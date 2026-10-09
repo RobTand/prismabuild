@@ -1,9 +1,12 @@
 """The demand-based gang fence, as a rule over declared demands (#1579).
 
 ``gang_blocking`` is a pure function of the census, the row, the host, the time
-and the host ledger's ``held`` and ``capacity``.  A gang that has waited past
-``GANG_RESERVE_AFTER_S`` reserves its elected member's declared demand; a new
-equal-priority row is admitted only if the reservation survives it.
+and the host ledger's ``held`` and ``capacity``, and of whether the caller found
+the row to be a movement node this host trusts (``exempt``).  A gang that has
+waited past ``GANG_RESERVE_AFTER_S``, on a host that holds the protected copy of
+its runtime, reserves its elected member's declared demand; a new equal-priority
+row is admitted only if the reservation survives it.  On a host without the copy
+the gang keeps only the fence against strictly lower priority.
 """
 import random
 
@@ -35,10 +38,12 @@ def _row(**over):
     return row
 
 
-def _blocked(row, *, now=OLD, held=None, capacity=CAPACITY, census=None, **kw):
+def _blocked(row, *, now=OLD, held=None, capacity=CAPACITY, census=None, exempt=False,
+             authority=True, **kw):
     census = _census(**kw) if census is None else census
     return reservation.gang_blocking(census, row, host="sparky", group=None, now=now,
-                                     held={} if held is None else held, capacity=capacity)
+                                     held={} if held is None else held, capacity=capacity,
+                                     exempt=exempt, authority=authority)
 
 
 # --- the rule table -----------------------------------------------------------------
@@ -66,14 +71,20 @@ def test_a_small_row_is_held_once_running_work_has_used_the_slack():
     assert held is not None and held["reservation"] == {"mem_gb": 1}
 
 
-def test_a_marked_returner_is_admitted_even_with_the_slack_gone():
-    assert _blocked(_row(returns_capacity=True), held={"cpu": 2, "mem_gb": 119}) is None
+def test_an_exempt_movement_node_is_admitted_even_with_the_slack_gone():
+    assert _blocked(_row(), held={"cpu": 2, "mem_gb": 119}, exempt=True) is None
 
 
 @pytest.mark.parametrize("value", [False, "true", 1, None, {}])
-def test_only_a_true_role_mark_exempts(value):
-    for role in ("returns_capacity", "serves_residency"):
-        assert _blocked(_row(**{role: value}), held={"cpu": 2, "mem_gb": 119}) is not None
+def test_only_a_true_exemption_exempts(value):
+    assert _blocked(_row(), held={"cpu": 2, "mem_gb": 119}, exempt=value) is not None
+
+
+@pytest.mark.parametrize("role", ["returns_capacity", "serves_residency"])
+def test_a_role_mark_on_the_row_alone_exempts_nothing(role):
+    """The rule never reads the mark: the caller decides it against its own host's copy."""
+    held = _blocked(_row(**{role: True}), held={"cpu": 2, "mem_gb": 119})
+    assert held is not None and held["reservation"]
 
 
 @pytest.mark.parametrize("resources", [
@@ -105,7 +116,8 @@ def test_a_member_that_demands_nothing_on_this_host_reserves_nothing():
 def test_an_unreadable_host_ledger_fails_safe():
     for held, capacity in ((None, CAPACITY), ({}, None), ("x", CAPACITY)):
         blocked = reservation.gang_blocking(
-            _census(), _row(), host="sparky", group=None, now=OLD, held=held, capacity=capacity)
+            _census(), _row(), host="sparky", group=None, now=OLD, held=held, capacity=capacity,
+            authority=True)
         assert blocked is not None and "unknown" in blocked["reservation"]
 
 
@@ -116,20 +128,20 @@ def test_a_malformed_held_count_is_consuming():
 def test_strictly_lower_priority_is_fenced_from_election_without_waiting():
     blocked = _blocked(_row(priority=-20), now=FIRST + 1)
     assert blocked is not None and "reservation" not in blocked
-    # and a declared returner of lower priority is still fenced: only equal priority reserves
-    assert _blocked(_row(priority=-20, returns_capacity=True), now=FIRST + 1) is not None
+    # and an exempt returner of lower priority is still fenced: only equal priority reserves
+    assert _blocked(_row(priority=-20), now=FIRST + 1, exempt=True) is not None
 
 
 def test_higher_priority_own_members_other_hosts_and_canary_are_never_held():
     big = {"cpu": 8, "gpu": 1, "mem_gb": 64}
     assert _blocked(_row(priority=0, resources=big)) is None
     assert reservation.gang_blocking(_census(), _row(resources=big), host="sparky", group="g" * 32,
-                                     now=OLD, held={}, capacity=CAPACITY) is None
+                                     now=OLD, held={}, capacity=CAPACITY, authority=True) is None
     assert reservation.gang_blocking(_census(), _row(resources=big, gang={"group": "h" * 32}),
                                      host="sparky", group="h" * 32, now=OLD, held={},
-                                     capacity=CAPACITY) is None
+                                     capacity=CAPACITY, authority=True) is None
     assert reservation.gang_blocking(_census(), _row(resources=big), host="sparklina", group=None,
-                                     now=OLD, held={}, capacity=CAPACITY) is None
+                                     now=OLD, held={}, capacity=CAPACITY, authority=True) is None
     canary = _row(needs_gpu=True, resources=big,
                   publication_canary={"host": "sparky", "generation": "g", "run_id": "r"})
     assert _blocked(canary) is None
@@ -145,17 +157,48 @@ def test_a_missing_rank_does_not_reserve():
 
 def test_the_reservation_priority_is_the_gangs_and_only_past_the_bound_on_its_host():
     census = _census()
-    assert reservation.reservation_priority_on(census, host="sparky", now=YOUNG) is None
-    assert reservation.reservation_priority_on(census, host="sparky", now=OLD) == -10
-    assert reservation.reservation_priority_on(census, host="sparklina", now=OLD) is None
-    assert reservation.reservation_priority_on({}, host="sparky", now=OLD) is None
+    assert reservation.reservation_priority_on(census, host="sparky", now=YOUNG, authority=True) is None
+    assert reservation.reservation_priority_on(census, host="sparky", now=OLD, authority=True) == -10
+    assert reservation.reservation_priority_on(census, host="sparklina", now=OLD, authority=True) is None
+    assert reservation.reservation_priority_on({}, host="sparky", now=OLD, authority=True) is None
 
 
-def test_the_role_marks_are_not_a_declaration_and_exempt_both_roles():
-    held = {"cpu": 2, "mem_gb": 119}
-    for role in ("returns_capacity", "serves_residency"):
-        assert _blocked(_row(**{role: True}), held=held) is None
-        assert _blocked(_row(**{role: "true"}), held=held) is not None
+# --- the fallback: no protected copy on this host ---------------------------------
+
+@pytest.mark.parametrize("authority", [False, None, "yes", 1])
+def test_a_host_without_the_protected_copy_reserves_nothing_for_equal_priority(authority):
+    """Main's behaviour: equal priority work is never held, whatever it demands."""
+    big = {"cpu": 8, "gpu": 1, "mem_gb": 64}
+    for now in (YOUNG, OLD, OLD + 10 * BOUND):
+        assert _blocked(_row(needs_gpu=True, resources=big), now=now, authority=authority) is None
+    assert reservation.reservation_priority_on(
+        _census(), host="sparky", now=OLD, authority=authority) is None
+
+
+def test_a_caller_that_says_nothing_about_authority_reserves_nothing():
+    """The default is main's behaviour: a reservation needs the caller to vouch for the host."""
+    assert reservation.gang_blocking(_census(), _row(resources={"cpu": 8, "mem_gb": 64}),
+                                     host="sparky", group=None, now=OLD, held={},
+                                     capacity=CAPACITY) is None
+
+
+def test_a_host_without_the_protected_copy_still_fences_strictly_lower_priority():
+    """The fence of #1517 does not depend on the copy."""
+    blocked = _blocked(_row(priority=-20), now=FIRST + 1, authority=False)
+    assert blocked is not None and "reservation" not in blocked
+
+
+@pytest.mark.parametrize("first, now, authority, expected", [
+    (FIRST, FIRST + BOUND + 1, True, True),
+    (FIRST, FIRST + BOUND, True, False),          # the bound is exclusive
+    (FIRST, FIRST + BOUND + 1, False, False),
+    (FIRST, FIRST + BOUND + 1, None, False),
+    (None, FIRST + BOUND + 1, True, False),
+    (True, FIRST + BOUND + 1, True, False),       # a bool is no publication time
+    ("1000", FIRST + BOUND + 1, True, False),
+])
+def test_a_gang_reserves_when_it_has_waited_and_the_host_holds_the_copy(first, now, authority, expected):
+    assert reservation.reserves_after(first, now, authority=authority) is expected
 
 
 # --- the timeline -------------------------------------------------------------------
@@ -214,9 +257,8 @@ def test_the_gang_is_admissible_within_the_bound_plus_the_longest_running_job(se
             name, resources, gpu, returns, run = rng.choice(CLASSES)
             if returns and int(now) % 60:
                 continue
-            row = _row(resources=dict(resources), needs_gpu=gpu,
-                       **({"returns_capacity": True} if returns else {}))
-            if _blocked(row, now=now, held=dict(held), census=census) is None and _fits(
+            row = _row(resources=dict(resources), needs_gpu=gpu)
+            if _blocked(row, now=now, held=dict(held), census=census, exempt=returns) is None and _fits(
                     held, resources, CAPACITY):
                 add(resources, now + rng.uniform(30, run))
         now += 20
@@ -227,6 +269,7 @@ def test_the_gang_is_admissible_within_the_bound_plus_the_longest_running_job(se
 # --- malformed sealed actions are nothing (the role cases themselves are in the claims file) ---
 
 def test_a_malformed_sealed_action_has_no_role():
+    """Shape only: a definition that is not a movement node derives nothing, on any host."""
     small = {"cpu": 1, "mem_gb": 1}
     for action in ({}, {"params": {}}, {"params": {"command": ["/usr/bin/python3", "x.py"]}},
                    {"params": {"command": None}, "task": {}},

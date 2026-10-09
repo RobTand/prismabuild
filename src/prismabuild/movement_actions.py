@@ -16,6 +16,7 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from . import core as pb
 from . import pool
@@ -108,16 +109,27 @@ MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
 #: reservation never holds either, because the running action, and through it
 #: the gang, waits on them.  Nothing here is a flag a submitter can declare:
 #: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
-#: role from the node's executed identity (:func:`capacity_role`).
+#: role from the node's executed identity (:func:`capacity_role`).  The mark is
+#: honoured only on a host that holds a protected copy of the tool the row
+#: names (:func:`authorized_role`), so a host judges what it enforces.
 CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
+#: The row field that names the tool a role mark was derived for.
+ROLE_SCRIPT_FIELD = "movement_script"
 PRODUCED_EXPORT_SCRIPT = "produced_export.py"
 LOCAL_RESIDENT_SCRIPT = "local_resident.py"
 
+
+class CapacityRole(NamedTuple):
+    """A derived role and the protected-spelled tool path it was derived for."""
+    role: str
+    script: str
+
+
 #: The interpreter a role-bearing movement node runs under (#1579, review 3).
-#: The one facts prove: the live fleet announces ``/usr/bin/python3`` on
-#: every tier record and in the produced-spool sealer, and the path is a
-#: root-owned system file a submitter cannot rewrite.  Anything else runs the
-#: script under an interpreter the submitter chose, so it is an ordinary row.
+#: The live fleet announces ``/usr/bin/python3`` on every tier record and uses
+#: it in the produced-spool sealer, and the path is a root-owned system file a
+#: submitter cannot rewrite.  Anything else runs the script under an
+#: interpreter the submitter chose, so it is an ordinary row.
 MOVEMENT_PYTHON = "/usr/bin/python3"
 
 #: Extra sealed environment names a movement node carries past
@@ -204,12 +216,15 @@ def _local_resident_evict(command: list) -> bool:
 
 
 def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
-                  residency: Mapping[str, object] | None) -> str | None:
+                  residency: Mapping[str, object] | None) -> CapacityRole | None:
     """The role PrismaBuild's own movement nodes have, from their executed identity.
 
     ``None`` for everything else, which a reservation then holds by its demand:
     unknown is consuming.  The role is read from what the node EXECUTES, never
-    from a sidecar field a submitter sets:
+    from a sidecar field a submitter sets, and from the sealed definition
+    alone: it reads nothing from this host's filesystem, so a submitter's box
+    and the box that enforces the role need not agree on anything but the
+    definition.
 
     * ``task.argv`` equals exactly the bash capture wrapper
       :func:`seal_movement_action` builds around ``params.command`` and
@@ -222,10 +237,10 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
       ``BASH_ENV``, ``PYTHONPATH`` or other startup hook reaches the wrapper;
     * the interpreter is :data:`MOVEMENT_PYTHON`, the root-owned system python
       the fleet seals; a submitter-owned python-named executable is ordinary;
-    * the script belongs to an administrator-approved runtime copy
-      (``resource_scope.published_generation_member``). Its receipt and
-      publication record have root custody through every path component.
-      The command names that protected member exactly, never a mutable alias;
+    * the script is spelled as a tool of a protected runtime copy
+      (``runtime_publication.spelled_member``), never a retained-store path or
+      an alias.  Whether this host holds that copy is the claiming host's
+      question (:func:`authorized_role`);
     * the declared demand is the small one the node is sealed with.
 
     ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
@@ -235,10 +250,9 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     tier's (``kind@tier``).  ``serves_residency``: ``stage_move.py`` or
     ``ram_promote.py`` carrying a residency range, no GPU. A caller can choose
     arguments for a genuine published tool, within that tool's demand limits.
-    Root publication authority controls the tool, its imports, and its path.
-    Ordinary store ownership grants no role. ``recompute`` is not a condition.
+    ``recompute`` is not a condition.
     """
-    from . import resource_scope
+    from . import runtime_publication
     params = action.get("params")
     task = action.get("task")
     if not isinstance(params, Mapping) or not isinstance(task, Mapping):
@@ -256,18 +270,12 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
             or not _movement_environment_ok(action, command)):
         return None
-    if command[0] != MOVEMENT_PYTHON:
+    if command[0] != MOVEMENT_PYTHON or not runtime_publication.spelled_member(command[1]):
         return None
-    script_path = Path(command[1])
-    if not script_path.is_absolute():
-        return None
-    resolved = resource_scope.published_generation_member(script_path)
-    if resolved is None or script_path != resolved:
-        return None
-    script = resolved.name
+    script = Path(command[1]).name
     if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
         if isinstance(residency, Mapping) and "range_start_bytes" in residency:
-            return "serves_residency"
+            return CapacityRole("serves_residency", command[1])
         return None
     evict = script == LOCAL_RESIDENT_SCRIPT and _local_resident_evict(command)
     if script not in (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT) and not evict:
@@ -279,7 +287,30 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             return None
         if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
             return None
-    return "returns_capacity"
+    return CapacityRole("returns_capacity", command[1])
+
+
+def authorized_role(item: Mapping[str, object]) -> bool:
+    """Whether a READY row's role mark stands on THIS host (#1579).
+
+    The mark was derived from the sealed definition when the row was
+    published, on whatever box published it.  It exempts the row from a gang's
+    reservation only here, on the box that enforces the reservation, and only
+    if the tool the row names is a member of a protected copy this box holds:
+    root custody through every path component, a receipt-bound publication
+    record and the member's digest.  A mark with no such tool (a hand-written
+    row, a copy this box lacks, an altered file, a path that is not spelled
+    exactly) exempts nothing.  A row with no mark costs nothing to ask about.
+    """
+    from . import runtime_publication
+    marks = [role for role in CAPACITY_ROLE_FIELDS if item.get(role) is True]
+    script = item.get(ROLE_SCRIPT_FIELD)
+    if len(marks) != 1 or not runtime_publication.spelled_member(script):
+        return False
+    path = Path(str(script))
+    permitted = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT) if marks[0] == "serves_residency" else (
+        STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT, LOCAL_RESIDENT_SCRIPT)
+    return path.name in permitted and runtime_publication.published_member(path) == path
 
 
 #: The retry policy a movement node gets when its caller names none (#950).
@@ -651,27 +682,7 @@ def movement_tools(tier: Mapping[str, object], *,
             f"older than this one is the usual cause, and publishing the "
             f"runtime again fixes it.  Filling them in from this process "
             f"would seal an argv naming a python that is not on that box")
-    mover_path = Path(root) / mover
-    egress_path = Path(root) / STAGE_RELEASE_SCRIPT
-    # The gang role binds execution to the verified bytes (#1579, review 3):
-    # the sealed command must spell the generation member exactly, never an
-    # alias the anchor resolves.  Canonicalize here, where the paths are made:
-    # a sealer that runs on the tier host (the writer lanes, a local pbrun)
-    # resolves both tools through symlinks, so a tier announced through the
-    # live ``repo`` link seals the generation member the mover executes.  A
-    # sealer on another box cannot resolve the tier host's paths, so it seals
-    # the announced spelling; the role then applies only when that spelling is
-    # already the member.  An unresolvable path seals as announced: resolution
-    # failures must not refuse a submission whose mover runs elsewhere.
-    try:
-        resolved = mover_path.resolve(strict=True)
-    except OSError:
-        resolved = mover_path
-    try:
-        egress_resolved = egress_path.resolve(strict=True)
-    except OSError:
-        egress_resolved = egress_path
-    return (python, str(resolved), str(egress_resolved))
+    return (python, str(Path(root) / mover), str(Path(root) / STAGE_RELEASE_SCRIPT))
 
 
 def container_owner(
@@ -785,13 +796,6 @@ def seal_movement_action(
         if name in template["params"]                     # type: ignore[operator]
     }
     params["command"] = list(command)
-    if len(params["command"]) >= 2:
-        from . import resource_scope, runtime_publication
-        protected = runtime_publication.movement_member(
-            Path(params["command"][1]),
-            retained_store=resource_scope.RETAINED_GENERATION_STORE)
-        if protected is not None:
-            params["command"][1] = str(protected)
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
     # A mover's retry policy is its own, not the consumer's (#603, #950).  The

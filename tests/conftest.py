@@ -71,6 +71,9 @@ if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
 import pbstatus  # noqa: E402
 import prismabuild.core as pb_core  # noqa: E402
+# Shared by the gang tests, whichever module imports ``gang_fleet``: a host that
+# holds the protected copy of the generation it runs (#1579, #1659).
+from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
 
 #: The mount the fleet executes against. The environment override exists so
 #: the guard itself can be exercised against a scratch store.

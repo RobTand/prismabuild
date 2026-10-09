@@ -1,63 +1,48 @@
-"""The demand-based gang fence on real claims (#1579).
+"""The demand-based gang fence on real claims (#1579, #1659).
 
 The two-host fixture of ``test_gang_reservation_1517``: real queue, ledgers,
 census and controllers; only the clock and the sampler are controlled.  A gang
 member is a whole-box row (cpu 2 or 20, gpu 1, mem 100 on a 20/1/120 host).
-The roles ``returns_capacity`` and ``serves_residency`` are assigned by
-``publish`` from the sealed definition of a movement node and refused in any
-submitted action, so these tests publish real sealed movement nodes.
+
+``gang_fleet`` runs on a host that holds the protected copy of the runtime it
+runs, so the reservation applies; the fallback tests take the copy away.  The
+roles ``returns_capacity`` and ``serves_residency`` are derived by ``publish``
+from the sealed definition of a movement node and refused in any submitted
+action; the host that enforces the reservation honours a mark only when the
+tool the row names is a member of its own protected copy.  These tests publish
+real sealed movement nodes.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import sys
 from pathlib import Path
 
 import pytest
+from movement_publication_support import retained_generation, unseal
 from test_gang_reservation_1517 import HOSTS, _busy_both, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
-from test_runtime_publication_1659 import approve, publication_store  # noqa: F401
 
 from prismabuild import _gang, _measurement_reservation as reservation, core as pb, pool
+from prismabuild import movement_actions as ma, resource_scope, runtime_publication
 
 REASONS = ("deferred_for_gang_reservation",)
 from test_gang_residency_members import GIB, MANIFEST, STAGE_KIND, TIER  # noqa: E402
 
 RANGE = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER, "manifest_sha256": MANIFEST,
          "manifest_bytes": 6 * GIB, "range_start_bytes": 0, "range_end_bytes": 2 * GIB}
-TOOLS = "/mnt/shared/prismabuild-fleet/repo/tools"
-
-
-SCRIPTS = ("stage_move.py", "ram_promote.py", "stage_release.py", "produced_export.py", "local_resident.py")
+SMALL = {"cpu": 1, "mem_gb": 1}
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch, publication_store):
-    """Publish a private generation through the protected publication interface."""
-    from prismabuild import resource_scope
-    root = tmp_path / "runtime-generations"
-    generation = root / ("a" * 12 + "-1791311474-" + "b" * 12)
-    files = {}
-    for sub in ("tools", "tools/fleet"):
-        (generation / sub).mkdir(parents=True)
-        for name in SCRIPTS:
-            path = generation / sub / name
-            path.write_text(f"# {name}\n")
-            files[f"{sub}/{name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
-            path.chmod(0o444)
-    (generation / "RUNTIME_VERSION.json").write_text(json.dumps({
-        "schema": resource_scope.RUNTIME_RECEIPT_SCHEMA, "generation": generation.name,
-        "commit": "c" * 40, "files": files}))
-    (generation / "RUNTIME_VERSION.json").chmod(0o444)
-    for sub in ("tools/fleet", "tools"):
-        (generation / sub).chmod(0o555)
-    generation.chmod(0o555)
-    monkeypatch.setattr(resource_scope, "RETAINED_GENERATION_STORE", root)
-    yield approve(generation, monkeypatch)
-    for sub in ("tools/fleet", "tools"):
-        (generation / sub).chmod(0o755)
-    generation.chmod(0o755)
+def store(movement_authority):
+    """The protected copy of the generation this host runs, with its tools."""
+    return movement_authority
+
+
+@pytest.fixture()
+def retained(store):
+    """The same generation as an ordinary retained-store directory, which no role anchors."""
+    return resource_scope.RETAINED_GENERATION_STORE / store.name
 
 
 def _tool(generation, script):
@@ -72,7 +57,6 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
     ``task.argv``, the movement task fields, the movement execution scope, the fleet python and
     the movement environment.  Each keyword spoils one part of it, for the look-alike cases.
     """
-    from prismabuild import movement_actions as ma
     checkout = tmp_path / "checkout"
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     sealed_variables = {"variables": {}, "toolchain": {}}
@@ -127,6 +111,13 @@ def _row(queue, key):
     return pool._read_json(queue.item_path(pool.READY, key))
 
 
+def _roles(queue, key):
+    row = _row(queue, key)
+    return [field for field in ma.CAPACITY_ROLE_FIELDS if row.get(field) is True]
+
+
+# --- what publish derives, from the sealed definition alone --------------------------
+
 @pytest.mark.parametrize("field", ["returns_capacity", "serves_residency"])
 @pytest.mark.parametrize("value", [True, False, "yes", 1])
 def test_publish_refuses_a_role_declared_by_a_submitted_action(gang_fleet, store, tmp_path, field, value):
@@ -134,17 +125,12 @@ def test_publish_refuses_a_role_declared_by_a_submitted_action(gang_fleet, store
     queue, clock, *_ = gang_fleet
     with pytest.raises(pool.PoolContractError, match="assigned by PrismaBuild"):
         _publish_sealed(queue, tmp_path, clock, f"forged-{field}-{value!r}", script="stage_release.py",
-                        resources={"cpu": 1, "mem_gb": 1}, extra_params={field: value}, generation=store)
+                        resources=SMALL, extra_params={field: value}, generation=store)
 
 
-def _roles(queue, key):
-    row = _row(queue, key)
-    return [field for field in ("returns_capacity", "serves_residency") if row.get(field) is True]
-
-
-def test_publish_assigns_the_roles_to_genuine_published_movement_nodes_only(gang_fleet, store, tmp_path):
+def test_publish_assigns_the_roles_to_movement_nodes_of_a_protected_copy_only(gang_fleet, store, tmp_path):
     queue, clock, *_ = gang_fleet
-    small = {"cpu": 1, "mem_gb": 1}
+    small = SMALL
     mover = {"cpu": 4, "mem_gb": 8, STAGE_KIND: 2}
     resident = ("--pool-root", "q", "--set-id", "s", "--host", "h", "--policy", "p")
     cases = [
@@ -168,6 +154,10 @@ def test_publish_assigns_the_roles_to_genuine_published_movement_nodes_only(gang
         key = _publish_sealed(queue, tmp_path, clock, name, script=script, resources=resources,
                               residency=residency, extra_command=extra, generation=store)
         assert _roles(queue, key) == ([role] if role else []), (name, _row(queue, key))
+        if role:
+            assert _row(queue, key)[ma.ROLE_SCRIPT_FIELD] == _tool(store, script), name
+        else:
+            assert ma.ROLE_SCRIPT_FIELD not in _row(queue, key), name
     # An ordinary action has no role whatever it demands.
     plain = _publish_sealed(queue, tmp_path, clock, "plain", script=None, resources=small)
     assert _roles(queue, plain) == []
@@ -178,67 +168,86 @@ def test_a_genuine_spool_export_gets_its_role_without_recompute(gang_fleet, stor
     queue, clock, *_ = gang_fleet
     for recompute in (False, True):
         key = _publish_sealed(queue, tmp_path, clock, f"export-{recompute}", script="produced_export.py",
-                              resources={"cpu": 1, "mem_gb": 1}, recompute=recompute, generation=store)
+                              resources=SMALL, recompute=recompute, generation=store)
         assert _roles(queue, key) == ["returns_capacity"], recompute
 
 
-@pytest.mark.parametrize("layout", ["tools", "tools/fleet"])
-def test_the_real_sealer_publishes_a_protected_movement_role(
-        gang_fleet, store, tmp_path, layout):
-    from prismabuild import movement_actions as ma, resource_scope
-    queue, clock, *_ = gang_fleet
+# --- the sealer names a tool root the executing host announced -----------------------
+
+def _tier(root):
+    return {"tier_id": TIER, "host": "sparky", "mover_python": ma.MOVEMENT_PYTHON,
+            "mover_tools_root": str(root)}
+
+
+def _template(queue, tmp_path):
     key, cas, checkout = _seal(queue, tmp_path, "consumer")
     consumer = pool._sealed_action_request(str(cas.root), key)
-    template = {
-        "task": consumer["task"], "params": {"cwd": str(checkout)},
-        "inputs": consumer["inputs"], "code_closure": consumer["code_closure"],
-        "environment": consumer["environment"], "marker_root": tmp_path / "markers",
-        "checkout_identity": {"commit": "a" * 40},
-    }
-    source = resource_scope.RETAINED_GENERATION_STORE / store.name / layout / "stage_release.py"
+    return {"task": consumer["task"], "params": {"cwd": str(checkout)}, "inputs": consumer["inputs"],
+            "code_closure": consumer["code_closure"], "environment": consumer["environment"],
+            "marker_root": tmp_path / "markers", "checkout_identity": {"commit": "a" * 40}}, cas, checkout
+
+
+@pytest.mark.parametrize("layout", ["tools", "tools/fleet"])
+def test_a_mover_sealed_from_a_protected_tool_root_gets_its_role(gang_fleet, store, tmp_path, layout):
+    queue, clock, *_ = gang_fleet
+    template, cas, checkout = _template(queue, tmp_path)
+    python, mover, egress = ma.movement_tools(_tier(store / layout))
     action = ma.seal_movement_action(
-        template, command=[ma.MOVEMENT_PYTHON, str(source), "--pool-root", str(queue.root)],
-        demand={"cpu": 1, "mem_gb": 1}, tags=["sparky"], log_name=f"release-{layout}.log")
+        template, command=[python, egress, "--pool-root", str(queue.root)],
+        demand=SMALL, tags=["sparky"], log_name=f"release-{layout}.log")
+    assert action["params"]["command"][1] == str(store / layout / "stage_release.py")
     cas.publish_action_request(action)
-    _enqueue(queue, clock, action["action_key"], cas, checkout, resources={"cpu": 1, "mem_gb": 1})
+    _enqueue(queue, clock, action["action_key"], cas, checkout, resources=SMALL)
     assert _roles(queue, action["action_key"]) == ["returns_capacity"]
 
 
-def test_a_self_certified_store_generation_gets_no_role(gang_fleet, store, tmp_path):
-    """A store owner cannot authorize its own movement code."""
+def test_the_sealing_host_having_the_copy_does_not_change_the_path_the_executing_host_runs(
+        gang_fleet, store, retained, tmp_path):
+    """Review of 14fb82c6, finding 3: a partial deployment must not break a mover launch.
+
+    This process (the sealing host) holds the protected copy.  The executing host's tier announces
+    only its ordinary tool root, so it has no copy.  The sealed command names the path that
+    host announced, a file it has; the sealer never swaps in a path from its own box.
+    """
     queue, clock, *_ = gang_fleet
-    from prismabuild import resource_scope
-    source = resource_scope.RETAINED_GENERATION_STORE / store.name
+    template, cas, checkout = _template(queue, tmp_path)
+    announced = retained / "tools" / "fleet"
+    python, mover, egress = ma.movement_tools(_tier(announced))
+    for tool, script in ((mover, "stage_move.py"), (egress, "stage_release.py")):
+        assert tool == str(announced / script)
+    action = ma.seal_movement_action(
+        template, command=[python, egress, "--pool-root", str(queue.root)],
+        demand=SMALL, tags=["sparky"], log_name="partial.log")
+    assert action["params"]["command"][1] == str(announced / "stage_release.py")
+    assert action["task"]["argv"][-1].count(str(store)) == 0
+    cas.publish_action_request(action)
+    _enqueue(queue, clock, action["action_key"], cas, checkout, resources=SMALL)
+    assert _roles(queue, action["action_key"]) == [], "an ordinary retained path derives no role"
+
+
+def test_a_retained_store_path_is_no_protected_tool(gang_fleet, store, retained, tmp_path):
+    """A store owner cannot authorize its own movement code: its path is not the protected copy's."""
+    queue, clock, *_ = gang_fleet
     key = _publish_sealed(queue, tmp_path, clock, "self-certified-release",
-                          script="stage_release.py", resources={"cpu": 1, "mem_gb": 1},
-                          generation=source)
+                          script="stage_release.py", resources=SMALL, generation=retained)
     assert _roles(queue, key) == []
 
 
-def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path, monkeypatch):
+def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, retained, tmp_path):
     """Every way a submitted action could imitate a movement node leaves it an ordinary row (review 2)."""
-    from prismabuild import movement_actions as ma
     queue, clock, *_ = gang_fleet
-    small = {"cpu": 1, "mem_gb": 1}
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     lookalike = outside / "stage_release.py"            # right name, wrong place
     lookalike.write_text("# not a published tool\n")
-    # a real generation directory that is not published: no receipt naming it
-    unknown = Path(str(store.parent)) / ("d" * 12 + "-1791311474-" + "e" * 12)
+    unknown = retained.parent / ("d" * 12 + "-1791311474-" + "e" * 12)   # a store directory, not protected
     (unknown / "tools" / "fleet").mkdir(parents=True)
     (unknown / "tools" / "fleet" / "stage_release.py").write_text("# unpublished\n")
-    # a published file whose bytes no longer match the manifest
-    tampered = store / "tools" / "fleet" / "produced_export.py"
-    tampered.chmod(0o644)
-    tampered.write_text("# tampered after publication\n")
-    tampered.chmod(0o444)
     hook = {"BASH_ENV": str(tmp_path / "payload.sh")}
     startup = {"PYTHONPATH": str(tmp_path), "PYTHONSTARTUP": str(tmp_path / "start.py")}
     cases = {
         "look-alike script in /tmp": dict(tool=str(lookalike)),
         "unknown generation": dict(tool=str(unknown / "tools" / "fleet" / "stage_release.py")),
-        "tampered published file": dict(script="produced_export.py"),
         "relative script path": dict(tool="tools/fleet/stage_release.py"),
         "wrong interpreter": dict(python="/bin/sh"),
         "relative interpreter": dict(python="python3"),
@@ -259,7 +268,7 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
             spoil["variables"] = {**ma.movement_environment(command),
                                   **{k: v for k, v in spoil["variables"].items()
                                      if k not in ma.movement_environment(command)}}
-        key = _publish_sealed(queue, tmp_path, clock, name.replace(" ", "-"), resources=small,
+        key = _publish_sealed(queue, tmp_path, clock, name.replace(" ", "-"), resources=SMALL,
                               generation=store, **spoil)
         assert _roles(queue, key) == [], (name, _row(queue, key))
 
@@ -268,7 +277,6 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
 def test_missing_movement_environment_keys_with_docker_ownership_publish_without_a_role(
         gang_fleet, store, tmp_path, missing):
     """An incomplete movement environment produces an ordinary row."""
-    from prismabuild import movement_actions as ma
     queue, clock, *_ = gang_fleet
     command = [ma.MOVEMENT_PYTHON, _tool(store, "stage_release.py"),
                "--pool-root", str(queue.root)]
@@ -280,57 +288,34 @@ def test_missing_movement_environment_keys_with_docker_ownership_publish_without
     }
     variables.pop(missing)
     key = _publish_sealed(queue, tmp_path, clock, f"missing-{missing}",
-                          script="stage_release.py", resources={"cpu": 1, "mem_gb": 1},
+                          script="stage_release.py", resources=SMALL,
                           generation=store, variables=variables)
     assert _roles(queue, key) == []
-    assert _row(queue, key)["resources"] == {"cpu": 1, "mem_gb": 1}
+    assert _row(queue, key)["resources"] == SMALL
 
 
 def test_a_submitter_alias_of_a_published_tool_gets_no_role(gang_fleet, store, tmp_path):
-    """Review 3: the role is read off the resolved member, and the sealed path spells it exactly."""
-    from prismabuild import movement_actions as ma
-    from prismabuild import resource_scope
+    """Review 3: the sealed path spells a protected member, never a mutable alias."""
     queue, clock, *_ = gang_fleet
-    small = {"cpu": 1, "mem_gb": 1}
-    # An alias named stage_release.py pointing at the published stage_move.py:
-    # the anchor verifies the mover bytes, but the sealed name is an alias.
+    # An alias named stage_release.py pointing at the published stage_move.py.
     alias = tmp_path / "stage_release.py"
     alias.symlink_to(store / "tools" / "fleet" / "stage_move.py")
     key = _publish_sealed(queue, tmp_path, clock, "alias-basename", script="stage_release.py",
-                          resources=small, tool=str(alias), generation=store)
+                          resources=SMALL, tool=str(alias), generation=store)
     assert _roles(queue, key) == [], _row(queue, key)
     # The same alias retargeted after publication still names the alias.
     alias.unlink()
     alias.symlink_to(store / "tools" / "fleet" / "stage_release.py")
     key = _publish_sealed(queue, tmp_path, clock, "alias-retargeted", script="stage_release.py",
-                          resources=small, tool=str(alias), generation=store)
+                          resources=SMALL, tool=str(alias), generation=store)
     assert _roles(queue, key) == [], _row(queue, key)
-    # A published tool reached through an unrelated published name is ordinary too.
-    honest = tmp_path / "honest-link.py"
-    honest.symlink_to(store / "tools" / "fleet" / "stage_release.py")
-    key = _publish_sealed(queue, tmp_path, clock, "honest-alias", script="stage_release.py",
-                          resources=small, tool=str(honest), generation=store)
-    assert _roles(queue, key) == [], _row(queue, key)
-    # The sealer canonicalizes the live repo link, so a sealed member path counts.
-    link = tmp_path / "repo"
-    if not link.exists():
-        link.symlink_to(store)
-    canonical = ma.movement_tools({"tier_id": "t", "mover_python": ma.MOVEMENT_PYTHON,
-                                   "mover_tools_root": str(link / "tools" / "fleet")})[2]
-    assert canonical == str(store / "tools" / "fleet" / "stage_release.py"), canonical
-    key = _publish_sealed(queue, tmp_path, clock, "canonical-member", script="stage_release.py",
-                          resources=small, tool=canonical, generation=store)
-    assert _roles(queue, key) == ["returns_capacity"]
 
 
 def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tmp_path):
     """Review 3: the role's operation test parses exactly as local_resident does."""
-    import sys
     sys.path.insert(0, str(Path("tools/fleet").resolve()))
     from local_resident import effective_operation as tool_parses
-    from prismabuild import movement_actions as ma
     queue, clock, *_ = gang_fleet
-    small = {"cpu": 1, "mem_gb": 1}
     base = ["--pool-root", str(queue.root), "--set-id", "s", "--host", "h", "--policy", "/p"]
     shapes = [
         [*base, "--operation", "evict"],
@@ -346,7 +331,7 @@ def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tm
         assert ma.effective_local_resident_operation(argv) == tool_parses(argv), argv
     # Only one literal --operation evict gets the role; every other shape is ordinary.
     key = _publish_sealed(queue, tmp_path, clock, "evict", script="local_resident.py",
-                          resources=small, extra_command=(*base, "--operation", "evict"),
+                          resources=SMALL, extra_command=(*base, "--operation", "evict"),
                           generation=store)
     assert _roles(queue, key) == ["returns_capacity"]
     for name, extra in {
@@ -357,19 +342,91 @@ def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tm
             "truncated": (*base, "--operation"),
     }.items():
         key = _publish_sealed(queue, tmp_path, clock, name, script="local_resident.py",
-                              resources=small, extra_command=extra, generation=store)
+                              resources=SMALL, extra_command=extra, generation=store)
         assert _roles(queue, key) == [], (name, _row(queue, key))
 
 
-def test_without_a_protected_store_nothing_is_a_movement_node(gang_fleet, store, tmp_path, monkeypatch):
-    """Unknown publication authority produces an ordinary row."""
-    from prismabuild import runtime_publication
+def test_a_changed_scope_or_task_on_a_genuine_node_loses_the_role(gang_fleet, store, tmp_path):
+    """Checked on a mutated copy of a genuine sealed node, since the sealer refuses some scopes."""
+    import copy
     queue, clock, *_ = gang_fleet
-    monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
-    key = _publish_sealed(queue, tmp_path, clock, "no-store", script="stage_release.py",
-                          resources={"cpu": 1, "mem_gb": 1}, generation=store)
-    assert _roles(queue, key) == []
+    key, cas, checkout = _seal(queue, tmp_path, "genuine", script="stage_release.py", generation=store)
+    genuine = pool._sealed_action_request(str(cas.root), key)
+    assert ma.capacity_role(genuine, SMALL, residency=None) == ma.CapacityRole(
+        "returns_capacity", _tool(store, "stage_release.py"))
+    for mutate in (
+            lambda a: a["execution_scope"].update(portability="host_class_keyed", host_class="gb10"),
+            lambda a: a["execution_scope"].update(platform_key="linux-x86_64"),
+            lambda a: a["task"].update(determinism="deterministic"),
+            lambda a: a["task"].update(artifact_kind="measurement"),
+            lambda a: a["task"].update(result_path="another.log"),
+            lambda a: a["task"]["argv"].__setitem__(4, a["task"]["argv"][4] + " "),
+            lambda a: a["params"]["command"].append("--extra"),
+            lambda a: a["environment"]["variables"].update(BASH_ENV="/tmp/payload.sh"),
+            lambda a: a["environment"]["variables"].update(PYTHONPATH="/tmp/evil"),
+            lambda a: a["environment"]["variables"].__delitem__("LANG"),
+            lambda a: a["params"]["command"].__setitem__(0, "/tmp/python3")):
+        changed = copy.deepcopy(dict(genuine))
+        mutate(changed)
+        assert ma.capacity_role(changed, SMALL, residency=None) is None
 
+
+# --- the host that enforces the reservation checks the tool against its own copy ------
+
+def _mark(path, role="returns_capacity", **over):
+    return {role: True, ma.ROLE_SCRIPT_FIELD: str(path), **over}
+
+
+def test_a_mark_stands_where_the_named_tool_is_a_member_of_this_hosts_protected_copy(store):
+    assert ma.authorized_role(_mark(store / "tools" / "fleet" / "stage_release.py"))
+    assert ma.authorized_role(_mark(store / "tools" / "stage_release.py"))
+    assert ma.authorized_role(_mark(store / "tools" / "fleet" / "stage_move.py", "serves_residency"))
+    assert ma.authorized_role(_mark(store / "tools" / "fleet" / "ram_promote.py", "serves_residency"))
+    assert not ma.authorized_role({})        # a row with no mark costs nothing to ask about
+
+
+def test_a_mark_without_such_a_tool_exempts_nothing(store, retained, tmp_path):
+    genuine = store / "tools" / "fleet" / "stage_release.py"
+    other_generation = store.parent / ("d" * 12 + "-1791311474-" + "e" * 12)     # no copy here
+    cases = {
+        "a hand-written mark with no tool": {"returns_capacity": True},
+        "a tool outside the protected store": _mark(retained / "tools" / "fleet" / "stage_release.py"),
+        "a tool of a generation this host has no copy of":
+            _mark(other_generation / "tools" / "fleet" / "stage_release.py"),
+        "a role the tool cannot have": _mark(store / "tools" / "fleet" / "stage_move.py"),
+        "the other role the tool cannot have": _mark(genuine, "serves_residency"),
+        "a tool that is no movement tool": _mark(store / "src" / "prismabuild" / "helper.py"),
+        "two roles": _mark(genuine, serves_residency=True),
+        "a mark that is not literally true": {"returns_capacity": "true", ma.ROLE_SCRIPT_FIELD: str(genuine)},
+        "a relative path": _mark("tools/fleet/stage_release.py"),
+        "a path that is not normalized": _mark(f"{store}/tools/../tools/fleet/stage_release.py"),
+        "no path": {"returns_capacity": True, ma.ROLE_SCRIPT_FIELD: None},
+    }
+    for name, row in cases.items():
+        assert not ma.authorized_role(row), name
+
+
+def test_a_tool_altered_after_publication_loses_its_mark(store):
+    member = store / "tools" / "fleet" / "stage_release.py"
+    assert ma.authorized_role(_mark(member))
+    member.chmod(0o644)
+    member.write_text("# altered\n")
+    member.chmod(0o444)
+    assert not ma.authorized_role(_mark(member))
+
+
+def test_an_alias_inside_the_protected_namespace_is_no_member(store):
+    """The spelled path must be the member itself, whatever it resolves to."""
+    alias = store / "tools" / "fleet" / "alias.py"
+    store.chmod(0o755)
+    (store / "tools" / "fleet").chmod(0o755)
+    alias.symlink_to(store / "tools" / "fleet" / "stage_release.py")
+    (store / "tools" / "fleet").chmod(0o555)
+    store.chmod(0o555)
+    assert not ma.authorized_role(_mark(alias))
+
+
+# --- real claims ----------------------------------------------------------------------
 
 def _wait_gang(publish, gclaim, members, clock, name, **kw):
     incumbents = _busy_both(publish, gclaim)
@@ -390,9 +447,9 @@ def test_a_waiting_gang_reserves_its_member_demand_and_admits_what_returns_capac
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "res")
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     gpu = publish("late-gpu", priority=-10, timeout_s=None, cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
-    small = _publish_sealed(queue, tmp_path, clock, "small", script=None, resources={"cpu": 1, "mem_gb": 1})
+    small = _publish_sealed(queue, tmp_path, clock, "small", script=None, resources=SMALL)
     release = _publish_sealed(queue, tmp_path, clock, "release", script="stage_release.py",
-                              resources={"cpu": 1, "mem_gb": 1}, generation=store)
+                              resources=SMALL, generation=store)
     assert gclaim("sparky") == release, (denial(release, "sparky"), denial(small, "sparky"))
     for key in (gpu, small):
         assert denial(key, "sparky")["reason"] in REASONS, denial(key, "sparky")
@@ -405,26 +462,20 @@ def test_a_young_gang_does_not_hold_equal_priority_work(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     _wait_gang(publish, gclaim, members, clock, "young")
     clock[0] += reservation.GANG_RESERVE_AFTER_S - 60
-    small = _publish_sealed(queue, tmp_path, clock, "young-small", script=None, resources={"cpu": 1, "mem_gb": 1})
+    small = _publish_sealed(queue, tmp_path, clock, "young-small", script=None, resources=SMALL)
     assert gclaim("sparky") == small
 
 
-def test_a_gang_member_that_takes_every_cpu_still_progresses_through_its_own_movers(
-        gang_fleet, store, monkeypatch, tmp_path):
-    """The review's hole, end to end.
+def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool):
+    """A gang whose first member takes every CPU, aged past the bound, and its stage mover.
 
-    Member 1 takes all 20 CPUs on sparky and waits there, its gang past the bound.  Member 0's
-    residency lead is a stage mover (4 CPUs, 8 GiB, tier tokens) that runs on sparky.  The
-    reservation leaves no CPU slack, so an ordinary row of that demand is held; the sealed mover
-    PrismaBuild publishes (recompute, its own script, its range) is admitted anyway, runs, and
-    the gang starts whole.
+    Member 1 takes all 20 CPUs on sparky and waits there.  Member 0's residency lead is a stage
+    mover (4 CPUs, 8 GiB, tier tokens) that runs on sparky, sealed with ``mover_tool``.
     """
-    from test_gang_residency_members import _compose_map, _consumer_block
+    from test_gang_residency_members import _consumer_block
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
-    stage = tmp_path / "stage"
-    stage.mkdir()
     need = {"cpu": 4, "mem_gb": 8, STAGE_KIND: 2}
-    mover, cas, checkout = _seal(queue, tmp_path, "mover", script="stage_move.py", generation=store)
+    mover, cas, checkout = _seal(queue, tmp_path, "mover", script="stage_move.py", tool=mover_tool)
     incumbents = _busy_both(publish, gclaim)
     group, (first, second) = members("whole-cpu", priority=-10, member_cpu=20,
                                      residency=_consumer_block([mover]))
@@ -435,19 +486,17 @@ def test_a_gang_member_that_takes_every_cpu_still_progresses_through_its_own_mov
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     for host in HOSTS:
         finish(incumbents[host], host)
+    return mover, cas, checkout, need, first, second
 
-    # An ordinary row with the mover's demand is held: 4 CPUs beside the member's 20 do not fit.
-    control = _publish_sealed(queue, tmp_path, clock, "ordinary-same-demand", script=None,
-                              resources=need, residency=RANGE)
-    assert gclaim("sparky") is None
-    held = denial(control, "sparky")
-    assert held["reason"] in REASONS, held
-    assert held["evidence"]["gang_election"]["reservation"]["cpu"] == 4, held
-    queue.withdraw(control, reason="control done", by="test")
 
-    # The mover PrismaBuild publishes is admitted, runs, and releases the gang.
+def _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, *, role):
+    from test_gang_residency_members import _compose_map
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    stage = tmp_path / "stage"
+    stage.mkdir()
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
-    assert _row(queue, mover)["serves_residency"] is True
+    assert _roles(queue, mover) == ([role] if role else [])
     assert gclaim("sparky") == mover, denial(mover, "sparky")
     queue.record_move(mover, {
         "consumer_action_key": first, "tier_id": TIER, "stage_root": str(stage),
@@ -464,6 +513,113 @@ def test_a_gang_member_that_takes_every_cpu_still_progresses_through_its_own_mov
     assert started == {first, second}, (started, denial(first, "sparklina"), denial(second, "sparky"))
 
 
+def test_a_gang_member_that_takes_every_cpu_still_progresses_through_its_own_movers(
+        gang_fleet, store, monkeypatch, tmp_path):
+    """The review's hole, end to end, on a host that holds the protected copy.
+
+    The reservation leaves no CPU slack, so an ordinary row of the mover's demand is held; the
+    sealed mover PrismaBuild publishes (its own protected tool, its range) is admitted anyway,
+    runs, and the gang starts whole.
+    """
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, _tool(store, "stage_move.py"))
+    # An ordinary row with the mover's demand is held: 4 CPUs beside the member's 20 do not fit.
+    control = _publish_sealed(queue, tmp_path, clock, "ordinary-same-demand", script=None,
+                              resources=need, residency=RANGE)
+    assert gclaim("sparky") is None
+    held = denial(control, "sparky")
+    assert held["reason"] in REASONS, held
+    assert held["evidence"]["gang_election"]["reservation"]["cpu"] == 4, held
+    queue.withdraw(control, reason="control done", by="test")
+    _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, role="serves_residency")
+
+
+def _lose_the_copy(kind, retained, monkeypatch, tmp_path):
+    """Take this host's protected copy of the generation it runs away, in one of three ways."""
+    if kind == "absent":                      # the host is not enrolled, or nothing was published yet
+        monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
+    elif kind == "stale":                     # a roll: the copy of the last generation, not of this one
+        live = retained_generation(retained.parent, "d" * 12 + "-1791400000-" + "e" * 12,
+                                   commit="d" * 40)
+        monkeypatch.setattr(runtime_publication, "executing_generation", lambda: live)
+    else:                                     # a copy made from other bytes than this generation's receipt
+        unseal(retained.parent)
+        receipt = retained / "RUNTIME_VERSION.json"
+        receipt.chmod(0o644)
+        receipt.write_text(receipt.read_text().replace("c" * 40, "9" * 40))
+        receipt.chmod(0o444)
+
+
+@pytest.mark.parametrize("missing", ["absent", "stale", "other-receipt"])
+def test_a_host_without_the_copy_of_its_generation_has_no_authority(
+        store, retained, monkeypatch, tmp_path, missing):
+    assert runtime_publication.live_authority() is True
+    _lose_the_copy(missing, retained, monkeypatch, tmp_path)
+    assert runtime_publication.live_authority() is False
+
+
+@pytest.mark.parametrize("missing", ["absent", "stale", "other-receipt"])
+def test_without_a_protected_copy_of_its_generation_the_gang_starts_as_on_main(
+        gang_fleet, store, retained, monkeypatch, tmp_path, missing):
+    """Review of 14fb82c6, finding 1, and the CEO decision of 2026-10-09.
+
+    A copy that has not arrived must never deadlock a gang.  The host has no protected copy of
+    the generation it runs (none at all; only the copy of an older generation; a copy made from
+    other bytes), so its movers are sealed from the ordinary tool root and are ordinary rows.  A
+    whole-CPU member, aged past the bound, still starts: equal-priority work is not held, which
+    is what main does.
+    """
+    _lose_the_copy(missing, retained, monkeypatch, tmp_path)
+    mover, cas, checkout, need, first, second = _whole_cpu_gang(
+        gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"))
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    # The mover is an ordinary row here, and so is any row of its demand: neither is held.
+    ordinary = _publish_sealed(queue, tmp_path, clock, "ordinary-same-cpu", script=None,
+                               resources={"cpu": need["cpu"], "mem_gb": need["mem_gb"]})
+    assert gclaim("sparky") == ordinary, denial(ordinary, "sparky")
+    finish(ordinary, "sparky")
+    _run_the_mover_and_start_the_gang(gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
+                                      need, first, second, role=None)
+
+
+def test_without_the_copy_equal_priority_work_is_admitted_but_strictly_lower_is_still_fenced(
+        gang_fleet, store, monkeypatch, tmp_path):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
+    incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "no-copy")
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    lower = publish("lower", priority=-20, timeout_s=None, cpu=1, mem_gb=1, tags=["sparky"])
+    gpu = publish("equal-gpu", priority=-10, timeout_s=None, cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
+    assert gclaim("sparky") is None            # the incumbent still holds the box
+    assert denial(lower, "sparky")["reason"] in REASONS, "the strictly lower fence of #1517 stays"
+    assert "reservation" not in denial(lower, "sparky")["evidence"]["gang_election"]
+    finish(incumbents["sparky"], "sparky")
+    assert gclaim("sparky") == gpu, denial(gpu, "sparky")
+
+
+def test_a_mark_judged_by_another_box_does_not_exempt_here(gang_fleet, store, monkeypatch, tmp_path):
+    """The host that enforces the reservation decides, with its own copy.
+
+    The row is marked from a sealed definition naming the tool of a generation whose protected copy
+    this host lacks (the host holds the copy of the generation it runs, not of that one).  The mark
+    exempts nothing, so the row is held by its demand.
+    """
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "judged")
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    foreign = store.parent / ("d" * 12 + "-1791400000-" + "e" * 12)
+    release = _publish_sealed(queue, tmp_path, clock, "release-of-another-generation",
+                              script="stage_release.py", resources=SMALL, generation=foreign)
+    assert _roles(queue, release) == ["returns_capacity"]
+    assert gclaim("sparky") is None
+    held = denial(release, "sparky")
+    assert held["reason"] in REASONS and held["evidence"]["gang_election"]["reservation"], held
+
+
+# --- measurement precedence -------------------------------------------------------------
+
 def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
         gang_fleet, monkeypatch, tmp_path):
     """The review's carried-withhold path: a measurement's carried episode is a measurement withhold.
@@ -471,7 +627,6 @@ def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
     The older measurement single cannot be evaluated this pass (its residency lead record is
     unreadable) and carries its withhold.  Past the bound the gang member behind it still elects.
     """
-    from test_gang_residency_members import _consumer_block, _hexkey
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents = _busy_both(publish, gclaim)
     measurement = publish("carried-measurement", measurement=True, priority=-10, timeout_s=None,
@@ -519,6 +674,24 @@ def test_the_reservation_wins_over_an_older_measurement_withhold_so_the_gang_can
     assert queue.item_path(pool.READY, measurement).exists()
 
 
+def test_without_the_copy_a_waiting_measurement_keeps_its_place_as_on_main(
+        gang_fleet, monkeypatch, tmp_path):
+    """No reservation, so no precedence: the measurement withhold is not suspended either."""
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
+    incumbents = _busy_both(publish, gclaim)
+    measurement = publish("old-measurement", measurement=True, priority=-10, timeout_s=None,
+                          cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
+    group, (first, second) = members("behind-measurement", priority=-10)
+    assert gclaim("sparklina") is None
+    assert gclaim("sparky") is None
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    assert gclaim("sparky") is None
+    assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
+    assert _gang.elections(queue, group, 2).get(1) is None
+    assert queue.item_path(pool.READY, measurement).exists()
+
+
 def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged_gang(gang_fleet, tmp_path):
     """Priority order, not a reservation exception: a priority-10 measurement goes first."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
@@ -552,6 +725,19 @@ def test_a_measurement_single_of_the_gangs_priority_does_not_elect_on_a_reserved
     assert queue.item_path(pool.READY, measurement).exists()
 
 
+def test_without_the_copy_a_measurement_single_of_the_gangs_priority_elects_as_on_main(
+        gang_fleet, monkeypatch, tmp_path):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
+    incumbents, group, keys = _wait_gang(publish, gclaim, members, clock, "no-copy-elect")
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    measurement = publish("late-measurement", measurement=True, priority=-10, timeout_s=None,
+                          cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
+    assert gclaim("sparky") is None
+    census = reservation.CensusReader(queue, queue.ledger("sparky")).capture()
+    assert measurement in census["elections"], "no reservation, so the host is withheld for it as before"
+
+
 def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents = _busy_both(publish, gclaim)
@@ -571,29 +757,3 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
                 started.add(claimed)
     assert started == {first, second}, (started, denial(second, "sparky"), denial(other, "sparky"))
     assert queue.item_path(pool.READY, other).exists()
-
-
-def test_a_changed_scope_or_task_on_a_genuine_node_loses_the_role(gang_fleet, store, tmp_path):
-    """Checked on a mutated copy of a genuine sealed node, since the sealer refuses some scopes."""
-    import copy
-    from prismabuild import movement_actions as ma
-    queue, clock, *_ = gang_fleet
-    key, cas, checkout = _seal(queue, tmp_path, "genuine", script="stage_release.py", generation=store)
-    genuine = pool._sealed_action_request(str(cas.root), key)
-    small = {"cpu": 1, "mem_gb": 1}
-    assert ma.capacity_role(genuine, small, residency=None) == "returns_capacity"
-    for mutate in (
-            lambda a: a["execution_scope"].update(portability="host_class_keyed", host_class="gb10"),
-            lambda a: a["execution_scope"].update(platform_key="linux-x86_64"),
-            lambda a: a["task"].update(determinism="deterministic"),
-            lambda a: a["task"].update(artifact_kind="measurement"),
-            lambda a: a["task"].update(result_path="another.log"),
-            lambda a: a["task"]["argv"].__setitem__(4, a["task"]["argv"][4] + " "),
-            lambda a: a["params"]["command"].append("--extra"),
-            lambda a: a["environment"]["variables"].update(BASH_ENV="/tmp/payload.sh"),
-            lambda a: a["environment"]["variables"].update(PYTHONPATH="/tmp/evil"),
-            lambda a: a["environment"]["variables"].__delitem__("LANG"),
-            lambda a: a["params"]["command"].__setitem__(0, "/tmp/python3")):
-        changed = copy.deepcopy(dict(genuine))
-        mutate(changed)
-        assert ma.capacity_role(changed, small, residency=None) is None

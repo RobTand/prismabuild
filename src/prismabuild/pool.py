@@ -7365,13 +7365,17 @@ class PoolQueue:
         if sealed_request_present:
             # Assigned here, from the node's executed identity, never declared
             # (#1579): the exact capture wrapper around one of PrismaBuild's
-            # movement scripts, a file of a generation it published, and its
-            # small sealed demand.  ``recompute`` is no part of it.
+            # movement scripts, spelled as a tool of a protected copy, and its
+            # small sealed demand.  The row records the tool the mark was
+            # derived for; the host that enforces a reservation checks that
+            # tool against its own copy (``authorized_role``).  ``recompute``
+            # is no part of it.
             from . import movement_actions
             role = movement_actions.capacity_role(
                 sealed_request, demand, residency=residency_block)
             if role is not None:
-                item[role] = True
+                item[role.role] = True
+                item[movement_actions.ROLE_SCRIPT_FIELD] = role.script
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
@@ -12117,14 +12121,15 @@ class PoolQueue:
     def _canonical_measurement_verdict(self, item, verdict, *, ledger, controller,
                                        cpu_decision, gpu_sample):
         """Separate bounded attention from the persisted host election (#1419)."""
-        from . import _measurement_reservation as reservation
+        from . import _measurement_reservation as reservation, runtime_publication
         sample = cpu_decision.get("sample") if isinstance(cpu_decision, Mapping) else None
         sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
         try:
             chosen = reservation.elect(
                 self, ledger, controller, item,
                 verdict if _measurement_foreign_clear(cpu_decision) else dict(verdict, withhold=False),
-                sampled_unix=sampled, gpu_sample=gpu_sample)
+                sampled_unix=sampled, gpu_sample=gpu_sample,
+                authority=runtime_publication.live_authority())
         except reservation.CensusUnavailable as exc:
             return dict(verdict, withhold=True, why="measurement_census_unavailable",
                         census_error=str(exc))
@@ -21986,9 +21991,16 @@ class PoolQueue:
                             # waiting measurement and reserved for a gang.  The
                             # suspended row stays READY and withholds again once
                             # the gang has started and no election waits (#1579).
+                            # ...and only on a host that holds the protected copy of
+                            # the runtime it runs: without it nothing the gang waits on
+                            # can be told from other work, and the host keeps the fence
+                            # against strictly lower priority that it always had.
+                            from . import movement_actions, runtime_publication
                             reservation_now = _now()
+                            movement_authority = runtime_publication.live_authority()
                             reserving_priority = measurement_reservation.reservation_priority_on(
-                                census, host=ledger.base.name, now=reservation_now)
+                                census, host=ledger.base.name, now=reservation_now,
+                                authority=movement_authority)
                             # This row's own measurement withhold yields only to a
                             # gang of its priority or higher.
                             measurement_suspended = (reserving_priority is not None
@@ -22024,12 +22036,17 @@ class PoolQueue:
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
+                            # A role mark exempts the row only if this host holds
+                            # a protected copy of the tool the row names (#1579).
+                            role_exempt = movement_actions.authorized_role(item)
                             gang_blocked = (None if serves_incumbent else
                                             measurement_reservation.gang_blocking(
                                                 census, item, host=ledger.base.name,
                                                 group=gang["group"] if gang is not None else None,
                                                 now=reservation_now, held=reservation_held,
-                                                capacity=reservation_capacity))
+                                                capacity=reservation_capacity,
+                                                exempt=role_exempt,
+                                                authority=movement_authority))
                             while gang_blocked is not None:
                                 # A demand shortfall cannot become a loan (#1579).
                                 if "reservation" in gang_blocked:
@@ -22058,7 +22075,8 @@ class PoolQueue:
                                 gang_blocked = measurement_reservation.gang_blocking(
                                     remaining, item, host=ledger.base.name, group=None,
                                     now=reservation_now, held=reservation_held,
-                                    capacity=reservation_capacity)
+                                    capacity=reservation_capacity, exempt=role_exempt,
+                                    authority=movement_authority)
                             if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
@@ -25614,8 +25632,12 @@ class PoolQueue:
         return self.attempt_path(archived, attempt)
 
     def _gang_member_past_reservation_bound(self, item: Mapping[str, object]) -> bool:
-        """Whether ``item`` is a gang member whose gang has waited past the reservation bound."""
-        from . import _gang, _measurement_reservation as measurement_reservation
+        """Whether ``item`` is a gang member whose gang reserves its hosts now (#1579).
+
+        The gang has waited past the reservation bound, and this host holds the
+        protected copy that makes the reservation apply at all.
+        """
+        from . import _gang, _measurement_reservation as measurement_reservation, runtime_publication
         if not isinstance(item.get("gang"), Mapping):
             return False
         try:
@@ -25623,7 +25645,8 @@ class PoolQueue:
             record = _gang.read_group(self, declared["group"]) if declared else None
             if record is None:
                 return False
-            return _now() - _gang.rank(record)[1] > measurement_reservation.GANG_RESERVE_AFTER_S
+            return measurement_reservation.reserves_after(
+                _gang.rank(record)[1], _now(), authority=runtime_publication.live_authority())
         except (_gang.GangContractError, OSError, pb.PrismaBuildError, KeyError, TypeError, ValueError):
             return False
 

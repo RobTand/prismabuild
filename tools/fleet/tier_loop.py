@@ -60,6 +60,8 @@ from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
+from prismabuild import resource_scope  # noqa: E402
+from prismabuild import runtime_publication  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
@@ -92,6 +94,24 @@ CYCLE_INTERVAL_S = 60.0
 #: either layout.
 MOVER_PYTHON = sys.executable
 MOVER_TOOLS_ROOT = str(Path(__file__).resolve().parent)
+
+
+def announced_tools_root() -> str:
+    """The tool root a submitter seals this box's movers from (#1659).
+
+    Once the box holds the protected copy of this loop's generation (a
+    root-owned twin that its enrolled unit publishes, see
+    ``runtime_publication``), the announcement names the twin: the movers then
+    run bytes no submitter can change, and a gang's reservation can tell them
+    from other work.  A submitter on another box seals exactly this path, which
+    this box has by construction.  Without the twin the announcement is the
+    loop's own directory, as it was before roles existed, and nothing is
+    refused.  The announcement is rebuilt each cycle, so a copy that arrives
+    later is announced within one.
+    """
+    protected = runtime_publication.protected_tools_dir(
+        Path(MOVER_TOOLS_ROOT), retained_store=resource_scope.RETAINED_GENERATION_STORE)
+    return MOVER_TOOLS_ROOT if protected is None else str(protected)
 
 
 #: A verdict that stands until something changes -- a wait, a decline, a
@@ -10798,7 +10818,7 @@ def _cycle(
         # same kind of fact: something about this box that a submitter would
         # otherwise have to guess.
         record["mover_python"] = MOVER_PYTHON
-        record["mover_tools_root"] = MOVER_TOOLS_ROOT
+        record["mover_tools_root"] = announced_tools_root()
         if (record.get("tier") in ("stage", "ram") and record.get("mountpoint")
                 and str(record.get("host") or "") == host):
             # This box's own stage -- and its own tmpfs -- are marked as this

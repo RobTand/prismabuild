@@ -24,7 +24,12 @@ HOSTS = ("sparklina", "sparky")
 
 
 @pytest.fixture()
-def gang_fleet(fleet, tmp_path, monkeypatch):
+def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
+    """The two-host fleet, on a host that holds the protected copy of its runtime (#1579).
+
+    The reservation of an aged gang applies only there; the fallback tests of
+    ``test_gang_demand_fence_claims_1579`` take the copy away.
+    """
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
 
     def finish(key, host):

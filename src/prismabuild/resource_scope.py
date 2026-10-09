@@ -333,17 +333,6 @@ def _sha256_file(path: Path) -> str:
 RETAINED_GENERATION_STORE = Path(
     "/mnt/shared/prismabuild-fleet/runtime-generations")
 
-def published_generation_member(path: str | Path) -> Path | None:
-    """Return a tool with independent, root-controlled publication authority.
-
-    An ordinary store receipt proves integrity, not authority. The protected
-    publisher copies the complete generation into a root-controlled namespace.
-    Unknown authority grants no movement role and adds no launch refusal.
-    """
-    from . import runtime_publication
-    return runtime_publication.published_member(Path(path))
-
-
 #: The receipt every published generation carries. ``publish_runtime``,
 #: ``supervise`` and ``upgrade_client`` all enforce this schema; the checks
 #: below mirror ``supervise._published_generation`` (store child, receipt

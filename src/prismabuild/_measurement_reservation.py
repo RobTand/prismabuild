@@ -535,25 +535,41 @@ GANG_RESERVE_AFTER_S = 600.0
 _ABSENT_IS_ZERO = ("gpu",)
 
 
-def _gang_has_waited(chosen: dict, now: float) -> bool:
-    """Whether the gang behind election ``chosen`` has waited past the reservation bound."""
+def reserves_after(first_published: object, now: float, *, authority: bool) -> bool:
+    """Whether a gang first published at ``first_published`` reserves its hosts at ``now``.
+
+    Two things hold: the gang has waited past :data:`GANG_RESERVE_AFTER_S`,
+    and this host holds the protected copy of its runtime
+    (``runtime_publication.live_authority``).  Without that copy nothing a gang
+    waits on (a stage mover, an egress) can be told from other work, so the
+    reservation would hold the gang's own movers and the gang could not start.
+    The host then keeps what it had before the reservation: the fence against
+    strictly lower priority, and nothing more.
+    """
+    return (authority is True
+            and isinstance(first_published, (int, float)) and not isinstance(first_published, bool)
+            and now - first_published > GANG_RESERVE_AFTER_S)
+
+
+def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
+    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
     rank = chosen.get("rank")
-    return (isinstance(rank, list) and len(rank) == 3
-            and isinstance(rank[1], (int, float)) and not isinstance(rank[1], bool)
-            and now - rank[1] > GANG_RESERVE_AFTER_S)
+    return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
+                          authority=authority)
 
 
-def reservation_priority_on(census: dict, *, host: str, now: float) -> int | None:
+def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool) -> int | None:
     """The highest priority among gangs that reserve ``host`` now, else ``None``.
 
-    A gang reserves a host once its wait passed the bound.  The reservation
+    A gang reserves a host once its wait passed the bound, on a host that holds
+    the protected copy (``authority``, :func:`reserves_after`).  The reservation
     wins over a measurement of the gang's priority or lower there: the
     measurement's fence and withhold are suspended and it does not elect.  A
     strictly HIGHER-priority measurement keeps its place ahead of the gang;
     that is the priority order, not a reservation exception (#1579).
     """
     reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
-                 if chosen["host"] == host and _gang_has_waited(chosen, now)]
+                 if chosen["host"] == host and _gang_reserves(chosen, now, authority)]
     return max(reserving) if reserving else None
 
 
@@ -609,22 +625,29 @@ def reservation_shortfall(item: dict, member_demand: object, *, held: object,
 
 def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
                   now: float | None = None, held: object = None,
-                  capacity: object = None) -> dict | None:
+                  capacity: object = None, exempt: bool = False,
+                  authority: bool = False) -> dict | None:
     """What a live gang election does to ``item`` on its host (#1517, #1579).
 
     Strictly lower priority is fenced from election, as before.  Equal
-    priority is not touched while the gang is young; past
-    :data:`GANG_RESERVE_AFTER_S` the gang RESERVES its elected member's declared
-    demand on the host, and a row is admitted only if the reservation survives
-    it (:func:`reservation_shortfall`).  Never held: the gang's own members and
+    priority is not touched while the gang is young, or on a host without the
+    protected copy that lets a reservation tell PrismaBuild's movement nodes
+    from other work (``authority``, :func:`reserves_after`; absent means
+    without).  Past
+    :data:`GANG_RESERVE_AFTER_S`, on a host that holds the copy, the gang
+    RESERVES its elected member's declared demand on the host, and a row is
+    admitted only if the reservation survives it
+    (:func:`reservation_shortfall`).  Never held: the gang's own members and
     any gang's (two gangs of one priority are ordered by ``rank``), a verified
-    publication canary slot (its own contract), and a row PrismaBuild itself
-    marked ``returns_capacity`` (a stage or RAM egress, an export, a resident
-    evict) or ``serves_residency`` (a stage mover or RAM promotion): the
-    running action, and through it the gang, waits on those.  ``publish``
-    derives the marks from the sealed definition and refuses them in a
-    submitted action.  Any other row is held by its demand.  Higher priority is never held.  The returned election
-    carries ``reservation`` (the shortfall) when it is this rule that holds.
+    publication canary slot (its own contract), and a row ``exempt`` as a
+    movement node PrismaBuild itself sealed (a stage or RAM egress, an export,
+    a resident evict, a stage mover, a RAM promotion): the running action, and
+    through it the gang, waits on those.  The caller decides ``exempt`` from
+    the row's mark and its own host's protected copy
+    (``movement_actions.authorized_role``); a mark alone never exempts.  Any
+    other row is held by its demand.  Higher priority is never held.  The
+    returned election carries ``reservation`` (the shortfall) when it is this
+    rule that holds.
     """
     now = time.time() if now is None else now
     for key, chosen in sorted(census.get("gang_elections", {}).items()):
@@ -634,9 +657,8 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
             return chosen
         if (item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]
                 or isinstance(item.get("publication_canary"), dict)
-                or item.get("returns_capacity") is True
-                or item.get("serves_residency") is True
-                or not _gang_has_waited(chosen, now)):
+                or exempt is True
+                or not _gang_reserves(chosen, now, authority)):
             continue
         short = reservation_shortfall(item, chosen.get("demand"), held=held, capacity=capacity)
         if short is not None:
@@ -645,7 +667,8 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
 
 
 def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
-          verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None) -> dict | None:
+          verdict: dict, *, sampled_unix: object, gpu_sample: Mapping | None,
+          authority: bool = False) -> dict | None:
     """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
     generation = queue.attempt_generation(item)
@@ -658,7 +681,7 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
             raise CensusUnavailable("previous measurement election has not retired")
         group = item["gang"].get("group") if isinstance(item.get("gang"), dict) else None
         if any(other["host"] == ledger.base.name and other["group"] != group
-               and _gang_has_waited(other, pool._now())
+               and _gang_reserves(other, pool._now(), authority)
                and int(item.get("priority", 0)) <= other["priority"]
                for other in census["gang_elections"].values()):
             # A gang of this priority or higher reserves this host: the
