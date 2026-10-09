@@ -4255,8 +4255,10 @@ cache roots in separate charged ROOT/MAX pairs, and seal this selection:
 ]}
 ```
 
-The proposed SDK6 builder returns this object.
-Its public contract decision remains pending; the cited runtime uses SDK5.
+The CEO approved the additive SDK6 builder in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior; the cited published runtime still uses SDK5.
+Qualification is limited to isolated x86 work.
+The decision approves no deployment or closure; pb-integrator owns publication.
 Use `json.dumps(selection, sort_keys=True, separators=(",", ":"))` to seal compact JSON.
 The pool counts all raw UTF-8 bytes, including whitespace, against the 16 KiB limit.
 
@@ -4297,7 +4299,9 @@ The roster also lacks `local_disk` and `--spool-gb` for dl380g10.
 Provision a qualified disk-backed mount beneath `/tmp` through an operator-approved change.
 Use the existing supervisor to measure its offer.
 Do not weaken filesystem checks, invent capacity, or place these CPU scenarios on a Spark.
-SDK6 and isolated worker fault authority remain in decision request `dec-1009-090451-62a1`.
+Decision `dec-1009-090451-62a1` approves additive SDK6 and isolated x86 qualification only.
+It does not permit deployment, closure, or faults against live worker services.
+The measured scratch prerequisite remains open.
 
 ### Write outputs that a later action reads
 

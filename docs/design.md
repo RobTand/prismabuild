@@ -1647,9 +1647,11 @@ exposes the generation-bound scratch lifetime contract (Refs #1360): the
 field, its sealed variable, and a builder for the sealed selection. Earlier
 exports and capability tags remain available.
 
-The SDK6 additions are proposed for this branch.
-They require a person's explicit public contract decision before acceptance.
-The published generation in the #1360 record uses SDK5.
+The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
+SDK5 consumers must keep their existing behavior.
+Qualification is limited to isolated x86 work.
+The decision authorizes no deployment or issue closure; pb-integrator owns publication.
+The published generation in the #1360 record still uses SDK5.
 
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
@@ -16566,7 +16568,7 @@ Pool publication derives the `scratch-lifetime-v1` worker requirement from
 nonempty versioned intent and refuses inadequate sealed scratch funding. Old
 workers do not offer it. The source worker loop offers this code capability;
 this is not evidence of a deployed runtime generation or PQ workload acceptance.
-The proposed SDK6 adds the capability tag and the selection builder.
+The approved SDK6 adds the capability tag and the selection builder.
 Other exports, signatures and legacy arrays remain unchanged.
 
 `PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
@@ -16662,8 +16664,9 @@ Unreadable or changed identities refuse the operation before any signal.
 The admitted CPU smoke checks only an owned inert launcher, not loss of a live fleet worker.
 The x86 offer observed on 2026-10-09 includes `scratch-lifetime-v1` but no `spool_gb`.
 Do not substitute synthetic capacity or a Spark tag for a measured x86 scratch offer.
-A supervisor must supply the measured offer and authorize an isolated worker for recovery qualification.
-No runtime publication, worker service restart or public contract approval occurred in this correction.
+A supervisor must supply the measured scratch offer.
+The CEO permits only isolated x86 qualification; no live worker service fault is authorized.
+No runtime publication or worker service restart occurred.
 
 The admitted x86 probe `ee950a85ee9d` used published generation `c8daa1be416c-1791512870-55b0e8c72f6b`.
 It observed immutable creation time on `/tmp`, but the lifetime and spool guards refused its `tmpfs` filesystem.
@@ -16674,9 +16677,17 @@ This is a separate deployment prerequisite, not a missing finalizer.
 Provide a qualified disk-backed mount beneath `/tmp` through an operator-approved provisioning change.
 Measure its capacity through the existing supervisor before an action reserves it.
 Do not add `tmpfs` to the disk policy or reuse the HDD pool to bypass this prerequisite.
-Decision request `dec-1009-090451-62a1` covers SDK6 and isolated worker fault authority.
-The earlier worker-input plan does not approve SDK6 exports.
-No approval or reduced-scope acceptance is recorded.
+The CEO approved option 1 in decision `dec-1009-090451-62a1`.
+SDK6 must remain additive, and qualification must stay in isolation on x86.
+This decision approves no deployment or closure.
+pb-integrator owns publication.
+The measured scratch prerequisite remains open.
+
+Admitted smoke `b4e28cac15b8` compared SDK6 with the published SDK5 client.
+It preserved all 84 earlier exports, 52 callable signatures, and 26 constants.
+It exercised legacy claim reads, nondestructive scratch paths, and receipt refusals against SDK6 internals.
+The three-file compatibility run passed all 278 collected cases with no skips.
+These checks establish the exercised compatibility, not full consumer or crash-recovery acceptance.
 
 **Still open.**
 

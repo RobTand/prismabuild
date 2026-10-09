@@ -2,10 +2,10 @@
  "completion": {
   "accepted": false,
   "issue_must_remain_open": true,
-  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. SDK6 requires a person's explicit public contract decision. The x86 scratch prerequisite needs separate provisioning.",
-  "sdk6_contract_decision": "pending: dec-1009-090451-62a1",
-  "runtime_publication_authority": "not granted to this correction",
-  "qualification_authority": "The decision request asks for isolated worker and broker qualification. No answer authorizes live worker faults."
+  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. The x86 scratch prerequisite needs separate provisioning. The approved SDK6 remains unpublished.",
+  "sdk6_contract_decision": "approved additive: dec-1009-090451-62a1",
+  "runtime_publication_authority": "The decision approves no deployment. pb-integrator owns publication.",
+  "qualification_authority": "The CEO approves isolated x86 qualification only. No live worker service fault is authorized."
  },
  "actions": [
   {
@@ -326,7 +326,7 @@
   "worker-process loss with reaped lease and successor retry on the same host",
   "reboot and cross-host recovery",
   "cleanup-error and record-commit fault injection with capacity retention",
-  "explicit public contract decision for the proposed SDK6 exports",
+  "pb-integrator publication of the approved additive SDK6",
   "supervisor-owned measured x86 scratch offer for admitted lifetime scenarios",
   "PQ #1091 cache sizing and GPU acceptance",
   "power-loss durability"
@@ -424,9 +424,13 @@
   },
   "decision_request": {
    "id": "dec-1009-090451-62a1",
-   "state": "pending",
-   "needs": "A person must approve or reject SDK6. An operator must authorize isolated worker and broker faults before live qualification.",
-   "recommendation": "Approve the proposed SDK6 interface and assign the prerequisites. Keep full acceptance unchanged."
+   "state": "approved",
+   "authority": "CEO decision delivered in this session for dec-1009-090451-62a1.",
+   "decision": "Option 1. SDK6 must be additive: SDK5 consumers keep working unchanged. Qualify it only in isolation on x86. This approves no deployment and no closure. pb-integrator owns the publication. Keep #1360 open until every criterion passes.",
+   "deployment_authorized": false,
+   "closure_authorized": false,
+   "publication_owner": "pb-integrator",
+   "remaining_prerequisite": "The measured x86 scratch offer remains absent."
   },
   "x86_offer": {
    "source": "pbmcp.pb_status",
@@ -488,6 +492,76 @@
    "ACC-04": {"target": "Crash recovery preserves attempt identity.", "implemented": "Exact-owner source cases exist.", "deployed": "Worker-loss recovery remains unqualified."},
    "DUR-01": {"target": "State the storage durability limit.", "implemented": "The existing process-crash contract applies.", "deployed": "No power-loss evidence exists."}
   }
+ },
+ "approved_sdk6_compatibility": {
+  "decision_request": "dec-1009-090451-62a1",
+  "source_parent": "1b498daa74d7a294200332e4c1728f00f385add0",
+  "scope": "Isolated x86 API and legacy behavior checks. No production directory, worker service, or runtime publication changed.",
+  "smoke": {
+   "action_key": "b4e28cac15b82539441020d28203ffb509320b39353277298241c8abb2b40b48",
+   "host": "dl380g10",
+   "terminal": "done",
+   "returncode": 0,
+   "sdk5_source_sha256": "40b4f5cc88b18ea127eeb9325e7f03d954adcd0e4b6cdceda25ceda8a9f352c9",
+   "sdk5_exports_preserved": 84,
+   "callable_signatures_preserved": 52,
+   "constants_preserved": 26,
+   "legacy_claim_reads": "passed",
+   "legacy_nondestructive_namespace": "passed",
+   "legacy_receipt_refusal": "passed",
+   "sdk6_added_names": ["SCRATCH_LIFETIME_DECLARATIONS_ENV", "SCRATCH_LIFETIME_FIELD", "SCRATCH_LIFETIME_RECORD_SCHEMA_V1", "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1", "SCRATCH_LIFETIME_TAG", "build_scratch_lifetime_selection"],
+   "claim_sha256": "32c658558ab4f45ce9f1c705870cc5f9a9c7d540f8c0cabedc21fe59d0980c6e",
+   "receipt_sha256": "bad7671e53ae0d2d7ebfa0d8596ec85614c579d181775fc6b82186c9331241d0",
+   "payload_sha256": "5ec0cb8a986cc51db903f6a913f84dbd2a89578ea220cffa8413dc2b8eef27e7",
+   "scaffold_removed": true
+  },
+  "suite": [
+   {
+    "action_key": "e1be6ee1e1cc2e83489fb8ac28703911b77c6273270737acfa89a04373ba622e",
+    "file": "tests/test_client_sdk_surface.py",
+    "collected": 171,
+    "ran": 171,
+    "passed": 171,
+    "skipped": 0,
+    "claim_sha256": "9a18f5d716ca5185ce14757d69f456c94a733c7d5f0613093c413db51a59251b",
+    "receipt_sha256": "6ee9b07253a4bfe8e9a9ff281f1f0c0bad27bd3c111c8bca2ebc97f2de0ed22d",
+    "payload_sha256": "9b73b35f34fc1b760cf7072e71b724179056f860c9f22c4ba6b41bcb84772bd5"
+   },
+   {
+    "action_key": "28de31f1d4d4980ddf0f8c36dcb59bf955996805a916266eef3f5e10adeaedf4",
+    "file": "tests/test_ephemeral_scratch_namespace.py",
+    "collected": 78,
+    "ran": 78,
+    "passed": 78,
+    "skipped": 0,
+    "claim_sha256": "84881021fdd3e2a2c29a89e009eaf6da1a43f05e17630186302b10cf74c71cc1",
+    "receipt_sha256": "bed6990d0588fc1fefbf5200ec77a15d2f049a7d9453ee6a8b39bb93947b1fba",
+    "payload_sha256": "15cde63d7b9e274770b1494e17ec22878a87f3fd4aa505e343245c8fb5c8436b"
+   },
+   {
+    "action_key": "385ca2b7db005f5e55fb5dd23a860225760c5b3d2654fd810ca51fc973d68832",
+    "file": "tests/test_scratch_lifetime_selection.py",
+    "collected": 29,
+    "ran": 29,
+    "passed": 29,
+    "skipped": 0,
+    "claim_sha256": "137b7e19d2edd93805c6640034125a875cb76be50c528faad8a88b48e9fe85a1",
+    "receipt_sha256": "110394ba9e4e41bd65e2c8327486edb05fc39ad1abfb67fd9ab463ccebd5ed59",
+    "payload_sha256": "1761268952561dfb699f26e0e6bbeac8caad5e19e2d8269c7c5897d616ebf20a"
+   }
+  ],
+  "verification": {
+   "all_actions_terminal": true,
+   "receipt_census_complete": true,
+   "green_actions": 4,
+   "pending_actions": 0,
+   "claim_receipt_payload_checks": "All four claims passed with payload hashing.",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "containment": "All four scopes were stopped, empty, settled, and released.",
+   "runtime_publication": false,
+   "live_service_mutation": false
+  },
+  "limit": "The checks preserve the exercised SDK5 contract. They do not establish full producer compatibility, SDK6 deployment, worker-loss cleanup, or durable cleanup retry."
  },
  "verification": [
   {
