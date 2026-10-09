@@ -411,17 +411,19 @@ def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, floa
 def unified_memory_verdict(ledger, demand, budget) -> dict[str, object] | None:
     """The unified-memory refusal for one candidate, or ``None`` to admit.
 
-    Both the CPU and GPU controllers call this on a ``shared_system``
-    host: the CPU path covers CPU-only candidates, which never reach
-    the GPU controller. The census charges every holder dir, claimed
+    The CPU path checks held ``shared_system`` caps without GPU telemetry.
+    With no held cap and no candidate GPU budget, ordinary token admission
+    remains authoritative. The census charges every holder dir, claimed
     or still acquiring, RAM-fill mirrors included: host ``mem_gb``
     tokens plus the declared GPU caps of ``shared_system`` holders.
-    The candidate charges its host demand plus its GPU cap (zero for
-    a CPU-only candidate). The refusal names every held cap and the
-    totals, so the reader sees which holders block the candidate.
+    The candidate charges its full host reservation, export allowance
+    included, plus its sealed GPU cap. The refusal names every held cap
+    and the totals, so the reader sees which holders block the candidate.
     """
     held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
         ledger)
+    if budget == 0 and held_total == 0:
+        return None
     try:
         offer_gib = float(ledger.capacity().get("mem_gb", 0))
     except (OSError, ValueError):
@@ -445,29 +447,6 @@ def unified_memory_verdict(ledger, demand, budget) -> dict[str, object] | None:
             "committed_gib": committed,
             "candidate_charge_gib": candidate,
             "mem_offer_gib": offer_gib}
-
-
-def unified_memory_domain(sample) -> bool:
-    """Whether one broker sample names a unified-memory host.
-
-    The CPU path calls this before the unified gate: only a fresh,
-    complete, attributed single-device sample whose device names
-    ``shared_system`` runs the gate. Anything else leaves the
-    candidate to the existing CPU and GPU decisions.
-    """
-    if not isinstance(sample, Mapping):
-        return False
-    devices = sample.get("devices")
-    sampled = sample.get("sampled_unix")
-    return (
-        isinstance(devices, list) and len(devices) == 1
-        and isinstance(devices[0], dict)
-        and devices[0].get("memory_domain") == "shared_system"
-        and sample.get("schema") == "prismabuild.gpu_capacity.v1"
-        and sample.get("complete") is True
-        and sample.get("attributed") is True
-        and _number(sampled)
-        and 0 <= time.time() - sampled <= MAX_SAMPLE_AGE_S)
 
 
 def _power_estimate(rows):

@@ -4762,7 +4762,7 @@ beside siblings that are already running. `pbgang.py` seals and publishes every
 member (`pbrun --detach --gang-*`) and only then files the immutable group record
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
 A member carries the existing `pbrun` options a measurement window declares (GPU
-memory subset, exclusive and measurement class, host class, container images,
+memory cap, exclusive and measurement class, host class, container images,
 priority reason, and a declared single attempt) plus the data-manifest and
 residency options (`data_manifest`, `residency`, `residency_tier`,
 `residency_ram`, `residency_share`, `residency_mover_mem_gb`,
@@ -6213,14 +6213,25 @@ option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
 bounded conversion. Without it the GPU budget conservatively
 defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
-VRAM budget. On shared-memory devices admission charges each holder and each
-candidate's host memory plus its declared GPU cap against the unified host
-offer (#1661): the host cgroup cap does not count CUDA allocations, so the
-cap is an additional charge beside the host reservation. CPU-only holders
-and candidates charge their memory alone against the same held caps, RAM-fill
-mirrors count as memory holders, and a first GPU cap above the offer refuses
-on an empty host. The exact GPU budget follows scope creation, durable
-recovery and release. SLURM refuses this option until its execution contract supports separate VRAM budgets.
+VRAM budget.
+
+On `shared_system` hosts, admission adds each holder's declared GPU cap to
+its host reservation (#1661). CUDA allocations bypass the host cgroup charge.
+The GPU cap is an additional admission charge, not a subset reservation.
+The ledger counts claimed and starting holders, CPU reservations, RAM fills,
+and export allowances. Each GPU candidate charges its full host reservation
+plus its sealed GPU cap. An export allowance does not raise the default GPU cap.
+
+CPU-only candidates must fit beside held unified caps even without fresh GPU
+telemetry. The ledger retains those caps until release. With no held unified
+cap, CPU admission keeps its existing token behavior. New GPU claims still
+require fresh trusted telemetry. The refusal `unified_gpu_memory_budget`
+names each holder, its cap, the cap total, host memory, candidate charge, and offer.
+The memory observation window does not postpone this reservation check.
+
+The exact GPU budget follows scope creation, durable recovery, and release.
+This admission change does not alter scope containment or the GPU memory guard.
+SLURM refuses this option until its execution contract supports separate VRAM budgets.
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -11601,11 +11612,10 @@ start where the previous one ended). It has three spans:
 * The phase the consumer's accepted progress names, which it is reading.
 * The consumer's read-ahead: `mem_gb` plus its admission's
   `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
-  Where the admitted device's memory is unified (admission's measured
-  `memory_domain` is `shared_system`, a GB10), the GPU budget is a subset of
-  `mem_gb` and the two are one pool, so the read-ahead is the larger of them,
-  not their sum (#959). A `discrete` device, or a claim whose admission
-  recorded no domain, keeps the sum, which errs long.
+  On a unified device (`shared_system`, such as GB10), the existing read-ahead
+  policy uses the larger budget, not their sum (#959). This rule does not
+  discount the additive admission charge (#1661). A `discrete` device, or a
+  claim with no recorded domain, keeps the sum.
 * The refill: ranges past that reach until they cover what the consumer
   reads while a copy published now lands, and never less than one range.
 

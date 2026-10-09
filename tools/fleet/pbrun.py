@@ -7068,7 +7068,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="demand the whole GPU capacity of one box")
     ap.add_argument("--gpu-memory-gb", type=float, default=None,
                     help="GPU memory budget in GiB; separate VRAM on discrete GPUs, "
-                         "a subset of --demand mem_gb on unified-memory GPUs")
+                         "an additional charge beside --demand mem_gb on unified-memory GPUs")
     ap.add_argument("--gpu-capacity", type=int, default=0,
                     help="slots to demand for --exclusive; 0 reads the largest "
                          "a matching box actually offers")

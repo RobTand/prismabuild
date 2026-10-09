@@ -22070,19 +22070,9 @@ class PoolQueue:
                             if controller is not None and not refused:
                                 unified_budget = None
                                 if gpu_controller is not None and not demand.get("gpu"):
-                                    # Unified DRAM (#1661): a CPU-only candidate
-                                    # never reaches the GPU controller, so the
-                                    # CPU gate charges its host demand beside
-                                    # held GPU caps. ``None`` skips the gate on
-                                    # other hosts; ``0`` is a zero GPU cap.
-                                    sample = getattr(gpu_controller, "_sample", None)
-                                    if sample is None:
-                                        try:
-                                            sample = gpu_controller.sample()
-                                        except (OSError, ValueError):
-                                            sample = None
-                                    if gpu_admission.unified_memory_domain(sample):
-                                        unified_budget = 0
+                                    # Held metadata identifies unified GPU caps;
+                                    # a telemetry gap cannot release their charge.
+                                    unified_budget = 0
                                 adaptive = controller.decision(
                                     item, demand, identity=identity, owner=dependent_owner,
                                     allowance=allowance,
@@ -22147,7 +22137,9 @@ class PoolQueue:
                                     refusal_source = "deferred_for_ready_gpu_row"
                                     adaptive = None
                             if not refused and gpu_controller is not None and demand.get("gpu"):
-                                adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
+                                # Charge the full reservation, including exports.
+                                # The pre-read contract keeps the GPU cap sealed.
+                                adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
                                 gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:

@@ -87,6 +87,8 @@ def gpu_rig(tmp_path, monkeypatch):
 
 def test_probes_exceed_old_slots_without_minting_or_discounts(gpu_rig):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    # Four probes reserve 4 GiB host memory plus four 1 GiB GPU caps.
+    capacity['mem_gb'] = 8
     for index in range(5):
         publish(index)
     admitted = [claim()]
@@ -102,7 +104,7 @@ def test_probes_exceed_old_slots_without_minting_or_discounts(gpu_rig):
         assert admitted[-1]
         assert claim() is None  # a sample funds at most one probe
     tick()
-    assert claim() is None  # the unchanged four-GiB ledger is full
+    assert claim() is None  # The eight-GiB unified offer is full.
     assert queue.ledger().held()['mem_gb'] == 4
     assert queue.ledger().capacity() == capacity
     assert admitted[-1]['gpu_admission']['borrowed_gpu'] == 1
@@ -165,6 +167,7 @@ def test_idle_gpu_utilization_percentage_is_ignored(gpu_rig):
 
 def test_probe_startup_cannot_be_hidden_by_a_new_sample(gpu_rig):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    capacity['mem_gb'] = 6  # Three host reservations plus three GPU caps.
     for index in range(3): publish(index)
     assert claim(); tick(); assert claim()
     tick(.5)
@@ -580,6 +583,7 @@ def test_power_plateau_closes_below_soc_fraction_and_survives_departure(gpu_rig)
 def test_startup_plateau_is_invalidated_by_sustained_activity_rise(gpu_rig, holder_exits):
     """A startup plateau cannot govern a later active phase indefinitely."""
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    capacity['mem_gb'] = 6  # Permit the third probe after activity recovery.
     for index in range(4): publish(index)
     sample['devices'][0]['power_w'] = 8.
     first = claim(); assert first
@@ -629,6 +633,7 @@ def test_noisy_power_response_does_not_authorize_an_unbounded_probe(gpu_rig):
 
 def test_a_telemetry_gap_cannot_reuse_old_plateau_recovery_samples(gpu_rig):
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    capacity['mem_gb'] = 6  # Memory must not mask the telemetry recovery gate.
     for index in range(3): publish(index)
     sample['devices'][0]['power_w']=60
     assert claim(); tick(); assert claim()
