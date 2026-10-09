@@ -1254,10 +1254,12 @@ class Controller:
         (the pool reads it from the sealed request, outside this lock); left unread it is
         read only if a measurement holds the host (#982).  ``allowance`` is the
         export allowance a producer's claim reserves with itself (#985).
-        ``unified_memory_budget`` enables the ledger-based memory gate.
-        A CPU-only candidate on a GPU host passes ``0``. Held metadata
-        identifies unified caps even without a current GPU sample.
-        ``None`` or an unread budget leaves ordinary token admission intact.
+        ``unified_memory_budget`` enables the ledger-based unified memory gate
+        (#1661). A CPU-only candidate on a GPU host passes ``0``. Each holder
+        charges ``mem_gb`` once; the verdict also counts foreign GPU bytes
+        from a fresh broker sample. A missing or stale sample only withholds
+        that external term. ``None`` or an unread budget leaves ordinary
+        token admission intact.
         """
         funding_refusal = None
         measurement_drain = {}
@@ -1628,12 +1630,14 @@ class Controller:
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
                               last_borrow_sampled_unix=last)
         if unified_memory_budget is not _UNREAD and unified_memory_budget is not None:
-            # CPU-only candidates must fit beside held unified GPU caps.
-            # The ledger retains those caps until release, independent of
-            # broker telemetry. Without unified caps, tokens decide as before.
+            # CPU-only candidates share unified DRAM with held GPU caps and
+            # foreign GPU allocations alike (#1661). Held metadata identifies
+            # the caps even without a current GPU sample; the sample only
+            # adds the external term, and only when fresh.
             from . import adaptive_gpu
             verdict = adaptive_gpu.unified_memory_verdict(
-                self.ledger, demand, unified_memory_budget)
+                self.ledger, demand, unified_memory_budget,
+                sample=adaptive_gpu.trusted_sample())
             if verdict is not None:
                 return refuse(verdict.pop("reason"), **verdict)
         self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}

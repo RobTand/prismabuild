@@ -4817,7 +4817,7 @@ beside siblings that are already running. `pbgang.py` seals and publishes every
 member (`pbrun --detach --gang-*`) and only then files the immutable group record
 `pb-queue/gangs/<group>.json`. A member is never claimable without that record.
 A member carries the existing `pbrun` options a measurement window declares (GPU
-memory cap, exclusive and measurement class, host class, container images,
+memory subset, exclusive and measurement class, host class, container images,
 priority reason, and a declared single attempt) plus the data-manifest and
 residency options (`data_manifest`, `residency`, `residency_tier`,
 `residency_ram`, `residency_share`, `residency_mover_mem_gb`,
@@ -6311,32 +6311,34 @@ cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
 Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
 option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
-bounded conversion. Without it the GPU budget conservatively
 defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
-VRAM budget.
+VRAM budget. On shared-memory devices this explicit GPU cap is an additional
+subset cap, not a second reservation of the same physical DRAM.
 
-On `shared_system` hosts, admission adds each holder's declared GPU cap to
-its host reservation (#1661). CUDA allocations bypass the host cgroup charge.
-The GPU cap is an additional admission charge, not a subset reservation.
-The ledger counts claimed and starting holders, CPU reservations, RAM fills,
-and export allowances. Each GPU candidate charges its full host reservation
-plus its sealed GPU cap. An export allowance does not raise the default GPU cap.
+On `shared_system` hosts, each claimed or starting action charges its
+`mem_gb` once against the node offer (#1661). The GPU cap stays a subset of
+that charge, never a second one. A declared cap above `mem_gb` refuses at
+submission; an absent cap defaults to `mem_gb`. The node offer also subtracts
+unified GPU bytes the broker attributes to no pool holder: the kernel memory
+reading does not reliably show driver-held allocations, and that foreign
+memory is what overfilled the box on 2026-10-08. Attributed bytes never
+subtract twice: their host share sits inside the holder's `mem_gb` charge.
 
-CPU-only candidates must fit beside held unified caps even without fresh GPU
-telemetry. The ledger retains those caps until release. With no held unified
-cap, CPU admission keeps its existing token behavior. New GPU claims still
-require fresh trusted telemetry. The refusal `unified_gpu_memory_budget`
-names each holder, its cap, the cap total, host memory, candidate charge, and offer.
-The memory observation window does not postpone this reservation check.
+CPU-only candidates face the same gate on a GPU host, with the held caps
+identified from ledger metadata when GPU telemetry is absent or stale. A
+missing or stale sample only withholds the external term. New GPU claims
+still require fresh trusted telemetry. The refusal
+`unified_gpu_memory_budget` names each held cap, the cap total, the external
+bytes, the candidate charge, and the offer.
 
 The exact GPU budget follows scope creation, durable recovery, and release.
 This admission change does not alter scope containment or the GPU memory guard.
 SLURM refuses this option until its execution contract supports separate VRAM budgets.
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
-submission. Manifest preflight validates the bounded numeric conversion and
-refuses a budget without GPU demand (explicit or implied by `exclusive`) or
-under SLURM before any row is submitted.
+submission. Manifest preflight validates the bounded numeric conversion, refuses
+a budget without GPU demand (explicit or implied by `exclusive`) or under SLURM,
+and refuses a cap above the row's `mem_gb` before any row is submitted.
 
 ## Storage prewarm pacing
 
@@ -11712,10 +11714,11 @@ start where the previous one ended). It has three spans:
 * The phase the consumer's accepted progress names, which it is reading.
 * The consumer's read-ahead: `mem_gb` plus its admission's
   `gpu_memory_budget_bytes`, the most it can hold ahead of what it reads.
-  On a unified device (`shared_system`, such as GB10), the existing read-ahead
-  policy uses the larger budget, not their sum (#959). This rule does not
-  discount the additive admission charge (#1661). A `discrete` device, or a
-  claim with no recorded domain, keeps the sum.
+  Where the admitted device's memory is unified (admission's measured
+  `memory_domain` is `shared_system`, a GB10), the GPU budget is a subset of
+  `mem_gb` and the two are one pool, so the read-ahead is the larger of them,
+  not their sum (#959). A `discrete` device, or a claim whose admission
+  recorded no domain, keeps the sum, which errs long.
 * The refill: ranges past that reach until they cover what the consumer
   reads while a copy published now lands, and never less than one range.
 

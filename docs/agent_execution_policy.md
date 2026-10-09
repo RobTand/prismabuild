@@ -370,8 +370,8 @@ workers advertise one physical device and use the same adaptive sharing policy.
 `--exclusive` and measurements remain exclusive. On discrete GPUs, declare the
 separate VRAM budget with pool `--gpu-memory-gb N`; it defaults conservatively
 to `mem_gb`. Host RAM and VRAM are reserved independently.
-On GB10, admission adds the GPU cap to the host reservation in the same physical pool.
-The GPU cap defaults to `mem_gb`; export allowances add host memory only.
-Held caps still constrain CPU-only admission when GPU telemetry is absent or stale.
-The 104 GiB roof and 8 GiB margin remain unchanged (#1661).
+On GB10, `mem_gb` remains the shared physical budget and an explicit GPU budget
+is a subset cap. A cap above `mem_gb` refuses at submission. The node offer also
+subtracts unified GPU bytes no pool holder owns (#1661).
+The 104 GiB roof and 8 GiB margin remain unchanged.
 Unknown memory domains or missing counters grant no admission credit.

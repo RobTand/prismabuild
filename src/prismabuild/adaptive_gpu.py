@@ -357,17 +357,73 @@ def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float, float]:
-    """Unified DRAM this host commits: per-holder charges and their total.
+def external_unified_gpu_bytes(devices, foreign_processes) -> tuple[int, bool]:
+    """Foreign GPU bytes on shared-system devices, and an unknown flag.
 
-    The walk covers every holder dir, claimed or still acquiring, RAM-fill
-    mirrors included: a fill holds host ``mem_gb`` tokens from the same
-    unified pool. Each holder charges its held ``mem_gb`` tokens plus its
-    declared GPU cap (#1661): the host cgroup cap does not count CUDA
-    allocations, so the cap is an additional charge beside the host
-    reservation. The return is the per-holder list, the committed total,
-    the held GPU-cap total, the held host-memory total, and the RAM-fill
-    memory total.
+    Only processes the broker attributes to nobody count. Bytes the pool's
+    own jobs hold sit inside their ``mem_gb`` reservation (#1661), so this
+    function never counts them: that subtraction belongs to the holder, and
+    a second one here would charge the box twice. Discrete devices never
+    count: their VRAM is not host DRAM. The flag is true when a
+    shared-system foreign process reports no usable byte count.
+    """
+    total = 0
+    unknown = False
+    devices = [device for device in (devices or []) if isinstance(device, Mapping)]
+    by_uuid = {device.get("uuid"): device for device in devices}
+    all_shared = bool(devices) and all(
+        device.get("memory_domain") == "shared_system" for device in devices)
+    for process in (foreign_processes or []):
+        if not isinstance(process, Mapping):
+            unknown = True
+            continue
+        device = by_uuid.get(process.get("gpu_uuid"))
+        if device is not None:
+            shared = device.get("memory_domain") == "shared_system"
+        else:
+            shared = all_shared
+        if not shared:
+            continue
+        used = process.get("used_bytes")
+        if type(used) is int and used >= 0:
+            total += used
+        else:
+            unknown = True
+    return total, unknown
+
+
+def _sample_external_unified_gib(sample) -> tuple[int, int, bool]:
+    """Ceiled GiB of foreign GPU bytes in one broker sample.
+
+    Zero, with a clear unknown flag, when the sample is missing or stale:
+    without fresh broker evidence nothing is proven to subtract, and
+    ordinary token admission stays authoritative.
+    """
+    if not isinstance(sample, Mapping):
+        return 0, 0, False
+    sampled = sample.get("sampled_unix")
+    if (type(sampled) not in (int, float) or not math.isfinite(float(sampled))
+            or not 0.0 <= time.time() - float(sampled) <= MAX_SAMPLE_AGE_S):
+        return 0, 0, False
+    devices = sample.get("devices")
+    foreign = sample.get("foreign_processes")
+    if not isinstance(devices, list) or not isinstance(foreign, list):
+        return 0, 0, False
+    total, unknown = external_unified_gpu_bytes(devices, foreign)
+    return math.ceil(total / GIB), total, unknown
+
+
+def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float, float]:
+    """Unified DRAM this host commits, with each holder charged once (#1661).
+
+    The GPU cap is a subset of ``mem_gb``, not an extra charge: each holder
+    counts its held ``mem_gb`` tokens a single time. The walk covers every
+    holder dir, claimed or still acquiring, RAM-fill mirrors included: a fill
+    holds host ``mem_gb`` tokens from the same unified pool. The per-holder
+    list still reports each declared shared-system GPU cap, so a refusal can
+    name the caps that block the candidate. The return is the per-holder
+    list, the committed total, the held GPU-cap total, the held host-memory
+    total, and the RAM-fill memory total.
     """
     caps: list[dict[str, object]] = []
     committed = 0.0
@@ -400,51 +456,67 @@ def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, floa
             budget = meta.get("gpu_memory_budget_bytes")
             if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
                 cap_gib = float(budget) / float(GIB)
-        charge = mem_tokens + cap_gib
-        committed += charge
+        committed += mem_tokens
         cap_total += cap_gib
         caps.append({"action_key": holder.name, "gpu_cap_gib": cap_gib,
-                     "mem_gb": mem_tokens, "charge_gib": charge})
+                     "mem_gb": mem_tokens, "charge_gib": mem_tokens})
     return caps, committed, cap_total, held_mem, ram_mem
 
 
-def unified_memory_verdict(ledger, demand, budget) -> dict[str, object] | None:
+def unified_memory_verdict(ledger, demand, budget, *, sample=None) -> dict[str, object] | None:
     """The unified-memory refusal for one candidate, or ``None`` to admit.
 
-    The CPU path checks held ``shared_system`` caps without GPU telemetry.
-    With no held cap and no candidate GPU budget, ordinary token admission
-    remains authoritative. The census charges every holder dir, claimed
-    or still acquiring, RAM-fill mirrors included: host ``mem_gb``
-    tokens plus the declared GPU caps of ``shared_system`` holders.
-    The candidate charges its full host reservation, export allowance
-    included, plus its sealed GPU cap. The refusal names every held cap
-    and the totals, so the reader sees which holders block the candidate.
+    Each holder and the candidate charge ``mem_gb`` once: the GPU cap is a
+    subset of that reservation, never a second charge (#1661). ``sample`` is
+    the fresh broker snapshot the caller already holds; its foreign GPU
+    bytes on shared-system devices count against the same offer, because the
+    kernel memory reading does not reliably show driver-held unified
+    allocations. Attributed GPU bytes never count here: their host share is
+    inside the holder's ``mem_gb`` charge. A missing or stale sample only
+    withholds the external term. An unreadable ledger census refuses nothing
+    here: the token path reports that shortage itself.
     """
     held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
         ledger)
-    if budget == 0 and held_total == 0:
-        return None
+    external_gib, external_bytes, external_unknown = _sample_external_unified_gib(
+        sample)
     try:
-        offer_gib = float(ledger.capacity().get("mem_gb", 0))
-    except (OSError, ValueError):
-        offer_gib = 0.0
+        census = ledger.capacity_census()
+    except (AttributeError, OSError, ValueError):
+        census = None
+    if census is None:
+        try:
+            offer_gib = float(ledger.capacity().get("mem_gb", 0))
+        except (OSError, ValueError):
+            return None
+    else:
+        counts, unreadable = census
+        if unreadable:
+            return None
+        try:
+            offer_gib = float(counts.get("mem_gb", 0))
+        except (TypeError, ValueError):
+            return None
     candidate_mem = demand.get("mem_gb", 0)
     candidate_mem = float(candidate_mem) if type(candidate_mem) in (int, float) else 0.0
-    candidate_gib = 0.0
-    if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
-        candidate_gib = float(budget) / float(GIB)
-    candidate = candidate_mem + candidate_gib
-    if offer_gib <= 0 or committed + candidate <= offer_gib:
+    candidate = candidate_mem
+    if committed + candidate + external_gib <= offer_gib:
         return None
+    cap_gib = 0.0
+    if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+        cap_gib = float(budget) / float(GIB)
     return {"reason": "unified_gpu_memory_budget",
-            "requested_budget_bytes": budget,
-            "requested_budget_gib": candidate_gib,
             "requested_mem_gb": candidate_mem,
+            "requested_budget_bytes": budget,
+            "requested_budget_gib": cap_gib,
             "held_gpu_caps": held_caps,
             "held_gpu_cap_total_gib": held_total,
             "held_mem_gb": held_mem,
             "held_ram_mem_gb": ram_mem,
             "committed_gib": committed,
+            "external_gpu_bytes": external_bytes,
+            "external_gpu_gib": external_gib,
+            "external_gpu_unknown": external_unknown,
             "candidate_charge_gib": candidate,
             "mem_offer_gib": offer_gib}
 
@@ -748,7 +820,8 @@ class Controller:
                               **({'baseline': idle} if measurement else {}))
             if device.get("memory_domain") == "shared_system":
                 if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
-                    verdict = unified_memory_verdict(self.ledger, demand, budget)
+                    verdict = unified_memory_verdict(
+                        self.ledger, demand, budget, sample=sample)
                     if verdict is not None:
                         host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
                         return refuse(verdict.pop("reason"),

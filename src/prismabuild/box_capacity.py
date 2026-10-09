@@ -296,6 +296,32 @@ def _held_snapshot(
     return {str(kind): int(value) for kind, value in (source or {}).items()}
 
 
+def _shared_external_gib(
+    sample: object,
+    *,
+    devices: list,
+    foreign_processes: list,
+    gpu_parsed: bool,
+    now: float | None,
+) -> int:
+    """Ceiled GiB of foreign GPU bytes on shared-system devices (#1661).
+
+    Reuses the GPU branch parse when it ran; otherwise validates the sample
+    here. Zero without fresh evidence: nothing proven, nothing subtracted.
+    """
+    if not gpu_parsed:
+        if sample is _READ:
+            sample = trusted_gpu_sample()
+        if not isinstance(sample, Mapping):
+            return 0
+        devices, foreign_processes, _jobs, error = _gpu_evidence(sample, now=now)
+        if error is not None:
+            return 0
+    total, _unknown = adaptive_gpu.external_unified_gpu_bytes(
+        devices, foreign_processes)
+    return math.ceil(total / adaptive_gpu.GIB) if total > 0 else 0
+
+
 def observe(
     declared: Mapping[str, int],
     held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
@@ -348,6 +374,11 @@ def observe(
         foreign[kind] = foreign_units
         capacity[kind] = max(0, wanted[kind] - foreign_units)
 
+    # The GPU parse the memory branch reuses for the unified external term
+    # (#1661). Set only when the GPU branch validates a sample itself.
+    gpu_devices: list = []
+    gpu_foreign: list = []
+    gpu_parsed = False
     if wanted.get("gpu", 0) > 0:
         if gpu_sample is _READ:
             gpu_sample = trusted_gpu_sample()
@@ -358,6 +389,7 @@ def observe(
             detail["gpu_capacity_error"] = error
             capacity["gpu"] = 0
         else:
+            gpu_devices, gpu_foreign, gpu_parsed = devices, foreign_processes, True
             domains = [str(device["memory_domain"]) for device in devices]
             def memory_sum(kind: str) -> int | None:
                 values = [device.get(f"memory_{kind}_bytes") for device in devices]
@@ -482,6 +514,19 @@ def observe(
         if mem_gb is not None:
             available = int(mem_gb)                   # type: ignore[arg-type]
             detail["mem_available_gb"] = available
+            # Unified-memory hosts (#1661): foreign GPU bytes consume host
+            # DRAM, but the kernel reading does not reliably show driver-held
+            # unified allocations. Subtract what the broker attributes to no
+            # pool holder. Attributed bytes stay out: their host share sits
+            # inside the held tokens added back below, and a second
+            # subtraction here would charge the box twice for its own work.
+            external_gib = _shared_external_gib(
+                gpu_sample, devices=gpu_devices, foreign_processes=gpu_foreign,
+                gpu_parsed=gpu_parsed, now=now)
+            if external_gib:
+                detail["external_unified_gpu_gib"] = external_gib
+                available = max(0, available - external_gib)
+                detail["mem_available_less_external_gib"] = available
             # The honest total is what the pool already holds here plus what is
             # physically free, capped by the declaration.  Adding the held part
             # back is not generosity: an action's resident bytes are already

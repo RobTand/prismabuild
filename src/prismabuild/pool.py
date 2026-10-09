@@ -18970,6 +18970,13 @@ class PoolQueue:
                 gpu_kwargs["gpu_memory_max_bytes"] = gpu_admission.memory_budget_bytes(gpu_memory)
             except ValueError as exc:
                 raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
+            # The GPU cap is a subset of ``mem_gb`` on unified memory (#1661).
+            # A larger cap declares memory the reservation does not hold.
+            if gpu_kwargs["gpu_memory_max_bytes"] > memory * 1024 ** 3:
+                raise PoolContractError(
+                    f"gpu_memory_gb {gpu_memory!r} exceeds sealed mem_gb "
+                    f"{memory!r}; raise mem_gb or lower the cap"
+                )
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(

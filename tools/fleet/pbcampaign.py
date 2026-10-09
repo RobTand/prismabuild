@@ -595,10 +595,17 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
         demand = row.get("demand") or {}
+        gpu = bool(row.get("exclusive") or int(demand.get("gpu", 0)))
+        mem_gb = demand.get("mem_gb")
+        if mem_gb is None:
+            # The same default ``pbrun`` seals at submit time, asked here so
+            # the manifest refuses the row at load instead of at submission.
+            mem_gb = pbrun.default_host_mem_gb(gpu=gpu)
         pbrun.require_gpu_memory_scope(
             gpu_memory_gb=row.get("gpu_memory_gb"),
-            gpu=bool(row.get("exclusive") or int(demand.get("gpu", 0))),
+            gpu=gpu,
             transport=transport,
+            mem_gb=mem_gb,
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
