@@ -154,8 +154,8 @@ def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
     assert offer["tags"] == [
         "gb10", "sparky", "cpu", "progress-v1", "progress-helper-v1",
         "progress-cycle-v1", "progress-pool-contention-v1",
-        "progress-egress-v1", "container-image-v1",
-        module.pb.INTERPRETER_TAG,
+        "progress-egress-v1", "progress-queued-child-v1",
+        "container-image-v1",
         module.local_dependencies.TAG,
         module.dependency_digest.DEPENDENCY_DIGEST_TAG,
         module.local_scratch.IO_CAPABILITY,

@@ -218,6 +218,11 @@ POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 #: one it does not.
 AWAITED_BATCH_PARAM = "progress_awaited_batch"
 AWAITED_BATCH_SCHEMA_V1 = "prismabuild.progress_awaited_batch.v1"
+#: Offered by a worker whose stall check credits a coordinator's wait on its
+#: declared queued children (#1666). A worker without it would ignore the
+#: declaration and end a valid queue wait as no_progress, so a coordinator
+#: that declares an awaited batch requires the tag.
+QUEUED_CHILD_TAG = "progress-queued-child-v1"
 #: Offered by a worker that names the holder of a stage's ownership lock
 #: from the holder's own record and never credits an action's own hold as a
 #: start-gate wait (#1021).  A stage egress takes that lock itself, so a
@@ -8995,6 +9000,7 @@ __all__ = [
     "POOL_CONTENTION_TAG",
     "AWAITED_BATCH_PARAM",
     "AWAITED_BATCH_SCHEMA_V1",
+    "QUEUED_CHILD_TAG",
     "action_awaited_batch",
     "validate_awaited_batch",
     "EGRESS_PROGRESS_TAG",

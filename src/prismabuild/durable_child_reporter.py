@@ -55,11 +55,41 @@ class DurableChildReporter:
         except (OSError, ValueError):
             return None
 
+    def _membership_of(self) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        from . import decomposition as decomposition_mod
+
+        try:
+            root = self.cas.root
+        except AttributeError:
+            return None, None
+        plan_doc: Mapping[str, Any] | None = None
+        index: Mapping[str, Any] | None = None
+        try:
+            raw_plan = (root / "decompositions" / self.parent_key[:2]
+                        / self.parent_key / "plan.json").read_bytes()
+            plan_doc = decomposition_mod.validate_plan(
+                __import__("json").loads(raw_plan.decode("utf-8")))
+            if (str(plan_doc.get("parent_key")) != self.parent_key
+                    or str(plan_doc.get("plan_key")) != self.plan_key):
+                return None, None
+        except (OSError, ValueError):
+            return None, None
+        try:
+            raw_index = (root / "decompositions" / self.parent_key[:2]
+                         / self.parent_key / "publication.json").read_bytes()
+            index = decomposition_mod.validate_publication_index(
+                __import__("json").loads(raw_index.decode("utf-8")), plan_doc)
+        except (OSError, ValueError):
+            return None, None
+        return plan_doc, index
+
     def _verifies(self, child_key: str) -> dict[str, Any] | None:
         from . import pool as pool_mod
 
         request = self._request_of(child_key)
         if request is None:
+            return None
+        if str(request.get("action_key") or "") != child_key:
             return None
         params = request.get("params")
         batch = (params.get("logical_batch")  # type: ignore[union-attr]
@@ -67,6 +97,9 @@ class DurableChildReporter:
         if (not isinstance(batch, Mapping)
                 or batch.get("parent_key") != self.parent_key
                 or batch.get("plan_key") != self.plan_key):
+            return None
+        plan_doc, index = self._membership_of()
+        if plan_doc is None or index is None:
             return None
         try:
             receipt = self.cas.lookup(request)
@@ -76,7 +109,8 @@ class DurableChildReporter:
             return None
         try:
             manifest = pool_mod.verify_durable_child_result(
-                self.cas, request, receipt, child_key=child_key)
+                self.cas, request, receipt, child_key=child_key,
+                plan=plan_doc, publication=index)
         except Exception:  # noqa: BLE001 -- tamper reads as not durable
             return None
         if manifest is None:

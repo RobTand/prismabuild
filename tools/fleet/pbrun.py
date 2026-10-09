@@ -2022,9 +2022,16 @@ def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
         raise SystemExit(f"pbrun: {exc}") from None
 
 
-def progress_required_tags(policy: Mapping[str, object]) -> list[str]:
-    return [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
+def progress_required_tags(policy: Mapping[str, object],
+                           awaited_batch: Mapping[str, object] | None = None) -> list[str]:
+    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
         [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
+    if awaited_batch is not None:
+        # A coordinator that declares an awaited batch needs a worker that
+        # credits the wait (#1666): an older worker would ignore the sealed
+        # declaration and end a valid queue wait as no_progress.
+        tags = [*tags, pb.QUEUED_CHILD_TAG]
+    return tags
 
 
 def container_image_required_tags(images: Sequence[str]) -> list[str]:
@@ -2337,6 +2344,7 @@ def progress_contract_notice(
     *,
     policy: Mapping[str, object] | None,
     requested_timeout_s: float | None = None,
+    awaited_batch: Mapping[str, object] | None = None,
 ) -> str:
     """Say what this action's stall allowance is, and who cannot honour it.
 
@@ -2453,6 +2461,28 @@ def progress_contract_notice(
             "between increases in cumulative committed units; "
             f"at most {total:g}s of quiet after the count stops increasing.")
         helper_intent = cycle_intent
+    if awaited_batch is not None:
+        awaited_intent = {**helper_intent, "tags": [
+            *helper_intent["tags"], pb.QUEUED_CHILD_TAG]}
+        awaited_hosts = set(queue.placeable_hosts(awaited_intent) or [])
+        awaited_missing = sorted(eligible - awaited_hosts)
+        eligible &= awaited_hosts
+        if not eligible:
+            raise SystemExit(
+                f"pbrun: no eligible worker offers {pb.QUEUED_CHILD_TAG} "
+                f"({', '.join(awaited_missing)}); update the fleet's published "
+                "generation before submitting a coordinator that awaits "
+                "queued children.")
+        if awaited_missing:
+            lines.append("pbrun: " + ", ".join(awaited_missing)
+                         + f" do not offer {pb.QUEUED_CHILD_TAG}; "
+                         "this coordinator waits for a capable worker.")
+        lines.append(
+            "pbrun: queued-child wait: the worker credits quiet while a "
+            "verified awaited child is ready or claimed at both ends of "
+            "the interval; a first sighting is a baseline and earns no "
+            "credit.")
+        helper_intent = awaited_intent
     ceilings = queue.placement_timeout_ceilings(helper_intent)
     for host in sorted(eligible):
         ceiling = ceilings.get(host)
@@ -7760,7 +7790,9 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # the receipt says the action was admitted under the contract *and*
         # ran on a box that could keep it.
         tags = pool.normalize_placement_tags(
-            [*tags, *progress_required_tags(progress_policy)])
+            [*tags, *progress_required_tags(
+                progress_policy,
+                getattr(args, "awaited_batch", None))])
     if gang is not None:
         # Capability, not place (#1517): only a gang-enabled box offers it,
         # so the live-offer check below refuses when none can claim a member.
@@ -8025,10 +8057,12 @@ def announce_placement(
         queue,
         {**intent, "tags": [
             t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG)
+            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
+                         pb.QUEUED_CHILD_TAG)
         ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,
+        awaited_batch=getattr(args, "awaited_batch", None),
     )
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)

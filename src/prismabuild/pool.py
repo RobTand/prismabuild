@@ -2426,15 +2426,21 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
 def verify_durable_child_result(
         cas, request: Mapping[str, object], receipt: Mapping[str, object], *,
         child_key: str | None = None,
+        plan: Mapping[str, object] | None = None,
+        publication: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
     """Verify one child's durable result through the native CAS (#1666).
 
     Verifies the receipt, the result blob digest and manifest membership:
     the receipt names this action, the blob digest matches its name, the
-    manifest validates and names the sealed request's parent and plan. A
-    child with several tasks still counts one unit. Returns the verified
-    manifest, or ``None`` when the child has no verified durable result.
-    Raises on unreadable or tampered bytes, like any CAS verification.
+    manifest validates and carries this child's exact membership. Exact
+    means all four hold: the manifest names the sealed request's parent
+    and plan, its ordinal equals the child's position in the publication's
+    ``child_action_keys``, and its task set equals the plan's partition at
+    that ordinal. A child with several tasks still counts one unit.
+    Returns the verified manifest, or ``None`` when the child has no
+    verified durable result. Raises on unreadable or tampered bytes, like
+    any CAS verification.
     """
 
     from . import decomposition as decomposition_mod
@@ -2455,8 +2461,41 @@ def verify_durable_child_result(
     if (manifest["parent_key"] != batch.get("parent_key")
             or manifest["plan_key"] != batch.get("plan_key")):
         return None
-    if key and manifest["child_ordinal"] is not None:
-        pass
+    if (not key or not isinstance(batch.get("child_ordinal"), int)
+            or isinstance(batch.get("child_ordinal"), bool)):
+        return None
+    if manifest["child_ordinal"] != batch.get("child_ordinal"):
+        return None
+    tasks = batch.get("ordered_task_ids")
+    if (not isinstance(tasks, list) or not tasks
+            or any(not isinstance(entry, str) for entry in tasks)):
+        return None
+    if plan is not None and publication is not None:
+        try:
+            checked_plan = decomposition_mod.validate_plan(plan)
+            checked_index = decomposition_mod.validate_publication_index(
+                publication, checked_plan)
+        except (ValueError, pb.ActionContractError):
+            return None
+        if (manifest["parent_key"] != checked_plan["parent_key"]
+                or manifest["plan_key"] != checked_plan["plan_key"]):
+            return None
+        ordinal = int(batch.get("child_ordinal"))
+        if not 0 <= ordinal < len(checked_index["child_action_keys"]):
+            return None
+        if checked_index["child_action_keys"][ordinal] != key:
+            return None
+        if list(checked_plan["partitions"][ordinal]) != list(tasks):
+            return None
+        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+            return None
+    elif key:
+        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+            return None
+    else:
+        return None
     return manifest
 
 
@@ -10882,10 +10921,11 @@ class PoolQueue:
         """Whether a quiet coordinator waits on a declared queued child (#1666).
 
         ``awaited`` is the coordinator's sealed ``progress_awaited_batch``:
-        the parent and plan keys whose children credit its quiet. The
-        verdict credits an interval only when every counted child verifies:
-        its sealed request names that parent and plan under the child's
-        ``params.logical_batch``. A child with other keys, with no
+        the parent and plan keys whose children credit its quiet. Every
+        counted child verifies exact membership: its sealed request names
+        that parent and plan, its ordinal equals its position in the stored
+        publication's ``child_action_keys``, and its task set equals the
+        stored plan's partition there. A child with other keys, with no
         ``logical_batch``, or with an unreadable sealed request earns none.
 
         ``admitted`` is the SDK-confirmed admitted or attached set: each
@@ -10896,34 +10936,49 @@ class PoolQueue:
         tombstones and late-finish leaves keep their owner-defined custody
         and are neither credited nor released.
 
-        The two-sample rule matches the staged-wait credit: the rung credits
-        only the quiet both ends agree on. A child ready or claimed at this
-        look is exempt, and this verdict becomes the next look's prior; a
-        child live now but absent there is a fresh baseline whose entry edge
-        earns no double credit through _credit's shared mark. No credit for
-        a missing, unreadable or terminal child, or for a row of another
-        batch. A child keeps its own watchdog and ceiling; the credit moves
-        only the coordinator's deadline.
+        The interval rule matches the staged-wait credit: the rung credits
+        only the quiet both ends agree on. A first sighting is a baseline
+        and earns no credit; a child live at both ends is carried and
+        credits through the shared _credit mark. A replacement child is a
+        new baseline. A missing or unreadable admitted child stays in the
+        verdict and blocks the credit: a live sibling cannot cover for it.
+        No credit for a missing, unreadable or terminal child, or for a row
+        of another batch. A child keeps its own watchdog and ceiling; the
+        credit moves only the coordinator's deadline.
         """
 
         moment = _now() if now is None else float(now)
         parent_key = str(awaited.get("parent_key") or "")
         plan_key = str(awaited.get("plan_key") or "")
         members = (dict(admitted) if isinstance(admitted, Mapping) else {})
-        prior_live = {
-            str(entry.get("key"))
+        prior_children = {
+            str(entry.get("key")): entry
             for entry in ((prior or {}).get("children") or ())  # type: ignore[union-attr]
-            if isinstance(entry, Mapping)
-            and entry.get("evidence") == "queued"
-            and entry.get("state") in (READY, CLAIMED)}
+            if isinstance(entry, Mapping)}
+        membership = self._awaited_batch_membership(
+            cas_root, parent_key=parent_key, plan_key=plan_key,
+            members=members)
+        if membership["unreadable"]:
+            return {
+                "exempt": False, "children": [], "missing": [],
+                "parent_key": parent_key, "plan_key": plan_key,
+                "checked_unix": moment,
+                "reason": "stored plan or publication is missing or unreadable",
+                "detail": "; ".join(membership["unreadable"])}
+        plan_doc = membership["plan"]
+        index = membership["publication"]
+        assert isinstance(plan_doc, Mapping) and isinstance(index, Mapping)
+        slots = {str(entry): position
+                 for position, entry in enumerate(index["child_action_keys"])}  # type: ignore[union-attr]
         children: list[dict[str, object]] = []
+        missing: list[str] = []
         live = False
         since: float | None = None
-        for child_key, submission in sorted(members.items()):
+        for child_key in sorted(members):
             entry: dict[str, object] = {"key": child_key}
             link, detail = self._queued_child_link(
                 child_key, cas_root=cas_root, parent_key=parent_key,
-                plan_key=plan_key)
+                plan_key=plan_key, plan=plan_doc, publication=index)
             if link is None:
                 entry.update({"state": "foreign", "evidence": "none"})
                 if detail:
@@ -10931,19 +10986,33 @@ class PoolQueue:
                 children.append(entry)
                 continue
             state, evidence_detail = self._queued_child_queue_state(
-                child_key, cas_root=cas_root, request=link)
+                child_key, cas_root=cas_root, request=link,
+                plan=plan_doc, publication=index)
             entry["state"] = state
             if evidence_detail:
                 entry["detail"] = evidence_detail
             if state in (READY, CLAIMED):
-                # Live at this look: exempt, and this verdict becomes the
-                # next look's prior. A child live now but absent there is a
-                # fresh baseline for that interval; the shared _credit mark
-                # still grants no double credit.
-                entry["evidence"] = (
-                    "queued" if prior is None or child_key in prior_live
-                    else "baseline")
-                if entry["evidence"] == "queued":
+                # Credit only the quiet both ends agree on. A child live at
+                # both ends is carried: a first sighting or a replacement is
+                # a baseline whose entry edge earns nothing through the
+                # shared _credit mark. The prior carries membership-checked
+                # state, so a child that leaves cannot exempt through stale
+                # bytes.
+                before = prior_children.get(child_key)
+                carried = (
+                    isinstance(before, Mapping)
+                    and before.get("state") in (READY, CLAIMED)
+                    and before.get("evidence") in ("baseline", "carried")
+                    and before.get("parent_key", parent_key) == parent_key
+                    and before.get("plan_key", plan_key) == plan_key
+                    and before.get("ordinal") == slots.get(child_key))
+                entry["ordinal"] = slots.get(child_key)
+                entry["parent_key"] = parent_key
+                entry["plan_key"] = plan_key
+                if prior is None or not carried:
+                    entry["evidence"] = "baseline"
+                else:
+                    entry["evidence"] = "carried"
                     live = True
                     stamp = self._queued_child_queue_stamp(child_key, state)
                     if stamp is not None and (
@@ -10951,11 +11020,21 @@ class PoolQueue:
                         since = stamp
             elif state == "durable":
                 entry["evidence"] = "durable"
+                entry["ordinal"] = slots.get(child_key)
+            elif state in ("unknown", "unpublished"):
+                # An admitted child the queue cannot show stays in the
+                # verdict and blocks the credit: a live sibling cannot cover
+                # for it.
+                entry["evidence"] = "none"
+                entry["ordinal"] = slots.get(child_key)
+                missing.append(child_key)
             else:
                 entry["evidence"] = "none"
+                entry["ordinal"] = slots.get(child_key)
             children.append(entry)
         verdict: dict[str, object] = {
-            "exempt": live, "children": children,
+            "exempt": live and not missing, "children": children,
+            "missing": missing,
             "parent_key": parent_key, "plan_key": plan_key,
             "checked_unix": moment}
         if since is not None:
@@ -10965,14 +11044,21 @@ class PoolQueue:
             # and the last exemption, through the shared _credit mark.
             verdict["since_unix"] = since
         if not verdict["exempt"]:
-            verdict["reason"] = "no awaited child is ready or claimed"
+            if missing:
+                verdict["reason"] = (
+                    "an awaited child is missing or unreadable "
+                    "with no verified durable result")
+            else:
+                verdict["reason"] = "no awaited child is ready or claimed"
         return verdict
 
     def _queued_child_link(
             self, child_key: str, *, cas_root: object,
             parent_key: str, plan_key: str,
+            plan: Mapping[str, object] | None = None,
+            publication: Mapping[str, object] | None = None,
     ) -> tuple[dict[str, object] | None, str]:
-        """The child's sealed request when it names the awaited batch."""
+        """The child's sealed request when it carries the exact membership."""
 
         if (len(child_key) != 64
                 or any(ch not in "0123456789abcdef" for ch in child_key)):
@@ -10998,11 +11084,32 @@ class PoolQueue:
                 or batch.get("parent_key") != parent_key
                 or batch.get("plan_key") != plan_key):
             return None, "its sealed logical_batch names another batch"
+        ordinal = batch.get("child_ordinal")
+        if (not isinstance(ordinal, int) or isinstance(ordinal, bool)
+                or not isinstance(batch.get("ordered_task_ids"), list)):
+            return None, "its sealed logical_batch carries no ordinal membership"
+        if plan is not None and publication is not None:
+            keys = publication.get("child_action_keys")
+            partitions = plan.get("partitions")
+            if not isinstance(keys, list) or not isinstance(partitions, list):
+                return None, "the stored publication names no children"
+            if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
+                return None, (
+                    "its sealed ordinal is not its position in the stored "
+                    "publication")
+            if not 0 <= ordinal < len(partitions):
+                return None, "its sealed ordinal is outside the stored plan"
+            if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
+                return None, (
+                    "its sealed task set differs from the stored plan's "
+                    "partition")
         return request, ""
 
     def _queued_child_queue_state(
             self, child_key: str, *, cas_root: object,
             request: Mapping[str, object],
+            plan: Mapping[str, object] | None = None,
+            publication: Mapping[str, object] | None = None,
     ) -> tuple[str, str]:
         """One awaited child's queue state, with durable CAS as durable."""
 
@@ -11013,10 +11120,15 @@ class PoolQueue:
                 return "held", "cleanup holds the claim"
             if self.item_path(WITHDRAWN, child_key).exists():
                 return WITHDRAWN, ""
-            if self.item_path(READY, child_key).exists():
-                return READY, ""
-            if self.item_path(CLAIMED, child_key).exists():
-                return CLAIMED, ""
+            for state in (READY, CLAIMED):
+                if self.item_path(state, child_key).exists():
+                    try:
+                        row = _read_json(self.item_path(state, child_key))
+                    except (OSError, ValueError, PoolContractError) as exc:
+                        return "unknown", f"{state} row unreadable: {exc!r}"
+                    if not isinstance(row, Mapping):
+                        return "unknown", f"{state} row vanished mid-read"
+                    return state, ""
             ending = self.current_ending(child_key)
             state = ending["state"]
             if state in (DONE, FAILED):
@@ -11026,11 +11138,13 @@ class PoolQueue:
                     f"{entry['state']}: {entry['reason']}"
                     for entry in ending["unreadable"])  # type: ignore[union-attr]
                 if self._queued_child_durable(child_key, cas_root=cas_root,
-                                             request=request):
+                                             request=request, plan=plan,
+                                             publication=publication):
                     return "durable", detail
                 return "unknown", detail
             if self._queued_child_durable(child_key, cas_root=cas_root,
-                                         request=request):
+                                         request=request, plan=plan,
+                                         publication=publication):
                 # A missing queue record with a verified durable CAS result
                 # is durable, not missing.
                 return "durable", ""
@@ -11053,9 +11167,81 @@ class PoolQueue:
         value = float(stamp)
         return value if math.isfinite(value) else None
 
+    def _awaited_batch_membership(
+            self, cas_root: object, *, parent_key: str, plan_key: str,
+            members: Mapping[str, object],
+    ) -> dict[str, object]:
+        """The stored plan and publication this batch must match (#1666).
+
+        Read from the coordinator's CAS beside the sealed requests, through
+        the native plan and publication validators: the ordinal of a child
+        is its position in ``child_action_keys``, and its task set is the
+        plan's partition there. A missing or unreadable store refuses the
+        credit rather than guessing membership from queue rows.
+        """
+
+        from . import decomposition as decomposition_mod
+
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return {"plan": None, "publication": None,
+                    "unreadable": ["the coordinator's claim names no CAS"]}
+        root = Path(str(cas_root))
+        unreadable: list[str] = []
+        plan_doc: Mapping[str, object] | None = None
+        index: Mapping[str, object] | None = None
+        for name in ("plan.json", "publication.json"):
+            path = root / "decompositions" / parent_key[:2] / parent_key / name
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                unreadable.append(f"{name} is missing at {path}")
+                continue
+            except OSError as exc:
+                unreadable.append(f"{name} is unreadable: {exc!r}")
+                continue
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                unreadable.append(f"{name} is not JSON: {exc!r}")
+                continue
+            if name == "plan.json":
+                try:
+                    plan_doc = decomposition_mod.validate_plan(value)
+                except (ValueError, pb.ActionContractError) as exc:
+                    unreadable.append(f"plan.json is invalid: {exc}")
+            else:
+                try:
+                    index = decomposition_mod.validate_publication_index(value)
+                except (ValueError, pb.ActionContractError) as exc:
+                    unreadable.append(f"publication.json is invalid: {exc}")
+        if plan_doc is not None:
+            if (str(plan_doc.get("parent_key")) != parent_key
+                    or str(plan_doc.get("plan_key")) != plan_key):
+                unreadable.append(
+                    "the stored plan names another parent or plan")
+                plan_doc = None
+        if index is not None:
+            if (str(index.get("parent_key")) != parent_key
+                    or str(index.get("plan_key")) != plan_key):
+                unreadable.append(
+                    "the stored publication names another parent or plan")
+                index = None
+            elif (plan_doc is not None and len(index.get("child_action_keys") or ())  # type: ignore[union-attr]
+                    != len(plan_doc.get("partitions") or ())):  # type: ignore[union-attr]
+                unreadable.append(
+                    "the stored publication covers another child count "
+                    "than the stored plan")
+                index = None
+        if plan_doc is None or index is None:
+            if not unreadable:
+                unreadable.append("the stored plan or publication did not read")
+            return {"plan": None, "publication": None, "unreadable": unreadable}
+        return {"plan": plan_doc, "publication": index, "unreadable": []}
+
     def _awaited_child_submissions(
             self, item: Mapping[str, object], *,
             awaited: Mapping[str, object],
+            retained: Mapping[str, Mapping[str, object]] | None = None,
     ) -> dict[str, dict[str, object]]:
         """The SDK-confirmed admitted or attached set for one batch (#1666).
 
@@ -11066,6 +11252,12 @@ class PoolQueue:
         not prove queued work either: only a live ready or claimed row, a
         terminal ending, or a verified durable CAS result joins the set.
         Future prepared plan entries earn no credit.
+
+        The scan retains custody: ``retained`` is the previous call's set,
+        and a member stays in the set when its row is missing or unreadable
+        unless a verified durable CAS result retires it as durable. A live
+        sibling never covers for a missing member: the verdict carries the
+        retained key and refuses the credit while it stays missing.
         """
 
         cas_root = item.get("cas_root")
@@ -11074,6 +11266,12 @@ class PoolQueue:
         members: dict[str, dict[str, object]] = {}
         if not parent_key or not plan_key:
             return members
+        keep = (dict(retained) if isinstance(retained, Mapping) else {})
+        membership = self._awaited_batch_membership(
+            cas_root, parent_key=parent_key, plan_key=plan_key,
+            members=keep)
+        plan_doc = membership["plan"]
+        index = membership["publication"]
         for state in (READY, CLAIMED):
             try:
                 names = os.listdir(self.dir(state))
@@ -11087,14 +11285,17 @@ class PoolQueue:
                     continue
                 link, _ = self._queued_child_link(
                     child_key, cas_root=cas_root, parent_key=parent_key,
-                    plan_key=plan_key)
+                    plan_key=plan_key, plan=plan_doc, publication=index)
                 if link is None:
                     continue
                 try:
                     row = _read_json(self.item_path(state, child_key))
                 except (OSError, ValueError, PoolContractError):
+                    members[child_key] = dict(keep.get(child_key) or {})
                     continue
-                if isinstance(row, Mapping):
+                if row is None:
+                    members[child_key] = dict(keep.get(child_key) or {})
+                elif isinstance(row, Mapping):
                     members[child_key] = dict(row)
         for state in (DONE, FAILED, WITHDRAWN):
             try:
@@ -11109,15 +11310,27 @@ class PoolQueue:
                     continue
                 link, _ = self._queued_child_link(
                     child_key, cas_root=cas_root, parent_key=parent_key,
-                    plan_key=plan_key)
+                    plan_key=plan_key, plan=plan_doc, publication=index)
                 if link is None:
                     continue
                 try:
                     row = _read_json(self.item_path(state, child_key))
                 except (OSError, ValueError, PoolContractError):
+                    members[child_key] = dict(keep.get(child_key) or {})
                     continue
-                if isinstance(row, Mapping):
+                if row is None:
+                    members[child_key] = dict(keep.get(child_key) or {})
+                elif isinstance(row, Mapping):
                     members[child_key] = dict(row)
+        for child_key in sorted(keep):
+            if child_key in members:
+                continue
+            link, _ = self._queued_child_link(
+                child_key, cas_root=cas_root, parent_key=parent_key,
+                plan_key=plan_key, plan=plan_doc, publication=index)
+            if link is None:
+                continue
+            members[child_key] = dict(keep[child_key])
         return members
 
     def _queued_child_finish_marked(self, child_key: str) -> bool:
@@ -11133,7 +11346,9 @@ class PoolQueue:
                    for name in names)
 
     def _queued_child_durable(self, child_key: str, *, cas_root: object,
-                              request: Mapping[str, object]) -> bool:
+                              request: Mapping[str, object],
+                              plan: Mapping[str, object] | None = None,
+                              publication: Mapping[str, object] | None = None) -> bool:
         """Whether the CAS verifies this child's durable result (#1666)."""
 
         try:
@@ -11146,7 +11361,8 @@ class PoolQueue:
             return False
         try:
             return verify_durable_child_result(
-                cas, request, receipt, child_key=child_key) is not None
+                cas, request, receipt, child_key=child_key,
+                plan=plan, publication=publication) is not None
         except (OSError, ValueError, pb.ActionContractError,
                 pb.CASTamperError, pb.CASUnavailableError):
             return False
@@ -28576,13 +28792,21 @@ class PoolQueue:
                             try:
                                 awaited = (progress.awaited_batch
                                            if progress is not None else None)
+                                retained = None
+                                if isinstance(watch.queued_child_wait, Mapping):
+                                    retained = {
+                                        str(entry.get("key")): {}
+                                        for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
+                                        if isinstance(entry, Mapping)
+                                        and _is_hex64(entry.get("key"))}
                                 queued = (
                                     None if awaited is None
                                     else self.queued_child_wait_verdict(
                                         key, cas_root=item.get("cas_root"),
                                         awaited=awaited,
                                         admitted=self._awaited_child_submissions(
-                                            item, awaited=awaited),
+                                            item, awaited=awaited,
+                                            retained=retained),
                                         prior=watch.queued_child_wait,
                                         now=_now()))
                             except (OSError, ValueError, PoolContractError) as exc:

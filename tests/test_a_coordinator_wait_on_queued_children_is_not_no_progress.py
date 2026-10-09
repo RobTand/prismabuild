@@ -157,6 +157,13 @@ def _batch(tmp_path: Path):
         })
         cas.publish_action_request(child)
         children.append(child)
+    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
+    stored.mkdir(parents=True, exist_ok=True)
+    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
+    (stored / "publication.json").write_bytes(dc.document_bytes(
+        dc.publication_index(
+            plan, batch_input_digests=["0" * 64] * len(children),
+            child_action_keys=[child["action_key"] for child in children])))
     return cas, plan, children
 
 
@@ -306,6 +313,52 @@ def test_an_unreadable_child_request_earns_no_credit(tmp_path: Path) -> None:
     assert verdict["children"][0]["state"] == "foreign"
 
 
+def test_a_child_with_a_foreign_ordinal_earns_no_credit(tmp_path: Path) -> None:
+    """A sealed ordinal outside its publication slot is foreign."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    other = children[1] if len(children) > 1 else children[0]
+    batch = dict(other["params"]["logical_batch"])
+    checkout = tmp_path / "ordinal-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    wrong = dict(other)
+    wrong["params"] = {"logical_batch": {**batch, "child_ordinal": 0}}
+    wrong.pop("action_key", None)
+    sealed = pb.seal_action({k: v for k, v in wrong.items() if k != "action_key"})
+    cas.publish_action_request(sealed)
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted={sealed["action_key"]: {}})
+    assert verdict["exempt"] is False
+    assert verdict["children"][0]["state"] == "foreign"
+
+
+def test_a_child_with_foreign_tasks_earns_no_credit(tmp_path: Path) -> None:
+    """A sealed task set outside its plan partition is foreign."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    child = children[0]
+    batch = dict(child["params"]["logical_batch"])
+    wrong = dict(child)
+    wrong["params"] = {"logical_batch": {
+        **batch, "ordered_task_ids": ["no-such-task"]}}
+    wrong.pop("action_key", None)
+    sealed = pb.seal_action({k: v for k, v in wrong.items() if k != "action_key"})
+    cas.publish_action_request(sealed)
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted={sealed["action_key"]: {}})
+    assert verdict["exempt"] is False
+    assert verdict["children"][0]["state"] == "foreign"
+
+
 def test_a_coordinator_survives_a_queue_wait_past_twice_its_allowance(
         tmp_path: Path) -> None:
     """Quiet past twice the allowance, with a ready child, is not ended."""
@@ -379,6 +432,158 @@ def test_a_coordinator_ends_no_progress_once_the_child_is_terminal(
     assert outcome["termination_reason"] == "no_progress", outcome
     observed = outcome["progress_observation"]
     assert observed["queued_child_wait_exempt_s"] > 0.0
+
+def test_a_first_sighting_is_a_baseline_and_earns_no_credit(
+        tmp_path: Path) -> None:
+    """One live sample without a prior is a baseline, not a credit."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    admitted = queue._awaited_child_submissions(
+        {"action_key": "c" * 64, "cas_root": str(cas.root)}, awaited=awaited)
+    first = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=admitted, prior=None)
+    assert first["exempt"] is False
+    assert first["children"][0]["evidence"] == "baseline"
+    second = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=queue._awaited_child_submissions(
+            {"action_key": "c" * 64, "cas_root": str(cas.root)},
+            awaited=awaited, retained={
+                key: {} for key in admitted}),
+        prior=first)
+    assert second["exempt"] is True
+    assert second["children"][0]["evidence"] == "carried"
+
+
+def test_a_replacement_child_is_a_new_baseline(tmp_path: Path) -> None:
+    """A live child that the prior never saw earns no credit yet."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children to replace one"
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    first = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=queue._awaited_child_submissions(item, awaited=awaited),
+        prior=None)
+    assert first["exempt"] is False
+    queue.withdraw(children[0]["action_key"], by="test-replace")
+    queue.publish(
+        action_key=children[1]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    replacement = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=queue._awaited_child_submissions(item, awaited=awaited),
+        prior=first)
+    assert replacement["exempt"] is False
+    live = [entry for entry in replacement["children"]
+            if entry["key"] == children[1]["action_key"]]
+    assert live and live[0]["evidence"] == "baseline", replacement
+    carried = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=queue._awaited_child_submissions(
+            item, awaited=awaited,
+            retained={children[1]["action_key"]: {}}),
+        prior=replacement)
+    assert carried["exempt"] is True
+
+
+def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
+    """A retained member with no row stays in the verdict and earns none."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    assert len(children) >= 2, "the batch needs two children for this"
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    queue.publish(
+        action_key=children[1]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    admitted = queue._awaited_child_submissions(item, awaited=awaited)
+    assert len(admitted) == 2, admitted
+    queue.item_path(pool.READY, children[1]["action_key"]).unlink()
+    retained = queue._awaited_child_submissions(
+        item, awaited=awaited, retained={key: {} for key in admitted})
+    assert children[1]["action_key"] in retained, retained
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=retained,
+        prior={"children": [
+            {"key": children[0]["action_key"], "state": pool.READY,
+             "evidence": "baseline", "ordinal": 0,
+             "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}]})
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [children[1]["action_key"]], verdict
+
+
+def test_an_older_worker_cannot_claim_an_awaited_coordinator(
+        tmp_path: Path) -> None:
+    """The declaration requires the queued-child capability tag."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "coord-src"
+    checkout.mkdir()
+    (checkout / "task.py").write_text("print('ok')\n")
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+              "phases": [{"name": "run", "grace_s": 60.0}]}
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            "definition_id": "tests/coordinator", "definition_version": "v1",
+            "task_class": "generation", "determinism": "deterministic",
+            "artifact_family": "generic", "artifact_kind": "generic",
+            "argv": [sys.executable, "task.py"], "working_directory": ".",
+            "result_path": "result"},
+        "inputs": [],
+        "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {pb.PROGRESS_PARAM: policy, pb.AWAITED_BATCH_PARAM: awaited},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas.publish_action_request(action)
+    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.QUEUED_CHILD_TAG]
+    import pbrun as pbrun_mod  # noqa: PLC0415 -- tools/fleet is on sys.path in PB
+    required = pbrun_mod.progress_required_tags(policy, awaited)
+    assert pb.QUEUED_CHILD_TAG in required
+    assert pb.QUEUED_CHILD_TAG not in pbrun_mod.progress_required_tags(policy)
+    queue.publish(
+        action_key=action["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true",
+        tags=[*tags])
+    assert queue.claim(tags=["x86", "old", pb.PROGRESS_TAG,
+                             pb.PROGRESS_HELPER_TAG]) is None
+    claimed = queue.claim(tags=["x86", "old", *tags])
+    assert claimed is not None
+    assert claimed["action_key"] == action["action_key"]
 
 
 def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> None:
@@ -480,6 +685,79 @@ def test_a_non_verifying_child_counts_zero(tmp_path: Path) -> None:
     assert reporter.establish_baseline() == set()
     assert reporter.newly_durable() == []
     assert reporter.units == 0
+
+def test_a_reporter_rejects_a_manifest_for_another_ordinal(
+        tmp_path: Path) -> None:
+    """A valid receipt with a valid digest but a foreign ordinal counts zero."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    worker = (Path(__file__).resolve().parents[1]
+              / "tools" / "prismabuild_worker.py")
+    checkout = tmp_path / "run-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script=worker)
+    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+                            heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed", outcome
+    other = children[1] if len(children) > 1 else children[0]
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[other["action_key"]],
+        child_requests={other["action_key"]: children[0]}, phase="run")
+    assert reporter.establish_baseline() == set()
+    assert reporter.newly_durable() == []
+    assert reporter.units == 0
+
+
+def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
+    """A manifest that answers one task of a two-task batch counts zero."""
+
+    checkout = tmp_path / "child-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    request = dc.validate_logical_request({
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": [sys.executable, "-c", PRODUCER,
+                     dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": ".", "demand": {"cpu": 1, "mem_gb": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {}},
+        "roster": {
+            "schema": dc.LOGICAL_TASK_ROSTER_SCHEMA_V1,
+            "tasks": [
+                {"id": f"q{index}", "payload": {"v": index},
+                 "residency_key": "r", "estimated_seconds": 8.2,
+                 "estimate_evidence": EVIDENCE, "output_id": f"z{index}"}
+                for index in range(2)]},
+        "batch_policy": {
+            "schema": dc.ROSTER_BATCH_POLICY_SCHEMA_V1,
+            "residencies": [{"key": "r", "setup_seconds": 20.0,
+                             "setup_evidence": EVIDENCE}],
+            "max_setup_fraction": 0.5,
+            "max_estimated_wall_seconds": 300.0},
+    })
+    frozen = _frozen()
+    frozen["argv"] = [sys.executable, "-c", PRODUCER,
+                      dc.TASK_BATCH_PLACEHOLDER]
+    plan = dc.build_plan(request, frozen)
+    assert len(plan["partitions"]) == 1, plan["partitions"]
+    assert len(plan["partitions"][0]) == 2, plan["partitions"]
+    batch = dc.PreparedBatches(request, plan).membership(0)
+    manifest = {
+        "schema": dc.CHILD_RESULT_MANIFEST_SCHEMA_V1,
+        "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
+        "child_ordinal": 0,
+        "results": [{
+            "task_id": batch["ordered_task_ids"][0],
+            "output_id": f"z0", "value_sha256": "0" * 64}]}
+    checked = dc.validate_child_result_manifest(manifest)
+    assert sorted(entry["task_id"] for entry in checked["results"]) != sorted(
+        batch["ordered_task_ids"])
+
 
 
 def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
@@ -602,7 +880,13 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
                             "platform_key": None, "host_class": None},
     })
     cas.publish_action_request(child)
-    queue = _queue(tmp_path, cas)
+    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
+    stored.mkdir(parents=True, exist_ok=True)
+    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
+    (stored / "publication.json").write_bytes(dc.document_bytes(
+        dc.publication_index(
+            plan, batch_input_digests=["0" * 64],
+            child_action_keys=[child["action_key"]])))
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     run = tmp_path / "run-multi"
