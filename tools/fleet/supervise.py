@@ -2162,6 +2162,15 @@ def _run_supervisor(stop_requested) -> int:
     fixed_target = args.loops > 0
     next_log_index = _next_log_index()
     draining_announced = False
+    # The busiest claim census of the last two ticks (#1571): a claim
+    # count that alternates between ticks -- a loop finishes one action
+    # and claims the next between two censuses, or two loops trade one
+    # claim -- otherwise sizes the box down and back up every tick:
+    # sparky stopped and respawned loops while it held the same work
+    # throughout. Sizing on the two-tick maximum holds the higher count
+    # across the dip, so neither a stop nor a respawn follows it. A
+    # steady low count still shrinks, one tick later at most.
+    busiest_recent_claims = 0
     # The last health state named per role pid, so a steady stopped role is
     # reported once rather than every tick (#709).
     role_health_seen: dict[int, str] = {}
@@ -2310,6 +2319,17 @@ def _run_supervisor(stop_requested) -> int:
         # without a process start -- and shrink needs no permission from the
         # queue, because an idle poller is idle whether or not work is
         # waiting.  ``backlog`` survives only below, choosing the tick rate.
+        #
+        # Size on the busiest claim census of the last two ticks
+        # (#1571).  A claim count that alternates between ticks -- a loop
+        # finishes one action and claims the next between two censuses,
+        # or two loops trade one claim -- otherwise sizes the box down
+        # and back up every tick: sparky stopped and respawned loops
+        # while it held the same work throughout.  The two-tick maximum
+        # holds the higher count across the dip, so neither a stop nor
+        # a respawn follows it.  A steady low count still shrinks, one
+        # tick later at most.  Active claims and unknown workers stay
+        # protected either way; only proven-idle loops ever stop.
         desired = target
         if (not fixed_target or draining) and not args.once:
             if holders is None:
@@ -2320,8 +2340,10 @@ def _run_supervisor(stop_requested) -> int:
                 # A draining box keeps no idle reserve: every idle poller is
                 # excess, so its offers expire and placement stops seeing it.
                 reserve = 0 if draining else IDLE_RESERVE
+                sized_claims = max(busy + unknown, busiest_recent_claims)
                 desired = min(housekeeping_ceiling(target),
-                              max(target, busy + unknown + reserve))
+                              max(target, sized_claims + reserve))
+                busiest_recent_claims = busy + unknown
                 excess = max(0, len(live) - desired)
                 if excess and idle:
                     stopped = _stop_idle_loops(

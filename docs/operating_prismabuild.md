@@ -422,18 +422,19 @@ What PB does with it:
 
 Practical rules:
 
-- Reference forms. `sha256:<64 hex>` matches the local image **ID**;
-  `repository@sha256:<64 hex>` matches that exact **RepoDigest**, repository
-  context included; `content:sha256:<64 hex>` matches the image's
-  store-independent **content**. The three are not aliases. Mutable tags
-  (`repo:tag`) are refused; use a digest.
-- Prefer the content form for work any box holding the image may run. An
-  image ID is what that box's own image store calls the image, and the two
-  Sparks run different stores, so an ID-sealed action is claimable by one
-  Spark only (#805); a locally built image has no RepoDigest on the classic
-  store, so the `repository@` form is not the answer either. Read a portable
-  reference off a box that holds the image with `python3 -m
-  prismabuild.container_images <repo:tag>`.
+- A bare `sha256:<64 hex>` requirement matches the local image **ID** or
+  the digest part of any reported **RepoDigest**. The digest must match in full.
+  Placement, claim admission, and GPU room checks use `container_images.missing`.
+  That function checks each requirement through `container_images.satisfied`.
+- A `repository@sha256:<64 hex>` requirement matches only that exact **RepoDigest**,
+  with the repository name included. A bare ID cannot satisfy it.
+  A `content:sha256:<64 hex>` requirement matches only that exact **content** reference.
+  Mutable tags (`repo:tag`) remain invalid.
+- Prefer the content form for portable work. The two Sparks use different
+  image stores, which can report different IDs for the same image (#805).
+  A pulled image can satisfy a bare digest through its RepoDigest.
+  A locally built or loaded image can lack a RepoDigest on the classic store.
+  Read its portable reference with `python3 -m prismabuild.container_images <repo:tag>`.
 - The image must be local *before* the action is claimed. A workflow that
   loads its image from an archive inside the action (PrismaQuant's
   `container.archive`) must **not** declare it: PB would deny the claim
@@ -3406,6 +3407,27 @@ Publication refuses rather than guesses:
     back if the install fails. A caller can be refused in that narrow
     interval. It can never read a mixed generation.
 *   **A live `repo` that is neither a directory nor a symlink** is refused.
+*   **A candidate roster that drops a `--` option the live generation
+    declares for any box** is refused before anything is staged (#1664).
+    Only option names are compared, so a value that moves (`--mem-gb 96`
+    to `--mem-gb 104`) passes while a name that vanishes
+    (`--gang-admission`) refuses. A box the candidate removes, or
+    reshapes without a usable `args` list, drops every live name it
+    declared. A box is compared under its own roster key; an alias
+    (`gx10-6b77` / `sparklina`) answers for placement tags, never for
+    options. The live roster is read from the sealed generation the
+    pointer names, not from a mirror copy beside it. To remove an
+    option on purpose, pass `--drop-roster-option-by WHO` with
+    `--drop-roster-option-reason WHY`; both are recorded in
+    `RUNTIME_VERSION.json` beside the dropped names, and the receipt
+    keeps its `generation` name for adoption. Rollback restores a
+    sealed generation and takes neither flag.
+
+The CPU adoption test publishes private generations and runs a real supervisor without `--once`.
+It proves that a matching roster preserves worker PIDs and the supervisor claim across `exec`.
+A removal control proves that a different roster replaces idle loops.
+The fixture binds each worker to its own receipt, so this proof excludes the worker's separate upgrade path.
+This test does not qualify a live Spark or a native gang.
 
 A staged generation's import probe disables bytecode writes, so validation
 does not add unlisted cache files before the generation is sealed.
