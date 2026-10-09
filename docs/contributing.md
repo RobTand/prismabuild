@@ -85,6 +85,12 @@ Warm-listing trust fixtures pin the complete object resolver
 through the validated mount table, so only the complete resolver models trust
 loss (#1506).
 
+Keep forest list counters in call order. Count each refusal at its underlying
+trust check, not at both a wrapper and its callee.
+Each re-list must consume one earlier refusal for the same directory.
+Retain the exact one-list and no-list-under-lock bounds under stable trust.
+Test unrelated lists, repeated use of a refusal, and lists before a refusal.
+
 Unrelated subprocesses retain native Popen behavior when env=None.
 
 The live-store test guard checks `os.open(name, dir_fd=fd)` against the

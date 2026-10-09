@@ -52,7 +52,7 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 5
+SDK_VERSION = 6
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
@@ -109,12 +109,18 @@ SIGNATURES = {
     "bind_ephemeral_scratch": "queue, *root_env, *name, *claim_snapshot, *env=None",
     "ephemeral_scratch_path": "declaration",
     "record_ephemeral_scratch_declarations": "queue, *claim_snapshot, *env=None",
+    "build_scratch_lifetime_selection": "entries",
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 5,
+    "SDK_VERSION": 6,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": "prismabuild.scratch_declaration_record.v1",
+    "SCRATCH_LIFETIME_TAG": "scratch-lifetime-v1",
+    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": "prismabuild.scratch_lifetime_selection.v1",
+    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": "prismabuild.scratch_lifetime_record.v1",
+    "SCRATCH_LIFETIME_FIELD": "scratch_lifetime_record",
+    "SCRATCH_LIFETIME_DECLARATIONS_ENV": "PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS",
     "READER_LEASE_TAG": "reader-lease-v1",
     "DATA_MANIFEST_MAX_BYTES": 64 * 1024 * 1024,
     "CLAIMED": "claimed",
@@ -140,7 +146,8 @@ CONSTANTS = {
     "TIER_RECORD_SCHEMA": "prismabuild.storage_tier.v1",
     "DECOMPOSITION_TAG": "decomposition-v1",
     "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "lifetime-fence-v1", "decomposition-v1",
-                               "verified-action-result-v1", "native-producer-context-v1"}),
+                               "verified-action-result-v1", "native-producer-context-v1",
+                               "scratch-lifetime-v1"}),
 }
 
 PATTERNS = {
@@ -160,6 +167,12 @@ REEXPORTS = {
     "ephemeral_scratch_path": local_scratch.ephemeral_scratch_path,
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
     "record_ephemeral_scratch_declarations": local_scratch.record_ephemeral_scratch_declarations,
+    "SCRATCH_LIFETIME_TAG": local_scratch.SCRATCH_LIFETIME_TAG,
+    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
+    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
+    "SCRATCH_LIFETIME_FIELD": local_scratch.SCRATCH_LIFETIME_FIELD,
+    "SCRATCH_LIFETIME_DECLARATIONS_ENV": local_scratch.DECLARATIONS_ENV,
+    "build_scratch_lifetime_selection": local_scratch.build_scratch_lifetime_selection,
     "READER_LEASE_TAG": reader_lease.READER_LEASE_TAG,
     "injected_context": reader_lease.injected_context,
     "acquire_for": reader_lease.acquire_for,
@@ -284,6 +297,9 @@ def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES
+    assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
+    assert client.SCRATCH_LIFETIME_TAG == local_scratch.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
+    assert "SCRATCH_LIFETIME_TAG" in (ROOT / "tools" / "fleet" / "worker_loop.py").read_text()
     assert "require_native_producer_context" in inspect.signature(client.read_verified_action_result).parameters
     assert callable(client.read_verified_action_result)
     assert callable(client.bind_standard_capture_command)

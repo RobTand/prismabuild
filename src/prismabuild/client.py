@@ -45,6 +45,13 @@ The surface, by area:
 * **Durable scratch declaration evidence** (SDK v3, not cleanup registration):
   :func:`record_ephemeral_scratch_declarations`,
   :data:`SCRATCH_DECLARATION_RECORD_SCHEMA_V1`.
+* **Generation-bound scratch lifetime** (``scratch-lifetime-v1``, SDK v6,
+  Refs #1360): :func:`build_scratch_lifetime_selection`, which seals one
+  versioned lifetime selection; :data:`SCRATCH_LIFETIME_SELECTION_SCHEMA_V1`,
+  :data:`SCRATCH_LIFETIME_RECORD_SCHEMA_V1`, :data:`SCRATCH_LIFETIME_TAG`,
+  :data:`SCRATCH_LIFETIME_FIELD`, and
+  :data:`SCRATCH_LIFETIME_DECLARATIONS_ENV`. The pool, not the SDK, registers
+  directories and deletes them after exact stopped-attempt proof.
 * **Receipts**: :func:`cas_receipt_self_check`.
 * **Verified action results** (``verified-action-result-v1``, SDK v5):
   :func:`read_verified_action_result`, :class:`ActionResultError`,
@@ -54,7 +61,8 @@ The surface, by area:
 * **Liveness**: :data:`TIER_LOOP_LIVENESS_S`, :data:`TIER_RECORD_SCHEMA`.
 * **Capabilities**: :data:`CAPABILITIES`, which names
   :data:`DECOMPOSITION_TAG` when this tree's ``pbcampaign`` can decompose a
-  logical request.
+  logical request, and :data:`SCRATCH_LIFETIME_TAG` when this tree's pool
+  registers and cleans generation-bound scratch.
 
 The module imports nothing from any client, and no client's name appears in
 it.
@@ -75,7 +83,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 5
+SDK_VERSION = 6
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -213,6 +221,24 @@ ephemeral_scratch_path = _local_scratch.ephemeral_scratch_path
 SCRATCH_DECLARATION_RECORD_SCHEMA_V1 = _local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1
 record_ephemeral_scratch_declarations = _local_scratch.record_ephemeral_scratch_declarations
 
+# -- generation-bound scratch lifetime (capability ``scratch-lifetime-v1``) ----
+
+#: The capability tag the pool derives from sealed lifetime intent. A worker
+#: that offers it runs this tree's registration and cleanup code; an older
+#: worker offers no such tag and cannot claim versioned lifetime actions.
+SCRATCH_LIFETIME_TAG = _local_scratch.SCRATCH_LIFETIME_TAG
+#: The schema of the sealed selection :func:`build_scratch_lifetime_selection`
+#: returns for ``PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS``.
+SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
+#: The schema of the durable registration the pool files in the claim/lease.
+SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1
+#: The claim field that carries the durable registration.
+SCRATCH_LIFETIME_FIELD = _local_scratch.SCRATCH_LIFETIME_FIELD
+#: The sealed variable that carries the versioned selection.
+SCRATCH_LIFETIME_DECLARATIONS_ENV = _local_scratch.DECLARATIONS_ENV
+#: Build one versioned scratch-lifetime selection for the sealed environment.
+build_scratch_lifetime_selection = _local_scratch.build_scratch_lifetime_selection
+
 # -- receipts ----------------------------------------------------------------
 
 CAS_RECEIPT_SCHEMA_V3 = _core.CAS_RECEIPT_SCHEMA_V3
@@ -321,6 +347,7 @@ CAPABILITIES = frozenset({
     DECOMPOSITION_TAG,
     VERIFIED_ACTION_RESULT_TAG,
     NATIVE_PRODUCER_CONTEXT_TAG,
+    SCRATCH_LIFETIME_TAG,
 })
 
 __all__ = [
@@ -357,6 +384,10 @@ __all__ = [
     "EPHEMERAL_SCRATCH_SCHEMA_V1", "LocalScratchError",
     "bind_ephemeral_scratch", "ephemeral_scratch_path",
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1", "record_ephemeral_scratch_declarations",
+    # generation-bound scratch lifetime (capability ``scratch-lifetime-v1``)
+    "SCRATCH_LIFETIME_TAG", "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1",
+    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1", "SCRATCH_LIFETIME_FIELD",
+    "SCRATCH_LIFETIME_DECLARATIONS_ENV", "build_scratch_lifetime_selection",
     # receipts
     "CAS_RECEIPT_SCHEMA_V3", "WORKER_ATTESTATION_SCHEMA_V2",
     "RECEIPT_REFUSALS", "cas_receipt_self_check",
