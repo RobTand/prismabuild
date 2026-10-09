@@ -53,16 +53,16 @@ DEFAULT_CONFIG = Path("/etc/prismabuild/movement-publish.json")
 APPROVAL_SUFFIX = ".approval"
 #: Where the enrolled host holds the verification secret (root-only, 0400).
 APPROVAL_KEY_PATH = Path("/etc/prismabuild/movement-approval.key")
- #: How long a protected copy must exist before a gang reservation applies on
- #: that host (#1659): one gang-wait period. A copy that just arrived may have
- #: pre-copy rows still queued from the retained store (sealed before the copy,
- #: with or without isolated Python). Those rows execute mutable retained bytes,
- #: so they never get a role. The reservation stays off while they drain, and
- #: the host keeps the behaviour of main. After this bound any remaining
- #: retained row is held by demand like other ordinary work, which forces new
- #: movers to seal from the protected twin. A copy without a publication time
- #: (published before this bound existed) counts as mature.
- PROTECTED_COPY_MATURITY_S = 600.0
+#: How long a protected copy must exist before a gang reservation applies on
+#: that host (#1659): one gang-wait period. A copy that just arrived may have
+#: pre-copy rows still queued from the retained store (sealed before the copy,
+#: with or without isolated Python). Those rows execute mutable retained bytes,
+#: so they never get a role. The reservation stays off while they drain, and
+#: the host keeps the behaviour of main. After this bound any remaining
+#: retained row is held by demand like other ordinary work, which forces new
+#: movers to seal from the protected twin. A copy without a publication time
+#: (published before this bound existed) counts as mature.
+PROTECTED_COPY_MATURITY_S = 600.0
 #: The movement tool every tool root carries; its copy stands for the root.
 PROBE_TOOL = "stage_release.py"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
