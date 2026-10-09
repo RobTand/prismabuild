@@ -1045,41 +1045,40 @@ import tempfile as _pb_tempfile
 import uuid as _pb_uuid
 
 
-_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
-if not _pb_tmpdir:
-    raise SystemExit("pbtest: the worker did not provide TMPDIR for the attempt base temp")
-_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
-if not _pb_key or "/" in _pb_key or _pb_key in (".", ".."):
-    raise SystemExit(
-        "pbtest: the worker did not provide a safe PRISMABUILD_ACTION_KEY, so the "
-        "attempt base temp cannot be derived")
-_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
-if _pb_attempt:
-    if len(_pb_attempt) != 32 or any(
-            character not in "0123456789abcdef" for character in _pb_attempt):
-        raise SystemExit(
-            "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
-else:
-    _pb_attempt = _pb_uuid.uuid4().hex
-_pb_owned = _pb_os.path.join(_pb_tmpdir, "pbtest-" + _pb_key[:12], _pb_attempt, "pytest")
-try:
-    _pb_os.makedirs(_pb_owned, exist_ok=True)
-    with _pb_tempfile.TemporaryFile(dir=_pb_owned):
-        pass
-except (OSError, ValueError) as _pb_exc:
-    raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
-_pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
-
-
 def _pb_run_and_clean_attempt_base(_pb_run):
-    _pb_code = _pb_run()
-    if int(_pb_code) == 0:
-        _pb_shutil.rmtree(_pb_os.path.dirname(_pb_owned), ignore_errors=True)
-        try:
-            _pb_os.rmdir(_pb_os.path.dirname(_pb_os.path.dirname(_pb_owned)))
-        except OSError:
+    return _pb_run()
+
+
+_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
+_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
+_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
+if _pb_attempt and (len(_pb_attempt) != 32 or any(
+        character not in "0123456789abcdef" for character in _pb_attempt)):
+    raise SystemExit(
+        "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
+if (_pb_tmpdir and _pb_key and "/" not in _pb_key
+        and _pb_key not in (".", "..")):
+    if not _pb_attempt:
+        _pb_attempt = _pb_uuid.uuid4().hex
+    _pb_owned = _pb_os.path.join(_pb_tmpdir, "pbtest-" + _pb_key[:12], _pb_attempt, "pytest")
+    try:
+        _pb_os.makedirs(_pb_owned, exist_ok=True)
+        with _pb_tempfile.TemporaryFile(dir=_pb_owned):
             pass
-    return _pb_code
+    except (OSError, ValueError) as _pb_exc:
+        raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
+    _pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
+
+
+    def _pb_run_and_clean_attempt_base(_pb_run):
+        _pb_code = _pb_run()
+        if int(_pb_code) == 0:
+            _pb_shutil.rmtree(_pb_os.path.dirname(_pb_owned), ignore_errors=True)
+            try:
+                _pb_os.rmdir(_pb_os.path.dirname(_pb_os.path.dirname(_pb_owned)))
+            except OSError:
+                pass
+        return _pb_code
 
 
 """
