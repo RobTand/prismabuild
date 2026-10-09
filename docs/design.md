@@ -534,10 +534,9 @@ seconds are `RELEASE_RESERVE_S`, a constant of contract v1; another reserve is
 another version. The reserve is sized for answers that take seconds (the
 broker released a stopped scope 0.56 s after its stop in the 2026-10-09
 measurement), not for the sum of every worst-case timeout. Nothing launches
-from the stop instant, and the worker stops
-the payload there at the latest. Nothing credits, pauses or extends either
-instant. The separate payload budget (`execution_timeout_s`) keeps its credited
-waits and its disclaimers.
+from the stop instant, and the worker stops the payload there at the latest.
+Nothing credits, pauses or extends either instant. The separate payload budget
+(`execution_timeout_s`) keeps its credited waits and its disclaimers.
 
 *Phases.* Each phase has one bound and one enforcing mechanism. A phase is
 `enforced` only when the worker filed it under that mechanism and it ended
@@ -556,6 +555,11 @@ before its bound.
 | scope settlement | deadline | `exact-scope-proof`: the broker's token-gated export verdict proves the scope stopped and empty |
 | resource release | deadline | `release-after-proof`: the host ledger no longer holds the key |
 
+The stop alarm is a timer inside the existing supervisor, not a second
+lifecycle controller. It delivers one stop, once, under a lock. The supervisor
+still files the ending, and `finish` still returns the tokens on proof. A
+payload that has ended on its own is never stopped.
+
 A run without a scope has no scope to stop or settle. Its termination and
 scope-settlement phases carry no mechanism and read unenforced.
 
@@ -571,9 +575,10 @@ bound. Anything else is UNKNOWN. A live claim, a READY row or a successor never
 answers for an attempt.
 
 *Admission.* `candidate_release_bound` is finite only when the sealed request
-carries the contract, the READY row carries the same clock, the claiming box
-offers the capability, the stop instant is still ahead, and every phase is
-bounded for the candidate's shape. The bound is the deadline. A gang member
+carries the contract, the READY row carries the same clock and requires the
+capability (so only a box that offers it can claim the row), the stop instant
+is still ahead, and every phase is bounded for the candidate's shape. The
+bound is the deadline. A gang member
 leaves admission unfenced, because it waits on sibling claims. An action that
 declares scratch leaves cleanup unfenced, because scratch removal has no
 deadline. One unfenced phase makes the whole verdict UNKNOWN, and
@@ -582,16 +587,17 @@ strictly before the original opportunity. Equality and later bounds refuse. The
 capacity, isolation and measurement gates stay unchanged beside this answer.
 
 *What the bound is not.* The bound holds when the kernel, the broker, the local
-disk and the shared mount answer promptly. A system call that never returns is outside
-it, and so is the death of the worker process. A task in uninterruptible sleep
-survives the broker's kill, and its scope stays populated. The deadline is a
-wall-clock instant that the publishing host stamps and the claiming host
-reads, so the bound also assumes those clocks agree. Such an attempt keeps its
-tokens until settlement is proved, its audit reads UNKNOWN, and a delay can
-still reach the measurement. Once the original opportunity has passed, every later
-bound is later than it, so one overrun admits no more backfill. No timer
-returns tokens. The payload stop kills the payload and releases nothing, and it
-does not make kernel or NFS reclamation immediate.
+disk and the shared mount answer promptly. A system call that never returns is
+outside it, and so is the death of the worker process. A task in
+uninterruptible sleep survives the broker's kill, and its scope stays
+populated. The deadline is a wall-clock instant that the publishing host
+stamps and the claiming host reads, so the bound also assumes those clocks
+agree. Such an attempt keeps its tokens until settlement is proved, its audit
+reads UNKNOWN, and a delay can still reach the measurement. Once the original
+opportunity has passed, every later bound is later than it, so one overrun
+admits no more backfill. No timer returns tokens. The payload stop kills the
+payload and releases nothing, and it does not make kernel or NFS reclamation
+immediate.
 
 *Retry.* A payload the fence stops ends as a `timeout` attempt with
 `termination_reason: lifetime_fence`. The same deadline refuses a later claim,

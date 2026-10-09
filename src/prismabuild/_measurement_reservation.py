@@ -3,7 +3,8 @@
 The existing passes sidecar carries one host election per publication. A complete
 read is refreshed under measurement transition keys and host admission; directory
 absence alone never retires an election. Payload deadlines are opportunity
-metadata only. No current candidate has a proved admission-to-release bound.
+metadata only. Only a candidate that seals the lifetime contract has a
+prospective admission-to-release bound (:mod:`prismabuild.lifetime_fence`, #1429).
 """
 from __future__ import annotations
 
@@ -814,9 +815,10 @@ def candidate_release_verdict(
 
     Returns ``(bound, support)``.  ``bound`` is the sealed lifetime contract's
     release deadline, finite only when the opt-in contract is sealed, the
-    READY row's own publication projection agrees with it, the claiming box
-    offers the capability that enforces it, the stop instant is still ahead,
-    and every phase is bounded for this candidate's shape.  ``support`` names
+    READY row's own publication projection agrees with it, the row requires
+    the capability that enforces it (so only a box that offers it can claim
+    the row), the stop instant is still ahead, and every phase is bounded for
+    this candidate's shape.  ``support`` names
     each phase and, where one is UNKNOWN, why.  The sealed payload timeout
     alone is opportunity metadata, never a release bound.
 
@@ -969,7 +971,11 @@ def timed_backfill_permitted(
 
 
 def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | None) -> dict | None:
-    """UNKNOWN-first: no current timed candidate proves a safe finish."""
+    """UNKNOWN-first: the elected host fences lower-priority work.
+
+    Only a candidate with a prospective release bound strictly before the
+    election's opportunity runs ahead of it (:func:`timed_backfill_permitted`).
+    """
     for key, chosen in sorted(census["elections"].items()):
         if (chosen["host"] == host and key != item["action_key"]
                 and int(item.get("priority", 0)) < chosen["priority"] and funded_by != key):
