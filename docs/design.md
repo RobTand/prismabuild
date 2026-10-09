@@ -1636,13 +1636,15 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `5`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
 binding (#1446). Version 5 adds the opt-in native producer context from the
-selected immutable attempt and exact execution receipt (#1481). The generic
-result mapping remains unchanged when the new requirement is false. Earlier
+selected immutable attempt and exact execution receipt (#1481). Version 6
+exposes the generation-bound scratch lifetime contract (Refs #1360): the
+`scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
+field, its sealed variable, and a builder for the sealed selection. Earlier
 exports and capability tags remain available.
 `tests/test_client_sdk_surface.py` pins everything the SDK exports: the set of
 names, each callable's parameters (name, kind, default), each constant's value,
@@ -1657,7 +1659,7 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 5).**
+**The surface (version 6).**
 
 | Area | Names |
 |---|---|
@@ -1667,6 +1669,7 @@ names the generation root, never `src`; the client appends `src` itself.
 | Produced output | `declared_template`, `validate_template`, `bind_declared_instance`, `declare_instance`, `admit_instance`, `validate_instance`, `instance_dir`, `checked_instance_maxima`, `owner_demand_terms`, `admit_funded_window`, `refill_window`, `require_prewrite`, `abort_prewrite`, `validate_descriptor`, `output_manifest_sha256`, `batch_namespace`, `output_fragment_root`, `publish_prepaid_batch`, `commit_batch`, `commit_origin_batch`, `retire_batch`, `reclaim_origin`, `recover_batches`, `due_mover_rows`, `materialization_state`, `ensure_batch_materialized`, `safe_release_instance`, `release_produced_instance`, `TEMPLATE_SCHEMA_V1`, `DESCRIPTOR_SCHEMA_V2` |
 | Residency maps | `validate_residency_map`, `read_residency_map`, `read_residency_fragments`, `compose_residency_map`, `write_residency_map`, `residency_map_key`, `ResidencyMapError`, `RESIDENCY_MAP_ENV`, `RESIDENCY_MAP_SCHEMA_V1`, `RESIDENCY_MAP_FRAGMENT_SCHEMA_V1`, `RESIDENCY_LANDING_SCHEMA_V1`, `LANDING_STATES` |
 | Ephemeral scratch naming (no lifetime capability) | `bind_ephemeral_scratch`, `ephemeral_scratch_path`, `EPHEMERAL_SCRATCH_SCHEMA_V1`, `LocalScratchError` |
+| Generation-bound scratch lifetime (`scratch-lifetime-v1`) | `build_scratch_lifetime_selection`, `SCRATCH_LIFETIME_TAG`, `SCRATCH_LIFETIME_SELECTION_SCHEMA_V1`, `SCRATCH_LIFETIME_RECORD_SCHEMA_V1`, `SCRATCH_LIFETIME_FIELD`, `SCRATCH_LIFETIME_DECLARATIONS_ENV` |
 | Receipts | `cas_receipt_self_check`, `RECEIPT_REFUSALS`, `CAS_RECEIPT_SCHEMA_V3`, `WORKER_ATTESTATION_SCHEMA_V2` |
 | Verified action results (`verified-action-result-v1`; native context `native-producer-context-v1`) | `read_verified_action_result`, `bind_standard_capture_command`, `ActionResultError`, `ACTION_RESULT_SCHEMA_V1`, `VERIFIED_ACTION_RESULT_TAG`, `NATIVE_PRODUCER_CONTEXT_SCHEMA_V1`, `NATIVE_PRODUCER_CONTEXT_TAG` |
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
@@ -1765,11 +1768,13 @@ that are not internal: `produced_output.batch_record` and `batch_records`
 `progress-v1`, `decomposition-v1` (`pbcampaign` can decompose a logical
 request, #517/#518), and `verified-action-result-v1` (the bounded
 verified-result read, #1446), plus `native-producer-context-v1` (strict selected
-producer provenance, #1481). A client asks for a capability by tag, never by
-probing files or function names. The surface test fails if a tag is advertised
-without the code behind it. The SDK's scratch additions are naming only:
-`CAPABILITIES` does **not** advertise `scratch-lifetime-v1` or any scratch
-cleanup capability. SDK version 2 is not evidence of a deployed finalizer.
+producer provenance, #1481) and `scratch-lifetime-v1` (the generation-bound
+scratch lifetime contract, Refs #1360). A client asks for a capability by tag,
+never by probing files or function names. The surface test fails if a tag is
+advertised without the code behind it. The SDK's scratch naming additions
+grant no deletion authority; the versioned pool input below supplies the
+opt-in lifetime contract. A naming-only client is not evidence of a deployed
+finalizer.
 
 ### Generated files in a pbrun checkout
 

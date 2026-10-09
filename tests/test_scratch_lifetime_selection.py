@@ -43,7 +43,7 @@ def test_legacy_naming_does_not_acquire_cleanup_lifetime(variables, legacy):
     assert local_scratch._scratch_lifetime_selections(variables) == []
 
 
-def test_selection_is_nondestructive_and_advertises_no_capability(variables, tmp_path):
+def test_selection_is_nondestructive_and_sdk_advertises_versioned_capability(variables, tmp_path):
     cache = tmp_path / "persistent"
     cache.mkdir()
     sentinel = cache / "kernel.cache"
@@ -53,8 +53,8 @@ def test_selection_is_nondestructive_and_advertises_no_capability(variables, tmp
     assert variables == before
     assert sentinel.read_bytes() == b"persistent compilation cache"
     assert not (tmp_path / "temporary").exists()
-    assert "scratch-lifetime-v1" not in client.CAPABILITIES
-    assert client.SDK_VERSION == 5
+    assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
+    assert client.SDK_VERSION == 6
 
 
 @pytest.mark.parametrize("entry", [

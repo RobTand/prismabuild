@@ -441,6 +441,30 @@ SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = "prismabuild.scratch_lifetime_record.v1"
 SCRATCH_LIFETIME_FIELD = "scratch_lifetime_record"
 
 
+def build_scratch_lifetime_selection(entries: object) -> dict[str, object]:
+    """Build one sealed versioned lifetime selection, validated, with no I/O.
+
+    The pool validates the same shape again at publication; the SDK builds the
+    exact object the sealed ``DECLARATIONS_ENV`` variable carries. A builder
+    output never grants cleanup, quota, or deletion authority.
+    """
+    if not isinstance(entries, list) or len(entries) > _MAX_DECLARATIONS:
+        raise LocalScratchError("scratch lifetime selection needs at most 64 entries")
+    checked = []
+    for entry in entries:
+        if (not isinstance(entry, Mapping) or set(entry) != {"root_env", "name", "lifetime"}
+                or not isinstance(entry["root_env"], str) or not _NAME.fullmatch(entry["root_env"])
+                or not isinstance(entry["name"], str) or not _COMPONENT.fullmatch(entry["name"])
+                or entry["lifetime"] not in ("ephemeral", "persistent")):
+            raise LocalScratchError("scratch lifetime entries need root_env, name and a known lifetime")
+        checked.append({"root_env": entry["root_env"], "name": entry["name"],
+                        "lifetime": entry["lifetime"]})
+    seen = {(entry["root_env"], entry["name"]) for entry in checked}
+    if len(seen) != len(checked):
+        raise LocalScratchError("duplicate scratch lifetime selection")
+    return {"schema": SCRATCH_LIFETIME_SELECTION_SCHEMA_V1, "entries": checked}
+
+
 def _scratch_lifetime_selections(variables: Mapping[str, str]) -> list[dict[str, object]]:
     """Validate versioned lifetime intent without granting filesystem authority.
 
