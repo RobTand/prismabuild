@@ -527,6 +527,7 @@ DRAIN_EXCLUSIVE_CPU = frozenset({
 DRAIN_EXCLUSIVE_GPU = frozenset({
     "exclusive_holder", "measurement_device_not_idle", "host_or_device_congested",
     "sharing_probe_not_authorized", "gpu_memory_budget",
+    "unified_gpu_memory_budget",
 })
 #: *GPU*: the refusals ``adaptive_gpu.Controller.decision`` gives an item that
 #: is not a measurement only while the pool's own GPU holders are on the
@@ -545,6 +546,7 @@ DRAIN_EXCLUSIVE_GPU = frozenset({
 DRAIN_GPU_HOLDERS = frozenset({
     "exclusive_holder", "sharing_probe_not_authorized",
     "holder_telemetry_unavailable", "max_actions",
+    "unified_gpu_memory_budget",
 })
 #: *SW-cap idle* (#1125): a ``host_or_device_congested`` refusal with
 #: ``limited`` set, on a GB10 whose only limiter is the idle SW power cap.
