@@ -8013,17 +8013,17 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     only when all hold under that lock: the producer attempt ended
     in failure (``dead`` by ``_producer_attempt_state``; ``live``,
     ``succeeded`` and ``unknown`` refuse), the mover is neither
-    ready nor claimed, the record is still ``transferring``, and
-    every prewrite path of the bound batch is proven absent
-    (``ENOENT``; present or unreadable refuses). The funding
-    rollback runs through the pool's locked nonexecution proof
-    (``_release_never_started_funding_locked``), which refuses a
-    committed batch, a claimed or terminal row, a receipt with
-    staged bytes and a live lease; the token release is the
-    ordinary ``release_tier_holder``. Both land under the same lock
-    hold, so a crash cannot leave one without the other. A live or
-    unreadable verdict is a refusal that changes nothing.
-    Returns at most two events.
+    ready nor claimed, the record is ``transferring`` or ``released``,
+    and every prewrite path of the bound batch is proven absent.
+    Present or unreadable paths retain the reservation.
+    The pool's nonexecution proof refuses committed batches, terminal
+    or claimed movers, staged bytes, and live leases.
+    Release tokens through ``release_tier_holder`` first.
+    Verify that no tokens remain before the ordinary funding rollback.
+    A fault can leave ``transferring`` with no tokens; the next pass
+    completes the rollback under the same lock and fresh checks.
+    An old ``released`` record with held tokens follows the same proof.
+    A live or unreadable verdict changes nothing.
     """
     events: list[dict[str, object]] = []
     stem = Path(str(path)).name
@@ -8079,7 +8079,8 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
         return events
     if file_state != "ok" or not isinstance(record, Mapping):
         return defer(f"funding file state: {file_state}")
-    if str(record.get("state")) != "transferring":
+    state = str(record.get("state"))
+    if state not in ("transferring", "released"):
         return events
     if (str(record.get("mover_action_key") or "") != mover_name
             or str(record.get("tier_id") or "") != scan_tier):
@@ -8095,25 +8096,38 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
             return events
         return defer(why)
     try:
-        outcome = queue._release_never_started_funding_locked(
-            mover_name, scan_tier,
-            generation=str(record.get("generation")))
+        outcome = queue._output_funding_nonexecution_locked(record)
     except (OSError, pool.PoolContractError, ValueError) as exc:
         return defer(repr(exc))
     if outcome is None:
         return defer("nonexecution proof undecided")
     if outcome is not True:
         return events
-    events.append({"event": "output-funding-reconcile-released",
-                   "tier_id": str(scan_tier), "mover": mover_name})
     try:
         freed = int(queue.release_tier_holder(scan_tier, mover_name))
-    except (OSError, pool.PoolContractError, ValueError):
-        freed = 0
+        # The ordinary release can swallow an I/O error or return after
+        # only some token moves. Its count is not proof of an empty holder.
+        if pool.held_names_visible(queue.tier_ledger(scan_tier), mover_name):
+            return defer("token release incomplete")
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return defer(repr(exc))
     if freed:
         events.append({"event": "output-funding-tokens-released",
                        "tier_id": str(scan_tier), "mover": mover_name,
                        "released_gib": freed})
+    if state == "transferring":
+        try:
+            outcome = queue._release_never_started_funding_locked(
+                mover_name, scan_tier,
+                generation=str(record.get("generation")))
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            return defer(repr(exc))
+        if outcome is None:
+            return defer("funding rollback undecided")
+        if outcome is not True:
+            return events
+        events.append({"event": "output-funding-reconcile-released",
+                       "tier_id": str(scan_tier), "mover": mover_name})
     return events
 
 

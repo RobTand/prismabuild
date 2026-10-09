@@ -13616,6 +13616,29 @@ the output funding record first. For a key it funds on this tier:
 - **Unknown** otherwise, and kept. An absent producer is unknown, not dead: no
   outcome record is not an ending (#798).
 
+**A never-started output intent has a separate rollback (#1555).**
+The tier cycle scans output funding records on every pass.
+It takes the mover's transition lock before each fresh safety check.
+The producer attempt must be dead, and the mover must be withdrawn, not ready or claimed.
+The bound prewrite paths must all be absent.
+Unreadable evidence retains the reservation.
+The pool's existing nonexecution proof also refuses committed batches, terminals, staged bytes, and live leases.
+
+The token files and the funding record are separate stores.
+The cycle releases tokens first through `release_tier_holder`.
+It checks the holder with `held_names_visible`, which reports read faults instead of an empty holder.
+Only then does `_release_never_started_funding_locked` mark a `transferring` record as `released`.
+A release error or a partial release leaves the marker unchanged.
+A fault after token release leaves an empty holder with a `transferring` marker.
+The next pass repeats the safety checks and completes the rollback.
+
+A previous `released` marker with held tokens needs the same proof before token release.
+The owner census retains that intent until its holder is empty.
+This preserves the prewrite record that supplies the absence proof through release faults.
+An absent or unreadable prewrite record still refuses repair.
+Complete ranges and partial produced outputs keep their existing charge rules.
+This repair adds no seal, identity barrier, or admission policy.
+
 The same question fixes the opposite exposure. A completed produced mover's
 receipt names its batch namespace, not a queue action, and its fragment is in
 the produced store, so the orphan pass used to take a live producer's
