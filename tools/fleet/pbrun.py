@@ -4297,6 +4297,21 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
         )
 
 
+def require_lifetime_scope(*, lifetime_s: float | None, transport: str) -> None:
+    """Refuse the lifetime contract on a transport that does not support it.
+
+    The pool worker enforces the contract and records per-phase evidence.
+    The SLURM lane does not support this versioned contract.
+    """
+
+    if lifetime_s is not None and transport != "pool":
+        raise ValueError(
+            "--lifetime-s requires pool transport: the lifetime fence is "
+            "the pull-queue worker's, and the SLURM lane cannot enforce it. "
+            "Submit this action to the pool, or bound it there with --timeout-s"
+        )
+
+
 def require_awaited_batch_scope(
         *, awaited: Mapping[str, object] | None,
         progress: Mapping[str, object] | None, transport: str) -> None:
@@ -5531,6 +5546,7 @@ def freeze_action_template(
     exclusive: bool,
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
+    lifetime_s: float | None = None,
     progress: Mapping[str, object] | None,
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
@@ -5850,6 +5866,13 @@ def freeze_action_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if lifetime_s is not None:
+        # Sealed, like the progress policy: a fenced action is a different
+        # action from its unfenced twin, so the store never answers one
+        # with the other's receipt.  Absent, the key is byte-identical to
+        # what it was before this flag existed.
+        params[pb.LIFETIME_PARAM] = {
+            "schema": pb.LIFETIME_SCHEMA_V1, "fence_s": float(lifetime_s)}
     if gang is not None:
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
@@ -7462,6 +7485,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "(7200 s by default, announced per box and reported "
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--lifetime-s", type=float, default=None,
+                    help="opt-in sealed lifetime contract (#1429): the deadline "
+                         "is publication plus this many seconds "
+                         f"({pb.LIFETIME_MIN_FENCE_S:g} s to {pb.LIFETIME_MAX_FENCE_S:g} s). "
+                         f"The worker stops the payload {pb.LIFETIME_RELEASE_RESERVE_S:g} s "
+                         "before that deadline, whatever the payload budget has "
+                         "credited, launches nothing from that instant, and records "
+                         "per-phase evidence. The payload budget (--timeout-s) is "
+                         "separate and unchanged. Termination, cleanup, settlement "
+                         "and release end inside the deadline only while the kernel, "
+                         "the broker, the disk and the shared mount answer promptly. "
+                         "A blocked system call is outside the bound; tokens return "
+                         "only on proved settlement, never on a timer. The pool runs "
+                         "such an action ahead of a waiting measurement only after a "
+                         "person has recorded their acceptance of that limit "
+                         "(python -m prismabuild.lifetime_acceptance)")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "
@@ -7593,6 +7632,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
+    if args.lifetime_s is not None and (
+        not math.isfinite(args.lifetime_s)
+        or not pb.LIFETIME_MIN_FENCE_S <= args.lifetime_s <= pb.LIFETIME_MAX_FENCE_S
+    ):
+        raise SystemExit(
+            "pbrun: --lifetime-s must lie within "
+            f"{pb.LIFETIME_MIN_FENCE_S:g}s and {pb.LIFETIME_MAX_FENCE_S:g}s")
     args.progress_policy = parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
     args.awaited_batch = parse_awaited_batch(args.awaited_batch)
@@ -7864,6 +7910,12 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             [*tags, *progress_required_tags(
                 progress_policy,
                 getattr(args, "awaited_batch", None))])
+    if args.lifetime_s is not None:
+        # A capability, not a place (#1429): only a box that enforces the
+        # sealed fence across every phase may claim the action.  A loop
+        # from before the contract offers no tag, so fenced work waits
+        # for a box that can keep the bound.
+        tags = pool.normalize_placement_tags([*tags, pb.LIFETIME_TAG])
     if gang is not None:
         # Capability, not place (#1517): only a gang-enabled box offers it,
         # so the live-offer check below refuses when none can claim a member.
@@ -7989,6 +8041,11 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             progress=progress_policy, transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
+    try:
+        require_lifetime_scope(
+            lifetime_s=args.lifetime_s, transport=args.transport)
+    except ValueError as exc:
+        args.refuse_argument(str(exc))
     if not demand.get("gpu"):
         if declared not in (None, ""):
             raise SystemExit(
@@ -8024,6 +8081,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         exclusive=args.exclusive,
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
+        lifetime_s=args.lifetime_s,
         progress=progress_policy,
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,

@@ -3,7 +3,11 @@
 The existing passes sidecar carries one host election per publication. A complete
 read is refreshed under measurement transition keys and host admission; directory
 absence alone never retires an election. Payload deadlines are opportunity
-metadata only. No current candidate has a proved admission-to-release bound.
+metadata only. Only a candidate that seals the lifetime contract has a
+prospective admission-to-release bound (:mod:`prismabuild.lifetime_fence`, #1429),
+and only after a person has accepted the contract's assumption
+(:mod:`prismabuild.lifetime_acceptance`): no component bounds how long
+settlement takes, so until then every candidate reads UNKNOWN.
 """
 from __future__ import annotations
 
@@ -807,8 +811,179 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
         yield census
 
 
+def candidate_release_verdict(
+    queue: "PoolQueue", item: Mapping[str, object],
+) -> tuple[float | None, dict[str, str | None]]:
+    """The candidate's prospective release bound and the phases behind it (#1429).
+
+    Returns ``(bound, support)``.  ``bound`` is the sealed lifetime contract's
+    release deadline, finite only when the opt-in contract is sealed, the
+    READY row's own publication projection agrees with it, the row requires
+    the capability that enforces it (so only a box that offers it can claim
+    the row), the stop instant is still ahead, and every phase is bounded for
+    this candidate's shape.  A phase that ends in time only on a prompt answer
+    from the kernel, the broker, the disk and the mount has no verified
+    maximum: it is bounded only while the queue holds a person's recorded
+    acceptance of that assumption, so without one the verdict is UNKNOWN for
+    every candidate.  ``support`` names each phase and, where one is UNKNOWN,
+    why.  The sealed payload timeout alone is opportunity metadata, never a
+    release bound.
+
+    A finished attempt's filed evidence audits that attempt from the archive;
+    it never becomes a new attempt's guarantee, and a successor is never
+    judged by its predecessor.
+    """
+
+    from . import lifetime_acceptance, lifetime_fence
+    from . import pool as pool_mod
+
+    def unknown(reason: str) -> tuple[None, dict[str, str | None]]:
+        return None, {phase: reason for phase in lifetime_fence.PHASES}
+
+    try:
+        key = str(item.get("action_key") or "")
+        cas_root = item.get("cas_root")
+        if not key or cas_root is None:
+            return unknown("the candidate names no sealed request")
+        action = pool_mod._sealed_action_request(
+            cas_root, key, max_bytes=MAX_RECORD_BYTES)
+        fence = None if action is None else core.action_lifetime(action)
+        if fence is None:
+            return unknown("the candidate seals no lifetime contract")
+        row = pool_mod._read_json(queue.item_path(pool_mod.READY, key))
+        if not isinstance(row, Mapping) or row.get("action_key") != key:
+            return unknown("the candidate is not a READY row")
+        if row.get("published_unix") != item.get("published_unix"):
+            return unknown("the READY row is another publication")
+        if (lifetime_fence.LIFETIME_TAG not in (row.get("tags") or [])
+                or not _projected_fence_matches(row, fence["fence_s"])
+                or row.get("lifetime_deadline_unix") != lifetime_fence.fence_deadline(
+                    published_unix=row.get("published_unix"),
+                    fence_s=fence["fence_s"])):
+            return unknown("the READY row does not carry the sealed clock")
+        variables = action["environment"]["variables"]
+        support = lifetime_fence.components_support(
+            gang=row.get("gang") is not None,
+            scratch=bool(variables.get(local_scratch.DECLARATIONS_ENV)),
+            assumption_accepted=lifetime_acceptance.assumption_accepted(queue.root))
+        bound = lifetime_fence.prospective_bound(
+            published_unix=row.get("published_unix"), fence_s=fence["fence_s"],
+            components=support, now_unix=pool_mod._now())
+        return bound, support
+    except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
+        return unknown("the candidate's sealed request is unreadable")
+
+
+def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
+    """The candidate's prospective release bound, or ``"UNKNOWN"``."""
+
+    bound, _support = candidate_release_verdict(queue, item)
+    return "UNKNOWN" if bound is None else float(bound)
+
+
+def _projected_fence_matches(row: Mapping[str, object], fence_s: object) -> bool:
+    """Whether the row's projected fence equals the sealed seconds."""
+
+    projected = row.get("lifetime_fence_s")
+    return (
+        type(projected) in (int, float)
+        and not isinstance(projected, bool)
+        and type(fence_s) in (int, float)
+        and not isinstance(fence_s, bool)
+        and float(projected) == float(fence_s))
+
+
+def attempt_release_audit(
+    queue: "PoolQueue", record: Mapping[str, object],
+) -> float | None:
+    """The audited bound of one finished attempt, or ``None`` when unproven.
+
+    Read only from the finished record of the exact generation and
+    attempt named: the attempt archive carries the execution phases plus
+    cleanup and scope settlement, and the terminal row beside the attempt
+    link carries the release record dated after the ledger return.  A live
+    claim, a READY row, or a successor's row never answers here.  ``None``
+    renders as ``UNKNOWN``.
+    """
+
+    from . import lifetime_fence
+    try:
+        archived = lifetime_fence.AttemptLog.from_record(
+            _archived_lifetime_evidence(queue, record))
+        if archived is None:
+            return None
+        terminal = lifetime_fence.AttemptLog.from_record(
+            record.get("lifetime_evidence"))
+        release = None if terminal is None else terminal.phases.get("resource_release")
+        # The terminal row adds only the release phase, and only for the very
+        # attempt the archive describes.
+        if (terminal is not None and release is not None
+                and terminal.clock == archived.clock
+                and terminal.claim == archived.claim):
+            archived.phases["resource_release"] = release
+        return lifetime_fence.release_bound(
+            published_unix=record.get("published_unix"),
+            fence_s=archived.clock.fence_s, evidence=archived.as_record())
+    except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
+        return None
+
+
+def _archived_lifetime_evidence(queue: "PoolQueue", record: Mapping[str, object]) -> Mapping[str, object] | None:
+    """The lifetime evidence the attempt archive filed, if any."""
+
+    try:
+        from . import lifetime_fence
+        from . import pool as pool_mod
+        if record.get("schema") != pool_mod.POOL_OUTCOME_SCHEMA_V1:
+            return None
+        outcomes = queue.attempt_outcomes(record)
+        if not outcomes:
+            return None
+        attempt = outcomes[-1]
+        if attempt.get("disposition") not in {pool_mod.DONE, pool_mod.FAILED}:
+            return None
+        if any(attempt.get(field) != record.get(field) for field in (
+                "action_key", "published_unix", "claimed_by", "claimed_unix", "claimed_host")):
+            return None
+        detail = attempt.get("detail")
+        if not isinstance(detail, Mapping):
+            return None
+        evidence = detail.get("lifetime_evidence")
+        if (not isinstance(evidence, Mapping)
+                or evidence.get("claim") != lifetime_fence.attempt_identity(record)):
+            return None
+        return evidence
+    except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
+        return None
+
+
+def timed_backfill_permitted(
+    queue: "PoolQueue", item: Mapping[str, object], blocked: Mapping[str, object],
+) -> tuple[bool, object]:
+    """Whether this candidate may backfill before the blocking election.
+
+    Returns ``(allowed, candidate_bound)``.  The candidate needs a
+    prospective release bound strictly before the election's opportunity;
+    equality and later bounds refuse.  Capacity and isolation gates stay in
+    force beside this answer.
+    """
+
+    from . import lifetime_fence
+    bound = candidate_release_bound(queue, item)
+    opportunity = blocked.get("opportunity_unix")
+    if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+        return False, bound
+    allowed = lifetime_fence.timed_backfill_allowed(
+        candidate_bound=bound, original_opportunity=opportunity)
+    return allowed, bound
+
+
 def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | None) -> dict | None:
-    """UNKNOWN-first: no current timed candidate proves a safe finish."""
+    """UNKNOWN-first: the elected host fences lower-priority work.
+
+    Only a candidate with a prospective release bound strictly before the
+    election's opportunity runs ahead of it (:func:`timed_backfill_permitted`).
+    """
     for key, chosen in sorted(census["elections"].items()):
         if (chosen["host"] == host and key != item["action_key"]
                 and int(item.get("priority", 0)) < chosen["priority"] and funded_by != key):

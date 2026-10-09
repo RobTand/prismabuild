@@ -1619,6 +1619,10 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         tags.append(local_scratch.IO_CAPABILITY)
         # Versioned lifetime actions cannot run on declaration-only workers.
         tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
+        # This loop enforces the opt-in lifetime contract (#1429): the stop
+        # alarm, the deadline-aware checkout and the per-phase evidence.  It
+        # never promises physical reclamation; the tokens return on proof.
+        tags.append(pb.LIFETIME_TAG)
         if args.gang_admission:
             # Default off (#1517): without this no box offers the tag, so no
             # gang member is ever claimed and no gang code runs in a pass.

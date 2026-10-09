@@ -65,6 +65,20 @@ and uncertain settlement retains resources (#1429). The receipt records
 needs a larger payload allowance needs an eligible loop with a larger ceiling,
 not just a larger submission ``--timeout-s`` (RobTand/prismabuild#293).
 
+A submission that needs a bound on the whole lifetime of the action, not on its
+payload, opts in with `pbrun --lifetime-s N` (180 s to 7 days, pool transport).
+The worker then stops the payload 120 s before `published + N`, whatever the
+payload budget has credited, and files per-phase evidence for admission,
+checkout, readiness, prelaunch, payload, credited waits, termination, cleanup,
+scope settlement and resource release. The contract is separate from
+`--timeout-s` and changes neither its semantics nor its disclaimer above. It
+holds while the kernel, the broker and the shared mount answer; a blocked call
+keeps the tokens until settlement is proved, and no timer returns them. Only
+a box that offers the `lifetime-fence-v1` capability claims such an action.
+Such an action runs ahead of a waiting measurement only after a person has
+recorded acceptance of that limit; an agent never records it. See
+`docs/design.md`, "Lifetime contract v1".
+
 An action that can say when it commits work need not be bounded by elapsed
 time at all. Declare the phases it walks and the quiet each one is allowed --
 `pbrun --progress-phase startup=1800 --progress-phase encode=900`, or a

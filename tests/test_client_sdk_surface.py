@@ -145,7 +145,7 @@ CONSTANTS = {
     "TIER_LOOP_LIVENESS_S": 120.0,
     "TIER_RECORD_SCHEMA": "prismabuild.storage_tier.v1",
     "DECOMPOSITION_TAG": "decomposition-v1",
-    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "decomposition-v1",
+    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "lifetime-fence-v1", "decomposition-v1",
                                "verified-action-result-v1", "native-producer-context-v1",
                                "scratch-lifetime-v1"}),
 }
@@ -293,6 +293,7 @@ def test_the_liveness_bound_is_the_one_the_pool_applies():
 def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.READER_LEASE_TAG in client.CAPABILITIES
     assert pb.PROGRESS_TAG in client.CAPABILITIES
+    assert pb.LIFETIME_TAG in client.CAPABILITIES
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES

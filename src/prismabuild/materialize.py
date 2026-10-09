@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
 import shutil
@@ -58,8 +59,34 @@ class MaterializationContractError(MaterializationError, ValueError):
     """A record handed to the materializer does not satisfy its schema."""
 
 
+class MaterializationDeadline(MaterializationError):
+    """A step ran out of the time its caller gave the whole checkout (#1429).
+
+    Raised only when the caller passed a deadline.  The step did not finish,
+    so nothing the tree holds is trusted; the caller refuses the launch.
+    """
+
+
 def _now() -> float:
     return time.time()
+
+
+#: What one Git call may take when no caller deadline is shorter.
+_GIT_TIMEOUT_S = 120.0
+#: How many directory entries a bounded removal deletes between clock reads.
+_REMOVAL_CLOCK_STRIDE = 256
+#: Opens a directory for descriptor-relative work: never through a link in
+#: the last component, and never as anything but a directory.
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _seconds_before(deadline_unix: float, where: str) -> float:
+    """The seconds left before ``deadline_unix``, or the deadline refusal."""
+
+    remaining = float(deadline_unix) - _now()
+    if remaining <= 0:
+        raise MaterializationDeadline(f"{where}: the deadline has passed")
+    return remaining
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
@@ -183,7 +210,12 @@ def _run_materializer_git(
     *,
     where: str,
     environment: Mapping[str, str] | None = None,
+    deadline_unix: float | None = None,
 ) -> str:
+    timeout = _GIT_TIMEOUT_S
+    if deadline_unix is not None:
+        # One call may not outlive the caller's deadline either (#1429).
+        timeout = min(timeout, _seconds_before(deadline_unix, where))
     try:
         # ``argv`` is ``git <args>``; ``git -C . <args>`` is the same command
         # run through the one shared runner (#1318).
@@ -192,24 +224,85 @@ def _run_materializer_git(
         completed = pb._git_run(
             ".",
             *argv[1:],
-            timeout=120,
+            timeout=timeout,
             env=None if environment is None else dict(environment),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        if timeout < _GIT_TIMEOUT_S:
+            raise MaterializationDeadline(
+                f"{where}: the deadline passed during the call") from exc
+        raise MaterializationError(f"{where} failed: {exc}") from exc
+    except OSError as exc:
         raise MaterializationError(f"{where} failed: {exc}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
         raise MaterializationError(f"{where} failed: {detail or completed.returncode}")
     return completed.stdout
 
+def _remove_tree_before(path: Path, deadline_unix: float) -> None:
+    """``shutil.rmtree`` that stops at ``deadline_unix`` and says so (#1429).
+
+    Descriptor-relative and never through a link, as ``shutil.rmtree`` is.  A
+    directory is opened with ``O_NOFOLLOW``, compared with the entry that was
+    listed, and every name below it is deleted relative to that descriptor.
+    A path name is never resolved twice, so a descendant that swaps a listed
+    directory for a link, or for another directory, steers no deletion out of
+    the tree: the open refuses and the removal raises.  ``path`` itself is
+    trusted, as it is for ``shutil.rmtree``.  The clock is read once per
+    directory and every ``_REMOVAL_CLOCK_STRIDE`` entries.  What remains at
+    the deadline stays where it is: the caller records the leak, as it does
+    for any other removal failure.
+    """
+
+    removed = 0
+
+    def empty(directory: int) -> None:
+        nonlocal removed
+        _seconds_before(deadline_unix, "checkout removal")
+        with os.scandir(directory) as listing:
+            entries = list(listing)
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                listed = entry.stat(follow_symlinks=False)
+                child = os.open(entry.name, _DIRECTORY_FLAGS, dir_fd=directory)
+                try:
+                    if not os.path.samestat(listed, os.fstat(child)):
+                        raise OSError(
+                            errno.ELOOP, "directory replaced during removal", entry.name)
+                    empty(child)
+                finally:
+                    os.close(child)
+                os.rmdir(entry.name, dir_fd=directory)
+            else:
+                os.unlink(entry.name, dir_fd=directory)
+            removed += 1
+            if removed % _REMOVAL_CLOCK_STRIDE == 0:
+                _seconds_before(deadline_unix, "checkout removal")
+
+    top = os.open(path, _DIRECTORY_FLAGS)
+    try:
+        empty(top)
+    finally:
+        os.close(top)
+    os.rmdir(path)
+
+
 def _cleanup_execution_checkout(
-    base: Path, temporary: Path, item: Mapping[str, object]
+    base: Path, temporary: Path, item: Mapping[str, object],
+    *, deadline_unix: float | None = None,
 ) -> None:
-    """Remove one private tree, recording a leak without changing task status."""
+    """Remove one private tree, recording a leak without changing task status.
+
+    With ``deadline_unix`` the removal stops there (#1429); the rest is a leak
+    like any other failed removal.
+    """
 
     error = ""
     try:
-        shutil.rmtree(temporary)
+        if deadline_unix is None:
+            shutil.rmtree(temporary)
+        else:
+            _remove_tree_before(temporary, deadline_unix)
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = str(exc)
     try:
@@ -249,7 +342,9 @@ def _cleanup_execution_checkout(
 
 
 @contextmanager
-def _require_contained_materialized_links(repository: Path) -> None:
+def _require_contained_materialized_links(
+    repository: Path, *, deadline_unix: float | None = None,
+) -> None:
     """Refuse a materialized checkout whose symlinks reach outside it.
 
     The seal-time gate reasons about the tree it is about to bundle, and this
@@ -268,6 +363,8 @@ def _require_contained_materialized_links(repository: Path) -> None:
     root = repository.resolve()
     pending = [root]
     while pending:
+        if deadline_unix is not None:
+            _seconds_before(deadline_unix, "materialized link check")
         directory = pending.pop()
         try:
             entries = list(os.scandir(directory))
@@ -306,6 +403,8 @@ def _execution_checkout(
     *,
     local_checkout_root: str | Path | None = None,
     on_temporary: Callable[[Path], None] | None = None,
+    deadline_unix: float | None = None,
+    cleanup_deadline_unix: float | None = None,
 ) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
 
@@ -321,6 +420,11 @@ def _execution_checkout(
             pre-created so ``mkdtemp`` and the cleanup below stay owned by this
             one function, and so the signature both transports share is
             unchanged for the caller that does not need it.
+        deadline_unix: With it, every Git call and the link check end before
+            this instant or raise :class:`MaterializationDeadline` (#1429).
+        cleanup_deadline_unix: With it, the final removal stops there and
+            records the rest as a leak.  Without either, the calls are the
+            ones every other transport has always made.
     """
 
     raw_snapshot = item.get("checkout_snapshot")
@@ -353,14 +457,17 @@ def _execution_checkout(
     if on_temporary is not None:
         on_temporary(temporary)
     repository = temporary / "checkout"
+    bounded = {} if deadline_unix is None else {"deadline_unix": deadline_unix}
     try:
         _run_materializer_git(
             ["git", "init", "-q", str(repository)],
             where="initialize materialized checkout",
+            **bounded,
         )
         heads = _run_materializer_git(
             ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
             where="read checkout snapshot bundle",
+            **bounded,
         )
         commit = str(snapshot["commit"])
         advertised = {
@@ -403,6 +510,7 @@ def _execution_checkout(
                     f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
                 ],
                 where="detach materialized HEAD from a fetched branch",
+                **bounded,
             )
         _run_materializer_git(
             [
@@ -410,6 +518,7 @@ def _execution_checkout(
                 str(bundle), *refspecs,
             ],
             where="fetch checkout snapshot bundle",
+            **bounded,
         )
         _run_materializer_git(
             [
@@ -420,8 +529,9 @@ def _execution_checkout(
             ],
             where="check out sealed commit",
             environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+            **bounded,
         )
-        _require_contained_materialized_links(repository)
+        _require_contained_materialized_links(repository, **bounded)
         subdirectory = repository / str(snapshot["subdirectory"])
         if not subdirectory.is_dir():
             raise MaterializationContractError(
@@ -433,6 +543,9 @@ def _execution_checkout(
         # never widen this cleanup to the root itself. A root-owned container
         # dropping can leave residue inside this bounded root, but cleanup
         # failure must not change an already-published action into a failure.
-        _cleanup_execution_checkout(base, temporary, item)
+        _cleanup_execution_checkout(
+            base, temporary, item,
+            **({} if cleanup_deadline_unix is None
+               else {"deadline_unix": cleanup_deadline_unix}))
 
 

@@ -552,8 +552,8 @@ action key, publication generation, host, priority, election epoch and original
 `opportunity_unix`. The original incumbent `claimed_unix + requested_timeout_s`
 (the latest declared one, or the election epoch when no incumbent declared a
 finite deadline) is ONLY selector-opportunity metadata, never proof that preparation, checkpoint
-credits, cleanup or physical resources finish by then. All prospective timed
-backfill candidates remain UNKNOWN, including five-second payloads (#1429).
+credits, cleanup or physical resources finish by then. An unfenced timed
+backfill candidate remains UNKNOWN, including five-second payloads (#1429).
 Submit notices and ``pbtest.shard_ceiling`` describe a **payload execution
 budget**, not a wall-clock stop or admission-to-resource-release guarantee.
 The lowest announced worker budget does not describe every eligible worker;
@@ -561,6 +561,125 @@ an offer with no ceiling leaves its effective budget unknown. The notice
 retains each cutting worker and its own ceiling. Progress notices preserve
 an explicitly requested
 payload budget without promising when preparation or settlement finishes.
+
+**Lifetime contract v1 (#1429).** A submitter opts in with `params.lifetime`
+(`prismabuild.action_lifetime.v1`, `pbrun --lifetime-s`, `fence_s` from 180
+seconds to 7 days). The declaration is part of the action key. Only a box that
+offers the `lifetime-fence-v1` capability can claim the action. The tag says
+the box enforces this contract. It does not say that the kernel or the shared
+mount will answer.
+
+*Clock.* Publication stamps `deadline_unix = published_unix + fence_s` before
+any resource moves. By the deadline every phase of the attempt has ended and
+the host tokens are back. The stop instant is `deadline_unix - 120 s`. The 120
+seconds are `RELEASE_RESERVE_S`, a constant of contract v1; another reserve is
+another version. The reserve is sized for answers that take seconds (the
+broker released a stopped scope 0.56 s after its stop in the 2026-10-09
+measurement), not for the sum of every worst-case timeout. Nothing launches
+from the stop instant, and the worker stops the payload there at the latest.
+Nothing credits, pauses or extends either instant. The separate payload budget
+(`execution_timeout_s`) keeps its credited waits and its disclaimers.
+
+*Phases.* Each phase has one bound and one enforcing mechanism. A phase is
+`enforced` only when the worker filed it under that mechanism and it ended
+before its bound.
+
+| Phase | Ends before | Enforcing mechanism | Ends in time because |
+|---|---|---|---|
+| admission | stop instant | `claim-gate`: the claim refuses at the stop instant and rolls back an unstarted claim with its reservation | the worker reads the clock |
+| checkout | stop instant | `deadline-bounded-checkout`: each Git call and the link check end before the stop instant; the tree removal is descriptor-relative, never follows a link, and ends before the deadline | the worker reads the clock |
+| readiness | stop instant | `launch-gate` | the worker reads the clock |
+| prelaunch | stop instant | `launch-gate`: the last check before the process exists. The scope, the status and progress files and the launch environment are ready before it, and the instant it passes is the instant prelaunch ended | the worker reads the clock |
+| payload | deadline | `stop-alarm`: a thread of its own stops the payload at the stop instant, whatever the supervisor's I/O is doing | a prompt answer |
+| credited waits | deadline | `absolute-stop-clock`: a credit moves the payload budget and never the stop instant | the worker reads the clock |
+| termination | deadline | `scope-stop`: the broker stops the exact scope, then the process-group ladder follows | a prompt answer |
+| cleanup | deadline | `fail-closed-cleanup`: an incomplete cleanup keeps the claim and its tokens | a prompt answer |
+| scope settlement | deadline | `exact-scope-proof`: the broker's token-gated export verdict proves the scope stopped and empty | a prompt answer |
+| resource release | deadline | `release-after-proof`: the host ledger no longer holds the key | a prompt answer |
+
+The stop alarm is a timer inside the existing supervisor, not a second
+lifecycle controller. It delivers one stop, once, under a lock. The supervisor
+still files the ending, and `finish` still returns the tokens on proof. A
+payload that has ended on its own is never stopped.
+
+A run without a scope has no scope to stop or settle. Its termination and
+scope-settlement phases carry no mechanism and read unenforced.
+
+*Settlement assumption.* The last column is the contract's limit. Five phases
+(payload, termination, cleanup, scope settlement and resource release) end
+before the deadline only while the kernel, the broker, the local disk and the
+shared mount answer promptly. No component bounds those answers, so no
+verified maximum exists for them. A task in uninterruptible sleep survives the
+broker's kill, and its scope stays populated. PrismaBuild keeps the tokens
+until settlement is proved and never returns them on a timer. One measured run
+(2026-10-09, #1429) shows both sides: the broker released a stopped scope 0.56 s
+after its stop, and the kernel then took about 54 s to clear the cgroup. This is a
+weaker promise than a verified release bound, so a change set does not grant
+it. A person decides whether to accept it. The decision is a record in the
+queue root, `lifetime-fence/acceptance.json`. It holds the exact statement
+(`lifetime_fence.ASSUMPTION`), the person, the explicit authority they cite and
+the time. `python -m prismabuild.lifetime_acceptance accept --by NAME
+--authority REF` writes it, `status` shows it, and `revoke` removes it. An
+agent's own judgment is not an authority. Without a valid record all five
+phases read UNKNOWN for every candidate, and no timed backfill runs. A record
+for another statement, such as another reserve, does not apply. A revoke
+takes effect at the next admission pass. It touches no running attempt and no
+held token.
+
+*Evidence and audit.* The worker files `prismabuild.action_lifetime_evidence.v1`
+for each attempt. It holds the clock, the attempt identity (key, publication,
+owner, claim stamp, scope nonce and scope id) and, per phase, `enforced`,
+`mechanism`, `evidence`, `bound_unix` and `ended_unix`. The immutable attempt
+archive keeps the execution and settlement phases beside the original result
+and logs. The terminal row adds the release phase after the ledger return.
+`attempt_release_audit` reads only the exact attempt. It answers the deadline
+only when every phase is enforced under its mechanism and ended before its
+bound. Anything else is UNKNOWN. A live claim, a READY row or a successor never
+answers for an attempt.
+
+*Admission.* `candidate_release_bound` is finite only when the sealed request
+carries the contract, the READY row carries the same clock and requires the
+capability (so only a box that offers it can claim the row), the stop instant
+is still ahead, every phase is bounded for the candidate's shape, and a person
+has accepted the settlement assumption. The bound is the deadline. A gang
+member leaves admission unfenced, because it waits on sibling claims. An
+action that declares scratch leaves cleanup unfenced, because scratch removal
+has no deadline. One unfenced phase makes the whole verdict UNKNOWN, and
+`candidate_release_verdict` names the phase. Timed backfill needs the bound
+strictly before the original opportunity. Equality and later bounds refuse. The
+capacity, isolation and measurement gates stay unchanged beside this answer.
+
+*What the accepted bound is not.* It is conditional. The bound holds when the
+kernel, the broker, the local disk and the shared mount answer promptly. A
+system call that never returns is outside it, and so is the death of the
+worker process. A task in uninterruptible sleep survives the broker's kill,
+and its scope stays populated. The deadline is a wall-clock instant that the
+publishing host stamps and the claiming host reads, so the bound also assumes
+those clocks agree. Such an attempt keeps its tokens until settlement is
+proved, its audit reads UNKNOWN, and a delay can still reach the measurement.
+That is the risk the person accepted. Once the original opportunity has
+passed, every later bound is later than it, so one overrun admits no more
+backfill. No timer returns tokens. The payload stop kills the payload and
+releases nothing, and it does not make kernel or NFS reclamation immediate.
+
+*Retry.* A payload the fence stops ends as a `timeout` attempt with
+`termination_reason: lifetime_fence`. The same deadline refuses a later claim,
+so a retry-safe action with attempts left stays `ready` and no box takes it.
+`pbrun` submits one attempt unless the caller asks for retries.
+
+*Rollout.* **Target:** the contract above. **Implemented source:** publication
+seals and projects the clock. Claim, the launch gates, the stop alarm, the
+bounded checkout, the evidence and the audit enforce it. `finish` completes the
+record from the broker's settlement proof. Custody is unchanged. SM-01
+(containment and a durable attempt terminal before release), INV-01 (one
+release helper for box and tier tokens), ID-02 (a nonce and a scope per
+attempt) and INV-08 (single adoption) keep their requirements, and this change
+waives none of them. **Deployed:** nothing. A source merge alone does not
+establish deployed support (ID-08). Positive timed backfill needs three
+things: a runtime generation whose loops offer the tag, a person's recorded
+acceptance of the settlement assumption, and live qualification on a real box.
+This change records no acceptance. Until one exists, every candidate reads
+UNKNOWN and the starvation guard of #1419 behaves as it did before.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire the sorted transition keys of the measurements **elected for this host**
