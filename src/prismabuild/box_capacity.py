@@ -22,10 +22,10 @@ pre-action memory samples and caps the first new reading at the ledger total.
 GPU evidence does not use that window: broker attribution and freshness are
 current safety facts, so GPU capacity changes immediately.
 
-The two memory domains remain separate. ``shared_system`` GPU residency is
-already reflected in host ``MemAvailable``. ``discrete`` VRAM is recorded for
-the GPU admission and budget controllers and is never added to or subtracted
-from the host ``mem_gb`` reservation.
+On ``shared_system`` devices, GPU allocations share host DRAM.
+Each pool reservation charges ``mem_gb`` once. Broker-attributed external
+GPU allocations also reduce the memory offer.
+Discrete VRAM remains independent of the host ``mem_gb`` reservation.
 
 """
 

@@ -6376,7 +6376,8 @@ cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
 Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
 option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
-defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
+bounded conversion. An omitted cap defaults to `mem_gb`. RAM-heavy, GPU-light
+jobs should declare their separate
 VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM.
 
@@ -6386,8 +6387,7 @@ that charge, never a second one. A declared cap above `mem_gb` refuses at
 submission for unified-memory placements, and admission refuses it per device
 with `unified_gpu_cap_exceeds_mem`; an absent cap defaults to `mem_gb`. The
 node offer also subtracts unified GPU bytes the broker attributes to no pool
-holder: the kernel memory reading does not reliably show driver-held
-allocations, and that foreign memory is what overfilled the box on 2026-10-08.
+holder. The kernel memory reading does not reliably show driver-held allocations.
 Attributed bytes never subtract twice: their host share sits inside the
 holder's `mem_gb` charge. The claim gate charges only fresh growth beyond the
 foreign GiB the offer already subtracted, so observation and admission never
@@ -6400,6 +6400,12 @@ still require fresh trusted telemetry. The refusal
 `unified_gpu_memory_budget` names each held cap, the cap total, the external
 bytes, the baseline the offer already subtracted, the candidate charge, and
 the offer.
+
+Memory refusals retain the existing background preemption and age rules.
+The release must cover the candidate and fresh external growth before preemption can select a holder.
+Withdrawal does not release memory tokens. The holder's finish path returns them.
+`rejoin` clears both observation histories and resets the external baseline.
+The first new offer respects the current memory reading and the ledger cap.
 
 The exact GPU budget follows scope creation, durable recovery, and release.
 This admission change does not alter scope containment or the GPU memory guard.

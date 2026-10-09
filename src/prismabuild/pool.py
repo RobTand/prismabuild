@@ -22083,6 +22083,23 @@ class PoolQueue:
         #: read it as an expired episode to bind every row.
         whole_box_held = False
 
+        def preempt_for_shortage(item, need, gang_record, gang) -> None:
+            """Use the existing handoff for one shortage per claim pass."""
+            nonlocal preempted
+            if preempted:
+                return
+            # Selection reacquires admission; withdrawal and retry publication
+            # hold only the handoff lock. Live tokens stay with their holder.
+            exclusion = None
+            if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                exclusion = _gang.elections(
+                    self, gang["group"], gang["size"]).get(gang["index"])
+            preempted = self._preempt_background_holder(
+                ledger, action_key=str(item["action_key"]), demand=need,
+                priority=int(item.get("priority", 0)), controller=controller,
+                **({"exclude_gang_election": exclusion}
+                   if exclusion is not None else {})) is not None
+
         def withhold(key: str, kinds: frozenset[str] | None) -> None:
             nonlocal withheld_for, withheld_kinds
             if withheld_for is not None and withheld_kinds is None:
@@ -23221,6 +23238,19 @@ class PoolQueue:
                                 self.record_denial(item, reason, evidence)
                                 continue
                             self.record_pass(key)
+                            if (isinstance(decision, Mapping)
+                                    and decision.get("reason") == "unified_gpu_memory_budget"):
+                                # Memory refusal must retain the token path's
+                                # restart and age rules. Include fresh external
+                                # growth so a release must close the whole gap.
+                                need = dict(reservation_demand)
+                                need["mem_gb"] = (int(need.get("mem_gb", 0))
+                                                  + int(decision["external_charged_gib"]))
+                                preempt_for_shortage(item, need, gang_record, gang)
+                                evidence["withhold_age_s"] = (
+                                    self.withhold_age(key)
+                                    if verdict is not None and verdict["eligible"] else None)
+                                evidence["withhold_ceiling_s"] = WITHHOLD_CEILING_S
                             # A refusal a drain of the pool's holders resolves
                             # keeps the refused row's room, whatever its
                             # verdict (#1240, ``keep_refused_room``).
@@ -23273,20 +23303,7 @@ class PoolQueue:
                                     cpu_decision=cpu_decision,
                                     gpu_sample=_gpu_sample_for(gpu_controller, demand))
                             denials = self.record_pass(key)
-                            if not preempted:
-                                # Selection reacquires admission, while the separate
-                                # handoff lock spans withdrawal/requeue as well. A
-                                # stalled handoff cannot stop ordinary fitting work.
-                                exclusion = None
-                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
-                                    exclusion = _gang.elections(
-                                        self, gang["group"], gang["size"]).get(gang["index"])
-                                preempted = self._preempt_background_holder(
-                                    ledger, action_key=key, demand=asked,
-                                    priority=int(item.get("priority", 0)),
-                                    controller=controller,
-                                    **({"exclude_gang_election": exclusion}
-                                       if exclusion is not None else {})) is not None
+                            preempt_for_shortage(item, asked, gang_record, gang)
                             withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
                             evidence = {

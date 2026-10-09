@@ -225,7 +225,9 @@ def test_rejoin_caps_memory_but_does_not_override_current_gpu_safety():
     assert offer["gpu"] == 0
     assert offer["mem_gb"] == 40
 
-def test_rejoin_forgets_populated_window_and_external_baseline():
+
+@pytest.mark.parametrize("available,expected", [(120, 40), (20, 12)])
+def test_rejoin_forgets_populated_window_and_external_baseline(available, expected):
     """Pre-action samples must not decide the first offer after rejoin."""
     observer = bc.CapacityObserver(samples=3)
     declared = {"cpu": 20, "gpu": 1, "mem_gb": 104}
@@ -247,8 +249,8 @@ def test_rejoin_forgets_populated_window_and_external_baseline():
     assert observer.last_offer_external_gib == 30
     observer.rejoin({"cpu": 20, "gpu": 1, "mem_gb": 40})
     assert observer.last_offer_external_gib == 0
-    offer = observer.offer(declared, {}, gpu_sample=None, mem_gb=120, load1=0)
-    assert offer["mem_gb"] == 40
+    offer = observer.offer(declared, {}, gpu_sample=None, mem_gb=available, load1=0)
+    assert offer["mem_gb"] == expected
     assert observer.last_offer_external_gib == 0
 
 

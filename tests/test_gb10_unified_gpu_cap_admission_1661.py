@@ -416,12 +416,10 @@ def test_discrete_scope_creation_allows_a_cap_above_host_ram(
     item = queue.claim(capacity={"cpu": 4, "gpu": 1, "mem_gb": 8},
                        tags=["x86"], has_gpu=True)
     assert item is not None and item["action_key"] == action["action_key"]
-    import hashlib
+    from prismabuild.produced_output import _broker_scope_id
     def fake_broker(scope, op, **extra):
         assert op == "create"
-        unit = ("prismabuild-job"
-                + hashlib.sha256((scope.action_key + scope.nonce).encode()).hexdigest()[:32]
-                + ".slice")
+        unit = _broker_scope_id(scope.action_key, scope.nonce)
         return {"ok": True, "scope_id": unit, "token": "b" * 64,
                 "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
                 "gpu_memory_max_bytes": scope.gpu_memory_max_bytes}
@@ -886,3 +884,68 @@ def test_held_charge_holds_during_the_memory_observation_window(rig, tmp_path):
         assert decision["reason"] == "unified_gpu_memory_budget"
         assert decision["committed_gib"] == 100.0
         assert decision["candidate_charge_gib"] == 6.0
+
+
+@pytest.mark.parametrize("gpu_candidate", [False, True], ids=["cpu", "gpu"])
+def test_memory_refusal_preserves_background_preemption(rig, tmp_path, gpu_candidate):
+    """A memory refusal stops restartable background work but keeps its charge."""
+    queue, now, sample, args = rig
+    # CPU work explicitly targets this synthetic host, so the ready-GPU
+    # placement rule cannot mask the priority and memory-release assertions.
+    host = pool.socket.gethostname()
+    args = dict(args, tags=["gb10", host])
+    holder, _, _ = _sealed(tmp_path, "preemptible-holder")
+    queue.publish(
+        action_key=holder, cas_root=tmp_path / "cas", checkout_root=tmp_path,
+        worker_script="/w.py", resources={"cpu": 2, "gpu": 1, "mem_gb": 100},
+        needs_gpu=True, tags=["gb10"], priority=-10, retry_safe=True, max_attempts=3)
+    first = queue.claim(**args)
+    assert first is not None and first["action_key"] == holder
+    candidate, _, _ = _sealed(tmp_path, "foreground")
+    demand = dict(SMALL) if gpu_candidate else {"cpu": 2, "mem_gb": 6}
+    queue.publish(
+        action_key=candidate, cas_root=tmp_path / "cas", checkout_root=tmp_path,
+        worker_script="/w.py", resources=demand, needs_gpu=gpu_candidate,
+        tags=["gb10"] if gpu_candidate else [host], priority=0)
+    _tick(rig)
+    assert queue.claim(**args) is None
+    decisions = [value for _, value in queue.withdrawal_decisions(holder)]
+    assert len(decisions) == 1
+    assert decisions[0]["preempted_by"] == candidate
+    assert queue.ledger().held()["mem_gb"] == 100
+    decision = _denial(queue, candidate)["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["held_gpu_cap_total_gib"] == 98
+    _tick(rig)
+    assert queue.claim(**args) is None
+    assert len(queue.withdrawal_decisions(holder)) == 1
+    assert queue.ledger().held()["mem_gb"] == 100
+    queue.finish(holder, status="withdrawn", detail={}, claim_snapshot=first)
+    _tick(rig)
+    assert queue.claim(**args)["action_key"] == candidate
+
+
+def test_external_growth_prevents_a_useless_background_stop(rig, tmp_path, monkeypatch):
+    """Do not stop a holder when external GPU memory still prevents admission."""
+    queue, now, sample, args = rig
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
+    holder, _, _ = _sealed(tmp_path, "external-preemption-holder")
+    queue.publish(
+        action_key=holder, cas_root=tmp_path / "cas", checkout_root=tmp_path,
+        worker_script="/w.py", resources={"cpu": 2, "gpu": 1, "mem_gb": 100},
+        needs_gpu=True, tags=["gb10"], priority=-10, retry_safe=True, max_attempts=3)
+    assert queue.claim(**args)["action_key"] == holder
+    candidate, _, _ = _sealed(tmp_path, "external-preemption-candidate")
+    queue.publish(
+        action_key=candidate, cas_root=tmp_path / "cas", checkout_root=tmp_path,
+        worker_script="/w.py", resources={"cpu": 2, "mem_gb": 6},
+        tags=["gb10"], priority=0)
+    _tick(rig)
+    sample["foreign_processes"] = [
+        {"gpu_uuid": "GPU-1", "used_bytes": 100 * GIB}]
+    assert queue.claim(**args) is None
+    assert queue.withdrawal_decisions(holder) == []
+    assert queue.ledger().held()["mem_gb"] == 100
+    decision = _denial(queue, candidate)["evidence"]["decision"]
+    assert decision["external_charged_gib"] == 100
+    assert decision["reason"] == "unified_gpu_memory_budget"
