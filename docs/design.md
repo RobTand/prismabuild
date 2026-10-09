@@ -16610,17 +16610,35 @@ record; retry shaping strips it.
 
 File fsync and atomic record publication use the existing process-crash storage
 contract, not new NFS/server power-loss qualification (DUR-01). CPU tempdir fault
-fixtures qualify only the source behavior. Deployment, real worker-crash/cross-
-host recovery, real PQ Stage A/B sizing and persistent-cache bounds remain owed;
-no live scratch, model bytes, serving gate or GPU workload is changed here.
+fixtures qualify only the source behavior. The deployment record below covers
+normal, failed, descendant-SIGKILL and launcher-SIGKILL cleanup on one live
+worker; worker-process loss, reboot/cross-host recovery, fault-injected retry,
+real PQ Stage A/B sizing and persistent-cache bounds remain owed. No model
+bytes, serving gate or GPU workload is changed here.
 
 Final source-only security review repaired exact tombstone and widowed-lease
 ownership recovery. The changed-source integrated campaign passed711 distinct
 tests across34 files with0 skips; all20 PB-planned shards and the four-file
 compile have authenticated SDK4/Core receipts and raw snapshot bindings.
 See `evidence/issue1360_scratch_final_source_acceptance_2026-10-03.json`.
-This completes the source review gate only; #1360 and the deployment/crash/PQ
-workload obligations above remain open.
+That record completes the source review gate only.
+
+Deployment evidence (2026-10-09): six admitted CPU-only lifetime actions ran
+on published generation `c8daa1be416c-1791512870-55b0e8c72f6b` (commit
+`c8daa1be416cd4d7fe8a8e55c49924ab33c4de39`, SDK5 pool code): normal, failed,
+SIGKILLed-descendant, symlink-guard, launcher-victim (returncode -9) and
+launcher-killer scenarios on sparky. Each row carried sealed 1-GiB
+TEMP/CACHE pairs (`spool_gb` 2) and the pool derived the
+`scratch-lifetime-v1` placement tag. Every terminal record shows a complete
+registration with both entries cleaned. Follow-up actions on the same host
+prove each ephemeral leaf absent, the declared roots intact, the persistent
+markers intact, and the symlink guard target intact without being followed.
+The victim's export verdict shows a stopped, empty, settled scope. The
+harness is `tools/fleet/qualify_scratch_lifetime.py`; it reads only its own
+claim and leaf. See
+`evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`. Worker loss
+with successor retry, reboot/cross-host recovery, injected cleanup/record
+faults with capacity retention, and PQ sizing/GPU acceptance remain open.
 
 **Still open.**
 

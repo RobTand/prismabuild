@@ -4270,8 +4270,15 @@ Cleanup failure, inode/ancestry replacement or an existing leaf whose identity
 was never committed retains the owning claim and charged capacity. Existing
 finish/reaper/late-finish recovery retries deterministic ownership, never
 adopts an ambiguous path. The owner UID may not mutate PB's private state or
-namespace control. Source CPU fixtures are not deployment qualification: check
-the actual worker offers before using this feature in PQ or another workload.
+namespace control. Check the actual worker offers before using this feature:
+the action needs a worker that offers both `spool_gb` and
+`scratch-lifetime-v1`. On 2026-10-09 six CPU-only lifetime scenarios ran on
+sparky under published generation `c8daa1be416c-1791512870-55b0e8c72f6b`
+(normal, failed, SIGKILLed descendant, symlink guard, launcher SIGKILL
+victim/killer); every terminal record shows a complete registration with
+both entries cleaned, and follow-up actions prove the leaves absent with
+roots, persistent markers and the guard target intact. See
+`docs/evidence/issue1360_scratch_lifetime_deployment_2026-10-09.json`.
 
 ### Write outputs that a later action reads
 

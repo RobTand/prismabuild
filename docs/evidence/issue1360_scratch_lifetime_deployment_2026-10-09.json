@@ -1,0 +1,359 @@
+{
+ "actions": [
+  {
+   "action_key": "bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f/21d1c10f28406ce4314c3a82b769e1a58e3dd4d075f2f1172621d4889796116a/00000001.json"
+    }
+   ],
+   "cas_claim": "36d09e440eae347b5d9575f9cddfb62509dc4b0652ceb4db8d0b605c6d9d66ae",
+   "cleanup_export": {
+    "empty": true,
+    "ok": true,
+    "released": true,
+    "settled": true,
+    "stop_reason": "executed",
+    "stopped": true
+   },
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "leaf": "/home/rob/tmp/ig1360-temp/prismabuild-ephemeral/14da6c3dd7c9945910d2dacc1b0c31d12f94110bafcd4d69a1ce5997810cecc8/bafc1442725d6c263fe7a03e2698f15201949a1ac954fbfb499d527e4879a72f/21d1c10f28406ce4314c3a82b769e1a58e3dd4d075f2f1172621d4889796116a/7e4deaeb5a224745b0cfe2350e43e76d/row-temp",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "normal",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 3604,
+    "sha256": "3897afc36a257302ce7bddfdf3847ed43167001d579840bb644bca943bd7f590"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "ac6e8e0b06a3a9d1d8a7ea452f4bc3732cd7af9339fdbaca287db43df6d3b09c",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/ac6e8e0b06a3a9d1d8a7ea452f4bc3732cd7af9339fdbaca287db43df6d3b09c/67dfbde73c1900e40b7fbef54cf7a0e8fa6bc5f0ba2a20c5437c963cde5818b4/00000001.json"
+    }
+   ],
+   "cas_claim": null,
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 1,
+   "scenario": "failed",
+   "stderr_log": {
+    "bytes": 831,
+    "sha256": "dff36998a80fb5341c06709cce5209643d07d5b8d7c62b6d5dc843de2797829a"
+   },
+   "stdout_log": {
+    "bytes": 645,
+    "sha256": "390bd1f01a24e1cb6288ced89fa455b4daa9d6468db03e60999ae8a626823ec6"
+   },
+   "terminal": "failed"
+  },
+  {
+   "action_key": "ff7f5ba50f8e06a86158c66017438a5e4c4f1af5ea05d0ba4bfef4cda5b3a4e5",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/ff7f5ba50f8e06a86158c66017438a5e4c4f1af5ea05d0ba4bfef4cda5b3a4e5/f717f8449338529d19d12a597c72224fc9629d4ccc6b9286787d4551e501a0df/00000001.json"
+    }
+   ],
+   "cas_claim": "64ac0935dfcd132248fa703f1a415f4091d360b064226889d8edc7a1f007704e",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "descendant_returncode": -9,
+   "finished_host": "sparky",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "sigkill-child",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4340,
+    "sha256": "184662ef1a46eb26fcb64e290266529b964e9563fd7a4efb62f0eb78452ee1d2"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "892e859c9e7dccee180df30f282610f616c726b035f7d2ad1b640e50fc5c699f",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/892e859c9e7dccee180df30f282610f616c726b035f7d2ad1b640e50fc5c699f/2d8be8da8a6499f31cfd7c57db309afcc749af2f36275f68f7dda49c1c6676d1/00000001.json"
+    }
+   ],
+   "cas_claim": "c388b8a6022f060c925f5a9285afba0803301411eb1b839e8979f642972b19ba",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "guard_target": "/home/rob/tmp/ig1360-cache/guard-target.txt",
+   "guard_target_survived": true,
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "failing-cleanup-guard",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4656,
+    "sha256": "d59317b78d5ff94a17a39f4f220c7575d58c020f974ac9acef2b18083b1d91df"
+   },
+   "terminal": "done"
+  },
+  {
+   "action_key": "1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5/0eb4478045f6fbd75d0cb73e96e55dc6b3f59b151ad379418929291ccb9af2f1/00000001.json"
+    }
+   ],
+   "cas_claim": null,
+   "cleanup_export": {
+    "empty": true,
+    "ok": true,
+    "released": true,
+    "settled": true,
+    "stop_reason": "execution client disconnected or sent unexpected data",
+    "stopped": true
+   },
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "killed_launcher_pids": [
+    3599938,
+    3599953
+   ],
+   "leaf": "/home/rob/tmp/ig1360-temp/prismabuild-ephemeral/14da6c3dd7c9945910d2dacc1b0c31d12f94110bafcd4d69a1ce5997810cecc8/1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5/0eb4478045f6fbd75d0cb73e96e55dc6b3f59b151ad379418929291ccb9af2f1/f0c649731a314c6aa993ca28cebc531e/row-temp",
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "max_attempts": 1,
+   "rendezvous": "/mnt/shared/pb-qualification/ig1360-launcher-2",
+   "retry_safe": true,
+   "returncode": -9,
+   "scenario": "launcher-victim",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   "terminal": "failed"
+  },
+  {
+   "action_key": "07ebc04a84b81fa6f4e714637fc1d98000e7205cfedc06e685a90b3349df30ff",
+   "attempt_history": [
+    {
+     "attempt": 1,
+     "outcome": "attempts/07ebc04a84b81fa6f4e714637fc1d98000e7205cfedc06e685a90b3349df30ff/d8cae81fb4b391dc4592eda7150eaa0f0d9a4c036f411d7fcaff686e3c31c1da/00000001.json"
+    }
+   ],
+   "cas_claim": "8f8e429c04aea0ab5fd4dac710a0e43805535ec567202b4f91a143ccd273de6f",
+   "demand": {
+    "cpu": 1,
+    "mem_gb": 2,
+    "spool_gb": 2
+   },
+   "finished_host": "sparky",
+   "killed_launcher_pids": [
+    3599938,
+    3599953
+   ],
+   "lifetime_record": {
+    "entries": [
+     {
+      "cleaned": true,
+      "lifetime": "ephemeral"
+     },
+     {
+      "cleaned": true,
+      "lifetime": "persistent"
+     }
+    ],
+    "registration_complete": true
+   },
+   "returncode": 0,
+   "scenario": "launcher-killer",
+   "stderr_log": {
+    "bytes": 43,
+    "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+   },
+   "stdout_log": {
+    "bytes": 4693,
+    "sha256": "6f17024866e4f75c37ef7398e4f86428bdb98d6f849aed69528997dbad4e4f84"
+   },
+   "terminal": "done",
+   "victim": "1f978957a3b4be25096728bb083e9e4aa3b3ce514f6344d3f781f67f71cbd6a5"
+  }
+ ],
+ "filesystem": {
+  "probe_action": "2ab6172c67a285375a2fd78ebc234eece6c62030d069674561a60c1d5f63189a",
+  "root": "/home/rob/tmp",
+  "statx_mask": "0x1f3f",
+  "type": "ext2/ext3"
+ },
+ "issue": "https://github.com/RobTand/prismabuild/issues/1360",
+ "negative_evidence": [
+  {
+   "action_key": "d9975060a50c91ad80a85df0195355b6def8495f40b47922697d4c679e1ad310",
+   "exception": "FileNotFoundError(2, 'No such file or directory')",
+   "meaning": "registration refuses a missing declared root before launch; the payload never runs",
+   "registration_complete": false,
+   "terminal": "failed"
+  },
+  {
+   "action_key": "f2446c651e9d11f7abf5e35b9c40a6595b0e26b00673857dcbde5cef3c09d465",
+   "meaning": "harness rendezvous-path defect, not production behavior; resubmitted as ig1360-launcher-2",
+   "terminal": "failed"
+  }
+ ],
+ "note": "Deployment evidence for the versioned lifetime contract. It does not claim worker-process loss, reboot, cross-host recovery, power-loss durability, PQ cache sizing, or GPU acceptance.",
+ "probe": {
+  "action_key": "a866e8ccd61df17f768d05db122a2a163e8ea04b7f79e3e667df679416eadfad",
+  "meaning": "first successful versioned registration and cleanup on the published runtime",
+  "terminal": "done"
+ },
+ "published_runtime": {
+  "commit": "c8daa1be416cd4d7fe8a8e55c49924ab33c4de39",
+  "generation": "c8daa1be416c-1791512870-55b0e8c72f6b",
+  "sdk_version": 5
+ },
+ "pull_request": 1675,
+ "roots": {
+  "action_key": "ab4d41b6362d7a3e3b979f87293d93109ec0a75d8ee134576a896e3cd5c91824",
+  "cache": "/home/rob/tmp/ig1360-cache",
+  "temp": "/home/rob/tmp/ig1360-temp"
+ },
+ "schema": "pb1360.scratch_lifetime_deployment.v1",
+ "source_parent": "5db23c868cf492896deaef57c571e7c0cd879123",
+ "still_open": [
+  "worker-process loss with reaped lease and successor retry on the same host",
+  "reboot and cross-host recovery",
+  "cleanup-error and record-commit fault injection with capacity retention",
+  "PQ #1091 cache sizing and GPU acceptance",
+  "power-loss durability"
+ ],
+ "suite": [
+  {
+   "action_key": "d7cccfdbfd9eb136cc5aa3c3b9079887b45322e7f4133e92b42296af37180d3e",
+   "collected": 5,
+   "files": [
+    "tests/test_qualify_scratch_lifetime.py"
+   ],
+   "passed": 5
+  }
+ ],
+ "verification": [
+  {
+   "action_key": "7ba12c3a0ebdbccb5c7e10409a61ffe2ec2cd2edfab01d1105cee57b44aa01ca",
+   "cache_marker_survived": true,
+   "leaf_absent": true,
+   "root_survived": true,
+   "scenario": "normal"
+  },
+  {
+   "action_key": "c681b849a19ff2d9c0b3065990fa4bc6fbb915c65e22f41b9f2579090763a113",
+   "cache_marker_survived": true,
+   "guard_target_survived": true,
+   "leaf_absent": true,
+   "scenarios": [
+    "failed",
+    "sigkill-child",
+    "failing-cleanup-guard"
+   ]
+  },
+  {
+   "action_key": "bd03e0519010dd0bc8736e43bf1bc79970a400f1593f1ee3d9f5bfabf9ca5ef4",
+   "leaf_absent": true,
+   "scenario": "launcher-victim"
+  }
+ ]
+}
