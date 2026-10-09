@@ -1,5 +1,8 @@
 """Verified whole-tree copies and their ordinary host-pinned movement actions."""
+import argparse
 from contextlib import contextmanager
+import contextlib
+import io
 import os
 from pathlib import Path
 import stat
@@ -13,6 +16,46 @@ from . import posix_lock
 from . import core, local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
 
 BLOCK_BYTES = 8 * 1024 * 1024
+
+OPERATIONS = ("copy", "evict", "adopt")
+
+
+def build_parser(description=None):
+    """The options of ``tools/fleet/local_resident.py``, in the one place that states them.
+
+    The tool parses with it, and so does everything that must know what a sealed
+    ``local_resident`` command will run (:func:`effective_operation`).
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--pool-root", required=True, help="PrismaBuild queue root (the pool directory) that holds the resident set records.")
+    parser.add_argument("--set-id", required=True, help="Resident set id (the sha256 of its manifest) to act on.")
+    parser.add_argument("--host", required=True, help="Host that owns the local copy; this action is pinned to it.")
+    parser.add_argument("--policy", required=True, help="local_tier_policy.json: each host's local root, maximum GiB, floor fraction and docker allowance.")
+    parser.add_argument("--operation", choices=OPERATIONS, required=True,
+                        help="copy: fetch and verify the set; evict: remove the local copy only after its lease ends and no pins remain; adopt: take over an existing verified directory.")
+    parser.add_argument("--source", help="Directory to adopt; required for --operation adopt, unused otherwise.")
+    return parser
+
+
+def effective_operation(argv):
+    """The operation the tool runs for ``argv``, or ``None`` when it runs none (#1579).
+
+    Exactly what argparse resolves: a repeated ``--operation`` (the last wins),
+    the ``--operation=value`` form and unambiguous prefix spellings.  Anything
+    argparse refuses, ``--help`` included, is ``None``.  Nothing is printed: a
+    sealed command is judged inside ``PoolQueue.publish``, whose caller may be
+    reading its standard output.  A caller that needs a stricter shape checks
+    that itself.
+    """
+    if not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
+        return None
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            args, _ = build_parser().parse_known_args(argv)
+    except SystemExit:
+        return None
+    operation = getattr(args, "operation", None)
+    return operation if operation in OPERATIONS else None
 
 
 def hash_file(path):

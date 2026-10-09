@@ -12,9 +12,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from . import core as pb
 from . import pool
@@ -100,6 +102,222 @@ MOVEMENT_TASK = {"task_class": "generation", "determinism": "stochastic",
                  "artifact_family": "generic", "artifact_kind": "generic"}
 MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
                             "host_class": None}
+
+#: Roles PrismaBuild itself assigns to a queue row (#1579): ``returns_capacity``
+#: for a node whose whole job is to give capacity back, ``serves_residency`` for
+#: a stage mover or RAM promotion a residency consumer waits on.  A gang's
+#: reservation never holds either, because the running action, and through it
+#: the gang, waits on them.  Nothing here is a flag a submitter can declare:
+#: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
+#: role from the node's executed identity (:func:`capacity_role`).  The mark is
+#: honoured only on a host that holds a mature protected copy of the tool the
+#: row names (:func:`authorized_role`), so a host judges what it enforces. A row
+#: that executes retained-store bytes never gets a role: those bytes are mutable
+#: to ordinary store owners, so exempting them would exempt arbitrary code.
+#: The row field that names the tool a role mark was derived for.
+ROLE_SCRIPT_FIELD = "movement_script"
+PRODUCED_EXPORT_SCRIPT = "produced_export.py"
+LOCAL_RESIDENT_SCRIPT = "local_resident.py"
+CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
+
+
+class CapacityRole(NamedTuple):
+    """A derived role and the protected-spelled tool path it was derived for."""
+    role: str
+    script: str
+
+
+#: The interpreter a role-bearing movement node runs under (#1579, review 3).
+#: The live fleet announces ``/usr/bin/python3`` on every tier record and uses
+#: it in the produced-spool sealer, and the path is a root-owned system file a
+#: submitter cannot rewrite.  Anything else runs the script under an
+#: interpreter the submitter chose, so it is an ordinary row.
+MOVEMENT_PYTHON = "/usr/bin/python3"
+MOVEMENT_PYTHON_ARGS = ("-I",)
+
+#: Isolated launch: ``-I`` runs Python without user-site startup code, so a
+#: submitter-controlled ``~/.local`` cannot run before the protected tool.
+
+#: Extra sealed environment names a movement node carries past
+#: :func:`movement_environment`'s own (``PATH``, the locale): the Docker
+#: ownership the sealer injects (:func:`seal_movement_action`).  Nothing else
+#: is a movement launch: an extra ``BASH_ENV``, ``PYTHONPATH`` or startup hook
+#: would run submitter code around the published tool.
+MOVEMENT_EXTRA_ENVIRONMENT = (pool.CONTAINER_OWNER_ENV, pool.CONTAINER_MARKER_ENV)
+
+
+def _movement_environment_ok(action: Mapping[str, object], command: list) -> bool:
+    """Whether the sealed environment is exactly a movement launch (#1579)."""
+    environment = action.get("environment")
+    if not isinstance(environment, Mapping):
+        return False
+    variables = environment.get("variables")
+    if not isinstance(variables, Mapping):
+        return False
+    if (set(variables) - {"PATH", *MOVEMENT_LOCALE, *MOVEMENT_EXTRA_ENVIRONMENT}
+            or not {"PATH", *MOVEMENT_LOCALE} <= set(variables)):
+        return False
+    if any(not isinstance(value, str) for value in variables.values()):
+        return False
+    if {name: variables[name] for name in ("PATH", *MOVEMENT_LOCALE)} != movement_environment(command):
+        return False
+    owner = variables.get(pool.CONTAINER_OWNER_ENV)
+    marker = variables.get(pool.CONTAINER_MARKER_ENV)
+    if (owner is None) != (marker is None):
+        return False
+    if owner is None:
+        return True
+    return (re.fullmatch(r"[0-9a-f]{64}", owner) is not None
+            and str(marker).endswith(f"/{owner}.used"))
+
+
+def effective_local_resident_operation(argv: object) -> str | None:
+    """Read the operation with the local resident tool's shared parser."""
+    from . import local_resident
+    return local_resident.effective_operation(argv)
+
+
+def _tool_arguments(command: list) -> list:
+    """The tool and its arguments: the interpreter and ``-I`` come first (#1659)."""
+    return command[1 + len(MOVEMENT_PYTHON_ARGS):]
+
+def _local_resident_evict(command: list) -> bool:
+    """Whether ``command`` runs the evict operation, spelled once, literally (#1579).
+
+    The effective operation comes from the tool's own parser
+    (``local_resident.effective_operation``, last ``--operation`` wins),
+    and the spelling must be exactly one literal ``--operation evict``: a
+    duplicate, an ``--operation=value`` form or a prefix abbreviation may run
+    ``evict`` today but is not the shape the sealer emits, so it is ordinary.
+    """
+    if command.count("--operation") != 1:
+        return False
+    if any(part != "--operation" and _spells_operation(part) for part in command):
+        return False
+    tool_args = _tool_arguments(command)
+    return effective_local_resident_operation(tool_args[1:]) == "evict"
+
+
+def _spells_operation(part: str) -> bool:
+    """Recognize literal, abbreviated, and equals forms of the operation option."""
+    head = part.split("=", 1)[0]
+    return len(head) >= 3 and "--operation".startswith(head)
+
+
+def pending_movement(action: Mapping[str, object] | None) -> bool:
+    """Recognize movement intent, including the previous non-isolated launch.
+
+    This predicate grants no role. An unqualified movement row keeps main's
+    fallback until it ends, because a gang can depend on that row.
+    """
+    if not isinstance(action, Mapping):
+        return False
+    task, params = action.get("task"), action.get("params")
+    if not isinstance(task, Mapping) or not isinstance(params, Mapping):
+        return False
+    command = params.get("command")
+    if (not isinstance(command, list) or len(command) < 2
+            or not all(isinstance(part, str) for part in command)
+            or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())):
+        return False
+    script_index = 2 if command[1] == "-I" else 1
+    if len(command) <= script_index:
+        return False
+    script = Path(command[script_index])
+    return script.is_absolute() and any(script.name in scripts for scripts in ROLE_SCRIPTS.values())
+
+
+def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
+                  residency: Mapping[str, object] | None) -> CapacityRole | None:
+    """The role PrismaBuild's own movement nodes have, from their executed identity.
+
+    ``None`` for everything else, which a reservation then holds by its demand:
+    unknown is consuming.  The role is read from what the node EXECUTES, never
+    from a sidecar field a submitter sets, and from the sealed definition
+    alone: it reads nothing from this host's filesystem, so a submitter's box
+    and the box that enforces the role need not agree on anything but the
+    definition.
+
+    * the interpreter runs isolated (``-I`` after :data:`MOVEMENT_PYTHON`), so
+      no user-site startup code runs before the protected tool (#1659);
+    * the interpreter is :data:`MOVEMENT_PYTHON`, the root-owned system python
+      the fleet seals; a submitter-owned python-named executable is ordinary;
+    * the script is spelled as a tool of a protected runtime copy
+      (``runtime_publication.spelled_member``), never a retained-store path or
+      an alias.  Whether this host holds that copy is the claiming host's
+      question (:func:`authorized_role`);
+
+    ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
+    ``local_resident.py`` whose effective operation (the tool's own
+    ``--operation`` parsing, last wins) is a single literal ``--operation
+    evict``; demanding at most one CPU and one GiB, no GPU, and no kind but a
+    tier's (``kind@tier``).  ``serves_residency``: ``stage_move.py`` or
+    ``ram_promote.py`` carrying a residency range, no GPU. A caller can choose
+    arguments for a genuine published tool, within that tool's demand limits.
+    ``recompute`` is not a condition.
+    """
+    from . import runtime_publication
+    params = action.get("params")
+    task = action.get("task")
+    if not isinstance(params, Mapping) or not isinstance(task, Mapping):
+        return None
+    command = params.get("command")
+    if (not isinstance(command, list) or len(command) < 3
+            or not all(isinstance(part, str) for part in command)
+            or not isinstance(demand, Mapping) or demand.get("gpu")):
+        return None
+    if (command[0] != MOVEMENT_PYTHON
+            or command[1:1 + len(MOVEMENT_PYTHON_ARGS)] != list(MOVEMENT_PYTHON_ARGS)
+            or not runtime_publication.spelled_member(command[1 + len(MOVEMENT_PYTHON_ARGS)])):
+        return None
+    script_index = 1 + len(MOVEMENT_PYTHON_ARGS)
+    result_path = task.get("result_path")
+    if (not isinstance(result_path, str)
+            or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                                    captured_command(command, result_path)]
+            or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
+            or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
+            or not _movement_environment_ok(action, command)):
+        return None
+    script = Path(command[script_index]).name
+    role = next((name for name, scripts in ROLE_SCRIPTS.items() if script in scripts), None)
+    if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
+        if isinstance(residency, Mapping) and "range_start_bytes" in residency:
+            return CapacityRole("serves_residency", command[script_index])
+        return None
+    if role is None or (script == LOCAL_RESIDENT_SCRIPT and not _local_resident_evict(command)):
+        return None
+    for kind, count in demand.items():
+        if type(count) is not int or count < 0:
+            return None
+        if kind == "cpu" and count > 1 or kind == "mem_gb" and count > 1:
+            return None
+        if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
+            return None
+    return CapacityRole("returns_capacity", command[script_index])
+
+
+def authorized_role(item: Mapping[str, object]) -> bool:
+    """Whether a READY row's role mark stands on THIS host (#1579).
+
+    The mark was derived from the sealed definition when the row was
+    published, on whatever box published it.  It exempts the row from a gang's
+    reservation only here, on the box that enforces the reservation, and only
+    if the tool the row names is a member of a protected copy this box holds:
+    root custody through every path component, a receipt-bound publication
+    record and the member's digest.  A mark with no such tool (a hand-written
+    row, a copy this box lacks, an altered file, a path that is not spelled
+    exactly) exempts nothing.  A row with no mark costs nothing to ask about.
+    """
+    from . import runtime_publication
+    marks = [role for role in CAPACITY_ROLE_FIELDS if item.get(role) is True]
+    script = item.get(ROLE_SCRIPT_FIELD)
+    if len(marks) != 1 or not runtime_publication.spelled_member(script):
+        return False
+    path = Path(str(script))
+    return (path.name in ROLE_SCRIPTS[marks[0]]
+            and runtime_publication.published_member(path) == path)
+
 
 #: The retry policy a movement node gets when its caller names none (#950).
 #: Its own, never its consumer's: a mover copies into a temporary, verifies
@@ -433,6 +651,14 @@ STAGE_RELEASE_SCRIPT = "stage_release.py"
 MOVEMENT_SCRIPTS = (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT,
                     STAGE_RELEASE_SCRIPT)
 
+#: The one statement of which tool can have which role (#1579):
+#: :func:`capacity_role` derives a role from it and :func:`authorized_role`
+#: checks a mark against it.
+ROLE_SCRIPTS = {
+    "returns_capacity": (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT, LOCAL_RESIDENT_SCRIPT),
+    "serves_residency": (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT),
+}
+
 
 def movement_tools(tier: Mapping[str, object], *,
                    mover: str = STAGE_MOVER_SCRIPT) -> tuple[str, str, str]:
@@ -583,7 +809,11 @@ def seal_movement_action(
         for name in _MOVEMENT_PARAM_KEYS
         if name in template["params"]                     # type: ignore[operator]
     }
-    params["command"] = list(command)
+    isolated = list(command)
+    if (len(isolated) >= 1 and isolated[0] == MOVEMENT_PYTHON
+            and isolated[1:1 + len(MOVEMENT_PYTHON_ARGS)] != list(MOVEMENT_PYTHON_ARGS)):
+        isolated[1:1] = list(MOVEMENT_PYTHON_ARGS)
+    params["command"] = isolated
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
     # A mover's retry policy is its own, not the consumer's (#603, #950).  The

@@ -6,13 +6,30 @@ in the PR using `Refs #NUMBER` or `Fixes #NUMBER`, validate through PrismaBuild,
 merge the PR. Do not push commits directly to `main`, including fixes to policy
 or automation. Existing dirty work must be retained until it follows this path.
 
-The `Issue link / issue-link` workflow accepts a pull request that links an
-issue in this repository either way: a `Refs #NUMBER` reference in the pull
-request body (`Fixes`, `Closes` and `Resolves` also count, and close the issue
-on merge), or the issue linked under **Development** in the pull request
-sidebar. Use `Refs #NUMBER` when the issue must stay open after the merge. The
-workflow verifies that the reference names an actual issue in this repository
-rather than another pull request, and it does not execute PR code.
+Name the branch for the issue: `prismabuild-<issue>`, for example `prismabuild-123`.
+Look for that branch before you create one.
+Continue an existing branch, or ask its owner.
+For a second branch, use `prismabuild-<issue>-<word>`, for example `prismabuild-123-gpu`.
+The suffix must start with a lowercase letter or digit.
+It can contain only lowercase letters, digits, and hyphens.
+
+The `Issue link / issue-link` workflow enforces the branch naming rule (rule 12).
+The pull request body must reference the actual issue whose number appears in the branch name.
+Use `Refs #NUMBER` when the issue must stay open after the merge.
+`Fixes`, `Closes`, and `Resolves` also count, and close the issue on merge.
+The workflow rejects references to other pull requests.
+It reads only metadata and does not execute pull request code.
+
+The following pull requests are exempt from branch validation:
+
+- The head branch starts with `ig/`.
+- The head branch starts with `release`.
+- GitHub records a creation time before `2026-10-09T17:00:00Z`.
+
+The cutoff time itself is not exempt.
+Exempt pull requests must still link an actual issue in this repository.
+They can use a body reference or an issue link under **Development** in the sidebar.
+A sidebar link alone does not satisfy the branch rule for other pull requests.
 
 Rob also requires one visible canonical priority on newly filed, reopened or materially
 triaged owned issues (2026-10-03): exactly one leading `[P0]`, `[P1]`, `[P2+]`, `[P2]` or
