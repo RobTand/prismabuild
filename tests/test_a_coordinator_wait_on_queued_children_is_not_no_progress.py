@@ -507,3 +507,133 @@ def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
                 "portability": "portable", "platform_key": None,
                 "host_class": None},
         })
+
+
+def test_a_cleanup_tombstone_is_neither_credited_nor_released(
+        tmp_path: Path) -> None:
+    """A finish mark holds owner custody; the credit leaves it alone."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    claimed = queue.claim()
+    assert claimed is not None
+    tombstone, mine = queue._entomb_claim(
+        children[0]["action_key"], expect=claimed)
+    assert mine and tombstone is not None
+    try:
+        awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+                   "parent_key": plan["parent_key"],
+                   "plan_key": plan["plan_key"]}
+        verdict = queue.queued_child_wait_verdict(
+            "c" * 64, cas_root=str(cas.root), awaited=awaited,
+            admitted={children[0]["action_key"]: dict(claimed)})
+        (entry,) = verdict["children"]
+        assert entry["state"] == "held", verdict
+        assert verdict["exempt"] is False
+        assert queue.item_path(
+            pool.CLAIMED, children[0]["action_key"]).exists() is False
+    finally:
+        tombstone.unlink(missing_ok=True)
+
+
+def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
+    """Three L40 encodes in one child are one unit, not three."""
+
+    cas = pb.PrismaBuildCAS(tmp_path / "cas3")
+    checkout = tmp_path / "child-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    request = dc.validate_logical_request({
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": [sys.executable, "-c", PRODUCER,
+                     dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": ".", "demand": {"cpu": 1, "mem_gb": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {}},
+        "roster": {
+            "schema": dc.LOGICAL_TASK_ROSTER_SCHEMA_V1,
+            "tasks": [
+                {"id": f"u{index}", "payload": {"v": index},
+                 "residency_key": "r", "estimated_seconds": 8.2,
+                 "estimate_evidence": EVIDENCE, "output_id": f"w{index}"}
+                for index in range(3)]},
+        "batch_policy": {
+            "schema": dc.ROSTER_BATCH_POLICY_SCHEMA_V1,
+            "residencies": [{"key": "r", "setup_seconds": 20.0,
+                             "setup_evidence": EVIDENCE}],
+            "max_setup_fraction": 0.5,
+            "max_estimated_wall_seconds": 300.0},
+    })
+    frozen = _frozen()
+    frozen["argv"] = [sys.executable, "-c", PRODUCER,
+                      dc.TASK_BATCH_PLACEHOLDER]
+    plan = dc.build_plan(request, frozen)
+    assert len(plan["partitions"]) == 1, plan["partitions"]
+    assert len(plan["partitions"][0]) == 3, plan["partitions"]
+    prepared = dc.PreparedBatches(request, plan)
+    roster_input, _ = cas.ingest_bytes(
+        dc.document_bytes(request["roster"]),
+        input_id=dc.TASK_ROSTER_INPUT_ID)
+    envelope = prepared.envelope(0)
+    batch_input, _ = cas.ingest_bytes(
+        dc.document_bytes(envelope), input_id=dc.TASK_BATCH_INPUT_ID)
+    command = dc.resolve_task_batch(
+        [sys.executable, "-c", PRODUCER, dc.TASK_BATCH_PLACEHOLDER],
+        batch_path=str(cas.blob_path(str(batch_input["sha256"]))))
+    child = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            "definition_id": "t/a", "definition_version": "v1",
+            "task_class": "generation", "determinism": "deterministic",
+            "artifact_family": "g", "artifact_kind": "g",
+            "argv": command, "working_directory": ".",
+            "result_path": dc.child_result_manifest_path(0)},
+        "inputs": [roster_input, batch_input],
+        "code_closure": pb.build_code_closure(checkout, ["t.py"]),
+        "params": {"logical_batch": prepared.membership(0)},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable",
+                            "platform_key": None, "host_class": None},
+    })
+    cas.publish_action_request(child)
+    queue = _queue(tmp_path, cas)
+    worker = (Path(__file__).resolve().parents[1]
+              / "tools" / "prismabuild_worker.py")
+    run = tmp_path / "run-multi"
+    run.mkdir()
+    (run / "t.py").write_text("x")
+    queue.publish(action_key=child["action_key"], cas_root=cas.root,
+                  checkout_root=run, worker_script=worker)
+    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+                            heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed", outcome
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"]],
+        child_requests={child["action_key"]: child}, phase="run")
+    assert reporter.establish_baseline() == {child["action_key"]}
+    assert reporter.units == 0
+    manifest = reporter.verified[child["action_key"]]
+    assert len(manifest["results"]) == 3
+
+
+def test_a_pending_only_child_earns_no_credit(tmp_path: Path) -> None:
+    """Intent without a queue row is not admission and earns nothing."""
+
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    awaited = {"schema": pb.AWAITED_BATCH_SCHEMA_V1,
+               "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}
+    item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
+    # Prepared but never published: the admitted set is empty.
+    assert queue._awaited_child_submissions(item, awaited=awaited) == {}
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited, admitted={})
+    assert verdict["exempt"] is False
+    assert verdict["children"] == []

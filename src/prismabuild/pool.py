@@ -10876,6 +10876,7 @@ class PoolQueue:
             self, action_key: str, *, cas_root: object,
             awaited: Mapping[str, object],
             admitted: Mapping[str, Mapping[str, object]] | None = None,
+            prior: Mapping[str, object] | None = None,
             now: float | None = None,
     ) -> dict[str, object]:
         """Whether a quiet coordinator waits on a declared queued child (#1666).
@@ -10895,20 +10896,29 @@ class PoolQueue:
         tombstones and late-finish leaves keep their owner-defined custody
         and are neither credited nor released.
 
-        Exempt when at least one awaited child is ready or claimed. No
-        credit for a missing, unreadable or terminal child, or for a row
-        of another batch. A child keeps its own watchdog and ceiling; the
-        credit moves only the coordinator's deadline.
+        The two-sample rule matches the staged-wait credit: the rung credits
+        only the quiet both ends agree on. A child ready or claimed at this
+        look is exempt, and this verdict becomes the next look's prior; a
+        child live now but absent there is a fresh baseline whose entry edge
+        earns no double credit through _credit's shared mark. No credit for
+        a missing, unreadable or terminal child, or for a row of another
+        batch. A child keeps its own watchdog and ceiling; the credit moves
+        only the coordinator's deadline.
         """
-
-        from . import decomposition as decomposition_mod
 
         moment = _now() if now is None else float(now)
         parent_key = str(awaited.get("parent_key") or "")
         plan_key = str(awaited.get("plan_key") or "")
         members = (dict(admitted) if isinstance(admitted, Mapping) else {})
+        prior_live = {
+            str(entry.get("key"))
+            for entry in ((prior or {}).get("children") or ())  # type: ignore[union-attr]
+            if isinstance(entry, Mapping)
+            and entry.get("evidence") == "queued"
+            and entry.get("state") in (READY, CLAIMED)}
         children: list[dict[str, object]] = []
         live = False
+        since: float | None = None
         for child_key, submission in sorted(members.items()):
             entry: dict[str, object] = {"key": child_key}
             link, detail = self._queued_child_link(
@@ -10926,8 +10936,19 @@ class PoolQueue:
             if evidence_detail:
                 entry["detail"] = evidence_detail
             if state in (READY, CLAIMED):
-                entry["evidence"] = "queued"
-                live = True
+                # Live at this look: exempt, and this verdict becomes the
+                # next look's prior. A child live now but absent there is a
+                # fresh baseline for that interval; the shared _credit mark
+                # still grants no double credit.
+                entry["evidence"] = (
+                    "queued" if prior is None or child_key in prior_live
+                    else "baseline")
+                if entry["evidence"] == "queued":
+                    live = True
+                    stamp = self._queued_child_queue_stamp(child_key, state)
+                    if stamp is not None and (
+                            since is None or stamp < since):
+                        since = stamp
             elif state == "durable":
                 entry["evidence"] = "durable"
             else:
@@ -10937,9 +10958,14 @@ class PoolQueue:
             "exempt": live, "children": children,
             "parent_key": parent_key, "plan_key": plan_key,
             "checked_unix": moment}
-        if not live:
+        if since is not None:
+            # The wait's start, the way a staged-wait record's since_unix
+            # dates its wait: the earliest a credited child queued. The
+            # rung credits from the later of this, the last real advance
+            # and the last exemption, through the shared _credit mark.
+            verdict["since_unix"] = since
+        if not verdict["exempt"]:
             verdict["reason"] = "no awaited child is ready or claimed"
-        _ = decomposition_mod.LOGICAL_BATCH_PARAM
         return verdict
 
     def _queued_child_link(
@@ -11011,6 +11037,21 @@ class PoolQueue:
             return "unpublished", ""
         except (OSError, ValueError) as exc:
             return "unknown", repr(exc)
+
+    def _queued_child_queue_stamp(self, child_key: str, state: str) -> float | None:
+        """When a queued child entered its row, or ``None`` if unreadable."""
+
+        try:
+            row = _read_json(self.item_path(state, child_key))
+        except (OSError, ValueError, PoolContractError):
+            return None
+        if not isinstance(row, Mapping):
+            return None
+        stamp = row.get("published_unix" if state == READY else "claimed_unix")
+        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+            return None
+        value = float(stamp)
+        return value if math.isfinite(value) else None
 
     def _awaited_child_submissions(
             self, item: Mapping[str, object], *,
@@ -28542,14 +28583,18 @@ class PoolQueue:
                                         awaited=awaited,
                                         admitted=self._awaited_child_submissions(
                                             item, awaited=awaited),
+                                        prior=watch.queued_child_wait,
                                         now=_now()))
                             except (OSError, ValueError, PoolContractError) as exc:
                                 queued = {"exempt": False, "children": [],
                                           "reason": f"unreadable: {exc!r}"}
                             if queued is not None:
+                                now_unix = _now()
+                                since = float(queued.get("since_unix") or now_unix)
                                 watch.exempt_queued_child_wait(
                                     queued, now=queued_checkpoint,
-                                    since_monotonic=watch.last_real_advance_monotonic)
+                                    since_monotonic=queued_checkpoint
+                                    - max(0.0, now_unix - since))
                             spent = time.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
