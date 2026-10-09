@@ -93,6 +93,11 @@ FLEET_SCRIPTS = (
     # orphan sweep, so a generation without it leaves a withdrawn consumer's
     # movers holding the stage with nothing able to take it back.
     "stage_release.py",
+    # ...and stage_reclaim.py, the operator command that moves digest-proven
+    # source-mark-only stage copies into quarantine and restores them (#1636).
+    # The stage lives on dl380g10, which has no checkout, so a generation
+    # without it leaves that command with no place to run.
+    "stage_reclaim.py",
     # ...and deferred_release.py, which the tier loop imports to release
     # consumers filed with ``pbrun --after`` once their producers commit
     # (#913).  A generation without it is a tier loop that cannot start.

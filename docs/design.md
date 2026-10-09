@@ -15015,6 +15015,92 @@ failure; every refusal lands before the first unlink.
 holds each rule as a focused case, with the staged copies and originals
 asserted intact after every refusal.
 
+### Reclaim of source-mark-only copies with digest-proven originals (#1636)
+
+Routine `reconcile` still leaves `source_mark_only` copies. The separate
+operator command, `tools/fleet/stage_reclaim.py`, does not change that contract.
+Automatic pressure reclaim remains outside this scope. Live apply still needs
+CEO approval and sufficient quarantine capacity.
+
+The default dry run lists every candidate with an original path, extent,
+SHA-256 and proof receipt, or a refusal reason. It changes no stage bytes,
+xattrs or file times. Explicit receipt and memo outputs must remain outside
+the stage. A dry run does not file a movement receipt in the queue.
+The command prints its receipt as one line of sorted JSON in the digest
+owner's spelling, and `--receipt` also writes an indented copy. Its helpers
+use the owner's `new_sha256` and `sorted_json` profiles, so the duplication
+ratchet gains no raw digest site. The command ships in the published runtime
+generation, because dl380g10 has no checkout to run it from.
+
+A range name, `<rel>.pbrange/<offset>-<size>`, identifies the original at
+`<mount_prefix>/<rel>`, with extent `[offset, offset+size)`. Historical mover
+receipts are not required. The original must be a regular file outside the
+stage with the complete extent. A missing, short, differing or unpaired
+original never permits a move.
+
+The initial proof hashes both exact extents outside the stage lock.
+No-follow descriptors bind each read to a regular file. Device, inode,
+mode, size, mtime and ctime fence its identity. `O_NOATIME` preserves access
+times; an unavailable permission refuses the read instead of a mutable fallback.
+The proof receipt binds both identities, paths, extent and content digest.
+Its canonical JSON digest identifies the proof, not a historical receipt.
+
+`--max-read-gib` bounds payload reads, including unsuccessful proof attempts.
+The receipt reports the full dry-run estimate and reserved read budgets.
+Metadata reads remain outside this payload budget. Apply reserves five reads
+per byte without a memo, or three with a valid memo. `--memo-out` records
+dry-run digests. Apply can reuse them only while both identities remain equal.
+The memo never authorizes removal alone: apply hashes the original again.
+
+Fresh checks under the stage ownership lock protect these references:
+
+- Every fragment, composed map, material record and reader pin.
+- Ready or claimed consumers, including their sealed manifest declarations.
+- Ready or claimed movers and promotion source handoffs.
+- Movement receipts, retired receipts and residency plans.
+- Held ledger keys, whose scope must be readable.
+- The produced-output lane.
+
+An unreadable reference record refuses the pass. The final reference census
+also covers references that appear during the quarantine copy. Identity
+checks run again immediately before removal.
+
+Apply requires `--apply`, a new `--run-id`, and `--quarantine-root`.
+The quarantine root must exist outside the stage on another device.
+Its available space must cover the batch. Path checks reject symlink
+components and device changes below either approved root.
+Each copy reaches quarantine through a private temporary file.
+The command fsyncs its bytes, checks its digest and commits its directory.
+It preserves xattrs, permissions, atime and mtime.
+
+The command fsyncs a write-ahead journal before each stage unlink.
+It then commits the stage directory. No payload is discarded: the verified
+quarantine copy remains. Both the journal and final manifest name its proof,
+metadata and executable restore command. New directory entries receive
+fsync before a later record can depend on them.
+
+`--restore RUN_ID` combines the manifest with all complete journal entries.
+A torn final journal append cannot hide earlier committed moves.
+Restore checks the digest and sets metadata on a temporary before publication.
+It refuses conflicting destinations, symlinks and conflicting restore records.
+A repeated restore leaves an identical file unchanged. A normal read can
+change atime; that alone does not create a destination conflict.
+
+The next tier mint reads the dataset's `available` value. Reclaim does
+not edit or release ledger tokens. The integrated test retains an existing
+holder, observes refusal before reclaim, and admits the same demand after
+the real supply mint.
+
+`tests/test_a_source_mark_copy_with_a_proven_original_is_reclaimed.py`
+covers paired, unpaired, differing and referenced copies. It also covers
+source changes, forged memos, read budgets, process exits and restore.
+The CLI smoke scenario uses private `/tmp` and `/dev/shm` fixtures.
+These checks qualify process interruption, not storage power loss.
+SM-02, INV-01 and INV-07 retain their wider target obligations.
+No deployment or complete workload proof is claimed for those requirements.
+DUR-01 still requires a separate storage-policy qualification; `sync=disabled`
+does not prove power-loss durability.
+
 ### How the map reaches the consumer
 
 `tier_loop` is the map's **single writer**: movers write one fragment each into a
