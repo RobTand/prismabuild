@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -112,6 +113,95 @@ CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
 PRODUCED_EXPORT_SCRIPT = "produced_export.py"
 LOCAL_RESIDENT_SCRIPT = "local_resident.py"
 
+#: The interpreter a role-bearing movement node runs under (#1579, review 3).
+#: The one facts prove: the live fleet announces ``/usr/bin/python3`` on
+#: every tier record and in the produced-spool sealer, and the path is a
+#: root-owned system file a submitter cannot rewrite.  Anything else runs the
+#: script under an interpreter the submitter chose, so it is an ordinary row.
+MOVEMENT_PYTHON = "/usr/bin/python3"
+
+#: Extra sealed environment names a movement node carries past
+#: :func:`movement_environment`'s own (``PATH``, the locale): the Docker
+#: ownership the sealer injects (:func:`seal_movement_action`).  Nothing else
+#: is a movement launch: an extra ``BASH_ENV``, ``PYTHONPATH`` or startup hook
+#: would run submitter code around the published tool.
+MOVEMENT_EXTRA_ENVIRONMENT = ("PRISMABUILD_CONTAINER_OWNER", "PRISMABUILD_CONTAINER_MARKER")
+
+
+def _movement_environment_ok(action: Mapping[str, object], command: list) -> bool:
+    """Whether the sealed environment is exactly a movement launch (#1579)."""
+    from . import pool
+    environment = action.get("environment")
+    if not isinstance(environment, Mapping):
+        return False
+    variables = environment.get("variables")
+    if not isinstance(variables, Mapping):
+        return False
+    if (set(variables) - {"PATH", *MOVEMENT_LOCALE, *MOVEMENT_EXTRA_ENVIRONMENT}
+            or set(variables) < {"PATH", *MOVEMENT_LOCALE}):
+        return False
+    if any(not isinstance(value, str) for value in variables.values()):
+        return False
+    if {name: variables[name] for name in ("PATH", *MOVEMENT_LOCALE)} != movement_environment(command):
+        return False
+    owner = variables.get(pool.CONTAINER_OWNER_ENV)
+    marker = variables.get(pool.CONTAINER_MARKER_ENV)
+    if (owner is None) != (marker is None):
+        return False
+    if owner is None:
+        return True
+    return (re.fullmatch(r"[0-9a-f]{64}", owner) is not None
+            and str(marker).endswith(f"/{owner}.used"))
+
+
+def effective_local_resident_operation(argv: object) -> str | None:
+    """The operation a sealed ``local_resident`` command runs, shared with the tool.
+
+    Parsed exactly as ``tools/fleet/local_resident.py`` parses it (#1579,
+    review 3): the LAST ``--operation`` wins, ``--operation=value`` and
+    unambiguous prefixes count, and anything argparse refuses is ``None``.
+    This duplicates the tool's option shape rather than importing the tool, so
+    the pool never imports a fleet script; the shape is asserted equal by
+    ``test_local_resident_operation_parsing_matches_the_tool``.
+    """
+    import argparse
+    import contextlib
+    import io
+    if not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
+        return None
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pool-root", required=True)
+    parser.add_argument("--set-id", required=True)
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--policy", required=True)
+    parser.add_argument("--operation", choices=("copy", "evict", "adopt"), required=True)
+    parser.add_argument("--source")
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            args, _ = parser.parse_known_args(list(argv))
+    except SystemExit:
+        return None
+    operation = getattr(args, "operation", None)
+    return operation if operation in ("copy", "evict", "adopt") else None
+
+
+def _local_resident_evict(command: list) -> bool:
+    """Whether ``command`` runs the evict operation, spelled once, literally (#1579).
+
+    The effective operation comes from the tool's own parsing contract
+    (:func:`effective_local_resident_operation`, last ``--operation`` wins),
+    and the spelling must be exactly one literal ``--operation evict``: a
+    duplicate, an ``--operation=value`` form or a prefix abbreviation may run
+    ``evict`` today but is not the shape the sealer emits, so it is ordinary.
+    """
+    if command.count("--operation") != 1:
+        return False
+    if any(part != "--operation" and (part.startswith("--operation=")
+                                      or part.startswith("--oper"))
+            for part in command):
+        return False
+    return effective_local_resident_operation(command[2:]) == "evict"
+
 
 def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
                   residency: Mapping[str, object] | None) -> str | None:
@@ -127,20 +217,32 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
       what runs;
     * the task carries the :data:`MOVEMENT_TASK` fields and the execution scope
       is :data:`MOVEMENT_EXECUTION_SCOPE`;
-    * the command is an absolute python running one of the movement scripts, and
-      that script is a file of a runtime generation this fleet published
+    * the sealed environment is exactly the movement launch
+      (:func:`movement_environment` plus the sealer's Docker ownership), so no
+      ``BASH_ENV``, ``PYTHONPATH`` or other startup hook reaches the wrapper;
+    * the interpreter is :data:`MOVEMENT_PYTHON`, the root-owned system python
+      the fleet seals; a submitter-owned python-named executable is ordinary;
+    * the script resolves, with every symlink followed, to a file of a runtime
+      generation this fleet published
       (``resource_scope.published_generation_member``: a sealed direct child of
       the retained store, receipt and manifest hash), not a file-name match and
-      not a host-announced directory;
+      not a host-announced directory; the role is read off the RESOLVED member,
+      and the sealed path must spell that member exactly (no alias: an alias
+      can be retargeted after publication while the sealed command still names
+      it);
     * the declared demand is the small one the node is sealed with.
 
     ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
-    ``local_resident.py --operation evict``, demanding at most one CPU and one GiB,
-    no GPU, and no kind but a tier's (``kind@tier``).  ``serves_residency``:
-    ``stage_move.py`` or ``ram_promote.py`` carrying a residency range, no GPU.
-    Residual: a genuine published movement script run with submitter-chosen
-    arguments still gets the role, bounded by that tool's own demand; the role
-    never reaches arbitrary code.  ``recompute`` is not a condition.
+    ``local_resident.py`` whose effective operation (the tool's own
+    ``--operation`` parsing, last wins) is a single literal ``--operation
+    evict``; demanding at most one CPU and one GiB, no GPU, and no kind but a
+    tier's (``kind@tier``).  ``serves_residency``: ``stage_move.py`` or
+    ``ram_promote.py`` carrying a residency range, no GPU.  Residual: a genuine
+    published movement script run with submitter-chosen arguments still gets the
+    role, bounded by that tool's own demand; the script itself, its interpreter
+    and its launch environment are PrismaBuild's, so the role never reaches
+    arbitrary code except through a store the submitter itself can write (see
+    ``docs/design.md``, "Priority rule").  ``recompute`` is not a condition.
     """
     from . import resource_scope
     params = action.get("params")
@@ -157,20 +259,23 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
                                     captured_command(command, result_path)]
             or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
-            or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE):
+            or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
+            or not _movement_environment_ok(action, command)):
         return None
-    python, script_path = Path(command[0]), Path(command[1])
-    if (not python.is_absolute() or not python.name.startswith("python")
-            or not script_path.is_absolute()
-            or not resource_scope.published_generation_member(script_path)):
+    if command[0] != MOVEMENT_PYTHON:
         return None
-    script = script_path.name
+    script_path = Path(command[1])
+    if not script_path.is_absolute():
+        return None
+    resolved = resource_scope.published_generation_member(script_path)
+    if resolved is None or script_path != resolved:
+        return None
+    script = resolved.name
     if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
         if isinstance(residency, Mapping) and "range_start_bytes" in residency:
             return "serves_residency"
         return None
-    evict = (script == LOCAL_RESIDENT_SCRIPT and "--operation" in command
-             and command[command.index("--operation") + 1:][:1] == ["evict"])
+    evict = script == LOCAL_RESIDENT_SCRIPT and _local_resident_evict(command)
     if script not in (STAGE_RELEASE_SCRIPT, PRODUCED_EXPORT_SCRIPT) and not evict:
         return None
     for kind, count in demand.items():
@@ -552,7 +657,27 @@ def movement_tools(tier: Mapping[str, object], *,
             f"older than this one is the usual cause, and publishing the "
             f"runtime again fixes it.  Filling them in from this process "
             f"would seal an argv naming a python that is not on that box")
-    return (python, str(Path(root) / mover), str(Path(root) / STAGE_RELEASE_SCRIPT))
+    mover_path = Path(root) / mover
+    egress_path = Path(root) / STAGE_RELEASE_SCRIPT
+    # The gang role binds execution to the verified bytes (#1579, review 3):
+    # the sealed command must spell the generation member exactly, never an
+    # alias the anchor resolves.  Canonicalize here, where the paths are made:
+    # a sealer that runs on the tier host (the writer lanes, a local pbrun)
+    # resolves both tools through symlinks, so a tier announced through the
+    # live ``repo`` link seals the generation member the mover executes.  A
+    # sealer on another box cannot resolve the tier host's paths, so it seals
+    # the announced spelling; the role then applies only when that spelling is
+    # already the member.  An unresolvable path seals as announced: resolution
+    # failures must not refuse a submission whose mover runs elsewhere.
+    try:
+        resolved = mover_path.resolve(strict=True)
+    except OSError:
+        resolved = mover_path
+    try:
+        egress_resolved = egress_path.resolve(strict=True)
+    except OSError:
+        egress_resolved = egress_path
+    return (python, str(resolved), str(egress_resolved))
 
 
 def container_owner(

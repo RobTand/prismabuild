@@ -4952,9 +4952,14 @@ only if, in every dimension the member declares, `held + row + reserved <=
 capacity`, with `held` and `capacity` read from the host's resource ledger under
 host admission. Otherwise it is denied as `deferred_for_gang_reservation`, and the
 denial's `reservation` names the dimension and the shortfall. Running work is never
-touched and nothing is lent. The rule reads only what the claim pass already reads
-(the member's census row, the candidate's demand, the ledger): no plan reads, no
-prerequisite walk, no new census work.
+touched. The rule reads only what the claim pass already reads (the member's census
+row, the candidate's demand, the ledger): no plan reads, no prerequisite walk, no
+new census work. On the reservation's own host the reservation arithmetic lends
+nothing: a reservation-denied row is refused, not lent. The gang backfill loan above
+still applies where its own contract allows, so a strictly lower-priority restartable
+row can borrow a fresh-ready member's host while peers cannot commit, and the
+reservation it meets there is that election's fence. A reservation shortfall is never
+a loan: `backfill_allowed` answers only the election fence it is asked about.
 
 Unknown is consuming, never exempt. A candidate that omits `cpu` or `mem_gb`, or
 whose demand does not read, counts as the whole host in that dimension (an omitted
@@ -4974,28 +4979,43 @@ identity (`movement_actions.capacity_role`), never from a sidecar field or from
 `seal_movement_action` builds around `params.command` and `task.result_path`
 (`captured_command`), so `params.command` is what runs; the task must carry the
 `MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`;
-the command is an absolute python running one of the movement scripts; and that
-script must be a file of a runtime generation this fleet published
-(`resource_scope.published_generation_member`): resolved through symlinks, a regular
-file at `tools/<name>` or `tools/fleet/<name>` of a sealed (no write bits) direct
-child of `RETAINED_GENERATION_STORE`, whose `RUNTIME_VERSION.json` names the
+the sealed environment must be exactly the movement launch (`movement_environment`
+plus the sealer's Docker ownership), so no `BASH_ENV`, `PYTHONPATH` or other startup
+hook reaches the wrapper; the interpreter must be `/usr/bin/python3`, the root-owned
+system python the fleet seals, never a submitter-owned python-named executable; and
+the script must resolve, with every symlink followed, to a file of a runtime
+generation this fleet published (`resource_scope.published_generation_member`): a
+regular file at `tools/<name>` or `tools/fleet/<name>` of a sealed (no write bits)
+direct child of `RETAINED_GENERATION_STORE`, whose `RUNTIME_VERSION.json` names the
 generation with a 40-hex commit and records the file's sha256, which it must match.
-That is the store and the receipt rules the pool already applies before it launches a
-worker from a retained generation, so no per-host setting is added; it is not a
-file-name match and not the tier-announced `mover_tools_root` (which is only where the
-tier loop was run from). The demand must be the small one the node is sealed with: a
-returner at most one CPU and one GiB and no kind but a tier's; a mover carries its
-residency range; neither has a GPU. `recompute` is not a condition (the produced spool
-publishes genuine exports without it). Anything unreadable, unpublished or altered is
-an ordinary row, held by its demand; a tier loop run from a dev checkout rather than a
-published generation announces tools the anchor does not trust, so its movers are held
-by demand, the safe direction. Residual: a genuine published movement script run with
-submitter-chosen arguments still gets the role, bounded by that tool's own demand; the
-role never reaches arbitrary code, because nothing but PrismaBuild's published tool
-can match. A node with a role skips the reservation arithmetic and still needs its real
-ledger fit (tier tokens, CPU, memory), so it cannot take what is not free. This is
-what lets a gang member that takes every CPU on its host progress: the movers it waits
-for are admitted although no CPU slack remains. Every other row is held by its demand.
+The role is read off the RESOLVED member, and the sealed path must spell that member
+exactly: a submitter-owned alias can be retargeted after publication while the sealed
+command still names it, so an alias is an ordinary row, while the fleet's live `repo`
+link is resolved by the sealer before it seals. That is the store and the receipt
+rules the pool already applies before it launches a worker from a retained generation,
+so no per-host setting is added; it is not a file-name match and not the tier-announced
+`mover_tools_root` (which is only where the tier loop was run from). The demand must
+be the small one the node is sealed with: a returner at most one CPU and one GiB and
+no kind but a tier's; a mover carries its residency range; neither has a GPU. A
+`local_resident` row gets the returner role only for one literal `--operation evict`
+(the tool's own parsing decides what runs; a duplicate, an `--operation=value` form
+or a prefix abbreviation is ordinary). `recompute` is not a condition (the produced
+spool publishes genuine exports without it). Anything unreadable, unpublished or
+altered is an ordinary row, held by its demand; a tier loop run from a dev checkout
+rather than a published generation announces tools the anchor does not trust, so its
+movers are held by demand, the safe direction. Residual: a genuine published movement
+script run with submitter-chosen arguments still gets the role, bounded by that tool's
+own demand. Trust boundary: the anchor proves the sealed bytes match a sealed receipt
+in the store; it does not prove who wrote the store. Whoever can write the store (today
+the submitting principal on the shared fleet mount) can mint a generation or reseal a
+file, and so can obtain a role for arbitrary bytes. The role also trusts the queue
+writer like priority does: `gang_blocking` honours a `true` role mark on a READY row
+without re-deriving it from the sealed request, so a hand-written row with the mark
+set is honoured. A node with a role skips the reservation arithmetic and still needs
+its real ledger fit (tier tokens, CPU, memory), so it cannot take what is not free.
+This is what lets a gang member that takes every CPU on its host progress: the movers
+it waits for are admitted although no CPU slack remains. Every other row is held by
+its demand.
 
 A host is never both withheld for a waiting measurement and reserved for a gang:
 once the gang's ten minutes elapse the reservation wins on that host over a

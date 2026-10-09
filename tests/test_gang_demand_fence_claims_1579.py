@@ -70,16 +70,17 @@ def _tool(generation, script):
 
 
 def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_command=(), python=None,
-          argv=None, scope=None, task_over=None, tool=None, generation=None):
+          argv=None, scope=None, task_over=None, tool=None, generation=None, variables=None):
     """Seal one action; a genuine movement node when ``script`` and ``tool`` are given.
 
     The shape is exactly ``movement_actions.seal_movement_action``'s: the bash capture wrapper as
-    ``task.argv``, the movement task fields, the movement execution scope.  Each keyword spoils one
-    part of it, for the look-alike cases.
+    ``task.argv``, the movement task fields, the movement execution scope, the fleet python and
+    the movement environment.  Each keyword spoils one part of it, for the look-alike cases.
     """
     from prismabuild import movement_actions as ma
     checkout = tmp_path / "checkout"
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    sealed_variables = {"variables": {}, "toolchain": {}}
     if script is None:
         command, task_argv, task_fields, execution_scope = (
             [sys.executable, "task.py"], [sys.executable, "task.py"],
@@ -88,9 +89,12 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
             {"portability": "portable", "platform_key": None, "host_class": None})
     else:
         tool = tool or _tool(generation, script)
-        command = [python or sys.executable, tool, "--pool-root", str(queue.root), *extra_command]
+        command = [python or ma.MOVEMENT_PYTHON, tool, "--pool-root", str(queue.root), *extra_command]
         task_argv = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", ma.captured_command(command, name)]
         task_fields, execution_scope = dict(ma.MOVEMENT_TASK), dict(ma.MOVEMENT_EXECUTION_SCOPE)
+        sealed_variables = {"variables": dict(ma.movement_environment(command)), "toolchain": {}}
+    if variables is not None:
+        sealed_variables = {"variables": dict(variables), "toolchain": {}}
     params = {"gpu_exclusive": False, "execution_timeout_s": 600, "command": command, **(extra_params or {})}
     body = {
         "schema": pb.ACTION_SCHEMA_V2,
@@ -98,7 +102,7 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
                  "argv": argv if argv is not None else task_argv, "working_directory": ".",
                  "result_path": name, **(task_over or {})},
         "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
-        "params": params, "environment": {"variables": {}, "toolchain": {}},
+        "params": params, "environment": sealed_variables,
         "execution_scope": scope if scope is not None else execution_scope}
     action = pb.seal_action(body)
     cas.publish_action_request(action)
@@ -147,11 +151,13 @@ def test_publish_assigns_the_roles_to_genuine_published_movement_nodes_only(gang
     queue, clock, *_ = gang_fleet
     small = {"cpu": 1, "mem_gb": 1}
     mover = {"cpu": 4, "mem_gb": 8, STAGE_KIND: 2}
+    resident = ("--pool-root", "q", "--set-id", "s", "--host", "h", "--policy", "p")
     cases = [
         # (name, script, resources, residency, extra_command, expected role)
         ("release", "stage_release.py", small, None, (), "returns_capacity"),
         ("export", "produced_export.py", small, None, (), "returns_capacity"),
-        ("evict", "local_resident.py", small, None, ("--operation", "evict"), "returns_capacity"),
+        ("evict", "local_resident.py", small, None, (*resident, "--operation", "evict"),
+         "returns_capacity"),
         ("mover", "stage_move.py", mover, RANGE, (), "serves_residency"),
         ("promotion", "ram_promote.py", mover, RANGE, (), "serves_residency"),
         # genuine tools that are not exempt: each missing condition leaves an ordinary consumer
@@ -159,7 +165,7 @@ def test_publish_assigns_the_roles_to_genuine_published_movement_nodes_only(gang
         ("big-memory", "stage_release.py", {"cpu": 1, "mem_gb": 64}, None, (), None),
         ("gpu-release", "stage_release.py", {**small, "gpu": 1}, None, (), None),
         ("foreign-kind", "stage_release.py", {**small, "scratch_gib": 1}, None, (), None),
-        ("copy", "local_resident.py", small, None, ("--operation", "copy"), None),
+        ("copy", "local_resident.py", small, None, (*resident, "--operation", "copy"), None),
         ("mover-without-range", "stage_move.py", {"cpu": 4, "mem_gb": 8}, None, (), None),
         ("gpu-mover", "stage_move.py", {"cpu": 4, "mem_gb": 8, "gpu": 1, STAGE_KIND: 2}, RANGE, (), None),
     ]
@@ -199,6 +205,8 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
     tampered.chmod(0o644)
     tampered.write_text("# tampered after publication\n")
     tampered.chmod(0o444)
+    hook = {"BASH_ENV": str(tmp_path / "payload.sh")}
+    startup = {"PYTHONPATH": str(tmp_path), "PYTHONSTARTUP": str(tmp_path / "start.py")}
     cases = {
         "look-alike script in /tmp": dict(tool=str(lookalike)),
         "unknown generation": dict(tool=str(unknown / "tools" / "fleet" / "stage_release.py")),
@@ -206,27 +214,102 @@ def test_a_look_alike_is_refused_a_role_part_by_part(gang_fleet, store, tmp_path
         "relative script path": dict(tool="tools/fleet/stage_release.py"),
         "wrong interpreter": dict(python="/bin/sh"),
         "relative interpreter": dict(python="python3"),
+        "submitter python": dict(python=str(outside / "python3")),
         "wrong wrapper executable": dict(argv=["/bin/sh", "--noprofile", "--norc", "-c", "true"]),
         "argv is not the capture wrapper": dict(argv=[sys.executable, "task.py"]),
         "wrapper runs other code": dict(argv=[ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", "echo anything"]),
         "wrong movement task": dict(task_over={"determinism": "deterministic"}),
+        "bash hook in environment": dict(variables={**ma.movement_environment(["x"]), **hook}),
+        "python startup hook in environment": dict(variables={**ma.movement_environment(["x"]), **startup}),
+        "empty environment": dict(variables={}),
     }
     for name, spoil in cases.items():
         spoil = {"script": "stage_release.py", **spoil}
+        if "variables" in spoil and len(spoil["variables"]) > 3:
+            command = [ma.MOVEMENT_PYTHON, _tool(store, "stage_release.py"),
+                       "--pool-root", str(queue.root)]
+            spoil["variables"] = {**ma.movement_environment(command),
+                                  **{k: v for k, v in spoil["variables"].items()
+                                     if k not in ma.movement_environment(command)}}
         key = _publish_sealed(queue, tmp_path, clock, name.replace(" ", "-"), resources=small,
                               generation=store, **spoil)
         assert _roles(queue, key) == [], (name, _row(queue, key))
 
 
-def test_a_published_tool_through_the_live_symlink_counts(gang_fleet, store, tmp_path):
-    """The fleet's ``repo`` link names a generation; the script path is resolved before it is judged."""
+def test_a_submitter_alias_of_a_published_tool_gets_no_role(gang_fleet, store, tmp_path):
+    """Review 3: the role is read off the resolved member, and the sealed path spells it exactly."""
+    from prismabuild import movement_actions as ma
+    from prismabuild import resource_scope
     queue, clock, *_ = gang_fleet
+    small = {"cpu": 1, "mem_gb": 1}
+    # An alias named stage_release.py pointing at the published stage_move.py:
+    # the anchor verifies the mover bytes, but the sealed name is an alias.
+    alias = tmp_path / "stage_release.py"
+    alias.symlink_to(store / "tools" / "fleet" / "stage_move.py")
+    key = _publish_sealed(queue, tmp_path, clock, "alias-basename", script="stage_release.py",
+                          resources=small, tool=str(alias), generation=store)
+    assert _roles(queue, key) == [], _row(queue, key)
+    # The same alias retargeted after publication still names the alias.
+    alias.unlink()
+    alias.symlink_to(store / "tools" / "fleet" / "stage_release.py")
+    resource_scope._MEMBER_CACHE.clear()
+    key = _publish_sealed(queue, tmp_path, clock, "alias-retargeted", script="stage_release.py",
+                          resources=small, tool=str(alias), generation=store)
+    assert _roles(queue, key) == [], _row(queue, key)
+    # A published tool reached through an unrelated published name is ordinary too.
+    honest = tmp_path / "honest-link.py"
+    honest.symlink_to(store / "tools" / "fleet" / "stage_release.py")
+    key = _publish_sealed(queue, tmp_path, clock, "honest-alias", script="stage_release.py",
+                          resources=small, tool=str(honest), generation=store)
+    assert _roles(queue, key) == [], _row(queue, key)
+    # The sealer canonicalizes the live repo link, so a sealed member path counts.
     link = tmp_path / "repo"
-    link.symlink_to(store)
-    key = _publish_sealed(queue, tmp_path, clock, "through-link", script="stage_release.py",
-                          resources={"cpu": 1, "mem_gb": 1}, tool=str(link / "tools" / "stage_release.py"),
+    if not link.exists():
+        link.symlink_to(store)
+    canonical = ma.movement_tools({"tier_id": "t", "mover_python": ma.MOVEMENT_PYTHON,
+                                   "mover_tools_root": str(link / "tools" / "fleet")})[2]
+    assert canonical == str(store / "tools" / "fleet" / "stage_release.py"), canonical
+    key = _publish_sealed(queue, tmp_path, clock, "canonical-member", script="stage_release.py",
+                          resources=small, tool=canonical, generation=store)
+    assert _roles(queue, key) == ["returns_capacity"]
+
+
+def test_local_resident_operation_parsing_matches_the_tool(gang_fleet, store, tmp_path):
+    """Review 3: the role's operation test parses exactly as local_resident does."""
+    import sys
+    sys.path.insert(0, str(Path("tools/fleet").resolve()))
+    from local_resident import effective_operation as tool_parses
+    from prismabuild import movement_actions as ma
+    queue, clock, *_ = gang_fleet
+    small = {"cpu": 1, "mem_gb": 1}
+    base = ["--pool-root", str(queue.root), "--set-id", "s", "--host", "h", "--policy", "/p"]
+    shapes = [
+        [*base, "--operation", "evict"],
+        [*base, "--operation", "evict", "--operation", "copy"],
+        [*base, "--operation=copy", "--operation", "evict"],
+        [*base, "--oper", "evict"],
+        [*base, "--operation=evict"],
+        [*base, "--operation", "copy"],
+        [*base, "--operation"],
+        [*base],
+    ]
+    for argv in shapes:
+        assert ma.effective_local_resident_operation(argv) == tool_parses(argv), argv
+    # Only one literal --operation evict gets the role; every other shape is ordinary.
+    key = _publish_sealed(queue, tmp_path, clock, "evict", script="local_resident.py",
+                          resources=small, extra_command=(*base, "--operation", "evict"),
                           generation=store)
     assert _roles(queue, key) == ["returns_capacity"]
+    for name, extra in {
+            "duplicate-evict-copy": (*base, "--operation", "evict", "--operation", "copy"),
+            "duplicate-copy-evict": (*base, "--operation", "copy", "--operation", "evict"),
+            "equals-evict": (*base, "--operation=evict"),
+            "abbreviated-evict": (*base, "--oper", "evict"),
+            "truncated": (*base, "--operation"),
+    }.items():
+        key = _publish_sealed(queue, tmp_path, clock, name, script="local_resident.py",
+                              resources=small, extra_command=extra, generation=store)
+        assert _roles(queue, key) == [], (name, _row(queue, key))
 
 
 def test_without_a_retained_store_nothing_is_a_movement_node(gang_fleet, store, tmp_path, monkeypatch):
@@ -457,7 +540,11 @@ def test_a_changed_scope_or_task_on_a_genuine_node_loses_the_role(gang_fleet, st
             lambda a: a["task"].update(artifact_kind="measurement"),
             lambda a: a["task"].update(result_path="another.log"),
             lambda a: a["task"]["argv"].__setitem__(4, a["task"]["argv"][4] + " "),
-            lambda a: a["params"]["command"].append("--extra")):
+            lambda a: a["params"]["command"].append("--extra"),
+            lambda a: a["environment"]["variables"].update(BASH_ENV="/tmp/payload.sh"),
+            lambda a: a["environment"]["variables"].update(PYTHONPATH="/tmp/evil"),
+            lambda a: a["environment"]["variables"].__delitem__("LANG"),
+            lambda a: a["params"]["command"].__setitem__(0, "/tmp/python3")):
         changed = copy.deepcopy(dict(genuine))
         mutate(changed)
         assert ma.capacity_role(changed, small, residency=None) is None
