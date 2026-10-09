@@ -4830,6 +4830,13 @@ It cannot confirm that member until the reset succeeds.
 A new queue instance resets inherited evidence before use.
 This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
 
+Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
+Every other verdict state ends the window and clears the mark.
+This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
+The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
+A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
+A dead member therefore holds no fence there, and the teardown still ends the gang.
+
 Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
 A READY member with a plan refusal still holds its siblings' fences until withdrawal.
 Issue #1543 remains open for that scope.
