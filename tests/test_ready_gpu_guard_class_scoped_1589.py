@@ -10,6 +10,7 @@ The class is read from every offer on file, stale ones included, so a brief x86 
 portable work into class-scoped work.
 """
 from pathlib import Path
+import hashlib
 import json
 import sys
 import time
@@ -19,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_core import _body  # noqa: E402
 
-from prismabuild import core as pb, pool
+from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
 
 CAPACITY = {"cpu": 8, "gpu": 1, "mem_gb": 32}
 TIERS = {"preferred": list(range(8)), "fallback": []}
@@ -80,6 +81,112 @@ def _fleet(tmp_path, monkeypatch, host, *, cpu_host: str):
                          resources={"cpu": 2, "gpu": 1, "mem_gb": 8})
     keys = {GPU_KEY: gpu_sealed}
     return queue, publish, claim, keys, seal
+
+
+# --- review 4 of PR 1590: aggregate adaptive headroom, under the real controllers --------
+
+T0 = 2_000_000.0
+
+
+def _key(seed):
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _adaptive_fleet(tmp_path, monkeypatch, host, *, cpu=8, mem_gb=32):
+    """A Spark-shaped box with both adaptive controllers live, like production.
+
+    The worker loop claims with ``adaptive_cpu=True``; ``has_gpu=True`` builds
+    the GPU controller.  The samples are scripted (fresh and idle), the telemetry
+    paths are the real local ones, and every row is sealed through the real CAS.
+    """
+    clock = [T0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
+    capacity = {"cpu": cpu, "gpu": 1, "mem_gb": mem_gb}
+    tiers = {"preferred": list(range(cpu)), "fallback": []}
+    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+        "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
+        "cpu_count": cpu, "interval_s": 1.})
+    gpu_sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(clock[0]),
+                  "sampled_unix": clock[0], "complete": True, "attributed": True,
+                  "devices": [{"uuid": "GPU-1", "name": "NVIDIA GB10", "power_w": 15.,
+                               "power_limit_w": None, "power_reference_w": 140.,
+                               "power_reference_scope": "soc_tdp",
+                               "memory_domain": "shared_system", "limited": False}],
+                  "host_total_bytes": 128 * adaptive_gpu.GIB,
+                  "host_available_bytes": 120 * adaptive_gpu.GIB,
+                  "memory_pressure_some": 0., "memory_pressure_full": 0.,
+                  "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(gpu_sample))
+    queue = pool.PoolQueue(tmp_path / "queue")
+    worker_tags = [host, "gb10", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG]
+    queue.announce(host=host, tags=worker_tags, has_gpu=True, capacity=capacity,
+                   observed_capacity=capacity, interpreters=[sys.executable], observed_images=[])
+    queue.announce(host="dl380g10", tags=["dl380g10", "x86", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG],
+                   has_gpu=False, capacity={"cpu": 40, "mem_gb": 200},
+                   observed_capacity={"cpu": 40, "mem_gb": 200},
+                   interpreters=[sys.executable], observed_images=[])
+    (tmp_path / "task_code.py").write_text("# closure member\n")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    issued = [0]
+
+    def seal(*, task_class="generation", resources, gpu=False):
+        issued[0] += 1
+        body = _body(tmp_path, task_class=task_class,
+                     result_path=f"result-{issued[0]}.bin",
+                     **({"portability": "platform_keyed", "platform_key": "linux-aarch64-sm121"}
+                         if task_class == "measurement" else {}))
+        params = {"demand": dict(resources)}
+        if gpu:
+            params.update({"gpu_exclusive": False, "gpu_memory_gb": 8})
+        body["params"] = params
+        action = pb.seal_action(body)
+        cas.publish_action_request(action)
+        return str(action["action_key"])
+
+    def publish(key, *, gpu=False, tags, resources, priority=0, **fields):
+        task_class = fields.pop("task_class", "generation")
+        sealed = seal(task_class=task_class, resources=resources, gpu=gpu)
+        clock[0] += 0.001
+        queue.publish(action_key=sealed, cas_root=str(cas.root), checkout_root=str(tmp_path),
+                      worker_script="worker.py", tags=tags, needs_gpu=gpu, priority=priority,
+                      resources=resources, **fields)
+        return sealed
+
+    def claim():
+        return queue.claim(tags=worker_tags, has_gpu=True, capacity=capacity, cpu_tiers=tiers,
+                           adaptive_cpu=True)
+
+    def tick(seconds=2.0):
+        clock[0] += seconds
+        gpu_sample.update(sampled_unix=clock[0], sample_id=str(clock[0]))
+        gpu_sample["jobs"] = []
+        for held in queue.ledger().held_keys():
+            record = {"action_key": held, "nonce": held + "-attempt",
+                      "scope_unit": held + "-scope", "sampled_unix": clock[0],
+                      "cpu_seconds": 0.01 * (clock[0] - T0),
+                      "wall_seconds": clock[0] - T0, "complete": True}
+            adaptive_cpu.write_json(
+                adaptive_cpu.local_telemetry_path(queue.ledger().base, held), record)
+            gpu_sample["jobs"].append({"action_key": held, "nonce": record["nonce"],
+                                       "scope_id": record["scope_unit"], "complete": True})
+
+    def telemetry(key, *, cpu_seconds, wall_seconds):
+        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
+            "action_key": key, "sampled_unix": clock[0], "cpu_seconds": cpu_seconds,
+            "wall_seconds": wall_seconds, "memory_current_bytes": 100,
+            "memory_peak_bytes": 100, "complete": True})
+
+    return {"queue": queue, "publish": publish, "claim": claim, "tick": tick,
+            "telemetry": telemetry, "clock": clock, "capacity": capacity, "tiers": tiers,
+            "gpu_sample": gpu_sample}
+
+
+def _denial(queue, key):
+    path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
+    records = adaptive_cpu.read_json(path).get("records", {})
+    return next(value for value in records.values() if value["action_key"] == key)
 
 
 @pytest.mark.parametrize("cpu_host", ["fresh", "stale"])
@@ -216,35 +323,51 @@ def test_the_boundary_reads_only_the_free_tokens_and_leaves_the_gpu_room(tmp_pat
     """No sealed request, no record, no shared read: arithmetic on the free tokens, after the row's own."""
     decide = pool.PoolQueue._class_scoped_beside_room
     demand = {"cpu": 2, "mem_gb": 4}
+    quiet = {"active": 0.0, "pending": 0.0, "busy_cpus": 0.0}
     assert decide(ROOM, ledger=_Tokens(cpu=4, gpu=1, mem_gb=12), identity=None, demand=demand,
-                  cpu_count=8) is None   # 2, 8 left; 2.5 + 2 <= 8
+                  cpu_count=8, holder_costs=quiet) is None   # 2, 8 left; 0 + 2 + 2 <= 8
     held = decide(ROOM, ledger=_Tokens(cpu=4, gpu=1, mem_gb=11), identity=None, demand=demand,
-                  cpu_count=8)        # 7 < 8
+                  cpu_count=8, holder_costs=quiet)        # 7 < 8
     assert held["kept_for"] == "class_scoped_cpu_beside_ready_gpu" and held["gpu_row"] == GPU_KEY[:12]
     assert decide(ROOM, ledger=_Tokens(cpu=8, gpu=0, mem_gb=32), identity=None, demand=demand,
-                  cpu_count=8)["room"]["gpu"] == 1
+                  cpu_count=8, holder_costs=quiet)["room"]["gpu"] == 1
     assert decide(ROOM, ledger=_Tokens(unreadable=True), identity=None, demand=demand,
-                  cpu_count=8) == {
+                  cpu_count=8, holder_costs=quiet) == {
         "class_scoped": "free_tokens_unreadable"}
 
 
 def test_the_boundary_keeps_adaptive_headroom_for_the_gpu_row(tmp_path, monkeypatch):
-    """Review 3 finding 1: a 2-CPU holder costs 2.5 CPUs, so six free tokens do not admit a 6-CPU GPU row."""
+    """Review 3 finding 1, replayed under review 4's aggregate rule: the owner's arithmetic decides.
+
+    Free tokens fit the room (8 - 2 >= 6).  With no other holder the candidate at
+    its full reservation plus the GPU row still fits (0 + 2 + 6 <= 8); a busy
+    2-CPU incumbent beside them does not (2.5 + 2 + 6 > 8).  The token fit alone
+    admits both; the aggregate headroom holds the second.
+    """
     decide = pool.PoolQueue._class_scoped_beside_room
     big_room = {"action_key": GPU_KEY, "room": {"cpu": 6, "gpu": 1, "mem_gb": 8}}
     demand = {"cpu": 2, "mem_gb": 4}
-    # Free tokens fit the room (8 - 2 >= 6), but 2.5 + 6 > 8: held.
+    quiet = {"active": 0.0, "pending": 0.0, "busy_cpus": 0.0}
+    # No incumbent: the pair fits the owner's rule, so the token fit admits.
+    assert decide(big_room, ledger=_Tokens(cpu=8, gpu=1, mem_gb=32), identity=None, demand=demand,
+                  cpu_count=8, holder_costs=quiet) is None
+    # A busy incumbent at 2.5 beside the candidate and the GPU row: held.
     held = decide(big_room, ledger=_Tokens(cpu=8, gpu=1, mem_gb=32), identity=None, demand=demand,
-                  cpu_count=8)
+                  cpu_count=8, holder_costs={"active": 2.5, "pending": 0.0, "busy_cpus": 0.0})
     assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
-    assert held["holder_cost"] == 2.5 and held["gpu_cost"] == 6.0
-    # The same pair on a 20-CPU host passes: 2.5 + 6 <= 20.
+    assert held["holder_cost"] == 2.0 and held["gpu_cost"] == 6.0
+    assert held["active_cpu_cost"] == 2.5
+    # The same triple on a 20-CPU host passes: 2.5 + 2 + 6 <= 20.
     assert decide(big_room, ledger=_Tokens(cpu=20, gpu=1, mem_gb=120), identity=None, demand=demand,
-                  cpu_count=20) is None
+                  cpu_count=20, holder_costs={"active": 2.5, "pending": 0.0, "busy_cpus": 0.0}) is None
     # Arithmetic only: no sealed request, no record, no shared read.
     assert pool.PoolQueue._class_scoped_projected_headroom(
-        big_room, demand, cpu_count=8)["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
-    assert pool.PoolQueue._class_scoped_projected_headroom(big_room, demand, cpu_count=20) is None
+        big_room, demand, cpu_count=8,
+        holder_costs={"active": 2.5, "pending": 0.0, "busy_cpus": 0.0}
+    )["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
+    assert pool.PoolQueue._class_scoped_projected_headroom(
+        big_room, demand, cpu_count=20,
+        holder_costs={"active": 2.5, "pending": 0.0, "busy_cpus": 0.0}) is None
 
 
 
@@ -330,18 +453,27 @@ def test_a_gpu_room_that_cannot_be_established_holds_the_row(tmp_path, monkeypat
         container_inventory=None) == (None, "gpu_room_unknown")
 
 def test_a_class_scoped_row_without_projected_headroom_still_waits(tmp_path, monkeypatch, host):
-    """Review 3 finding 1 end to end: 2-CPU class row beside a 6-CPU GPU row on 8 CPUs.
+    """Review 3 finding 1 end to end, under review 4's aggregate rule and controllers.
 
-    Free tokens fit (8 - 2 >= 6), but the adaptive projected-cost gate charges
-    the starter 2.5 CPUs: 2.5 + 6 > 8, so the GPU row's own decision would
-    refuse it.  The exemption holds the class row; the GPU row claims first.
+    A host-pinned 2-CPU incumbent runs beside a 2-CPU class row and a 6-CPU GPU
+    row on 8 CPUs.  Free tokens fit (8 - 2 - 2 >= 6), but the owner's rule counts
+    the incumbent, the starter at its full reservation, and the GPU row: with the
+    incumbent running at 2 CPUs the GPU row's own decision refuses, so the class
+    row waits and the GPU row claims first.
     """
-    queue, publish, claim, keys, _seal = _fleet(tmp_path, monkeypatch, host, cpu_host="fresh")
-    queue.withdraw(keys[GPU_KEY], reason="republish larger", by="test")
-    gpu_key = publish(GPU_KEY, gpu=True, tags=["gb10"], resources={"cpu": 6, "gpu": 1, "mem_gb": 8})
-    class_key = publish(CLASS_KEY, tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 6, "gpu": 1, "mem_gb": 8})
+    incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == incumbent
+    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["tick"]()
+    rig["telemetry"](incumbent, cpu_seconds=8.0, wall_seconds=4.0)
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
     first = claim()
-    assert first is not None and first["action_key"] == gpu_key, first
+    assert first is not None and first["action_key"] == gpu_key, (
+        f"the GPU row claims first: {_denial(queue, gpu_key)}")
     assert queue.item_path(pool.READY, class_key).exists()
 
 
@@ -420,3 +552,211 @@ def test_only_a_plain_bounded_host_demand_makes_a_candidate(tmp_path, monkeypatc
               {"host": "dl380g10", "has_gpu": False, "tags": ["x86"]}]
     item = {"action_key": CLASS_KEY, "tags": ["gb10"], "resources": resources}
     assert queue._class_scoped_candidate(item, offers) is candidate
+
+
+# --- review 4, end to end under both controllers --------------------------------------
+
+
+def test_two_class_holders_that_each_fit_do_not_together_block_the_gpu_row(tmp_path, monkeypatch, host):
+    """Review 4 finding 1: the headroom counts incumbents, not just the one new holder.
+
+    The review's counterexample: on an 8-CPU host a 4-CPU GPU row waits, and two
+    2-CPU class rows each fit alone (2.5 + 4 <= 8).  The second must wait: with
+    both holders running at 2 CPUs each the GPU row's own decision refuses
+    (2.5 + 2.5 + 4 > 8).  Tokens alone would admit both (8 - 2 - 2 >= 4).
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    first_key = publish(_key("class-a"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    second_key = publish(_key("class-b"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    first = claim()
+    assert first is not None and first["action_key"] == first_key, first
+    rig["telemetry"](first_key, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["tick"]()
+    rig["telemetry"](first_key, cpu_seconds=8.0, wall_seconds=4.0)
+    run = claim()
+    assert run is not None and run["action_key"] == gpu_key, run
+    assert queue.item_path(pool.READY, second_key).exists(), (
+        "the second class row waits: both holders beside the 4-CPU GPU row exceed the host")
+    queue.finish(gpu_key, status="executed")
+    rig["tick"]()
+    assert claim()["action_key"] == second_key
+
+
+def test_a_busy_incumbent_counts_against_the_gpu_rows_headroom(tmp_path, monkeypatch, host):
+    """Review 4 finding 1: a holder running hot charges its measured cost, not zero.
+
+    A host-pinned 2-CPU incumbent runs at 2 CPUs; the class row needs 2 CPUs and
+    the GPU row 4.  Tokens fit (8 - 2 - 2 >= 4), but the owner's rule refuses the
+    GPU row beside both (2.5 + 2.5 + 4 > 8), so the class row waits.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == incumbent
+    rig["telemetry"](incumbent, cpu_seconds=4.0, wall_seconds=2.0)
+    rig["tick"]()
+    rig["telemetry"](incumbent, cpu_seconds=8.0, wall_seconds=4.0)
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    run = claim()
+    assert run is not None and run["action_key"] == gpu_key, run
+    assert queue.item_path(pool.READY, class_key).exists()
+
+
+def test_a_holder_without_telemetry_charges_its_full_reservation(tmp_path, monkeypatch, host):
+    """Review 4 finding 1: startup/unknown attribution holds the exemption, like the owner.
+
+    A 3-CPU class row beside a 4-CPU GPU row passes bare token arithmetic
+    (8 - 3 >= 4) and the old single-holder check (3.75 + 4 <= 8).  With no
+    telemetry for a running 3-CPU holder the owner charges the reservation in
+    full and double-counts it against the busy baseline; the exemption holds.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    holder = publish(_key("holder"), tags=[host], resources={"cpu": 3, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == holder
+    rig["tick"](seconds=0.0)
+    for path in (adaptive_cpu.local_telemetry_path(queue.ledger().base, holder),):
+        if path.exists():
+            path.unlink()
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    run = claim()
+    assert run is not None and run["action_key"] == gpu_key, run
+    assert queue.item_path(pool.READY, class_key).exists()
+
+
+def test_a_quiet_holder_leaves_room_for_a_small_class_row_and_its_gpu_row(tmp_path, monkeypatch, host):
+    """The exemption still admits when the aggregate truly fits, under both controllers.
+
+    A host-pinned 2-CPU holder idles near zero; the class row needs 1 CPU and the
+    GPU row 2.  The owner's rule admits the GPU row beside both, so the class row
+    claims first and the GPU row follows on the same box.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 2, "gpu": 1, "mem_gb": 8})
+    incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == incumbent
+    rig["tick"]()
+    rig["tick"]()
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 1, "mem_gb": 4}, priority=1)
+    first = claim()
+    assert first is not None and first["action_key"] == class_key, (
+        f"the fitting class row claims first: {_denial(queue, class_key)}")
+    rig["tick"]()
+    second = claim()
+    assert second is not None and second["action_key"] == gpu_key, (
+        f"the GPU row follows beside it: {_denial(queue, gpu_key)}")
+
+
+def test_an_unreadable_holder_ledger_holds_the_exemption(tmp_path, monkeypatch, host):
+    """Fail closed: holder costs that do not read are unknown, never zero."""
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 4, "gpu": 1, "mem_gb": 8})
+    incumbent = publish(_key("incumbent"), tags=[host], resources={"cpu": 2, "mem_gb": 4}, priority=2)
+    assert claim()["action_key"] == incumbent
+    real_costs = pool.PoolQueue._class_scoped_holder_costs
+
+    def unreadable(*args, **kwargs):
+        raise OSError("estale")
+
+    monkeypatch.setattr(pool.PoolQueue, "_class_scoped_holder_costs", unreadable)
+    try:
+        class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+        run = claim()
+        assert run is not None and run["action_key"] == gpu_key, run
+        assert queue.item_path(pool.READY, class_key).exists()
+        assert _denial(queue, class_key)["reason"] == "deferred_for_ready_gpu_row"
+    finally:
+        monkeypatch.setattr(pool.PoolQueue, "_class_scoped_holder_costs", real_costs)
+
+
+def test_a_class_row_claims_beside_a_ready_gpu_row_on_a_private_pool(tmp_path, monkeypatch, host):
+    """Review 4 finding 3: the production-path smoke on an isolated private pool.
+
+    A fresh queue root (no shared fleet state), both adaptive controllers from
+    the worker loop's own claim arguments, one eligible GPU row READY, one
+    class-scoped CPU row: the class row claims, the GPU row follows, and the
+    ledger tokens balance afterwards.
+    """
+    rig = _adaptive_fleet(tmp_path, monkeypatch, host)
+    queue, publish, claim = rig["queue"], rig["publish"], rig["claim"]
+    gpu_key = publish(_key("gpu"), gpu=True, tags=["gb10"],
+                      resources={"cpu": 2, "gpu": 1, "mem_gb": 8})
+    class_key = publish(_key("class"), tags=["gb10"], resources={"cpu": 2, "mem_gb": 4}, priority=1)
+    first = claim()
+    assert first is not None and first["action_key"] == class_key, (
+        f"the class row passes the guard: {_denial(queue, class_key)}")
+    rig["tick"]()
+    second = claim()
+    assert second is not None and second["action_key"] == gpu_key, (
+        f"the GPU row is not crowded out: {_denial(queue, gpu_key)}")
+    held = queue.ledger().held()
+    assert held == {"cpu": 4, "mem_gb": 12, "gpu": 1}, held
+    assert queue.ledger().available() == {"cpu": 4, "mem_gb": 20}, queue.ledger().available()
+
+# --- review 4, the aggregate helper -------------------------------------------------
+
+
+class _Holders:
+    """A ledger stub with free tokens and holder costs for the boundary helper."""
+
+    def __init__(self, *, available, costs=None, unreadable=False):
+        self._available = dict(available)
+        self._costs = costs
+        self._unreadable = unreadable
+
+    def available(self):
+        if self._unreadable:
+            raise OSError("estale")
+        return dict(self._available)
+
+
+def test_the_aggregate_headroom_counts_incumbent_startup_and_busy_costs(tmp_path, monkeypatch):
+    """The helper replays the owner's rule: busy baseline plus pending, or active, plus both sides."""
+    queue = _bare(tmp_path, monkeypatch)
+    room = {"action_key": GPU_KEY, "room": {"cpu": 4, "gpu": 1, "mem_gb": 8}}
+    demand = {"cpu": 2, "mem_gb": 4}
+    ledger = _Holders(available={"cpu": 6, "gpu": 1, "mem_gb": 28})
+    # One busy incumbent at 2.5 plus this candidate at full reservation:
+    # max(0 + 0, 2.5) + 2 + 4 > 8.  Held, and the evidence names every term.
+    held = queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand=demand, cpu_count=8,
+        holder_costs={"active": 2.5, "pending": 0.0, "busy_cpus": 0.0})
+    assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
+    assert held["active_cpu_cost"] == 2.5 and held["pending_cpu_cost"] == 0.0
+    assert held["holder_cost"] == 2.0 and held["gpu_cost"] == 4.0
+    # A quiet box admits the same pair: 0 + 2 + 4 <= 8.
+    assert queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand=demand, cpu_count=8,
+        holder_costs={"active": 0.0, "pending": 0.0, "busy_cpus": 0.0}) is None
+    # Unknown attribution double-counts against the busy baseline, like the owner.
+    held = queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand=demand, cpu_count=8,
+        holder_costs={"active": 3.0, "pending": 3.0, "busy_cpus": 3.0})
+    assert held["kept_for"] == "class_scoped_cpu_projected_cpu_cost", held
+
+
+def test_the_aggregate_headroom_holds_when_holder_costs_do_not_read(tmp_path, monkeypatch):
+    """Unreadable holder costs are unknown, never zero; unknown CPU count binds nothing new."""
+    queue = _bare(tmp_path, monkeypatch)
+    room = {"action_key": GPU_KEY, "room": {"cpu": 4, "gpu": 1, "mem_gb": 8}}
+    demand = {"cpu": 2, "mem_gb": 4}
+    ledger = _Holders(available={"cpu": 6, "gpu": 1, "mem_gb": 28})
+    held = queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand=demand, cpu_count=8,
+        holder_costs=None)
+    assert held == {"class_scoped": "holder_costs_unreadable"}, held
+    assert queue._class_scoped_beside_room(
+        room, ledger=ledger, identity=None, demand=demand, cpu_count=None,
+        holder_costs={"active": 99.0, "pending": 99.0, "busy_cpus": 99.0}) is None
+

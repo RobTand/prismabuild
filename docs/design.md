@@ -5125,20 +5125,26 @@ reservation its own claim charges (`_ready_gpu_row_room`: under the facts its cl
 reads first, the producer's export allowance included). Without such a room the row
 stays deferred and the denial names why. At the token boundary, under host
 admission, `_class_scoped_beside_room` reads only the free tokens: the row passes
-only if, after it takes its own, that room still fits them, and the adaptive
-projected-cost gate keeps headroom for the GPU row beside the new holder (a
-2-CPU starter costs `2.5` CPUs, so six free tokens do not admit a 6-CPU GPU
-row on an 8-CPU host). The headroom check is arithmetic on the host CPU count;
-without one the token fit stands alone and the GPU row's own decision still
-guards it. Incumbents hold tokens
-and every earlier admission has taken its share, so the GPU row is never what a
-class-scoped row delays, however many such rows there are. A measurement row is
-held (its exclusivity contracts are its own), and free tokens that do not read hold
-the row. Ordinary CPU admission (adaptive CPU, measurement elections, gang reservations)
-still applies to the row afterwards, priority order is untouched, and portable
-rows, rows with a host tag and rows that do not fit are unchanged. Limit: a
-class-scoped row is recognised by tags only; arm64-only work that names no class
-tag but only an image or interpreter is still held by the rule.
+only if, after it takes its own, that room still fits them. Under adaptive
+admission it also replays the owner's projected-cost rule over the live host:
+every holder's conservative cost from its reservation and fresh local telemetry
+(`_class_scoped_holder_costs`), plus this candidate at its full reservation (a
+starter has no rate yet), plus the GPU row at its declared demand, against the
+host CPU count. A busy incumbent, an unattributed starter, and a second class
+holder each count; unknown costs hold the row. Without a controller there is no
+projected-cost gate, so the token fit stands alone. What the replay proves is
+bounded: the projected-cost gate at this sample. Later samples, learned costs,
+host pressure, and the GPU row's own later gates still decide its own claim, so
+the exemption cannot promise the GPU row starts next. It promises only that the
+class row did not take tokens or headroom the GPU row needs at this decision.
+A measurement row is held (its exclusivity contracts are its own), and free
+tokens or holder costs that do not read hold the row. Ordinary CPU admission
+(adaptive CPU, measurement elections, gang reservations) still applies to the row
+afterwards, priority order is untouched, and portable rows, rows with a host tag
+and rows that do not fit are unchanged. Limits: a class-scoped row is recognised
+by tags only; arm64-only work that names no class tag but only an image or
+interpreter is still held by the rule. The replay covers the CPU projected-cost
+gate only, not host pressure or the GPU row's GPU-side gates.
 Once no such GPU row is READY, ordinary CPU placement resumes.
 
 An eligible-fit GPU row stops holding CPU work back when this host's latest

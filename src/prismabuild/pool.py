@@ -19732,32 +19732,122 @@ class PoolQueue:
         return room, None
 
     @staticmethod
+    def _class_scoped_holder_costs(
+        ledger: "ResourceLedger", controller: object | None,
+    ) -> dict[str, float] | None:
+        """This host's live holder costs by the owner's rule, or ``None`` when unknown (#1589).
+
+        Called under host admission at the token boundary.  It replays the exact
+        terms ``adaptive_cpu.decision`` refuses on (``projected_cpu_cost``):
+        every holder's conservative cost from its declared reservation and its
+        fresh local telemetry (``cpu * 1.25``; the full reservation while its
+        rate is unknown, charged to ``pending`` too, against the fresh host
+        busy baseline).  Measurement holders are not priced here: a measurement
+        on the box refuses the GPU row on its own, and the exemption must not
+        price what it cannot share.  ``None`` when any term does not read --
+        unknown costs are unknown, never zero -- and when there is no
+        controller to own the sample.  Host-local reads only: holder metadata
+        and telemetry the controller already reads under this same lock, and
+        the controller's own cached sample.  No sealed request, no CAS, no
+        shared record beyond the ledger both already hold.
+        """
+        if controller is None:
+            return None
+        base = getattr(controller, "base", None)
+        sample = getattr(controller, "_host_sample", None)
+        cpus = getattr(controller, "cpus", None)
+        if base is None or not isinstance(sample, Mapping) or not isinstance(cpus, list):
+            return None
+        try:
+            now = time.time()
+            sampled = sample.get("sampled_unix", 0)
+            busy = sample.get("busy_cpus")
+            count = sample.get("cpu_count")
+            interval = sample.get("interval_s")
+            if not (type(sampled) in (int, float) and 0 <= now - sampled <= cpu_admission.MAX_SAMPLE_AGE_S):
+                return None
+            if not (isinstance(busy, (int, float)) and math.isfinite(busy)):
+                return None
+            if count != len(cpus) or not (
+                    isinstance(interval, (int, float)) and math.isfinite(interval)):
+                return None
+            active = 0.0
+            pending = 0.0
+            for holder in ledger.held_dir.iterdir():
+                if not holder.is_dir() or holder.name.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX):
+                    continue
+                if holder.name.startswith(ACQUIRING_PREFIX):
+                    continue
+                meta = cpu_admission.read_json(holder / cpu_admission.METADATA)
+                physical = len(list(holder.glob("cpu-*")))
+                reserved = meta.get("declared_cpu", physical)
+                if type(reserved) is not int or reserved <= 0:
+                    if meta or any(holder.iterdir()):
+                        return None
+                    continue
+                if meta.get("measurement"):
+                    return None
+                record = cpu_admission.read_json(Path(str(base)) / "telemetry" / f"{holder.name}.json")
+                cpu: float | None = None
+                valid = (record.get("complete") is True
+                         and 0 <= now - record.get("sampled_unix", 0) <= cpu_admission.MAX_SAMPLE_AGE_S
+                         and record.get("sampled_unix", 0) >= meta.get("admitted_unix", now)
+                         and record.get("action_key", holder.name) == holder.name
+                         and all(type(record.get(kind)) in (int, float) and math.isfinite(record[kind])
+                                 and record[kind] >= 0 for kind in ("cpu_seconds", "wall_seconds")))
+                if valid and record.get("wall_seconds", 0) > 0:
+                    cpu = float(record["cpu_seconds"]) / float(record["wall_seconds"])
+                    if not math.isfinite(cpu) or cpu < 0:
+                        return None
+                if cpu is None:
+                    cost = float(reserved)
+                    pending += cost
+                else:
+                    cost = max(0.05, cpu * 1.25)
+                active += cost
+            return {"active": active, "pending": pending, "busy_cpus": float(busy)}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    @staticmethod
     def _class_scoped_projected_headroom(
         room: Mapping[str, object], demand: Mapping[str, int], *,
-        cpu_count: int,
+        cpu_count: int, holder_costs: Mapping[str, float] | None,
     ) -> dict[str, object] | None:
         """``None`` when the GPU row keeps adaptive headroom beside ``demand``; else why not (#1589).
 
         The token fit is not enough: ``adaptive_cpu.decision`` refuses the GPU
-        row on ``projected_cpu_cost`` when the holder's conservative cost plus
-        the GPU row's own cost crosses the host (a 2-CPU starter costs
-        ``2 * 1.25 = 2.5``; an unlearned GPU row costs its declared demand).
-        Both sides count at that conservative rate here, before admission, so
-        the exemption never spends headroom the GPU row's own decision needs.
-        Arithmetic only; no new read.  ``None`` when the CPU count is unknown.
+        row on ``projected_cpu_cost`` when the host's holder costs plus the GPU
+        row's own cost cross the host.  This replays the owner's rule with the
+        live terms: ``max(busy + pending, active)`` over every holder on the
+        box (``_class_scoped_holder_costs``), plus this candidate at its full
+        reservation (a starter has no rate yet, so the owner charges it in
+        full), plus the GPU row at its declared demand, against the host CPU
+        count.  ``None`` holder costs hold the row: unknown is unknown, never
+        zero.  Arithmetic only; no new read.  A learned cheap GPU cost would
+        only admit more; the declared demand is the conservative side.
         """
+        if holder_costs is None:
+            return {"class_scoped": "holder_costs_unreadable"}
         try:
             total_cpus = int(cpu_count)
-            holder_cost = float(int(demand.get("cpu", 0))) * 1.25
+            active = float(holder_costs["active"])
+            pending = float(holder_costs["pending"])
+            busy = float(holder_costs["busy_cpus"])
+            holder_cost = float(int(demand.get("cpu", 0)))
             gpu_cost = float(int(room["room"].get("cpu", 0)))  # type: ignore[union-attr]
-        except (TypeError, ValueError):
-            return None
+        except (TypeError, ValueError, KeyError):
+            return {"class_scoped": "holder_costs_unreadable"}
         if total_cpus <= 0:
-            return None
-        if holder_cost + gpu_cost > float(total_cpus) + 0.01:
+            return {"class_scoped": "holder_costs_unreadable"}
+        for value in (active, pending, busy, holder_cost, gpu_cost):
+            if not math.isfinite(value) or value < 0:
+                return {"class_scoped": "holder_costs_unreadable"}
+        if max(busy + pending, active) + holder_cost + gpu_cost > float(total_cpus) + 0.01:
             return {"gpu_row": str(room["action_key"])[:12],
                     "kept_for": "class_scoped_cpu_projected_cpu_cost",
-                    "holder_cost": holder_cost, "gpu_cost": gpu_cost,
+                    "active_cpu_cost": active, "pending_cpu_cost": pending,
+                    "host_busy_cpus": busy, "holder_cost": holder_cost, "gpu_cost": gpu_cost,
                     "cpu_count": total_cpus}
         return None
 
@@ -19765,19 +19855,23 @@ class PoolQueue:
     def _class_scoped_beside_room(
         room: Mapping[str, object], *, ledger: "ResourceLedger", identity: object,
         demand: Mapping[str, int], cpu_count: int | None = None,
+        holder_costs: Mapping[str, float] | None = None,
     ) -> dict[str, object] | None:
         """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1589).
 
         Called under host admission, with the row's own demand known, just before
         it takes its tokens; it reads nothing but the free tokens.  The row passes
         only if, after it takes its own, ``room`` (:meth:`_class_scoped_room`) still
-        fits them, and the adaptive projected-cost gate keeps headroom for the
-        GPU row beside the new holder (a 2-CPU starter costs 2.5 CPUs).  The
-        headroom check needs the host CPU count; without one it binds nothing
-        beyond the token fit, and the GPU row's own decision still guards it.
-        Incumbents hold tokens and every earlier admission has taken its share,
-        so the GPU row is never what a class-scoped row delays.  A measurement
-        row is held (its exclusivity contracts are its own).
+        fits them, and -- under adaptive admission -- the projected-cost gate keeps
+        headroom for the GPU row beside every holder on the box plus this new one
+        (:meth:`_class_scoped_projected_headroom`).  The headroom check needs the
+        host CPU count and the live holder costs; the caller passes no count
+        without a controller, and then the token fit stands alone: there is no
+        projected-cost gate to keep headroom for.  Unreadable holder costs hold
+        the row.  A measurement row is held (its exclusivity contracts are its
+        own).  What this proves is bounded: the projected-cost gate at this
+        sample.  Later samples, learned costs, host pressure and the GPU row's
+        own later gates still decide its own claim.
         """
         if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
             return {"class_scoped": "measurement_row"}
@@ -19792,8 +19886,10 @@ class PoolQueue:
                     "available": dict(available), "demand": dict(demand)}
         if cpu_count is not None:
             headroom = PoolQueue._class_scoped_projected_headroom(
-                room, demand, cpu_count=cpu_count)
+                room, demand, cpu_count=cpu_count, holder_costs=holder_costs)
             if headroom is not None:
+                if headroom.get("kept_for") != "class_scoped_cpu_projected_cpu_cost":
+                    return headroom
                 return dict(headroom, available=dict(available), demand=dict(demand))
         return None
 
@@ -21718,12 +21814,26 @@ class PoolQueue:
                                 adaptive = None
                             if not refused and class_scoped:
                                 # #1589: beside the eligible GPU row's own room, now.
-                                # The adaptive headroom needs the host CPU count;
-                                # a funded remainder still pays its holder cost.
+                                # Under adaptive admission the headroom replays the
+                                # owner's rule over every holder on the box plus this
+                                # candidate; a funded remainder still pays its holder
+                                # cost.  Host-local reads only, under this same
+                                # admission lock; unknown costs hold the row.  The
+                                # controller's cached sample is the one its decision
+                                # just used.  Without a controller there is no
+                                # projected-cost gate to keep headroom for, so the
+                                # token fit stands alone.
+                                adaptive_costs = class_cpu_count is not None and controller is not None
+                                try:
+                                    costs = (self._class_scoped_holder_costs(ledger, controller)
+                                             if adaptive_costs else None)
+                                except OSError:
+                                    costs = None
                                 why = self._class_scoped_beside_room(
                                     class_room, ledger=ledger, identity=identity,
                                     demand=reservation_demand,
-                                    cpu_count=class_cpu_count)
+                                    cpu_count=(class_cpu_count if adaptive_costs else None),
+                                    holder_costs=costs)
                                 if why is not None:
                                     refused = True
                                     refusal_source = "deferred_for_ready_gpu_row"
