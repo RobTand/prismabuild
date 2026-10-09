@@ -7371,7 +7371,9 @@ class PoolQueue:
             # movement scripts, spelled as a tool of a protected copy, and its
             # small sealed demand.  The row records the tool the mark was
             # derived for; the host that enforces a reservation checks that
-            # tool against its own copy (``authorized_role``).  ``recompute``
+            # tool against its own mature copy (``authorized_role``).
+            # A retained-store path never derives a role: those bytes are
+            # mutable to ordinary store owners (#1659).  ``recompute``
             # is no part of it.
             from . import movement_actions
             role = movement_actions.capacity_role(
@@ -22060,8 +22062,14 @@ class PoolQueue:
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
                             # A role mark exempts the row only if this host holds
-                            # a protected copy of the tool the row names (#1579).
-                            # Asked only when an election could hold the row.
+                            # a mature protected copy of the tool the row names
+                            # (#1579, #1659). Asked only when an election could
+                            # hold the row. A retained-store path never exempts:
+                            # those bytes are mutable to ordinary store owners,
+                            # so they stay ordinary held rows. Pre-copy rows
+                            # progress because a fresh copy grants no authority
+                            # until it matures (``live_authority``), and the host
+                            # keeps the behaviour of main meanwhile.
                             role_exempt = (bool(census.get("gang_elections"))
                                            and movement_actions.authorized_role(item))
                             gang_blocked = (None if serves_incumbent else

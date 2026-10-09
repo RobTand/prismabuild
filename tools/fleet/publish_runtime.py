@@ -720,6 +720,40 @@ def _seal_generation(root: Path) -> None:
             path.chmod(PUBLISHED_FILE_MODE)
     root.chmod(PUBLISHED_DIRECTORY_MODE)
 
+def _sign_movement_approval(generation: Path) -> None:
+    """Write the movement-role publisher approval sibling (#1659).
+
+    Best effort: without the dedicated publisher principal's signing secret
+    there is no approval, enrolled hosts publish no protected copy, and the
+    fleet keeps the behaviour it had before roles existed. The secret must be
+    0600, owned by the publisher account, and under an account that does not
+    own the runtime store: a same-account key is refused, so a store writer
+    cannot approve its own bytes. A person approves that principal once.
+    """
+    try:
+        import hashlib as _hashlib
+        import hmac as _hmac
+        import os as _os
+        key_path = Path.home() / ".config" / "prismabuild" / "movement-approval.key"
+        info = key_path.stat()
+        if info.st_mode & 0o077 or info.st_uid != _os.geteuid():
+            return
+        try:
+            if info.st_uid == generation.parent.stat().st_uid:
+                return
+        except OSError:
+            return
+        secret = key_path.read_text(encoding="utf-8").strip()
+        if not __import__("re").fullmatch(r"[0-9a-f]{64}", secret):
+            return
+        raw = (generation / "RUNTIME_VERSION.json").read_bytes()
+        digest = _hashlib.sha256(raw).hexdigest()
+        tag = _hmac.new(bytes.fromhex(secret), digest.encode("utf-8"), _hashlib.sha256).hexdigest()
+        sibling = generation.parent / f"{generation.name}.approval"
+        sibling.write_text(tag + "\n", encoding="utf-8")
+    except (OSError, ValueError):
+        return
+
 
 def _unseal_tree(root: Path) -> None:
     """Undo ``_seal_generation`` on a tree that is still private to us."""
@@ -2140,6 +2174,7 @@ def _run_publication(args) -> int:
         _fsync_directory(stage)
         os.replace(stage, generation)
         _fsync_directory(store)
+        _sign_movement_approval(generation)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
                               "path": str(generation), "activated": False,

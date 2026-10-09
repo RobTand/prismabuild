@@ -125,6 +125,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
+    ready_versions: set[tuple[str, float]] = set()
+    claimed_versions: set[tuple[str, float]] = set()
     for state in (pool.READY, pool.CLAIMED, "passes"):
         directory = queue.root / state
         try:
@@ -178,12 +180,22 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             # CLAIMED one stays strict too: a running
                             # incumbent the census cannot read is unknown.
                             unorderable.setdefault(key, []).append(record)
-                            ready.add(key)
+                            try:
+                                ready_versions.add((key, float(record.get("published_unix", math.nan))))
+                            except (TypeError, ValueError):
+                                pass
                             continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
-                    if state == pool.READY:
-                        ready.add(key)
+                    try:
+                        version = (key, float(record.get("published_unix", math.nan)))
+                    except (TypeError, ValueError):
+                        version = None
+                    if version is not None:
+                        if state == pool.CLAIMED and not is_mark:
+                            claimed_versions.add(version)
+                        elif state == pool.READY:
+                            ready_versions.add(version)
                     if state == pool.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
@@ -238,7 +250,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
                         for key in rows.keys() | unorderable.keys()}, count,
-                frozenset(ready))}
+                ready_versions=ready_versions, claimed_versions=claimed_versions)}
 
 
 def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict | None:
@@ -262,8 +274,27 @@ def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict 
     return None
 
 
-def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
-                    waiting: frozenset[str] = frozenset()) -> dict:
+def _elected_member_state(record: dict, key: str, *, ready_versions: set, claimed_versions: set) -> str:
+    """Whether the elected member is pending, running, or terminal (#1659)."""
+    published = None
+    for member in record.get("members", []):
+        if isinstance(member, dict) and member.get("action_key") == key:
+            try:
+                published = float(member.get("published_unix", math.nan))
+            except (TypeError, ValueError):
+                published = None
+            break
+    if published is None or not math.isfinite(published):
+        return "terminal"
+    if (key, published) in claimed_versions:
+        return "claimed"
+    if (key, published) in ready_versions:
+        return "ready"
+    return "terminal"
+
+
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *,
+                    ready_versions: set | None = None, claimed_versions: set | None = None) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
@@ -273,12 +304,9 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
     admission, which also serializes this host's readers, so no member key
     joins the M lock set.
 
-    ``waiting`` names the member rows that are READY. An election carries
-    ``waiting`` when its member is: only a waiting member has a demand to
-    reserve (#1579). A claimed member holds its tokens on its host already, and
-    a reservation of them would count them twice. A member that has ended has no
-    demand left at all. The fence against strictly lower priority stays for the
-    gang's whole life, whatever its members do.
+    ``member_state`` distinguishes READY, CLAIMED, and terminal publications.
+    Only READY members reserve. CLAIMED members already hold ledger tokens.
+    The lower-priority fence lasts until the gang ends.
     """
     from . import _gang
     directory = _gang.root(queue)
@@ -287,6 +315,8 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
     except FileNotFoundError:
         return {}  # gang admission was never used on this pool
     found: dict[str, dict] = {}
+    ready = ready_versions if ready_versions is not None else set()
+    claimed = claimed_versions if claimed_versions is not None else set()
     try:
         with entries:
             for entry in entries:
@@ -310,7 +340,8 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int,
                         "group": group, "index": index, "action_key": election["action_key"],
                         "host": election["host"], "priority": election["priority"], "rank": rank,
                         "demand": _member_demand(rows, record, election["action_key"]),
-                        "waiting": election["action_key"] in waiting}
+                        "member_state": _elected_member_state(
+                            record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -555,10 +586,12 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
     """Whether a gang first published at ``first_published`` reserves its hosts at ``now``.
 
     Two things hold: the gang has waited past :data:`GANG_RESERVE_AFTER_S`,
-    and this host holds the protected copy of its runtime
+    and this host holds a mature protected copy of its runtime
     (``runtime_publication.live_authority``).  Without that copy nothing a gang
     waits on (a stage mover, an egress) can be told from other work, so the
     reservation would hold the gang's own movers and the gang could not start.
+    A fresh copy also grants no authority until it matures, so pre-copy rows
+    that execute mutable retained bytes (which never get a role) drain first.
     The host then keeps what it had before the reservation: the fence against
     strictly lower priority, and nothing more.
     """
@@ -568,27 +601,23 @@ def reserves_after(first_published: object, now: float, *, authority: bool) -> b
 
 
 def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
-    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`).
-
-    Only a member that is still waiting (its row is READY) reserves. A member
-    that is CLAIMED holds its demand on the ledger, and reserving it again would
-    refuse rows that fit beside it. A member that has ended has nothing to
-    reserve, and its host is idle for other work.
-    """
+    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
+    state = chosen.get("member_state", "ready")
+    if state not in ("ready", None):
+        return False
     rank = chosen.get("rank")
-    return (chosen.get("waiting") is True
-            and reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
-                               authority=authority))
+    return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
+                          authority=authority)
 
 
 def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool) -> int | None:
     """The highest priority among gangs that reserve ``host`` now, else ``None``.
 
     A gang reserves a host once its wait passed the bound, on a host that holds
-    the protected copy (``authority``, :func:`reserves_after`).  The reservation
-    wins over a measurement of the gang's priority or lower there: the
-    measurement's fence and withhold are suspended and it does not elect.  A
-    strictly HIGHER-priority measurement keeps its place ahead of the gang;
+    a mature protected copy (``authority``, :func:`reserves_after`).  The
+    reservation wins over a measurement of the gang's priority or lower there:
+    the measurement's fence and withhold are suspended and it does not elect.
+    A strictly HIGHER-priority measurement keeps its place ahead of the gang;
     that is the priority order, not a reservation exception (#1579).
     """
     reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
@@ -666,11 +695,11 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
     """What a live gang election does to ``item`` on its host (#1517, #1579).
 
     Strictly lower priority is fenced from election, as before.  Equal
-    priority is not touched while the gang is young, or on a host without the
-    protected copy that lets a reservation tell PrismaBuild's movement nodes
-    from other work (``authority``, :func:`reserves_after`; absent means
-    without).  Past
-    :data:`GANG_RESERVE_AFTER_S`, on a host that holds the copy, the gang
+    priority is not touched while the gang is young, or on a host without a
+    mature protected copy that lets a reservation tell PrismaBuild's movement
+    nodes from other work (``authority``, :func:`reserves_after`; absent means
+    without, including a fresh copy that has not matured).  Past
+    :data:`GANG_RESERVE_AFTER_S`, on a host that holds a mature copy, the gang
     RESERVES its elected member's declared demand on the host, and a row is
     admitted only if the reservation survives it
     (:func:`reservation_shortfall`).  Never held: the gang's own members and
@@ -679,11 +708,11 @@ def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
     movement node PrismaBuild itself sealed (a stage or RAM egress, an export,
     a resident evict, a stage mover, a RAM promotion): the running action, and
     through it the gang, waits on those.  The caller decides ``exempt`` from
-    the row's mark and its own host's protected copy
-    (``movement_actions.authorized_role``); a mark alone never exempts.  Any
-    other row is held by its demand.  Higher priority is never held.  The
-    returned election carries ``reservation`` (the shortfall) when it is this
-    rule that holds.
+    the row's mark and its own host's mature protected copy
+    (``movement_actions.authorized_role``); a mark alone never exempts, and a
+    retained-store path never exempts.  Any other row is held by its demand.
+    Higher priority is never held.  The returned election carries
+    ``reservation`` (the shortfall) when it is this rule that holds.
     """
     now = time.time() if now is None else now
     for key, chosen in sorted(census.get("gang_elections", {}).items()):

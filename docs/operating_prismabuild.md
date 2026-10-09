@@ -3488,33 +3488,50 @@ the resident evicts. A host trusts those nodes only from a root-owned copy of th
 runtime generation it runs. An ordinary runtime store belongs to the user that submits
 work, so a receipt written there proves integrity and not authority.
 
-**Enrollment is one step per host, once.** There is no root step per generation and no
-person in the publication loop. An administrator runs this on each fleet host that
-claims work, with the host's authorized root administration method:
+**Enrollment is one step per host, once, plus one publisher account once.** There is
+no root step per generation and no person in the publication loop. A person (Rob or
+the CEO) creates the dedicated publisher account once (for example
+`prismabuild-publisher`, with no submit or worker rights) and approves it as the
+signing principal. Generate one 64-hex secret once and keep it with that account:
+the publisher signs with it, every host verifies with it. Ordinary submitters and
+store owners never hold it.
 
 ```bash
+python3 -c "import secrets; print(secrets.token_hex(32))" > /tmp/movement-approval.key
+chmod 0600 /tmp/movement-approval.key
+# On the publisher host, as the dedicated publisher account (never as a worker or
+# store owner; its home is readable only by that account):
+mkdir -p ~/.config/prismabuild
+cp /tmp/movement-approval.key ~/.config/prismabuild/movement-approval.key
+chmod 0600 ~/.config/prismabuild/movement-approval.key
+# Then, as an administrator, on each fleet host that claims work:
 pb_enrollment_dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
 cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
    /mnt/shared/prismabuild-fleet/repo/src/prismabuild/runtime_publication.py "$pb_enrollment_dir/"
-sudo bash "$pb_enrollment_dir/install_movement_publisher.sh"
+sudo bash "$pb_enrollment_dir/install_movement_publisher.sh" --approval-key-file /tmp/movement-approval.key
 ```
 
 Stage both files on local storage as the publishing user, so NFS root squash stays on.
 The installer puts `runtime_publication.py` under the root-owned `/opt/prismabuild`,
 writes `/etc/prismabuild/movement-publish.json` (the live runtime pointer, the
-generation store and the status file) and enables `prismabuild-movement-publish.timer`.
+generation store and the status file), writes the verification secret root-only
+(`/etc/prismabuild/movement-approval.key`, 0400) and enables `prismabuild-movement-publish.timer`.
 It refuses an install under an ancestor that has no root custody.
 
 **What the timer does.** Once a minute, `runtime_publication.py` reads the live runtime
-pointer. When the generation it names has no copy on this host, the unit copies every
-member of the generation's receipt, byte for byte and without executing any of it, into
-`/opt/prismabuild/movement-generations/<generation>`. It checks each member against the
-receipt, writes `MOVEMENT_PUBLICATION.json`, seals the copy and renames it into place.
-Copies are append-only. Each new live generation therefore gets its copy within about a
-minute of the pointer moving, with no one present. This is the delegation that
-[the client upgrader](client_upgrade.md) already makes: root copies what the store's
-live pointer names. The receipt proves copy consistency, not who published; keep access
-to publish generations with the principals that administer these hosts.
+pointer. When the generation it names has no copy on this host, it first checks the
+publisher approval sibling (`<generation>.approval` in the store, the HMAC of the receipt
+digest under the publisher secret). `tools/fleet/publish_runtime.py`, run as the
+dedicated publisher account, writes that sibling automatically after each publication
+from its 0600 signing secret. A key in the same account that owns the runtime store is
+refused, so a store writer cannot approve its own bytes. Without a valid approval there
+is no copy. It then copies every member of the generation's receipt, byte for byte and
+without executing any of it, into `/opt/prismabuild/movement-generations/<generation>`.
+It checks each member against the receipt, writes `MOVEMENT_PUBLICATION.json` (with
+`published_unix`), seals the copy and renames it into place. Copies are append-only. Each
+approved live generation therefore gets its copy within about a minute of the pointer
+moving, with no one present. A fresh copy grants no reservation authority until it is
+older than `PROTECTED_COPY_MATURITY_S` (600 s), so pre-copy retained rows drain first.
 
 **Check a host.**
 
@@ -3530,11 +3547,15 @@ tier record shows the effect: `mover_tools_root` names a path under
 `/opt/prismabuild/movement-generations` once the host holds the copy of its tier loop's
 generation, and its own generation directory before that.
 
-**A missing or stale copy is not an outage.** The reservation applies only on a host
-that holds the copy of the generation its process runs. Until the copy exists (the host
-is not enrolled, the unit failed, a new generation has not been copied yet) the host
-behaves as before the reservation: it fences strictly lower priority work for an
-elected gang and holds nothing else. No action is refused and no mover fails to launch.
+**A missing, stale or fresh copy is not an outage.** The reservation applies only on
+a host that holds a mature copy of the generation its process runs. Until the copy
+exists and matures (the host is not enrolled, the unit failed, a new generation has
+not been copied yet, or the copy just arrived) the host behaves as before the
+reservation: it fences strictly lower priority work for an elected gang and holds
+nothing else. No action is refused and no mover fails to launch. No retained-store
+path ever exempts: those bytes are mutable, so a retained mover is an ordinary row
+once the copy matures. While the copy is fresh the gang starts through its pre-copy
+movers, including movers sealed by the previous sealer without isolated Python.
 Movers are sealed from the tool root their tier announces, which a host announces only
 when it has the copy, so a box without the copy is never sent a path it lacks. An
 `error` in the status file is the thing to fix, and nothing waits on it.

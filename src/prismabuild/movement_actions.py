@@ -110,13 +110,15 @@ MOVEMENT_EXECUTION_SCOPE = {"portability": "portable", "platform_key": None,
 #: the gang, waits on them.  Nothing here is a flag a submitter can declare:
 #: ``PoolQueue.publish`` refuses both names in a sealed action and derives the
 #: role from the node's executed identity (:func:`capacity_role`).  The mark is
-#: honoured only on a host that holds a protected copy of the tool the row
-#: names (:func:`authorized_role`), so a host judges what it enforces.
-CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
+#: honoured only on a host that holds a mature protected copy of the tool the
+#: row names (:func:`authorized_role`), so a host judges what it enforces. A row
+#: that executes retained-store bytes never gets a role: those bytes are mutable
+#: to ordinary store owners, so exempting them would exempt arbitrary code.
 #: The row field that names the tool a role mark was derived for.
 ROLE_SCRIPT_FIELD = "movement_script"
 PRODUCED_EXPORT_SCRIPT = "produced_export.py"
 LOCAL_RESIDENT_SCRIPT = "local_resident.py"
+CAPACITY_ROLE_FIELDS = ("returns_capacity", "serves_residency")
 
 
 class CapacityRole(NamedTuple):
@@ -131,6 +133,10 @@ class CapacityRole(NamedTuple):
 #: submitter cannot rewrite.  Anything else runs the script under an
 #: interpreter the submitter chose, so it is an ordinary row.
 MOVEMENT_PYTHON = "/usr/bin/python3"
+MOVEMENT_PYTHON_ARGS = ("-I",)
+
+#: Isolated launch: ``-I`` runs Python without user-site startup code, so a
+#: submitter-controlled ``~/.local`` cannot run before the protected tool.
 
 #: Extra sealed environment names a movement node carries past
 #: :func:`movement_environment`'s own (``PATH``, the locale): the Docker
@@ -165,6 +171,16 @@ def _movement_environment_ok(action: Mapping[str, object], command: list) -> boo
             and str(marker).endswith(f"/{owner}.used"))
 
 
+def effective_local_resident_operation(argv: object) -> str | None:
+    """Read the operation with the local resident tool's shared parser."""
+    from . import local_resident
+    return local_resident.effective_operation(argv)
+
+
+def _tool_arguments(command: list) -> list:
+    """The tool and its arguments: the interpreter and ``-I`` come first (#1659)."""
+    return command[1 + len(MOVEMENT_PYTHON_ARGS):]
+
 def _local_resident_evict(command: list) -> bool:
     """Whether ``command`` runs the evict operation, spelled once, literally (#1579).
 
@@ -178,16 +194,12 @@ def _local_resident_evict(command: list) -> bool:
         return False
     if any(part != "--operation" and _spells_operation(part) for part in command):
         return False
-    from . import local_resident
-    return local_resident.effective_operation(command[2:]) == "evict"
+    tool_args = _tool_arguments(command)
+    return effective_local_resident_operation(tool_args[1:]) == "evict"
 
 
 def _spells_operation(part: str) -> bool:
-    """Whether ``part`` is the ``--operation`` option in any spelling argparse accepts.
-
-    The option name, any unambiguous prefix of it (``--o`` is one: no other
-    option of the tool starts with ``--o``), and each of those with ``=value``.
-    """
+    """Recognize literal, abbreviated, and equals forms of the operation option."""
     head = part.split("=", 1)[0]
     return len(head) >= 3 and "--operation".startswith(head)
 
@@ -203,22 +215,14 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     and the box that enforces the role need not agree on anything but the
     definition.
 
-    * ``task.argv`` equals exactly the bash capture wrapper
-      :func:`seal_movement_action` builds around ``params.command`` and
-      ``task.result_path`` (:func:`captured_command`), so ``params.command`` is
-      what runs;
-    * the task carries the :data:`MOVEMENT_TASK` fields and the execution scope
-      is :data:`MOVEMENT_EXECUTION_SCOPE`;
-    * the sealed environment is exactly the movement launch
-      (:func:`movement_environment` plus the sealer's Docker ownership), so no
-      ``BASH_ENV``, ``PYTHONPATH`` or other startup hook reaches the wrapper;
+    * the interpreter runs isolated (``-I`` after :data:`MOVEMENT_PYTHON`), so
+      no user-site startup code runs before the protected tool (#1659);
     * the interpreter is :data:`MOVEMENT_PYTHON`, the root-owned system python
       the fleet seals; a submitter-owned python-named executable is ordinary;
     * the script is spelled as a tool of a protected runtime copy
       (``runtime_publication.spelled_member``), never a retained-store path or
       an alias.  Whether this host holds that copy is the claiming host's
       question (:func:`authorized_role`);
-    * the declared demand is the small one the node is sealed with.
 
     ``returns_capacity``: ``stage_release.py``, ``produced_export.py`` or a
     ``local_resident.py`` whose effective operation (the tool's own
@@ -235,10 +239,15 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     if not isinstance(params, Mapping) or not isinstance(task, Mapping):
         return None
     command = params.get("command")
-    if (not isinstance(command, list) or len(command) < 2
+    if (not isinstance(command, list) or len(command) < 3
             or not all(isinstance(part, str) for part in command)
             or not isinstance(demand, Mapping) or demand.get("gpu")):
         return None
+    if (command[0] != MOVEMENT_PYTHON
+            or command[1:1 + len(MOVEMENT_PYTHON_ARGS)] != list(MOVEMENT_PYTHON_ARGS)
+            or not runtime_publication.spelled_member(command[1 + len(MOVEMENT_PYTHON_ARGS)])):
+        return None
+    script_index = 1 + len(MOVEMENT_PYTHON_ARGS)
     result_path = task.get("result_path")
     if (not isinstance(result_path, str)
             or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
@@ -247,13 +256,11 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
             or not _movement_environment_ok(action, command)):
         return None
-    if command[0] != MOVEMENT_PYTHON or not runtime_publication.spelled_member(command[1]):
-        return None
-    script = Path(command[1]).name
+    script = Path(command[script_index]).name
     role = next((name for name, scripts in ROLE_SCRIPTS.items() if script in scripts), None)
-    if role == "serves_residency":
+    if script in (STAGE_MOVER_SCRIPT, RAM_PROMOTE_SCRIPT):
         if isinstance(residency, Mapping) and "range_start_bytes" in residency:
-            return CapacityRole(role, command[1])
+            return CapacityRole("serves_residency", command[script_index])
         return None
     if role is None or (script == LOCAL_RESIDENT_SCRIPT and not _local_resident_evict(command)):
         return None
@@ -264,7 +271,7 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
             return None
         if kind not in ("cpu", "mem_gb") and "@" not in str(kind):
             return None
-    return CapacityRole(role, command[1])
+    return CapacityRole("returns_capacity", command[script_index])
 
 
 def authorized_role(item: Mapping[str, object]) -> bool:
@@ -779,7 +786,11 @@ def seal_movement_action(
         for name in _MOVEMENT_PARAM_KEYS
         if name in template["params"]                     # type: ignore[operator]
     }
-    params["command"] = list(command)
+    isolated = list(command)
+    if (len(isolated) >= 1 and isolated[0] == MOVEMENT_PYTHON
+            and isolated[1:1 + len(MOVEMENT_PYTHON_ARGS)] != list(MOVEMENT_PYTHON_ARGS)):
+        isolated[1:1] = list(MOVEMENT_PYTHON_ARGS)
+    params["command"] = isolated
     params["demand"] = {str(key): int(value) for key, value in dict(demand).items()}
     params["placement"] = {"required_tags": list(tags)}
     # A mover's retry policy is its own, not the consumer's (#603, #950).  The

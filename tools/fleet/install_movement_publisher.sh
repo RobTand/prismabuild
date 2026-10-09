@@ -3,16 +3,21 @@
 #
 # After this runs, the host copies each live runtime generation into the
 # root-owned /opt/prismabuild/movement-generations by itself, once a minute,
-# with no person and no root step per generation. A gang's reservation
-# (#1579) trusts a movement tool only from such a copy; until the copy of the
-# generation a process runs exists, the host keeps the behaviour it had before
-# the reservation, and nothing is refused.
+# with no person and no root step per generation.  The copy needs a publisher
+# approval sibling (HMAC of the receipt digest) that only the dedicated
+# publisher account can write: give this installer the 64-hex verification
+# secret once (``--approval-key HEX`` or ``--approval-key-file PATH``).
+# A generation without a valid approval gets no copy, and the host keeps the
+# behaviour it had before the reservation, and nothing is refused.  A fresh copy
+# grants no reservation authority until it matures (600 s), so pre-copy retained
+# rows drain first.
 #
 # Like the client upgrader (docs/client_upgrade.md), this delegates one act to
-# the publisher of the generation store: root copies what the store's live
-# pointer names, after checking every member against the receipt. The receipt
-# proves copy consistency, not publisher authenticity, so access to publish
-# generations must stay with the principals that administer these hosts.
+# the dedicated publisher account: root copies what that account approved, after
+# checking every member against the receipt. The receipt proves copy consistency,
+# not publisher authenticity, so the signing secret must live under an account
+# that does not own the runtime store (0600, publisher-only). A person approves
+# that principal once.
 #
 # Stage this file and runtime_publication.py on local storage as the
 # publishing user (NFS root squash stays on), then run it as root:
@@ -22,6 +27,22 @@
 #   sudo bash "$dir/install_movement_publisher.sh"
 set -euo pipefail
 umask 022
+approval_key=""
+approval_key_file=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --approval-key) approval_key="${2:-}"; shift 2;;
+        --approval-key-file) approval_key_file="${2:-}"; shift 2;;
+        *) echo "unknown argument: $1" >&2; exit 1;;
+    esac
+done
+if [ -n "$approval_key_file" ]; then
+    approval_key=$(tr -d ' \t\r\n' < "$approval_key_file")
+fi
+if ! [[ "$approval_key" =~ ^[0-9a-f]{64}$ ]]; then
+    echo 'give the 64-hex verification secret once: --approval-key HEX or --approval-key-file PATH' >&2
+    exit 1
+fi
 if [ "$(id -u)" -ne 0 ]; then
     echo 'install_movement_publisher.sh must run as root' >&2
     exit 1
@@ -46,6 +67,9 @@ install -d -o root -g root -m 0755 /opt/prismabuild/movement-generations
 install -d -o root -g root -m 0755 /etc/prismabuild
 install -d -o root -g root -m 0755 /var/lib/prismabuild-movement-publish
 install -o root -g root -m 0644 "$module" /opt/prismabuild/runtime_publication.py
+printf '%s\n' "$approval_key" > /etc/prismabuild/movement-approval.key
+chmod 0400 /etc/prismabuild/movement-approval.key
+chown root:root /etc/prismabuild/movement-approval.key
 config=/etc/prismabuild/movement-publish.json
 if [ ! -e "$config" ]; then
     cat > "$config" <<'CONFIG'
