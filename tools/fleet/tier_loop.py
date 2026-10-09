@@ -64,6 +64,7 @@ from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
 import deferred_release  # noqa: E402
+import stage_rounding  # noqa: E402
 import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
@@ -7884,6 +7885,253 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
     return events
 
 
+def _stranded_producer_dead(queue: pool.PoolQueue,
+                            record: Mapping[str, object]
+                            ) -> tuple[str, str]:
+    """The bound producer attempt's state, read by the lane's rule.
+
+    Returns ``(state, owner)``: ``dead``, ``succeeded``, ``live`` or
+    ``unknown`` over the instance the funding record names, through
+    ``_producer_attempt_state``. Any unreadable or disagreeing step
+    answers ``unknown`` and retains; a live or unreadable verdict
+    changes nothing.
+    """
+    from prismabuild import produced_output as _po
+
+    try:
+        owner = str(record.get("owner_action_key") or "")
+        nonce = str(record.get("owner_nonce") or "")
+        template_id = str(record.get("template_id") or "")
+        batch_id = str(record.get("batch_id") or "")
+        owner_scope = str(record.get("owner_scope_id") or "")
+    except (AttributeError, TypeError, ValueError):
+        return ("unknown", "")
+    if (not _is_hex64(owner) or not nonce or not template_id
+            or not batch_id or not owner_scope):
+        return ("unknown", owner)
+    try:
+        residency = queue.root / pool.RESIDENCY
+        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+                 / f"{template_id}.{nonce}")
+        instance = _po.validate_instance(
+            json.loads((scope / "instance.json").read_text()))
+        template = _po.validate_template(json.loads(
+            (residency / _po.OUTPUT_TEMPLATES_SUBDIR
+             / f"{template_id}.json").read_text()))
+    except (OSError, ValueError):
+        return ("unknown", owner)
+    attempt = instance.get("owner_attempt")
+    if (not isinstance(attempt, Mapping)
+            or _po.instance_dir(queue.root, instance) != scope
+            or str(attempt.get("nonce")) != nonce
+            or str(attempt.get("scope_id")) != owner_scope
+            or _po.template_sha256(template)
+            != instance.get("template_sha256")
+            or str(record.get("template_sha256"))
+            != instance.get("template_sha256")):
+        return ("unknown", owner)
+    try:
+        return (str(_po._producer_attempt_state(queue, instance)), owner)
+    except (OSError, ValueError, pool.PoolContractError):
+        return ("unknown", owner)
+
+
+def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
+                                    record: Mapping[str, object]
+                                    ) -> tuple[bool, str]:
+    """Whether every prewrite path of the bound batch is proven absent.
+
+    Returns ``(absent, reason)``. A present or unreadable path (any
+    ``lstat`` fault but ``ENOENT``), a missing or corrupt prewrite
+    record, or a record that fails validation answers absent False:
+    present or unprovable retains, only ``ENOENT`` on every named
+    path proves the mover never laid bytes.
+    """
+    from prismabuild import produced_output as _po
+
+    try:
+        owner = str(record.get("owner_action_key") or "")
+        nonce = str(record.get("owner_nonce") or "")
+        template_id = str(record.get("template_id") or "")
+        batch_id = str(record.get("batch_id") or "")
+        tier_id = str(record.get("tier_id") or "")
+        owner_scope = str(record.get("owner_scope_id") or "")
+    except (AttributeError, TypeError, ValueError):
+        return (False, "funding binding unreadable")
+    if (not _is_hex64(owner) or not nonce or not template_id
+            or not batch_id or not tier_id or not owner_scope):
+        return (False, "funding binding unreadable")
+    try:
+        residency = queue.root / pool.RESIDENCY
+        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+                 / f"{template_id}.{nonce}")
+        instance = _po.validate_instance(
+            json.loads((scope / "instance.json").read_text()))
+    except (OSError, ValueError):
+        return (False, "producer instance unreadable")
+    attempt = instance.get("owner_attempt")
+    if (not isinstance(attempt, Mapping)
+            or _po.instance_dir(queue.root, instance) != scope
+            or str(attempt.get("nonce")) != nonce
+            or str(attempt.get("scope_id")) != owner_scope):
+        return (False, "funding, instance and attempt disagree")
+    try:
+        prewrite = _po._read_prewrite(
+            _po._prewrites_dir(queue.root, instance)
+            / f"{batch_id}.prewrite.json")
+    except _po.ProducedOutputError as exc:
+        return (False, f"prewrite unreadable: {exc}")
+    if prewrite is None:
+        return (False, "prewrite record absent")
+    if str(prewrite.get("tier")) != tier_id:
+        return (False, "prewrite names another tier")
+    if (str(prewrite.get("owner_action_key")) != owner
+            or dict(prewrite.get("owner_attempt", {}))
+            != dict(instance.get("owner_attempt", {}))):
+        return (False, "prewrite names another attempt")
+    for planned in (prewrite.get("paths", []) or []):
+        try:
+            os.lstat(str(planned))
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return (False, f"prewrite path unreadable: {planned}: {exc!r}")
+        return (False, f"prewrite path present: {planned}")
+    return (True, "")
+
+
+def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
+                                         path) -> list[dict[str, object]]:
+    """Roll back one never-started output intent through the pool (#1555).
+
+    Holds the mover's transition lock from the first re-read to the
+    token release, so a publication or claim between the proof and
+    the release cannot meet freed tokens: ``publish`` and ``claim``
+    take the same per-key lock, so a republished row either lands
+    before this lock (and the fresh census refuses) or after it
+    (and the new claim takes tokens this already returned). Acts
+    only when all hold under that lock: the producer attempt ended
+    in failure (``dead`` by ``_producer_attempt_state``; ``live``,
+    ``succeeded`` and ``unknown`` refuse), the mover is neither
+    ready nor claimed, the record is ``transferring`` or ``released``,
+    and every prewrite path of the bound batch is proven absent.
+    Present or unreadable paths retain the reservation.
+    The pool's nonexecution proof refuses committed batches, terminal
+    or claimed movers, staged bytes, and live leases.
+    Release tokens through ``release_tier_holder`` first.
+    Verify that no tokens remain before the ordinary funding rollback.
+    A fault can leave ``transferring`` with no tokens; the next pass
+    completes the rollback under the same lock and fresh checks.
+    An old ``released`` record with held tokens follows the same proof.
+    A live or unreadable verdict changes nothing.
+    """
+    events: list[dict[str, object]] = []
+    stem = Path(str(path)).name
+    if not stem.endswith(".output-funding.json"):
+        return events
+    stem = stem[: -len(".output-funding.json")]
+    mover_name, dot, scan_tier = stem.rpartition(".")
+    if not dot or len(mover_name) != 64 or not scan_tier:
+        return events
+    try:
+        with queue._transition_locked(mover_name,
+                                      blocking=False) as acquired:
+            if not acquired:
+                return events
+            events.extend(_reconcile_stranded_output_funding_locked(
+                queue, mover_name, scan_tier))
+    except (OSError, pool.PoolContractError, ValueError):
+        pass
+    return events
+
+
+def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
+                                              mover_name: str, scan_tier: str
+                                              ) -> list[dict[str, object]]:
+    """Locked body of the stranded repair; the caller holds the lock."""
+    from prismabuild import pool as _pool_mod
+
+    events: list[dict[str, object]] = []
+
+    def defer(reason: str) -> list[dict[str, object]]:
+        events.append({"event": "output-funding-reconcile-deferred",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "error": reason})
+        return events
+
+    try:
+        for state in (_pool_mod.READY, _pool_mod.CLAIMED):
+            if _pool_mod._read_json(
+                    queue.item_path(state, mover_name)) is not None:
+                return events
+        withdrawn = _pool_mod._read_json(
+            queue.item_path(_pool_mod.WITHDRAWN, mover_name))
+        if withdrawn is None:
+            return events
+    except (OSError, _pool_mod.PoolContractError, ValueError) as exc:
+        return defer(f"mover census unreadable: {exc!r}")
+    try:
+        record, file_state = queue.output_funding_file_state(
+            mover_name, scan_tier)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return defer(repr(exc))
+    if file_state == "absent":
+        return events
+    if file_state != "ok" or not isinstance(record, Mapping):
+        return defer(f"funding file state: {file_state}")
+    state = str(record.get("state"))
+    if state not in ("transferring", "released"):
+        return events
+    if (str(record.get("mover_action_key") or "") != mover_name
+            or str(record.get("tier_id") or "") != scan_tier):
+        return defer("funding record names another mover or tier")
+    producer, _owner = _stranded_producer_dead(queue, record)
+    if producer != "dead":
+        if producer == "unknown":
+            return defer("producer verdict unreadable")
+        return events
+    absent, why = _stranded_prewrite_paths_absent(queue, record)
+    if not absent:
+        if why.startswith("prewrite path present"):
+            return events
+        return defer(why)
+    try:
+        outcome = queue._output_funding_nonexecution_locked(record)
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return defer(repr(exc))
+    if outcome is None:
+        return defer("nonexecution proof undecided")
+    if outcome is not True:
+        return events
+    try:
+        freed = int(queue.release_tier_holder(scan_tier, mover_name))
+        # The ordinary release can swallow an I/O error or return after
+        # only some token moves. Its count is not proof of an empty holder.
+        if pool.held_names_visible(queue.tier_ledger(scan_tier), mover_name):
+            return defer("token release incomplete")
+    except (OSError, pool.PoolContractError, ValueError) as exc:
+        return defer(repr(exc))
+    if freed:
+        events.append({"event": "output-funding-tokens-released",
+                       "tier_id": str(scan_tier), "mover": mover_name,
+                       "released_gib": freed})
+    if state == "transferring":
+        try:
+            outcome = queue._release_never_started_funding_locked(
+                mover_name, scan_tier,
+                generation=str(record.get("generation")))
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            return defer(repr(exc))
+        if outcome is None:
+            return defer("funding rollback undecided")
+        if outcome is not True:
+            return events
+        events.append({"event": "output-funding-reconcile-released",
+                       "tier_id": str(scan_tier), "mover": mover_name})
+    return events
+
+
+
 def _settle_protected(queue: pool.PoolQueue,
                         protection: Mapping[str, object]) -> list[dict[str, object]]:
     """Move held fences onto their published movers; release the moot ones.
@@ -8024,10 +8272,15 @@ def _settle_protected(queue: pool.PoolQueue,
     try:
         funding_dir = queue.root / pool.TIER_FUNDING
         funding_files = sorted(funding_dir.glob("*.funding.json"))
+        funding_files += sorted(funding_dir.glob("*.output-funding.json"))
     except (OSError, pool.PoolContractError, ValueError):
         funding_files = []
     for funding_path in funding_files:
         stem = funding_path.name
+        if stem.endswith(".output-funding.json"):
+            events.extend(_reconcile_stranded_output_funding(
+                queue, funding_path))
+            continue
         if not stem.endswith(".funding.json"):
             continue
         stem = stem[: -len(".funding.json")]
@@ -9842,6 +10095,22 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
+def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str,
+                ) -> tuple[int, int, int]:
+    """Byte side of the mint split, read beside the token split.
+
+    Sums ``bytes_staged`` over complete, unrefused receipts for the
+    landed side, and the sealed plan range for each in-flight holder.
+    A holder with no plan leg adds its tokens to unknown, never to
+    waste. Returns ``(landed_bytes, in_flight_bytes, unknown_gib)``.
+    """
+    try:
+        split = stage_rounding.landed_and_in_flight_bytes(queue, tier_id, kind)
+    except (OSError, pool.PoolContractError, ValueError):
+        return (0, 0, 0)
+    return (split[1], split[3], split[4])
+
+
 def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
                       writable_tokens: int | None = None,
                       writable_reader=None,
@@ -9898,6 +10167,11 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
             supply = min(supply, int(cap))
         seen["landed"] = landed
         seen["in_flight"] = in_flight
+        landed_bytes, flight_bytes, unknown_gib = _mint_bytes(
+            queue, tier_id, kind)
+        seen["landed_bytes"] = landed_bytes
+        seen["in_flight_bytes"] = flight_bytes
+        seen["in_flight_unknown_gib"] = unknown_gib
         seen["supply"] = supply
         seen["writable"] = writable
         merged = {str(k): int(v) for k, v in dict(extra_tokens or {}).items()}
@@ -9906,6 +10180,9 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
 
     result = queue.mint_tier_capacity_guarded(tier_id, wanted)
     return {"landed": seen["landed"], "in_flight": seen["in_flight"],
+            "landed_bytes": seen.get("landed_bytes", 0),
+            "in_flight_bytes": seen.get("in_flight_bytes", 0),
+            "in_flight_unknown_gib": seen.get("in_flight_unknown_gib", 0),
             "supply": seen["supply"], "writable": seen["writable"],
             "ledger": result}
 
@@ -10861,6 +11138,18 @@ def _cycle(
             record["held_gib"] = minted["landed"] + minted["in_flight"]
             record["landed_gib"] = minted["landed"]
             record["in_flight_gib"] = minted["in_flight"]
+            record["landed_bytes"] = minted.get("landed_bytes", 0)
+            record["in_flight_bytes"] = minted.get("in_flight_bytes", 0)
+            unknown_gib = int(minted.get("in_flight_unknown_gib", 0))
+            record["in_flight_unknown_gib"] = unknown_gib
+            record["landed_rounding_gib"] = stage_rounding.rounding_gib(
+                minted["landed"], int(minted.get("landed_bytes", 0)),
+                storage_tiers.GIB)
+            # Unknown holders stay in the in-flight admission deduction
+            # but never in waste: only known-plan tokens bound bytes.
+            record["in_flight_rounding_gib"] = stage_rounding.rounding_gib(
+                max(0, minted["in_flight"] - unknown_gib),
+                int(minted.get("in_flight_bytes", 0)), storage_tiers.GIB)
             record["capacity_basis"] = supply_basis
             tokens[kind] = minted["supply"]
             record["ledger"] = minted["ledger"]

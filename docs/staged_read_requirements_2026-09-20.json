@@ -473,6 +473,13 @@
     "state": "yes"
    },
    "id": "SM-02",
+   "scoped_repair_1555": {
+    "target": "Never-started output intents release tokens before the funding marker. Live or uncertain intents retain their reservations.",
+    "implementation": "Branch ig/1555-stage-tier-tokens-round-up-per-mover-628 reuses the pool's nonexecution proof under the mover lock. It retries both interrupted states.",
+    "validation": "CPU action 2dd8359ebcdc4a83ac02bcbb9252a7c2af21140e608fe8cf04f6278b106cf1dd passed 25 tests. Action 8165a4ab7e958bb109572d209c580e950c66dd0e0e38b1e86fdf245465ad12fa failed five release-order assertions before repair.",
+    "deployment": "Not deployed. The pipeline must review and merge the source.",
+    "workload_proof": "Private queue smoke 82b192b6b81c85fc4f17e13a5a7e58cd98637dd1a27a7d643a8dd73bf3933dcf passed interruption and restart checks. No live ledger repair occurred."
+   },
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:3641e29332bf (#795), 793bc4238141 (#799), 94fc96b6924b (#826), 94d3b28e0611 (#803), 6f90a2304765 (#842), a1ac630ad421 (#868), f5111291c1bb (#877), 42a6ac156158 (#894), 81d95cba8d91 (#935) merged. PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable.",
     "path": "tools/fleet/stage_release.py guard-closed retiring (generation-bound marks), charge retained to actual delete with last live ref absent, exactly-once release; transfer moves only logical owner release; epoch invalidates readiness only; tools/fleet/tier_loop.py adopt preserves generation via sidecar copy",
@@ -713,6 +720,13 @@
     "state": "yes"
    },
    "id": "INV-07",
+   "scoped_repair_1555": {
+    "target": "Release retains all safety checks after faults. The funding marker cannot replace proof of absent bytes.",
+    "implementation": "The tier cycle releases tokens under the mover lock and uses an error-visible holder census before marker rollback.",
+    "validation": "CPU action 2dd8359ebcdc4a83ac02bcbb9252a7c2af21140e608fe8cf04f6278b106cf1dd passed 25 tests. Coverage includes partial release, unreadable evidence, live leases, and publication races.",
+    "deployment": "Not deployed. This entry records source and component evidence only.",
+    "workload_proof": "No campaign qualification or live stage census occurred."
+   },
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526; 2026-09-23 update (snapshot 13:50Z): PB:81d95cba8d91 (#935) keeps a live producer's completed batch and retires a dead producer's held mover; 42a6ac156158 (#894) retires withdrawn and receipt-less holders.",
     "path": "tools/fleet/stage_move.py owner-keyed temps + atomic rename + fragment-then-sidecar publish; tools/fleet/stage_release.py claimed-first snapshot extended to pins + promotion source legs (_claimed_source_paths), last reader incl. pending handoff blocks eviction, retiring charge ordering, reconcile under the same ownership guard; PR742/e534da78 shared capacity retirement/reissue and cache-tier mutation exclusion now component-qualified; PR752/357f32bba915 adds shared publication/adoption under the ownership lock, including null-digest dev reuse and changed-origin refusal.",
