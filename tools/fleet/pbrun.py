@@ -7402,11 +7402,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                          "here when it would cut this request short) also "
                          "applies. Queue waiting is bounded by --wait-s")
     ap.add_argument("--lifetime-s", type=float, default=None,
-                    help="opt-in sealed lifetime fence in seconds, enforced "
-                         "across admission, checkout, readiness, prelaunch, "
-                         "payload, credited waits, termination, cleanup, scope "
-                         "settlement and resource release (60 s to 7 days). "
-                         "Unlike --timeout-s, which bounds only the payload, "
+                    help="opt-in sealed lifetime fence in seconds from publication, "
+                         "enforced across admission, checkout, readiness, prelaunch, "
+                         "payload, credited waits and termination, with cleanup, scope "
+                         "settlement and resource release audited at finish (60 s to "
+                         "7 days). Unlike --timeout-s, which bounds only the payload, "
                          "a verified fence before the original opportunity "
                          "permits timed backfill (#1429). Absent, the action "
                          "is unfenced and every release bound reads UNKNOWN")

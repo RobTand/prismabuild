@@ -524,24 +524,31 @@ The opt-in sealed lifetime fence (`params.lifetime`,
 versioned all-applicable-phase bound: admission, checkout, readiness,
 prelaunch, payload including credited waits, termination, cleanup, scope
 settlement and resource release, or UNKNOWN for each unfenced component.
-The worker stamps one absolute, non-creditable deadline at claim
-(`claimed_unix + fence_s`) and enforces it across every phase it runs:
-checkout, readiness, and prelaunch refuse to launch past it, the payload
-wait loop kills past it with the `lifetime_fence` verdict before the
-payload budget rung, and checkpoint I/O credits the payload budget only,
-never the fence. A finite verdict needs the sealed fence plus filed
-enforcement evidence for every applicable phase, each end at or before
-the deadline; missing enforcement, missing evidence, or an end past the
-deadline keeps UNKNOWN and holds resources until settlement evidence
-permits release. Publish projects the sealed seconds onto the row and
-requires the fence tag; claim verifies the projection against the sealed
-request and stamps the deadline durably; admission reads the bound back
-only from the durable claimed row and its archived attempt. A verified
-release bound strictly before the original opportunity permits timed
-backfill; equality and later bounds refuse, and capacity and isolation
-gates stay in force. The payload budget keeps its existing semantics and
-credited waits; no timer expiry returns capacity. Only a loop that offers
-the fence tag claims fenced work.
+Publish stamps one absolute, non-creditable deadline at publication
+(`published_unix + fence_s`), before any claim and before any resource
+moves, and projects the sealed seconds plus the deadline onto the READY
+row. Claim verifies the projection against the sealed request, refuses
+expired fences and fenced gang members, and carries the deadline onto
+the claim. The worker enforces it across the phases it runs: checkout
+expiry fails before launch, scope setup rechecks before launch, the
+payload wait loop kills past it with the `lifetime_fence` verdict
+before the payload budget rung, and checkpoint I/O credits the payload
+budget only, never the fence. Each enforced phase files its measured
+end and the operation that proved it. Cleanup, scope settlement and
+resource release file no worker record; `finish` proves each one after
+the run and retains the claim on any unproven settlement. Admission
+reads a prospective bound from the READY row -- sealed fence, row
+stamp, supported tag, unexpired fence -- and a measurement's wait
+holds back only work that cannot prove release before its
+opportunity; the census gate rechecks the election before any claim.
+Timed backfill is granted only strictly before the original
+opportunity; equality and later bounds refuse, and capacity and
+isolation gates stay in force. A finished attempt's filed evidence
+audits that attempt from the archive; it never becomes a successor's
+guarantee. The payload
+budget keeps its existing semantics and credited waits; no timer
+expiry returns capacity. Only a loop that offers the fence tag
+claims fenced work.
 
 Discover potential measurement generations and elected sidecars outside H;
 acquire the sorted transition keys of the measurements **elected for this host**

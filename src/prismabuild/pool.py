@@ -7398,11 +7398,18 @@ class PoolQueue:
             # A hint checked against the sealed ``params.gang`` at claim.
             item["gang"] = declared_gang
         if sealed_fence_s is not None:
-            # The sealed bound, projected onto the row so claim and
-            # admission read it without a CAS round trip per candidate.
-            # Checked against the sealed request at claim; absent, the
-            # item is byte-identical to before the contract existed.
+            # The sealed bound and its absolute deadline, projected onto
+            # the row where the publication stamp is written: before any
+            # claim, before any resource moves. Admission reads the
+            # prospective bound from this READY row; claim and the worker
+            # re-derive the same number from the sealed request plus the
+            # row's own stamp. Absent, the item is byte-identical to
+            # before the contract existed.
+            from . import lifetime_fence as _publish_fence
             item["lifetime_fence_s"] = sealed_fence_s
+            item["lifetime_deadline_unix"] = (
+                _publish_fence.fence_deadline(
+                    published_unix=published_unix, fence_s=sealed_fence_s))
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -7551,6 +7558,51 @@ class PoolQueue:
         except (TypeError, ValueError):
             return True
         return any(int(host.get(kind, 0) or 0) > 0 for kind in kinds)
+
+    def _fenced_backfill_ahead_of_withhold(
+        self, item: Mapping[str, object], key: str, withheld_for: str,
+    ) -> bool:
+        """Whether this fenced row proves release before the withhold's need.
+
+        The narrow #1429 exception to a measurement's whole-box wait:
+        the candidate's prospective fence bound must be finite and
+        strictly before the withholder's own need. The withholder's
+        need is its election opportunity when one is filed, else its
+        drain point when one is on record, else UNKNOWN. Every
+        unreadable shape answers False and the row stays held back.
+        The census gate below rechecks the election before any claim.
+        """
+
+        try:
+            from . import _measurement_reservation as _withhold_reservation
+            from . import lifetime_fence as _withhold_fence
+            if _withhold_fence.LIFETIME_TAG not in (item.get("tags") or []):
+                return False
+            if not key or item.get("gang") is not None:
+                return False
+            row = _read_json(self.item_path(READY, key))
+            if not isinstance(row, Mapping) or row.get("action_key") != key:
+                return False
+            bound = _withhold_reservation.candidate_release_bound(self, row)
+            if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                return False
+            prior = _read_json(self.passes_path(withheld_for)) or {}
+            chosen = _withhold_reservation.selection(prior)
+            opportunity = (
+                chosen.get("opportunity_unix")
+                if isinstance(chosen, Mapping) else None)
+            if opportunity is None:
+                drain = (prior.get("measurement_drains") or {})
+                episode = (
+                    drain.get(socket.gethostname())
+                    if isinstance(drain, Mapping) else None)
+                opportunity = (
+                    episode.get("measurement_until_unix")
+                    if isinstance(episode, Mapping) else None)
+            return _withhold_fence.timed_backfill_allowed(
+                candidate_bound=bound, original_opportunity=opportunity)
+        except (OSError, ValueError, PoolContractError, KeyError, TypeError):
+            return False
 
     @staticmethod
     def _reservation_demand(host_demand: Mapping[str, int], *,
@@ -19495,6 +19547,167 @@ class PoolQueue:
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
 
     @staticmethod
+    def _lifetime_settlement_evidence(
+        *,
+        container_cleanup: Mapping[str, object],
+        scope_cleanup: Mapping[str, object],
+        tokens_returned_unix: float,
+    ) -> dict[str, dict[str, object]] | None:
+        """The audited fence records, or ``None`` when settlement is unproven.
+
+        One owner for the three phases ``finish`` proves after the run:
+        cleanup, scope settlement, resource release. Cleanup needs the
+        container verdict's own completeness. A contained run also
+        needs the exact-attempt scope verdict with a matching nonce;
+        an uncontained run has no scope to prove. Release needs the
+        measured return moment. Anything unproven answers ``None`` --
+        the audit then reads UNKNOWN and the claim stays retained.
+        """
+
+        if container_cleanup.get("complete") is not True:
+            return None
+        nonce = (scope_cleanup or {}).get("nonce")
+        checked = (scope_cleanup or {}).get("checked_unix")
+        contained = isinstance(nonce, str) and bool(nonce)
+        if contained and (
+            type(checked) not in (int, float)
+            or isinstance(checked, bool)
+        ):
+            return None
+        settled_end = (
+            float(checked) if contained else float(tokens_returned_unix))
+        return {
+            "cleanup": {
+                "enforced": True,
+                "evidence": "container-cleanup-complete",
+                "ended_unix": settled_end,
+            },
+            "scope_settlement": {
+                "enforced": True,
+                "evidence": (
+                    f"scope-proof:{nonce}" if contained
+                    else "uncontained-no-scope"),
+                "ended_unix": settled_end,
+            },
+            "resource_release": {
+                "enforced": True,
+                "evidence": "ledger-returned",
+                "ended_unix": float(tokens_returned_unix),
+            },
+        }
+
+    def _complete_lifetime_evidence(
+        self,
+        finished_detail: dict[str, object],
+        record: Mapping[str, object],
+        *,
+        container_cleanup: Mapping[str, object],
+        scope_cleanup: Mapping[str, object],
+    ) -> None:
+        """File the audited fence phases ``finish`` proved, if it proved them.
+
+        Runs after container cleanup completed and before the attempt
+        archive publishes. A fenced run whose worker filed its enforced
+        phases gains the cleanup and scope-settlement records here,
+        each citing its own completed verdict. The release record
+        waits for the ledger return below. A run with no worker
+        evidence, a fence kill, or unproven settlement files nothing
+        more -- the audit then reads UNKNOWN.
+        """
+
+        evidence = finished_detail.get("lifetime_evidence")
+        if not isinstance(evidence, Mapping):
+            return
+        phases = evidence.get("phases")
+        if not isinstance(phases, Mapping):
+            return
+        from . import lifetime_fence as _finish_fence
+        if evidence.get("schema") != _finish_fence.EVIDENCE_SCHEMA_V1:
+            return
+        for phase in _finish_fence.ENFORCED_PHASES:
+            entry = phases.get(phase)
+            if (
+                not isinstance(entry, Mapping)
+                or entry.get("enforced") is not True
+                or entry.get("evidence") in (None, "", [], {})
+                or type(entry.get("ended_unix")) not in (int, float)
+            ):
+                return
+        if evidence.get("published_unix") != record.get("published_unix"):
+            return
+        if evidence.get("fence_s") != record.get("lifetime_fence_s"):
+            return
+        if evidence.get("deadline_unix") != record.get("lifetime_deadline_unix"):
+            return
+        settled = self._lifetime_settlement_evidence(
+            container_cleanup=container_cleanup, scope_cleanup=scope_cleanup,
+            tokens_returned_unix=_now())
+        if settled is None:
+            return
+        merged = dict(phases)
+        merged["cleanup"] = settled["cleanup"]
+        merged["scope_settlement"] = settled["scope_settlement"]
+        evidence = dict(evidence)
+        evidence["phases"] = merged
+        finished_detail["lifetime_evidence"] = evidence
+
+    def _stamp_lifetime_release(
+        self, record: dict[str, object], action_key: str, *,
+        holder: str | None,
+    ) -> None:
+        """File the release record after the ledger return, if proved.
+
+        Runs after ``_release_reservation``. The ledger must hold no
+        host token for the key on the holder's box; a key that keeps
+        tier occupancy still releases its host capacity, which is
+        what the fence bounds. An unproven return files nothing and
+        the audit reads UNKNOWN. The record lands on the terminal
+        row beside the attempt link, never inside the immutable
+        attempt, so the archive keeps the evidence the attempt had
+        when it concluded and the release proof stays dated after
+        the return it describes.
+        """
+
+        detail = record.get("detail")
+        if not isinstance(detail, Mapping):
+            return
+        evidence = detail.get("lifetime_evidence")
+        if not isinstance(evidence, Mapping):
+            return
+        phases = evidence.get("phases")
+        if not isinstance(phases, Mapping):
+            return
+        from . import lifetime_fence as _release_fence
+        if evidence.get("schema") != _release_fence.EVIDENCE_SCHEMA_V1:
+            return
+        for phase in (
+            *_release_fence.ENFORCED_PHASES, "cleanup", "scope_settlement",
+        ):
+            entry = phases.get(phase)
+            if (
+                not isinstance(entry, Mapping)
+                or entry.get("enforced") is not True
+                or entry.get("evidence") in (None, "", [], {})
+                or type(entry.get("ended_unix")) not in (int, float)
+            ):
+                return
+        try:
+            held = (
+                str(action_key) in self.ledger(holder).held_keys()
+                if holder is not None else True)
+        except (OSError, ValueError, PoolContractError):
+            return
+        if held:
+            return
+        merged = dict(phases)
+        merged["resource_release"] = {
+            "enforced": True,
+            "evidence": "ledger-returned",
+            "ended_unix": _now(),
+        }
+        record["lifetime_evidence"] = {**dict(evidence), "phases": merged}
+
+    @staticmethod
     def _note_cleanup_attempt(
         pending: dict[str, object], prior: Mapping[str, object] | None,
         cleanup: Mapping[str, object],
@@ -21392,6 +21605,15 @@ class PoolQueue:
             held_back = withheld_for is not None and (
                 withheld_kinds is None
                 or self._demands_withheld_kind(item, withheld_kinds))
+            if held_back and withheld_for in measurement_withholds:
+                # A measurement's wait holds back only work that cannot
+                # prove release before its opportunity (#1429): a fenced
+                # candidate whose prospective bound precedes the
+                # election's is evaluated below, where the census gate
+                # rechecks it; every other row stays held back. The
+                # check reads the durable READY row, never a scan copy.
+                held_back = not self._fenced_backfill_ahead_of_withhold(
+                    item, key, withheld_for)
             producer = held_back and self._may_serve_a_producer(item)
             if held_back and withheld_kinds is None and not producer:
                 # Held back unevaluated behind the whole-box withhold.
@@ -21720,9 +21942,12 @@ class PoolQueue:
                         continue
                 if pb.LIFETIME_TAG in (item.get("tags") or []):
                     # The row claims the fence capability: prove the sealed
-                    # request seals it, and the projected seconds match.
-                    # A foreign row naming the tag without the fence stays
-                    # ready for a box that can run it -- which is no box.
+                    # request seals it, the projected seconds and deadline
+                    # match, and the fence has not expired yet. A foreign
+                    # row naming the tag without the fence stays ready for
+                    # a box that can run it -- which is no box. An expired
+                    # fence never claims: the worker could not enforce a
+                    # bound already past, so the row waits for no box.
                     try:
                         sealed_action = _sealed_action_request(
                             str(item.get("cas_root")), key)
@@ -21740,13 +21965,35 @@ class PoolQueue:
                             "tags": item.get("tags"),
                         })
                         continue
+                    from . import lifetime_fence as _claim_check_fence
                     projected = item.get("lifetime_fence_s")
+                    expected = _claim_check_fence.fence_deadline(
+                        published_unix=item.get("published_unix"),
+                        fence_s=sealed_life["fence_s"])
                     if (not isinstance(projected, (int, float))
                             or isinstance(projected, bool)
-                            or float(projected) != float(sealed_life["fence_s"])):
+                            or float(projected) != float(sealed_life["fence_s"])
+                            or expected is None
+                            or item.get("lifetime_deadline_unix") != expected):
                         self.record_denial(item, "lifetime_fence_mismatch", {
                             "projected": item.get("lifetime_fence_s"),
                             "sealed": float(sealed_life["fence_s"]),
+                            "deadline": item.get("lifetime_deadline_unix"),
+                            "expected_deadline": expected,
+                        })
+                        continue
+                    if item.get("gang") is not None:
+                        # A gang member waits on its siblings' claims, which
+                        # no fence bounds. The prospective bound needs the
+                        # worker's own phases only, so a fenced gang row
+                        # stays ready for no box.
+                        self.record_denial(item, "lifetime_fence_unsupported", {
+                            "gang": item.get("gang"),
+                        })
+                        continue
+                    if expected is not None and _now() >= expected:
+                        self.record_denial(item, "lifetime_fence_expired", {
+                            "deadline_unix": expected,
                         })
                         continue
                 if self.withdrawal_covers(
@@ -22279,11 +22526,17 @@ class PoolQueue:
                                           if int(need) - covered.get(kind, 0) > 0}
                                 reservation_demand = dict(demand)
                             elif held_back and not (serves_incumbent
-                                                    and withheld_for in measurement_withholds):
+                                                    and withheld_for in measurement_withholds
+                                                    or withheld_for in measurement_withholds
+                                                    and self._fenced_backfill_ahead_of_withhold(
+                                                        item, key, withheld_for)):
                                 # An earlier item is withholding what this row
                                 # takes.  A measurement's wait does not hold
                                 # back its host's incumbents' own dependents
-                                # (#1419 review); every other withhold does.  Only a dependent on its producer's
+                                # (#1419 review), nor a fenced row that proves
+                                # release before the election's opportunity
+                                # (#1429, rechecked above); every other withhold
+                                # does.  Only a dependent on its producer's
                                 # allowance takes nothing that item waits for
                                 # (#985); any other row is left as the withhold
                                 # always left it, unevaluated: no pass, no
@@ -23050,17 +23303,25 @@ class PoolQueue:
                 claimed["served_from"] = "canonical"
                 fence_claimed = _sealed_lifetime_fence(claimed)
                 if fence_claimed is not None:
-                    # Stamp the absolute enforcement bound where the claim
-                    # stamps its clock: the worker derives the same number
-                    # from the same two values, and admission reads it back
-                    # from this durable row. An unreadable sealed fence
-                    # refuses the claim rather than running unfenced.
+                    # Carry the publication-anchored deadline onto the
+                    # claim: the worker enforces the number admission
+                    # read from the READY row, re-derived here from the
+                    # sealed seconds plus the row's own publication
+                    # stamp. A mismatch, a missing stamp, or an expired
+                    # fence refuses the claim -- the checks above run
+                    # on the scan's copy, and the rename may have moved
+                    # a replaced generation.
                     from . import lifetime_fence as _claim_fence
-                    claimed["lifetime_fence_s"] = fence_claimed
-                    claimed["lifetime_deadline_unix"] = (
-                        _claim_fence.fence_deadline(
-                            claimed_unix=claimed["claimed_unix"],
-                            fence_s=fence_claimed))
+                    expected = _claim_fence.fence_deadline(
+                        published_unix=claimed.get("published_unix"),
+                        fence_s=fence_claimed)
+                    if (expected is None
+                            or claimed.get("lifetime_fence_s") != fence_claimed
+                            or claimed.get("lifetime_deadline_unix") != expected
+                            or _now() >= expected):
+                        raise PoolContractError(
+                            "lifetime-fenced claim does not carry its "
+                            "publication deadline")
                 if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
@@ -26293,6 +26554,10 @@ class PoolQueue:
             resolved = self.resolve_prewarm_reference(warmed)
             if resolved is not None:
                 finished_detail.setdefault("prewarm", resolved)
+        finished_detail["container_cleanup"] = container_cleanup
+        self._complete_lifetime_evidence(
+            finished_detail, record,
+            container_cleanup=container_cleanup, scope_cleanup=scope_cleanup)
         record.update(
             {
                 "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -26359,6 +26624,7 @@ class PoolQueue:
         self._release_reservation(
             action_key, host=holder,
             keep_tier=self.pin_holds_tier_tokens(record, action_key))
+        self._stamp_lifetime_release(record, action_key, holder=holder)
         # A republished key ends with one terminal record (#1117): an earlier
         # generation's record in the other terminal state is archived first,
         # named on the new record, and leaves its state directory only after
@@ -27768,28 +28034,63 @@ class PoolQueue:
         # still governs, progress or no progress.
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
+        fence_s = _sealed_lifetime_fence(item)
+        fence_deadline_wall: float | None = None
+        fence_checkout_end: float | None = None
+        fence_checkout_proof: str | None = None
+        if fence_s is not None:
+            from . import lifetime_fence as _exec_fence
+            fence_deadline_wall = _exec_fence.fence_deadline(
+                published_unix=item.get("published_unix"), fence_s=fence_s)
+            if (fence_deadline_wall is None
+                    or item.get("lifetime_deadline_unix") != fence_deadline_wall):
+                raise PoolContractError(
+                    "lifetime-fenced execution does not carry its "
+                    "publication deadline")
         with _execution_checkout(item) as checkout_root:
-            outcome = self._execute_in_checkout(
-                item, checkout_root=checkout_root, python=python,
-                timeout_s=budget.effective, heartbeat_s=heartbeat_s,
-                timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy,
-            )
+            if fence_deadline_wall is not None and _now() > fence_deadline_wall:
+                fence_checkout_proof = "checkout-exceeded-fence"
+                outcome = {
+                    "status": "failed",
+                    "returncode": None,
+                    "termination_reason": "lifetime_fence",
+                    "lifetime_fence": {
+                        "schema": "prismabuild.action_lifetime_evidence.v1",
+                        "fence_s": fence_s,
+                        "published_unix": item.get("published_unix"),
+                        "deadline_unix": fence_deadline_wall,
+                        "expired_phase": "checkout",
+                    },
+                    "stdout": "",
+                    "stderr": "PrismaBuild: lifetime fence expired during checkout.\n",
+                    "elapsed_s": 0.0,
+                    "argv": [],
+                    "cpu_allocation": item.get("cpu_allocation"),
+                }
+            else:
+                if fence_deadline_wall is not None:
+                    fence_checkout_end = _now()
+                    fence_checkout_proof = "checkout-materialized"
+                outcome = self._execute_in_checkout(
+                    item, checkout_root=checkout_root, python=python,
+                    timeout_s=budget.effective, heartbeat_s=heartbeat_s,
+                    timeout_grace_s=timeout_grace_s, containment=containment,
+                    progress=policy,
+                    fence_deadline_unix=fence_deadline_wall,
+                    fence_checkout_end=fence_checkout_end,
+                    fence_checkout_proof=fence_checkout_proof,
+                )
         # The fence record travels on the outcome into the attempt archive,
-        # where admission reads it back. ``_execute_in_checkout`` stamps
+        # where the audit reads it back. ``_execute_in_checkout`` stamps
         # the per-phase ends and, on a fence kill, the expiry phase; this
         # names the bound they are judged against without dropping that.
-        fence_s = _sealed_lifetime_fence(item)
         if fence_s is not None and "lifetime_fence" not in outcome:
             from . import lifetime_fence as _lifetime_fence
-            claimed_unix = item.get("claimed_unix")
-            fence_bound = _lifetime_fence.fence_deadline(
-                claimed_unix=claimed_unix, fence_s=fence_s)
             outcome["lifetime_fence"] = {
                 "schema": _lifetime_fence.EVIDENCE_SCHEMA_V1,
                 "fence_s": fence_s,
-                "claimed_unix": claimed_unix,
-                "deadline_unix": fence_bound,
+                "published_unix": item.get("published_unix"),
+                "deadline_unix": fence_deadline_wall,
             }
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
@@ -27959,6 +28260,9 @@ class PoolQueue:
         timeout_grace_s: float = TIMEOUT_GRACE_S,
         containment: bool = False,
         progress: ProgressPolicy | None = None,
+        fence_deadline_unix: float | None = None,
+        fence_checkout_end: float | None = None,
+        fence_checkout_proof: str | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -27971,6 +28275,10 @@ class PoolQueue:
         the timeout signals the launcher's whole process group and the launcher
         relays that into the action's own session; the timeout path itself is
         bounded end to end, because a timeout that can hang is not a timeout.
+
+        ``fence_deadline_unix`` is the opt-in absolute fence (#1429) the
+        caller derived from the publication stamp. It is threaded in
+        rather than re-derived so checkout's own cost cannot move it.
         """
 
         key = str(item["action_key"])
@@ -27980,20 +28288,33 @@ class PoolQueue:
         # rereads shared CAS after launch.
         timeout_s, profiled = _sealed_execution_policy(item, timeout_s)
         # The opt-in lifetime fence (#1429): one absolute, non-creditable
-        # bound across every phase the worker runs. Stamped from the claim
-        # record this worker executes, never from wall time at launch, so a
-        # slow checkout cannot move it. ``None`` when unfenced.
+        # bound across every phase the worker runs. The deadline arrives
+        # from the caller, derived from the publication stamp before
+        # checkout ran. Checkout's measured end arrives with it; phases
+        # that complete later stamp their own ends below. ``None`` when
+        # unfenced.
         from . import lifetime_fence
         fence_s = _sealed_lifetime_fence(item)
-        fence_deadline_wall: float | None = None
+        fence_deadline_wall = fence_deadline_unix
         fence_phase_ends: dict[str, float] = {}
-        claimed_unix = item.get("claimed_unix")
+        fence_phase_proofs: dict[str, str] = {}
+        published_unix = item.get("published_unix")
         if fence_s is not None:
-            fence_deadline_wall = lifetime_fence.fence_deadline(
-                claimed_unix=claimed_unix, fence_s=fence_s)
             if fence_deadline_wall is None:
                 raise PoolContractError(
-                    "lifetime-fenced action has no finite claim stamp")
+                    "lifetime-fenced action has no fence deadline")
+            expected = lifetime_fence.fence_deadline(
+                published_unix=published_unix, fence_s=fence_s)
+            if (expected is None or expected != fence_deadline_wall
+                    or item.get("lifetime_deadline_unix") != expected):
+                raise PoolContractError(
+                    "lifetime-fenced action does not carry its "
+                    "publication deadline")
+            if fence_checkout_end is None or fence_checkout_proof is None:
+                raise PoolContractError(
+                    "lifetime-fenced action has no measured checkout end")
+            fence_phase_ends["checkout"] = float(fence_checkout_end)
+            fence_phase_proofs["checkout"] = str(fence_checkout_proof)
         # The complete worker argv, captured before any taskset or
         # resource_exec wrapper: once those wrappers have exec'd, this is
         # exactly what ``/proc/<pid>/cmdline`` shows, and it is what the
@@ -28039,15 +28360,20 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        if fence_s is not None and item.get("gang") is not None:
+            # Claim refused this shape; a direct executor must too. The
+            # gang barrier waits on siblings, which no fence bounds.
+            raise PoolContractError(
+                "lifetime-fenced gang members are not supported")
         barrier = self._gang_start_barrier(item, owner=owner, heartbeat_s=heartbeat_s)
         if barrier is not None:
             return {"returncode": None, "stdout": "", "stderr": "",
                     "elapsed_s": _now() - started, "argv": argv,
                     "cpu_allocation": allocation, **barrier}
         if fence_deadline_wall is not None and _now() > fence_deadline_wall:
-            # The fence expired during checkout, readiness, or prelaunch --
-            # before any payload existed. Fail closed without launching:
-            # the payload budget never saw this run, and finish files no
+            # The fence expired during admission or checkout -- before
+            # any payload existed. Fail closed without launching: the
+            # payload budget never saw this run, and finish files no
             # receipt for work that never started.
             return {
                 "status": "failed",
@@ -28056,9 +28382,9 @@ class PoolQueue:
                 "lifetime_fence": {
                     "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                     "fence_s": fence_s,
-                    "claimed_unix": claimed_unix,
+                    "published_unix": published_unix,
                     "deadline_unix": fence_deadline_wall,
-                    "expired_phase": "prelaunch",
+                    "expired_phase": "checkout",
                 },
                 "stdout": "",
                 "stderr": "PrismaBuild: lifetime fence expired before launch.\n",
@@ -28067,16 +28393,15 @@ class PoolQueue:
                 "cpu_allocation": allocation,
             }
         if fence_deadline_wall is not None:
-            # Checkout, readiness, and prelaunch each ended now, inside
-            # the fence: stamp them where they complete, not at exit.
-            prelaunch_end = _now()
-            fence_phase_ends.update({
-                "admission": float(claimed_unix),
-                "checkout": prelaunch_end,
-                "readiness": prelaunch_end,
-                "prelaunch": prelaunch_end,
-            })
-        from . import local_scratch
+            # Admission ended at this claim's own stamp; checkout ended
+            # where the caller measured it. Readiness ends now, where
+            # the allocation checks above completed. Prelaunch ends
+            # below, after scope setup completes.
+            claimed_stamp = item.get("claimed_unix")
+            fence_phase_ends["admission"] = float(claimed_stamp)
+            fence_phase_proofs["admission"] = "claim-lease-written"
+            fence_phase_ends["readiness"] = _now()
+            fence_phase_proofs["readiness"] = "allocation-verified"
 
         variables = local_scratch._sealed_scratch_variables(item, allow_missing=True)
         lifetimes = local_scratch._scratch_lifetime_selections(variables)
@@ -28105,6 +28430,30 @@ class PoolQueue:
             # retained or current -- so the proxy comes from that same
             # proven runtime however the argv is prefixed.
             argv = scope.wrap_argv(argv, worker_script=item["worker_script"])
+        if fence_deadline_wall is not None:
+            # Scope setup completed above; recheck before launch. A
+            # slow broker call cannot move the fence, so expiry here
+            # fails closed without starting a payload.
+            if _now() > fence_deadline_wall:
+                return {
+                    "status": "failed",
+                    "returncode": None,
+                    "termination_reason": lifetime_fence.FENCE_TERMINATION_REASON,
+                    "lifetime_fence": {
+                        "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
+                        "fence_s": fence_s,
+                        "published_unix": published_unix,
+                        "deadline_unix": fence_deadline_wall,
+                        "expired_phase": "prelaunch",
+                    },
+                    "stdout": "",
+                    "stderr": "PrismaBuild: lifetime fence expired during scope setup.\n",
+                    "elapsed_s": 0.0,
+                    "argv": argv,
+                    "cpu_allocation": allocation,
+                }
+            fence_phase_ends["prelaunch"] = _now()
+            fence_phase_proofs["prelaunch"] = "scope-ready"
         # Read immediately before the launch and again at every way out, so
         # the difference is this child's and not the worker loop's history.
         rusage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -28479,6 +28828,51 @@ class PoolQueue:
                         deadline += time.monotonic() - checkpoint_started
                     if watch is not None:
                         watch.shift(time.monotonic() - checkpoint_started)
+                    if fence_deadline_wall is not None and _now() >= fence_deadline_wall:
+                        # The fence rung: absolute, non-creditable, and
+                        # checked before the payload deadline below. The
+                        # checkpoint credits above moved only the payload
+                        # deadline; this bound never moves. Same bounded
+                        # stop as the payload path, but its own verdict so
+                        # a reader tells which bound fired. The lease is
+                        # not refreshed during any of it, as on that path.
+                        # The synchronous observation above runs first and
+                        # can stall: a fenced action that wedges inside it
+                        # ends late, but the audit then proves the miss --
+                        # the phase end lands past the deadline and the
+                        # verdict reads UNKNOWN rather than finite.
+                        if scope is not None:
+                            scope.terminate_owned(
+                                lifetime_fence.FENCE_TERMINATION_REASON)
+                        pb._terminate_process_group(
+                            process, grace_s=timeout_grace_s
+                        )
+                        out, err, survived = _drain(
+                            process, timeout_s=timeout_grace_s
+                        )
+                        return ending({
+                            "status": "timeout",
+                            "termination_reason":
+                                lifetime_fence.FENCE_TERMINATION_REASON,
+                            "lifetime_fence": {
+                                "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
+                                "fence_s": fence_s,
+                                "published_unix": published_unix,
+                                "deadline_unix": fence_deadline_wall,
+                                "expired_phase": "payload",
+                            },
+                            "execution_observation": observation,
+                            "returncode": None,
+                            "launcher_returncode": process.returncode,
+                            "stdout": out,
+                            "stderr": err,
+                            "action_survived_kill": survived,
+                            "elapsed_s": _now() - started,
+                            "child_rusage": _reaped_children(
+                                rusage_before,
+                                resource.getrusage(resource.RUSAGE_CHILDREN)),
+                            "argv": argv, "cpu_allocation": allocation,
+                        })
                     if deadline is not None and time.monotonic() >= deadline:
                         # The branch's worst case stays the old three grace
                         # budgets.  The profiled flush opportunity, discovery
@@ -28489,7 +28883,8 @@ class PoolQueue:
                         # f + 2*(g-f) + g <= 3*g.  Nothing here may prevent
                         # the hard stop or change the timeout verdict; the
                         # lease is not refreshed during any of it, against a
-                        # 300 s expiry.
+                        # 300 s expiry. The fence rung above already fired
+                        # first when both bounds passed together.
                         settled = None
                         stop_grace_s = timeout_grace_s
                         if scope is not None:
@@ -28549,46 +28944,6 @@ class PoolQueue:
                             # worker and whether the worker exited within it.
                             outcome["profile_settle"] = settled
                         return ending(outcome)
-                    if fence_deadline_wall is not None and _now() >= fence_deadline_wall:
-                        # The fence rung: absolute, non-creditable, and
-                        # checked before the payload deadline below. The
-                        # checkpoint credits above moved only the payload
-                        # deadline; this bound never moves. Same bounded
-                        # stop as the payload path, but its own verdict so
-                        # a reader tells which bound fired. The lease is
-                        # not refreshed during any of it, as on that path.
-                        if scope is not None:
-                            scope.terminate_owned(
-                                lifetime_fence.FENCE_TERMINATION_REASON)
-                        pb._terminate_process_group(
-                            process, grace_s=timeout_grace_s
-                        )
-                        out, err, survived = _drain(
-                            process, timeout_s=timeout_grace_s
-                        )
-                        return ending({
-                            "status": "timeout",
-                            "termination_reason":
-                                lifetime_fence.FENCE_TERMINATION_REASON,
-                            "lifetime_fence": {
-                                "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
-                                "fence_s": fence_s,
-                                "claimed_unix": claimed_unix,
-                                "deadline_unix": fence_deadline_wall,
-                                "expired_phase": "payload",
-                            },
-                            "execution_observation": observation,
-                            "returncode": None,
-                            "launcher_returncode": process.returncode,
-                            "stdout": out,
-                            "stderr": err,
-                            "action_survived_kill": survived,
-                            "elapsed_s": _now() - started,
-                            "child_rusage": _reaped_children(
-                                rusage_before,
-                                resource.getrusage(resource.RUSAGE_CHILDREN)),
-                            "argv": argv, "cpu_allocation": allocation,
-                        })
                     if (watch is not None
                             and time.monotonic() >= watch.stall_deadline()):
                         # One more read before ending it.  The boundary is
@@ -28769,30 +29124,39 @@ class PoolQueue:
         if profile is not None:
             outcome["profile"] = profile
         if fence_deadline_wall is not None:
-            # The worker enforced the fence across every phase it ran.
-            # Early phases carry their measured ends from above; the
-            # payload, its credited waits, termination, cleanup, scope
-            # settlement, and resource release each end with this exit --
-            # the payload is reaped, and settlement runs inside finish
-            # before capacity returns. One shared end for those six is
-            # honest: they conclude together at this measured moment.
+            # The worker enforced the fence across the phases it ran:
+            # admission, checkout, readiness, prelaunch, payload with
+            # its credited waits, and termination. Each carries its
+            # measured end and the operation that proved it. Cleanup,
+            # scope settlement and resource release run later inside
+            # ``finish``; the worker files no record for them here,
+            # and the audit reads UNKNOWN until ``finish`` proves
+            # each one or fails closed by retaining the claim.
+            # ``credited_waits`` ends with the payload: the waits
+            # credit the payload budget only, and the fence never
+            # moves for them, so the observation that measured the
+            # last wait is the evidence this phase ended in time.
             phase_end = _now()
             ends = dict(fence_phase_ends)
-            for phase in ("payload", "credited_waits", "termination",
-                          "cleanup", "scope_settlement", "resource_release"):
-                ends[phase] = phase_end
+            proofs = dict(fence_phase_proofs)
+            ends["payload"] = phase_end
+            proofs["payload"] = "launcher-reaped"
+            ends["credited_waits"] = phase_end
+            proofs["credited_waits"] = "observation-measured"
+            ends["termination"] = phase_end
+            proofs["termination"] = "process-group-reaped"
             outcome["lifetime_evidence"] = {
                 "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                 "fence_s": fence_s,
-                "claimed_unix": claimed_unix,
+                "published_unix": published_unix,
                 "deadline_unix": fence_deadline_wall,
                 "phases": {
                     phase: {
                         "enforced": True,
-                        "evidence": f"{phase}-enforced",
+                        "evidence": proofs[phase],
                         "ended_unix": ends[phase],
                     }
-                    for phase in lifetime_fence.PHASES
+                    for phase in lifetime_fence.ENFORCED_PHASES
                 },
             }
         return ending(outcome)

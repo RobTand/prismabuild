@@ -3,12 +3,15 @@
 Real PB fixtures delay or fail every applicable phase and prove the
 declared finite predicate never holds without its enforcement and
 evidence. A short sealed payload timeout is opportunity metadata, not
-an admission-to-resource-release bound. Only a verified fence strictly
-before the original opportunity permits timed backfill. Equality and
-later bounds refuse. Capacity and isolation gates stay in force.
+an admission-to-resource-release bound. Only a verified prospective
+fence strictly before the original opportunity permits timed backfill.
+Equality and later bounds refuse. Capacity and isolation gates stay in
+force. A finished attempt's filed evidence audits that attempt only;
+it never becomes a successor's guarantee.
 """
 from __future__ import annotations
 
+import contextlib
 import platform
 import sys
 import time
@@ -57,13 +60,13 @@ def _seal(checkout: Path, task: str, params: dict) -> dict:
     })
 
 
-def _fenced_queue(tmp_path: Path, task_body: str):
+def _fenced_queue(tmp_path: Path, task_body: str, *, fence_s: float = FENCE_S):
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
+    checkout.mkdir(exist_ok=True)
     (checkout / "task.py").write_text(task_body)
     action = _seal(checkout, task_body, {
         "lifetime": {"schema": lifetime_fence.LIFETIME_SCHEMA_V1,
-                     "fence_s": FENCE_S}})
+                     "fence_s": fence_s}})
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
     queue = AdmittedQueueFixture(
@@ -127,8 +130,34 @@ def test_lifetime_fence_seal_is_versioned_and_bounded():
         pb.seal_action(body({"lifetime": {"fence_s": 300}}))
 
 
-def _timed_evidence(claimed_unix: float, fence_s: float, end: float | None = None):
-    end = claimed_unix + fence_s if end is None else end
+def test_prospective_bound_needs_support_and_an_unexpired_fence():
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=300.0, supported=True,
+        now_unix=1100.0) == 1300.0
+    # Unsupported enforcement, an expired fence, or a missing stamp
+    # answers None on every variant.
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=300.0, supported=False,
+        now_unix=1100.0) is None
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=300.0, supported=None,
+        now_unix=1100.0) is None
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=300.0, supported=True,
+        now_unix=1300.0) is None
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=300.0, supported=True,
+        now_unix=1400.0) is None
+    assert lifetime_fence.prospective_bound(
+        published_unix=None, fence_s=300.0, supported=True,
+        now_unix=1100.0) is None
+    assert lifetime_fence.prospective_bound(
+        published_unix=1000.0, fence_s=None, supported=True,
+        now_unix=1100.0) is None
+
+
+def _timed_evidence(published_unix: float, fence_s: float, end: float | None = None):
+    end = published_unix + fence_s if end is None else end
     return {
         "schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
         "phases": {
@@ -141,7 +170,7 @@ def _timed_evidence(claimed_unix: float, fence_s: float, end: float | None = Non
 def test_missing_enforcement_or_evidence_in_any_phase_reads_unknown(phase):
     good = _timed_evidence(1000.0, 300.0)["phases"]
     assert lifetime_fence.release_bound(
-        claimed_unix=1000.0, fence_s=300.0,
+        published_unix=1000.0, fence_s=300.0,
         evidence={"schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                   "phases": dict(good)}) == 1300.0
     # Fail this phase: drop enforcement, drop evidence, drop the phase,
@@ -154,27 +183,27 @@ def test_missing_enforcement_or_evidence_in_any_phase_reads_unknown(phase):
         phases = dict(good)
         phases[phase] = broken
         assert lifetime_fence.release_bound(
-            claimed_unix=1000.0, fence_s=300.0,
+            published_unix=1000.0, fence_s=300.0,
             evidence={"schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                       "phases": phases}) is None
     phases = dict(good)
     del phases[phase]
     assert lifetime_fence.release_bound(
-        claimed_unix=1000.0, fence_s=300.0,
+        published_unix=1000.0, fence_s=300.0,
         evidence={"schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                   "phases": phases}) is None
-    # No evidence at all, wrong schema, no claim stamp, no fence: UNKNOWN.
+    # No evidence at all, wrong schema, no publication stamp, no fence: UNKNOWN.
     assert lifetime_fence.release_bound(
-        claimed_unix=1000.0, fence_s=300.0, evidence=None) is None
+        published_unix=1000.0, fence_s=300.0, evidence=None) is None
     assert lifetime_fence.release_bound(
-        claimed_unix=1000.0, fence_s=300.0,
+        published_unix=1000.0, fence_s=300.0,
         evidence={"phases": dict(good)}) is None
     assert lifetime_fence.release_bound(
-        claimed_unix=None, fence_s=300.0,
+        published_unix=None, fence_s=300.0,
         evidence={"schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                   "phases": dict(good)}) is None
     assert lifetime_fence.release_bound(
-        claimed_unix=1000.0, fence_s=None,
+        published_unix=1000.0, fence_s=None,
         evidence={"schema": lifetime_fence.EVIDENCE_SCHEMA_V1,
                   "phases": dict(good)}) is None
 
@@ -234,16 +263,12 @@ def test_unfenced_candidate_holds_the_reserved_host(fleet):
     assert queue.item_path(pool.READY, candidate).exists()
 
 
-def test_candidate_release_bound_reads_unknown_without_fence_or_evidence(
-    fleet, tmp_path,
-):
+def test_candidate_release_bound_reads_unknown_without_fence(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     candidate = publish("bound-unknown-candidate", priority=-10, timeout_s=60)
     item = pool._read_json(queue.item_path(pool.READY, candidate))
     assert isinstance(item, dict)
-    # A READY row carries no claim stamp: always UNKNOWN, even unfenced.
-    assert "claimed_unix" not in item
     assert reservation.candidate_release_bound(queue, item) == "UNKNOWN"
     allowed, bound = reservation.timed_backfill_permitted(
         queue, item,
@@ -252,12 +277,8 @@ def test_candidate_release_bound_reads_unknown_without_fence_or_evidence(
     assert bound == "UNKNOWN"
 
 
-def test_ready_row_never_proves_a_bound_even_when_fenced(fleet):
-    # The reviewer's READY regression: a fenced READY row has a sealed
-    # fence but no claim stamp, so the bound stays UNKNOWN until a
-    # worker claims it and files enforcement evidence durably.
+def _publish_fenced_candidate(fleet, name: str, *, fence_s: float = FENCE_S):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
-    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
     checkout = fleet[0].root.parent / "checkout"
     cas = pb.PrismaBuildCAS(fleet[0].root.parent / "cas")
     action = pb.seal_action({
@@ -266,11 +287,11 @@ def test_ready_row_never_proves_a_bound_even_when_fenced(fleet):
                  "task_class": "generation", "determinism": "deterministic",
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "argv": [sys.executable, "task.py"],
-                 "working_directory": ".", "result_path": "fenced-candidate"},
+                 "working_directory": ".", "result_path": name},
         "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
         "params": {"gpu_exclusive": False, "execution_timeout_s": 120,
                    "lifetime": {"schema": lifetime_fence.LIFETIME_SCHEMA_V1,
-                                "fence_s": FENCE_S}},
+                                "fence_s": fence_s}},
         "environment": {"variables": {}, "toolchain": {
             **pb.executable_toolchain_contract(sys.executable),
             "system": platform.system(), "machine": platform.machine(),
@@ -285,64 +306,163 @@ def test_ready_row_never_proves_a_bound_even_when_fenced(fleet):
                   worker_script="worker.py", resources={"cpu": 2, "gpu": 1, "mem_gb": 8},
                   needs_gpu=True, tags=["sparklina"],
                   priority=-10, max_attempts=3)
+    return key
+
+
+def _claim_fenced_on_host(fleet, host="sparklina", q=None):
+    # The fleet helper claims without the fence capability tag, so a
+    # fenced row would mismatch placement before admission ever reads
+    # its bound. A real fence-capable loop offers the tag; claim as
+    # one, with the same capacity, tiers and GPU shape as the helper.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
+    tiers = {"preferred": list(range(20)), "fallback": []}
+    active = q or queue
+    result = active.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
+                          has_gpu=True,
+                          tags=["gb10", host, lifetime_fence.LIFETIME_TAG])
+    return None if result is None else result["action_key"]
+
+
+def test_ready_row_proves_a_prospective_bound_when_fenced(fleet):
+    # The publication-anchored predicate: a fenced READY row proves its
+    # prospective bound from its own stamp, with no claim and no filed
+    # completion evidence. Support is the sealed fence plus the
+    # projected tag and deadline, not a prior attempt.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = _publish_fenced_candidate(fleet, "fenced-ready-candidate")
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert isinstance(row, dict)
     # Publish projects the fence and requires the capability tag.
     assert row.get("lifetime_fence_s") == FENCE_S
+    assert row.get("lifetime_deadline_unix") == row["published_unix"] + FENCE_S
     assert lifetime_fence.LIFETIME_TAG in (row.get("tags") or [])
     assert "claimed_unix" not in row
-    assert reservation.candidate_release_bound(queue, row) == "UNKNOWN"
-    allowed, bound = reservation.timed_backfill_permitted(
-        queue, row, {"opportunity_unix": original_end, "action_key": measurement})
-    assert allowed is False
-    assert bound == "UNKNOWN"
+    bound = reservation.candidate_release_bound(queue, row)
+    assert bound == row["lifetime_deadline_unix"]
+    # The bound sits inside the sealed fence from now; it is not a
+    # claim stamp plus a payload timeout.
+    assert bound == row["published_unix"] + FENCE_S
 
 
-def test_claim_stamps_the_absolute_fence_deadline(tmp_path):
-    # Real claim path: the fence deadline is stamped where the claim
-    # stamps its clock, from the same two values the worker enforces.
+def test_fenced_backfill_claims_through_real_admission_before_its_opportunity(fleet):
+    # Positive admission through the real claim path: a fenced
+    # candidate whose fence ends strictly before the original
+    # opportunity backfills; capacity and isolation gates stay in
+    # force, and the holder and measurement keep their rows.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = _publish_fenced_candidate(fleet, "fenced-positive-backfill")
+    row = pool._read_json(queue.item_path(pool.READY, key))
+    assert isinstance(row, dict)
+    bound = reservation.candidate_release_bound(queue, row)
+    assert bound != "UNKNOWN"
+    assert bound < original_end
+    _observe_real_sharing_permission(fleet, key)
+    assert _claim_fenced_on_host(fleet) == key, denial(key)
+    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.item_path(pool.READY, measurement).exists()
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+    assert set(queue.ledger().held_keys()) == {incumbent, key}
+
+
+def test_fenced_backfill_refuses_equality_and_later_bounds_through_admission(fleet):
+    # Equality and later bounds refuse through the real claim path:
+    # the candidate row stays ready and the host stays held.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    now = clock[0]
+    # A fence that ends exactly at the opportunity, and one past it.
+    equal_s = original_end - now
+    late_s = equal_s + 120.0
+    assert lifetime_fence.MIN_FENCE_S <= equal_s <= lifetime_fence.MAX_FENCE_S
+    equal = _publish_fenced_candidate(fleet, "fenced-equal-bound", fence_s=equal_s)
+    late = _publish_fenced_candidate(fleet, "fenced-late-bound", fence_s=late_s)
+    for key in (equal, late):
+        row = pool._read_json(queue.item_path(pool.READY, key))
+        assert isinstance(row, dict)
+        bound = reservation.candidate_release_bound(queue, row)
+        assert bound != "UNKNOWN"
+        _observe_real_sharing_permission(fleet, key)
+    assert _claim_fenced_on_host(fleet) is None
+    refusal = denial(equal)
+    assert refusal["reason"] in (
+        "deferred_for_measurement_reservation", "deferred_behind_withheld_row")
+    if refusal["reason"] == "deferred_for_measurement_reservation":
+        assert refusal["evidence"]["candidate_release_bound"] != "UNKNOWN"
+    assert queue.item_path(pool.READY, equal).exists()
+    assert queue.item_path(pool.READY, late).exists()
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+
+
+def test_expired_fence_never_claims_and_reads_unknown(fleet):
+    # A fence already past never claims and never proves a bound:
+    # expiry is not a release, and no worker could enforce it.
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent, measurement, original_end, snapshot = _bounded_measurement_wait(fleet)
+    key = _publish_fenced_candidate(fleet, "fenced-expired-candidate")
+    row = pool._read_json(queue.item_path(pool.READY, key))
+    assert isinstance(row, dict)
+    tick(row["lifetime_deadline_unix"] - clock[0] + 1.0)
+    stale = pool._read_json(queue.item_path(pool.READY, key))
+    assert isinstance(stale, dict)
+    assert reservation.candidate_release_bound(queue, stale) == "UNKNOWN"
+    _observe_real_sharing_permission(fleet, key)
+    assert _claim_fenced_on_host(fleet) is None
+    assert queue.item_path(pool.READY, key).exists()
+    _assert_holder_unchanged(queue, incumbent, snapshot)
+
+
+def test_publish_stamps_the_publication_anchored_deadline(tmp_path):
+    # Real publish path: the fence deadline is stamped where the
+    # publication stamps its clock, before any claim or resource.
     queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
     row = pool._read_json(queue.item_path(pool.READY, action["action_key"]))
     assert row.get("lifetime_fence_s") == FENCE_S
+    assert row.get("lifetime_deadline_unix") == row["published_unix"] + FENCE_S
     item = _claim_fenced(queue)
     assert item.get("lifetime_fence_s") == FENCE_S
     assert item.get("lifetime_deadline_unix") == (
-        item["claimed_unix"] + FENCE_S)
+        item["published_unix"] + FENCE_S)
     # An old worker offering no fence tag cannot claim fenced work.
     assert queue.queue.claim(
         capacity={"cpu": 8, "mem_gb": 16}, tags=[]) is None
 
 
-def test_fast_payload_files_full_phase_evidence(tmp_path):
-    # Real execution: a payload that exits inside the fence files
-    # per-phase enforcement evidence with measured ends.
+def test_fast_payload_finishes_and_audits_every_phase(tmp_path):
+    # Real execution through finish: a payload that exits inside the
+    # fence gains enforced-phase evidence from the worker, cleanup
+    # and settlement evidence from finish, and a release record after
+    # the ledger return. The archive then audits the full bound.
     queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
     item = _claim_fenced(queue)
     key = item["action_key"]
-    assert reservation.candidate_release_bound(queue.queue, item) == "UNKNOWN"
     outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed"
     evidence = outcome.get("lifetime_evidence")
     assert isinstance(evidence, dict)
     assert evidence.get("schema") == lifetime_fence.EVIDENCE_SCHEMA_V1
-    assert set(evidence.get("phases", {})) == set(lifetime_fence.PHASES)
+    # The worker files enforced phases only; settlement is finish's.
+    assert set(evidence.get("phases", {})) == set(lifetime_fence.ENFORCED_PHASES)
     for phase, record in evidence["phases"].items():
         assert record.get("enforced") is True, phase
         assert record.get("evidence"), phase
         assert record.get("ended_unix") <= outcome["lifetime_fence"]["deadline_unix"], phase
-    # Filed durably on the live claim, the bound proves finite.
-    live = pool._read_json(queue.item_path(pool.CLAIMED, key))
-    live["lifetime_evidence"] = evidence
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), live)
-    snap = pool._read_json(queue.item_path(pool.CLAIMED, key))
-    bound = reservation.candidate_release_bound(queue.queue, snap)
-    assert bound == live["lifetime_deadline_unix"]
-    assert reservation.timed_backfill_permitted(
-        queue.queue, snap,
-        {"opportunity_unix": bound + 1, "action_key": "other"})[0] is True
-    assert reservation.timed_backfill_permitted(
-        queue.queue, snap,
-        {"opportunity_unix": bound, "action_key": "other"})[0] is False
+    assert evidence["phases"]["checkout"]["ended_unix"] <= evidence["phases"]["payload"]["ended_unix"]
+    dst = queue.finish(key, status=str(outcome["status"]),
+                       detail=outcome, claim_snapshot=item)
+    assert dst == queue.item_path(pool.DONE, key)
+    assert queue.ledger().held_keys() == []
+    terminal = pool._read_json(dst)
+    assert isinstance(terminal, dict)
+    audited = reservation.attempt_release_audit(queue.queue, terminal)
+    assert audited == terminal["lifetime_deadline_unix"]
+    # The audit reads the exact attempt's archive, not the live row.
+    assert terminal["detail"]["lifetime_evidence"]["phases"]["cleanup"]["evidence"] == (
+        "container-cleanup-complete")
+    assert terminal["lifetime_evidence"]["phases"]["resource_release"]["evidence"] == (
+        "ledger-returned")
 
 
 def test_slow_checkout_fails_closed_before_launch(tmp_path, monkeypatch):
@@ -352,19 +472,33 @@ def test_slow_checkout_fails_closed_before_launch(tmp_path, monkeypatch):
         tmp_path, "open('result','w').write('ok')\n")
     item = _claim_fenced(queue)
     key = item["action_key"]
-    record = pool._read_json(queue.item_path(pool.CLAIMED, key))
-    record["claimed_unix"] = float(record["claimed_unix"]) - FENCE_S - 1.0
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), record)
-    lease = pool._read_json(queue.lease_path(key))
-    lease["claimed_unix"] = record["claimed_unix"]
-    pool._write_json_atomic(queue.lease_path(key), lease)
-    item["claimed_unix"] = record["claimed_unix"]
+
+    real_checkout = pool._execution_checkout
+
+    @contextlib.contextmanager
+    def slow_checkout(entry):
+        with real_checkout(entry) as root:
+            time.sleep(0.2)
+            yield root
+
+    monkeypatch.setattr(pool, "_execution_checkout", slow_checkout)
+    # Age the publication past the fence, carrying the deadline with
+    # it: the fence clock starts at publication, not at claim.
+    path = queue.item_path(pool.CLAIMED, key)
+    row = pool._read_json(path)
+    assert isinstance(row, dict)
+    row["published_unix"] = float(row["published_unix"]) - FENCE_S - 1.0
+    row["lifetime_deadline_unix"] = row["published_unix"] + FENCE_S
+    pool._write_json_atomic(path, row)
+    item = pool._read_json(queue.item_path(pool.CLAIMED, key))
+    assert isinstance(item, dict)
     outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "failed"
     assert outcome["termination_reason"] == lifetime_fence.FENCE_TERMINATION_REASON
-    assert outcome["lifetime_fence"]["expired_phase"] == "prelaunch"
+    assert outcome["lifetime_fence"]["expired_phase"] == "checkout"
     assert "lifetime_evidence" not in outcome
-    assert reservation.candidate_release_bound(queue.queue, item) == "UNKNOWN"
+    # No successor evidence: the audit of any later row stays UNKNOWN.
+    assert reservation.attempt_release_audit(queue.queue, item) is None
 
 
 def test_term_ignoring_payload_dies_at_the_fence(tmp_path, monkeypatch):
@@ -399,7 +533,7 @@ def test_term_ignoring_payload_dies_at_the_fence(tmp_path, monkeypatch):
     assert outcome["termination_reason"] == lifetime_fence.FENCE_TERMINATION_REASON
     assert outcome["lifetime_fence"]["expired_phase"] == "payload"
     assert "lifetime_evidence" not in outcome
-    assert reservation.candidate_release_bound(queue.queue, item) == "UNKNOWN"
+    assert reservation.attempt_release_audit(queue.queue, item) is None
 
 
 def test_checkpoint_credit_never_moves_the_fence(tmp_path, monkeypatch):
@@ -439,9 +573,46 @@ def test_checkpoint_credit_never_moves_the_fence(tmp_path, monkeypatch):
     assert outcome["lifetime_fence"]["expired_phase"] == "payload"
 
 
-def test_failed_cleanup_holds_resources_and_bound(tmp_path, monkeypatch):
-    # Real failed settlement: cleanup that cannot prove the scope empty
-    # retains the claim and keeps the bound UNKNOWN. Only proved
+def test_slow_scope_setup_fails_closed_before_launch(tmp_path, monkeypatch):
+    # Real delayed prelaunch: scope setup stalls past the fence, so
+    # the worker refuses to launch even though checkout completed.
+    queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
+    item = _claim_fenced(queue)
+    real_start = pool.PoolQueue._start_resource_scope
+
+    def slow_start(self, entry):
+        time.sleep(0.2)
+        return real_start(self, entry)
+
+    monkeypatch.setattr(pool.PoolQueue, "_start_resource_scope", slow_start)
+    jumped = [False]
+    real_now = pool._now
+
+    def fake_now():
+        # Expire the fence only after checkout's measured end, so the
+        # prelaunch recheck -- not the checkout gate -- fires.
+        if jumped[0]:
+            return real_now() + FENCE_S + 1.0
+        return real_now()
+
+    def trip_start(self, entry):
+        scope = slow_start(self, entry)
+        jumped[0] = True
+        return scope
+
+    monkeypatch.setattr(pool, "_now", fake_now)
+    monkeypatch.setattr(pool.PoolQueue, "_start_resource_scope", trip_start)
+    outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2,
+                            containment=True)
+    assert outcome["status"] == "failed"
+    assert outcome["termination_reason"] == lifetime_fence.FENCE_TERMINATION_REASON
+    assert outcome["lifetime_fence"]["expired_phase"] == "prelaunch"
+    assert "lifetime_evidence" not in outcome
+
+
+def test_failed_cleanup_holds_resources_and_audit(tmp_path, monkeypatch):
+    # Real failed settlement: cleanup that cannot prove completion
+    # retains the claim and keeps the audit UNKNOWN. Only proved
     # settlement releases.
     queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
     item = _claim_fenced(queue)
@@ -458,4 +629,98 @@ def test_failed_cleanup_holds_resources_and_bound(tmp_path, monkeypatch):
     assert dst == queue.item_path(pool.CLAIMED, key)
     live = pool._read_json(queue.item_path(pool.CLAIMED, key))
     assert live.get("finish_pending") is not None
-    assert reservation.candidate_release_bound(queue.queue, live) == "UNKNOWN"
+    assert queue.ledger().held_keys() == [key]
+    assert reservation.attempt_release_audit(queue.queue, live) is None
+
+
+def test_late_settlement_audits_unknown_but_keeps_evidence(tmp_path, monkeypatch):
+    # Real late settlement: cleanup that proves completion only after
+    # the fence still releases through the normal path, but the audit
+    # reads UNKNOWN because the settlement end lands past the fence.
+    # Original results, logs and attempt evidence stay intact.
+    queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
+    item = _claim_fenced(queue)
+    outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed"
+    key = item["action_key"]
+    real_cleanup = queue.cleanup_action_containers
+
+    def late_cleanup(record, **kwargs):
+        result = real_cleanup(record, **kwargs)
+        assert result["complete"] is True
+        return result
+
+    monkeypatch.setattr(queue, "cleanup_action_containers", late_cleanup)
+    real_now = pool._now
+
+    def late_now():
+        return real_now() + FENCE_S + 30.0
+
+    monkeypatch.setattr(pool, "_now", late_now)
+    dst = queue.finish(key, status=str(outcome["status"]),
+                       detail=outcome, claim_snapshot=item)
+    assert dst == queue.item_path(pool.DONE, key)
+    assert queue.ledger().held_keys() == []
+    terminal = pool._read_json(dst)
+    assert isinstance(terminal, dict)
+    assert reservation.attempt_release_audit(queue.queue, terminal) is None
+    # Original evidence survives: status, stdout, attempt archive.
+    assert terminal["status"] == "executed"
+    assert terminal["detail"]["stdout"] == outcome["stdout"]
+    assert terminal["attempt_history"]
+    assert terminal["detail"]["container_cleanup"]["complete"] is True
+
+
+def test_successor_isolation_after_fence_kill(tmp_path, monkeypatch):
+    # Successor isolation: after a fence kill, a republished fenced
+    # row carries its own publication stamp and fence; the killed
+    # attempt's evidence never answers for the successor.
+    queue, action = _fenced_queue(tmp_path, "open('result','w').write('ok')\n")
+    item = _claim_fenced(queue)
+    key = item["action_key"]
+    first_published = item["published_unix"]
+    first_deadline = item["lifetime_deadline_unix"]
+    task = ("import time\ntime.sleep(30)\nopen('result','w').write('ok')\n")
+    (tmp_path / "checkout" / "task.py").write_text(task)
+    jumped = [False]
+    real_now = pool._now
+
+    def fake_now():
+        return real_now() + (FENCE_S + 1.0 if jumped[0] else 0.0)
+
+    monkeypatch.setattr(pool, "_now", fake_now)
+    real_popen = pool.subprocess.Popen
+
+    class TripPopen(real_popen):
+        def communicate(self, *args, **kwargs):
+            jumped[0] = True
+            return super().communicate(*args, **kwargs)
+
+    monkeypatch.setattr(pool.subprocess, "Popen", TripPopen)
+    outcome = queue.execute(item, heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["termination_reason"] == lifetime_fence.FENCE_TERMINATION_REASON
+    monkeypatch.setattr(pool, "_now", real_now)
+    dst = queue.finish(key, status=str(outcome["status"]),
+                       detail=outcome, claim_snapshot=item)
+    # A first-attempt timeout requeues under the retry contract; the
+    # killed attempt's evidence is archived, not live. Conclude the
+    # retry generation so the republished successor starts clean.
+    assert dst == queue.item_path(pool.READY, key)
+    assert queue.ledger().held_keys() == []
+    retry = pool._read_json(dst)
+    assert isinstance(retry, dict)
+    assert reservation.attempt_release_audit(queue.queue, retry) is None
+    dst.unlink()
+    assert queue.ledger().held_keys() == []
+    time.sleep(0.01)
+    queue.publish(action_key=key, cas_root=item["cas_root"],
+                  checkout_root=item["checkout_root"], worker_script=WORKER)
+    successor = pool._read_json(queue.item_path(pool.READY, key))
+    assert isinstance(successor, dict)
+    assert successor["published_unix"] != first_published
+    assert successor["lifetime_deadline_unix"] != first_deadline
+    assert successor["lifetime_deadline_unix"] == (
+        successor["published_unix"] + FENCE_S)
+    assert successor.get("attempt_history") is None
+    bound = reservation.candidate_release_bound(queue.queue, successor)
+    assert bound == successor["lifetime_deadline_unix"]

@@ -808,19 +808,16 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
 
 
 def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> object:
-    """The candidate's verified release bound, or ``"UNKNOWN"``.
+    """The candidate's verified prospective release bound, or ``"UNKNOWN"``.
 
-    A finite bound needs the opt-in sealed lifetime fence (#1429): a
-    fenced action whose worker enforced the absolute fence across every
-    applicable phase and filed that evidence durably. The sealed payload
+    A finite bound needs the opt-in sealed lifetime fence (#1429): the
+    sealed seconds, the READY row's own publication stamp, and supported
+    enforcement of the versioned clock on this box. The sealed payload
     timeout alone is opportunity metadata, never a release bound.
-    Anything unfenced answers ``"UNKNOWN"`` and holds the host.
-
-    Evidence comes only from durable queue rows, never from a caller's
-    in-memory dict: a READY row carries no claim stamp (``claimed_unix``
-    is written at claim), so a READY candidate is always UNKNOWN. A
-    claimed row's own ``lifetime_evidence``, or its archived attempt's
-    filed evidence, proves the bound.
+    Anything unfenced, unsupported, or expired answers ``"UNKNOWN"``
+    and holds the host. A finished attempt's filed evidence audits
+    that attempt from the archive; it never becomes a new attempt's
+    guarantee, and a successor is never judged by its predecessor.
     """
 
     from . import lifetime_fence
@@ -830,28 +827,32 @@ def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> o
         cas_root = item.get("cas_root")
         if not key or cas_root is None:
             return "UNKNOWN"
+        request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
         action = core.validate_action(core._decode_strict_json(
             core._read_regular_file_nofollow(
-                Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json",
-                where="pool action request", max_bytes=MAX_RECORD_BYTES),
+                request, where="pool action request",
+                max_bytes=MAX_RECORD_BYTES),
             where="pool action request"))
         if action.get("action_key") != key:
             return "UNKNOWN"
         fence = core.action_lifetime(action)
-        if fence is None:
+        fence_s = fence.get("fence_s") if fence is not None else None
+        if fence is None or fence_s is None:
             return "UNKNOWN"
-        claimed_row = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, key))
-        if not isinstance(claimed_row, Mapping):
+        row = pool_mod._read_json(queue.item_path(pool_mod.READY, key))
+        if not isinstance(row, Mapping) or row.get("action_key") != key:
             return "UNKNOWN"
-        if not pool_mod._same_claim(claimed_row, item):
+        if row.get("published_unix") != item.get("published_unix"):
             return "UNKNOWN"
-        claimed = claimed_row.get("claimed_unix")
-        evidence = claimed_row.get("lifetime_evidence")
-        if not isinstance(evidence, Mapping):
-            evidence = _archived_lifetime_evidence(queue, claimed_row)
-        bound = lifetime_fence.release_bound(
-            claimed_unix=claimed, fence_s=fence.get("fence_s"),
-            evidence=evidence if isinstance(evidence, Mapping) else None)
+        supported = (
+            lifetime_fence.LIFETIME_TAG in (row.get("tags") or [])
+            and row.get("gang") is None
+            and _projected_fence_matches(row, fence_s)
+            and row.get("lifetime_deadline_unix") == lifetime_fence.fence_deadline(
+                published_unix=row.get("published_unix"), fence_s=fence_s))
+        bound = lifetime_fence.prospective_bound(
+            published_unix=row.get("published_unix"), fence_s=fence_s,
+            supported=supported, now_unix=pool_mod._now())
         if bound is None:
             return "UNKNOWN"
         return float(bound)
@@ -859,11 +860,65 @@ def candidate_release_bound(queue: "PoolQueue", item: Mapping[str, object]) -> o
         return "UNKNOWN"
 
 
-def _archived_lifetime_evidence(queue: "PoolQueue", claimed_row: Mapping[str, object]) -> Mapping[str, object] | None:
+def _projected_fence_matches(row: Mapping[str, object], fence_s: object) -> bool:
+    """Whether the row's projected fence equals the sealed seconds."""
+
+    projected = row.get("lifetime_fence_s")
+    return (
+        type(projected) in (int, float)
+        and not isinstance(projected, bool)
+        and type(fence_s) in (int, float)
+        and not isinstance(fence_s, bool)
+        and float(projected) == float(fence_s))
+
+
+def attempt_release_audit(
+    queue: "PoolQueue", record: Mapping[str, object],
+) -> float | None:
+    """The audited bound of one finished attempt, or ``None`` when unproven.
+
+    Read only from the finished record of the exact generation and
+    attempt named: the attempt archive carries the enforced phases
+    plus cleanup and scope settlement, and the terminal row beside
+    the attempt link carries the release record dated after the
+    ledger return. A live claim, a READY row, or a successor's row
+    never answers here. ``None`` renders as ``UNKNOWN``.
+    """
+
+    from . import lifetime_fence
+    try:
+        evidence = _archived_lifetime_evidence(queue, record)
+        if not isinstance(evidence, Mapping):
+            return None
+        terminal = record.get("lifetime_evidence")
+        if isinstance(terminal, Mapping):
+            phases = evidence.get("phases")
+            terminal_phases = terminal.get("phases")
+            release = (
+                terminal_phases.get("resource_release")
+                if isinstance(terminal_phases, Mapping) else None)
+            if (
+                terminal.get("schema") == lifetime_fence.EVIDENCE_SCHEMA_V1
+                and terminal.get("fence_s") == evidence.get("fence_s")
+                and terminal.get("deadline_unix") == evidence.get("deadline_unix")
+                and isinstance(phases, Mapping)
+                and isinstance(release, Mapping)
+            ):
+                merged = dict(phases)
+                merged["resource_release"] = release
+                evidence = {**dict(evidence), "phases": merged}
+        return lifetime_fence.release_bound(
+            published_unix=record.get("published_unix"),
+            fence_s=evidence.get("fence_s"), evidence=evidence)
+    except (OSError, ValueError, core.PrismaBuildError, KeyError, TypeError):
+        return None
+
+
+def _archived_lifetime_evidence(queue: "PoolQueue", record: Mapping[str, object]) -> Mapping[str, object] | None:
     """The lifetime evidence the attempt archive filed, if any."""
 
     try:
-        history = claimed_row.get("attempt_history")
+        history = record.get("attempt_history")
         if not isinstance(history, list) or not history:
             return None
         link = history[-1]
