@@ -435,14 +435,20 @@ def validate_common_spec(value: object) -> dict[str, Any]:
         gpu_memory_gb = _finite_positive(
             gpu_memory_gb, where="common spec gpu_memory_gb"
         )
-        mem_gb = demand.get("mem_gb")
-        if (isinstance(mem_gb, int) and not isinstance(mem_gb, bool)
-                and float(gpu_memory_gb) > float(mem_gb)):
-            # The GPU cap is a subset of ``mem_gb`` on unified memory (#1661).
-            pb._fail(
-                f"common spec gpu_memory_gb {gpu_memory_gb!r} exceeds demand "
-                f"mem_gb {mem_gb!r}; raise mem_gb or lower the cap"
-            )
+        from . import adaptive_gpu
+        if adaptive_gpu.unified_placement(
+                common.get("tags"), common.get("host_class")):
+            # The GPU cap is a subset of ``mem_gb`` on unified memory
+            # (#1661). Discrete VRAM is a separate reservation, so this
+            # check runs only for unified-memory placements; admission
+            # refuses the same shape per device.
+            mem_gb = demand.get("mem_gb")
+            if (isinstance(mem_gb, int) and not isinstance(mem_gb, bool)
+                    and float(gpu_memory_gb) > float(mem_gb)):
+                pb._fail(
+                    f"common spec gpu_memory_gb {gpu_memory_gb!r} exceeds demand "
+                    f"mem_gb {mem_gb!r}; raise mem_gb or lower the cap"
+                )
     data_manifest = common["data_manifest"]
     if data_manifest is not None:
         data_manifest = pb._text(data_manifest, where="common spec data_manifest")

@@ -1497,8 +1497,9 @@ submit:
     `--transport slurm`. The budget accepts a JSON number or numeric string
     converting to between 1 and `2**63 - 1` bytes, just like `pbrun`.
     Booleans, non-finite values and out-of-range budgets refuse before any row
-    is submitted. A cap above the row's `mem_gb` refuses too: the GPU cap is a
-    subset of `mem_gb` on unified memory. For example, `"demand": {"gpu": 1,
+    is submitted. A cap above the row's `mem_gb` refuses too on unified-memory
+    placements: the GPU cap is a subset of `mem_gb` on unified memory.
+    For example, `"demand": {"gpu": 1,
     "mem_gb": 80}, "gpu_memory_gb": 32` retains the 80 GiB aggregate budget
     and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
@@ -1832,9 +1833,8 @@ override `--tag` for another real hardware dependency with the named interpreter
 3 GiB), including all pytest workers. Pool `--gpu-memory-gb N` sets its GPU
 cap, which defaults to the host budget. On GB10 the cap is a subset of that
 budget, never a second charge. Discrete admission reserves VRAM separately.
-The option requires
-SLURM, which cannot enforce this separate budget. PB owns GPU placement and
-sharing; shard count supplies work and does not prescribe GPU concurrency.
+The option requires pool transport; SLURM cannot enforce this budget. PB owns
+GPU placement and sharing; shard count supplies work and does not prescribe GPU concurrency.
 
 `--disk-metadata` requests `disk_metadata=1` for **every shard** of the
 invocation (#1008 item 4). A worker must opt in with
@@ -4047,7 +4047,7 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 
 | Memory domain | Budget contract |
 |---|---|
-| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission for unified-memory placements, and admission refuses it per device. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
 | `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
 Unified admission charges each claimed and starting action's `mem_gb` once

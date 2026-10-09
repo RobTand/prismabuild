@@ -606,6 +606,8 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
             gpu=gpu,
             transport=transport,
             mem_gb=mem_gb,
+            tags=row.get("tags"),
+            host_class=row.get("host_class"),
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None

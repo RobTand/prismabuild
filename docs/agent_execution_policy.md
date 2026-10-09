@@ -371,7 +371,8 @@ workers advertise one physical device and use the same adaptive sharing policy.
 separate VRAM budget with pool `--gpu-memory-gb N`; it defaults conservatively
 to `mem_gb`. Host RAM and VRAM are reserved independently.
 On GB10, `mem_gb` remains the shared physical budget and an explicit GPU budget
-is a subset cap. A cap above `mem_gb` refuses at submission. The node offer also
+is a subset cap. A cap above `mem_gb` refuses at submission for unified-memory
+placements, and admission refuses it per device. The node offer also
 subtracts unified GPU bytes no pool holder owns (#1661).
 The 104 GiB roof and 8 GiB margin remain unchanged.
 Unknown memory domains or missing counters grant no admission credit.

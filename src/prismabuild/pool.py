@@ -18970,13 +18970,10 @@ class PoolQueue:
                 gpu_kwargs["gpu_memory_max_bytes"] = gpu_admission.memory_budget_bytes(gpu_memory)
             except ValueError as exc:
                 raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
-            # The GPU cap is a subset of ``mem_gb`` on unified memory (#1661).
-            # A larger cap declares memory the reservation does not hold.
-            if gpu_kwargs["gpu_memory_max_bytes"] > memory * 1024 ** 3:
-                raise PoolContractError(
-                    f"gpu_memory_gb {gpu_memory!r} exceeds sealed mem_gb "
-                    f"{memory!r}; raise mem_gb or lower the cap"
-                )
+            # No subset check here: a cap above ``mem_gb`` is legal on
+            # discrete hosts, where VRAM is a separate reservation (#1661).
+            # GPU admission refuses it on shared-system devices, before any
+            # scope exists, with ``unified_gpu_cap_exceeds_mem``.
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(
@@ -20285,6 +20282,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -20292,6 +20290,9 @@ class PoolQueue:
         drain): ``_claim`` re-checks it under the per-key transition lock
         immediately before the intent write, so a fence that closed after the
         poll check is still observed. ``None`` preserves current behavior.
+        ``observed_external_gib`` is the foreign unified-GPU GiB the node
+        offer in ``capacity`` already subtracted (#1661): the unified gate
+        charges only the growth beyond it, never the same bytes twice.
         """
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
@@ -20346,7 +20347,8 @@ class PoolQueue:
                                    observed_images=observed_images,
                                    container_class_policy=container_class_policy,
                                    container_inventory=container_inventory,
-                                   admission_open=admission_open)
+                                   admission_open=admission_open,
+                                   observed_external_gib=observed_external_gib)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -20368,7 +20370,8 @@ class PoolQueue:
                                ready=ready, observed_images=observed_images,
                                container_class_policy=container_class_policy,
                                container_inventory=container_inventory,
-                               admission_open=admission_open)
+                               admission_open=admission_open,
+                               observed_external_gib=observed_external_gib)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
             return None
@@ -21034,6 +21037,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -22184,7 +22188,8 @@ class PoolQueue:
                                     item, demand, identity=identity, owner=dependent_owner,
                                     allowance=allowance,
                                     foreign_load_exempt=canary_exempt,
-                                    unified_memory_budget=unified_budget)
+                                    unified_memory_budget=unified_budget,
+                                    observed_external_gib=observed_external_gib)
                                 cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
@@ -22246,7 +22251,9 @@ class PoolQueue:
                             if not refused and gpu_controller is not None and demand.get("gpu"):
                                 # Charge the full reservation, including exports.
                                 # The pre-read contract keeps the GPU cap sealed.
-                                adaptive_gpu = gpu_controller.decision(item, demand, contract=contract)
+                                adaptive_gpu = gpu_controller.decision(
+                                    item, demand, contract=contract,
+                                    observed_external_gib=observed_external_gib)
                                 gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:
@@ -28645,6 +28652,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -28674,7 +28682,8 @@ class PoolQueue:
                           ready=ready, observed_images=observed_images,
                           container_class_policy=container_class_policy,
                           container_inventory=container_inventory,
-                          admission_open=admission_open)
+                          admission_open=admission_open,
+                          observed_external_gib=observed_external_gib)
         if item is None:
             return None
         key = str(item["action_key"])

@@ -350,33 +350,151 @@ def test_absent_cap_defaults_to_mem_gb(rig, tmp_path, real_gpu_contract):
     assert (shape, measurement, exclusive, budget) == ("shape", False, False, 64 * GIB)
 
 
-def test_pbrun_refuses_a_cap_above_mem_gb():
+def test_pbrun_refuses_a_cap_above_mem_gb_on_unified_placement():
     with pytest.raises(ValueError, match="exceeds mem_gb"):
         pbrun.require_gpu_memory_scope(
-            gpu_memory_gb=100, gpu=True, transport="pool", mem_gb=80)
+            gpu_memory_gb=100, gpu=True, transport="pool", mem_gb=80,
+            tags=["gb10"])
+    with pytest.raises(ValueError, match="exceeds mem_gb"):
+        pbrun.require_gpu_memory_scope(
+            gpu_memory_gb=100, gpu=True, transport="pool", mem_gb=80,
+            host_class="gb10")
     pbrun.require_gpu_memory_scope(
-        gpu_memory_gb=100, gpu=True, transport="pool", mem_gb=104)
+        gpu_memory_gb=100, gpu=True, transport="pool", mem_gb=104,
+        tags=["gb10"])
     pbrun.require_gpu_memory_scope(
-        gpu_memory_gb=None, gpu=True, transport="pool", mem_gb=80)
+        gpu_memory_gb=None, gpu=True, transport="pool", mem_gb=80,
+        tags=["gb10"])
     assert pbrun.default_host_mem_gb(gpu=True) == 16
     assert pbrun.default_host_mem_gb(gpu=False) == 4
 
 
-def test_campaign_preflight_refuses_a_cap_above_mem_gb(tmp_path):
+def test_discrete_submission_allows_a_cap_above_host_ram():
+    """A 2 GiB discrete action may budget 8 GiB of separate VRAM."""
+    pbrun.require_gpu_memory_scope(
+        gpu_memory_gb=8, gpu=True, transport="pool", mem_gb=2)
+    pbrun.require_gpu_memory_scope(
+        gpu_memory_gb=8, gpu=True, transport="pool", mem_gb=2,
+        tags=["x86"])
+    assert not adaptive_gpu.unified_placement(["x86"], None)
+    assert not adaptive_gpu.unified_placement([], None)
+    assert adaptive_gpu.unified_placement(["gb10"], None)
+    assert adaptive_gpu.unified_placement([], "gb10")
+
+
+def test_discrete_scope_creation_allows_a_cap_above_host_ram(
+        tmp_path, monkeypatch):
+    """Scope creation keeps no subset rule; admission owns it per device."""
+    from prismabuild import core as pb
+    from prismabuild import resource_scope
+    checkout = tmp_path / "checkout-discrete-scope"
+    checkout.mkdir(exist_ok=True)
+    (checkout / "task.py").write_text("print('fixture')\n")
+    demand = {"cpu": 1, "gpu": 1, "mem_gb": 2}
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/discrete-scope",
+                 "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": [sys.executable, "task.py"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {"demand": demand, "gpu_memory_gb": 8},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.publish_action_request(action)
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    queue.publish(action_key=action["action_key"], cas_root=str(cas.root),
+                  checkout_root=str(checkout), worker_script="/w.py",
+                  resources=demand, needs_gpu=True, priority=-10,
+                  tags=["x86"])
+    item = queue.claim(capacity={"cpu": 4, "gpu": 1, "mem_gb": 8},
+                       tags=["x86"], has_gpu=True)
+    assert item is not None and item["action_key"] == action["action_key"]
+    import hashlib
+    def fake_broker(scope, op, **extra):
+        assert op == "create"
+        unit = ("prismabuild-job"
+                + hashlib.sha256((scope.action_key + scope.nonce).encode()).hexdigest()[:32]
+                + ".slice")
+        return {"ok": True, "scope_id": unit, "token": "b" * 64,
+                "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
+                "gpu_memory_max_bytes": scope.gpu_memory_max_bytes}
+    monkeypatch.setattr(resource_scope.ResourceScope, "_request", fake_broker)
+    scope = queue._start_resource_scope(item)
+    assert scope.gpu_memory_max_bytes == 8 * GIB
+    assert scope.memory_max_bytes == 2 * GIB
+
+
+def test_unified_admission_refuses_a_cap_above_mem_gb(rig, tmp_path, monkeypatch):
+    """A 60 GiB action with a 98 GiB cap never starts on shared_system."""
+    from prismabuild import adaptive_gpu as _gpu
+    monkeypatch.setattr(_gpu, "action_contract",
+                        lambda item, demand: ("shape", False, False, 98 * GIB))
+    queue, now, sample, args = rig
+    key, _, _ = _sealed(tmp_path, "cap-above-mem")
+    _publish(queue, key, {"cpu": 2, "gpu": 1, "mem_gb": 60})
+    assert queue.claim(**args) is None
+    decision = _denial(queue, key)["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_cap_exceeds_mem"
+    assert decision["requested_budget_gib"] == 98.0
+    assert decision["requested_mem_gb"] == 60
+
+
+def test_discrete_admission_allows_a_cap_above_host_ram(rig, tmp_path, monkeypatch):
+    """The same 2/8 shape starts on a discrete device with roomy VRAM."""
+    from prismabuild import adaptive_gpu as _gpu
+    monkeypatch.setattr(_gpu, "action_contract",
+                        lambda item, demand: ("shape", False, False, 8 * GIB))
+    queue, now, sample, args = rig
+    sample["devices"][0].update(
+        memory_domain="discrete", memory_total_bytes=100 * GIB,
+        memory_free_bytes=100 * GIB, memory_used_bytes=0)
+    key, _, _ = _sealed(tmp_path, "discrete-cap-above-mem")
+    _publish(queue, key, {"cpu": 2, "gpu": 1, "mem_gb": 2})
+    got = queue.claim(**args)
+    assert got is not None and got["action_key"] == key
+    assert got["gpu_admission"]["gpu_memory_budget_bytes"] == 8 * GIB
+
+
+def test_campaign_preflight_refuses_a_cap_above_mem_gb_on_gb10(tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps([{
         "argv": ["python", "task.py"],
-        "demand": {"gpu": 1, "mem_gb": 80}, "gpu_memory_gb": 100}]))
+        "demand": {"gpu": 1, "mem_gb": 80}, "gpu_memory_gb": 100,
+        "tags": ["gb10"]}]))
     with pytest.raises(pbcampaign.ManifestError, match="exceeds mem_gb"):
         pbcampaign.load_manifest(str(manifest), transport="pool")
     manifest.write_text(json.dumps([{
         "argv": ["python", "task.py"],
-        "demand": {"gpu": 1, "mem_gb": 80}, "gpu_memory_gb": 64}]))
+        "demand": {"gpu": 1, "mem_gb": 80}, "gpu_memory_gb": 64,
+        "tags": ["gb10"]}]))
     rows = pbcampaign.load_manifest(str(manifest), transport="pool")
     assert rows[0]["gpu_memory_gb"] == 64
 
 
-def test_decomposition_refuses_a_cap_above_mem_gb():
+def test_campaign_preflight_allows_a_cap_above_mem_gb_off_gb10(tmp_path):
+    """Discrete campaign rows keep independent VRAM budgets."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{
+        "argv": ["python", "task.py"],
+        "demand": {"gpu": 1, "mem_gb": 2}, "gpu_memory_gb": 8,
+        "tags": ["x86"]}]))
+    rows = pbcampaign.load_manifest(str(manifest), transport="pool")
+    assert rows[0]["gpu_memory_gb"] == 8
+    manifest.write_text(json.dumps([{
+        "argv": ["python", "task.py"],
+        "demand": {"gpu": 1, "mem_gb": 2}, "gpu_memory_gb": 8}]))
+    rows = pbcampaign.load_manifest(str(manifest), transport="pool")
+    assert rows[0]["gpu_memory_gb"] == 8
+
+
+def test_decomposition_refuses_a_cap_above_mem_gb_on_gb10():
     common = {
         "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
         "cwd": "/checkout",
@@ -384,11 +502,82 @@ def test_decomposition_refuses_a_cap_above_mem_gb():
         "gpu_memory_gb": 100,
         "data_manifest": None,
         "env": {"OMP_NUM_THREADS": "1"},
+        "tags": ["gb10"],
     }
     from prismabuild import core as pb
     with pytest.raises(pb.ActionContractError, match="exceeds demand"):
         dc.validate_common_spec(common)
     assert dc.validate_common_spec({**common, "gpu_memory_gb": 64})["gpu_memory_gb"] == 64
+
+
+def test_decomposition_allows_a_cap_above_mem_gb_off_gb10():
+    """Discrete decomposed rows keep independent VRAM budgets."""
+    common = {
+        "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+        "cwd": "/checkout",
+        "demand": {"gpu": 1, "cpu": 1, "mem_gb": 2},
+        "gpu_memory_gb": 8,
+        "data_manifest": None,
+        "env": {"OMP_NUM_THREADS": "1"},
+    }
+    assert dc.validate_common_spec(common)["gpu_memory_gb"] == 8
+    assert dc.validate_common_spec({**common, "tags": ["x86"]})["gpu_memory_gb"] == 8
+
+
+def test_adjusted_offer_admits_without_a_second_external_charge(rig, tmp_path):
+    """An 82 GiB offer with a 30 GiB baseline still admits 60 GiB once."""
+    queue, now, sample, args = rig
+    observer = box_capacity.CapacityObserver(samples=1)
+    observed_sample = {
+        "schema": "prismabuild.gpu_capacity.v1", "sample_id": "obs",
+        "sampled_unix": now[0], "complete": True, "attributed": True,
+        "devices": [{"uuid": "GPU-1", "memory_domain": "shared_system"}],
+        "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
+        "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
+        "cpu_pressure_some": 0.0, "cpu_pressure_full": 0.0,
+        "foreign_processes": [{"pid": 9, "gpu_uuid": "GPU-1",
+                               "used_bytes": 30 * GIB}],
+        "jobs": []}
+    offered = observer.offer(
+        {"cpu": 20, "gpu": 1, "mem_gb": 104}, {}, gpu_sample=observed_sample,
+        mem_gb=120, load1=0)
+    assert offered["mem_gb"] == 82
+    assert observer.last_offer_external_gib == 30
+    sample["foreign_processes"] = [{
+        "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
+        "gpu_uuid": "GPU-1", "used_bytes": 30 * GIB}]
+
+    def gate():
+        return queue.claim(capacity=offered, tags=["gb10"], cpu_tiers=TIERS,
+                           adaptive_cpu=True, has_gpu=True,
+                           observed_external_gib=observer.last_offer_external_gib)
+    first, _, _ = _sealed(tmp_path, "adjusted-first")
+    _publish_cpu(queue, first, {"cpu": 2, "mem_gb": 60})
+    assert gate()["action_key"] == first
+    # Fresh growth beyond the baseline still charges once: beside 60 held
+    # and 10 new foreign GiB, 12 GiB fits the 82 GiB offer exactly.
+    sample["foreign_processes"] = [{
+        "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
+        "gpu_uuid": "GPU-1", "used_bytes": 40 * GIB}]
+    _tick(rig)
+    sample["foreign_processes"] = [{
+        "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
+        "gpu_uuid": "GPU-1", "used_bytes": 40 * GIB}]
+    cpu_fit, _, _ = _sealed(tmp_path, "adjusted-cpu-fit")
+    _publish_cpu(queue, cpu_fit, {"cpu": 2, "mem_gb": 12})
+    assert gate()["action_key"] == cpu_fit
+    cpu_big, _, _ = _sealed(tmp_path, "adjusted-cpu-big")
+    _publish_cpu(queue, cpu_big, {"cpu": 2, "mem_gb": 24})
+    _tick(rig)
+    sample["foreign_processes"] = [{
+        "pid": 999, "start_ticks": 1, "cgroup": "/user.slice",
+        "gpu_uuid": "GPU-1", "used_bytes": 40 * GIB}]
+    assert gate() is None
+    decision = _denial(queue, cpu_big)["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["external_gpu_gib"] == 40
+    assert decision["external_baseline_gib"] == 30
+    assert decision["external_charged_gib"] == 10
 
 
 def test_host_without_gpu_keeps_plain_token_admission(rig, tmp_path):

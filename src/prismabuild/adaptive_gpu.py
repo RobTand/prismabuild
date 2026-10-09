@@ -352,6 +352,23 @@ def memory_budget_bytes(value):
         raise ValueError('GPU budget must represent between 1 and 9223372036854775807 bytes')
     return result
 
+#: Placement tags and host classes whose memory domain is unified (#1661).
+#: A GPU cap larger than ``mem_gb`` is legal on discrete hosts, where VRAM
+#: is a separate reservation, so submission-time subset checks must only
+#: fire for these placements. Admission enforces the same rule per device.
+UNIFIED_PLACEMENTS = frozenset({"gb10"})
+
+
+def unified_placement(tags=None, host_class=None) -> bool:
+    """Whether a placement targets a unified-memory host (#1661)."""
+    if host_class is not None and str(host_class) in UNIFIED_PLACEMENTS:
+        return True
+    try:
+        names = {str(tag) for tag in (tags or [])}
+    except TypeError:
+        return False
+    return not names.isdisjoint(UNIFIED_PLACEMENTS)
+
 
 def _number(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
@@ -463,7 +480,8 @@ def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, floa
     return caps, committed, cap_total, held_mem, ram_mem
 
 
-def unified_memory_verdict(ledger, demand, budget, *, sample=None) -> dict[str, object] | None:
+def unified_memory_verdict(ledger, demand, budget, *, sample=None,
+                           observed_external_gib=0) -> dict[str, object] | None:
     """The unified-memory refusal for one candidate, or ``None`` to admit.
 
     Each holder and the candidate charge ``mem_gb`` once: the GPU cap is a
@@ -472,14 +490,23 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None) -> dict[str, 
     bytes on shared-system devices count against the same offer, because the
     kernel memory reading does not reliably show driver-held unified
     allocations. Attributed GPU bytes never count here: their host share is
-    inside the holder's ``mem_gb`` charge. A missing or stale sample only
-    withholds the external term. An unreadable ledger census refuses nothing
-    here: the token path reports that shortage itself.
+    inside the holder's ``mem_gb`` charge. ``observed_external_gib`` is the
+    foreign GiB the node offer already subtracted: the verdict charges only
+    the growth beyond it, so observation and admission never charge the same
+    bytes twice. A missing or stale sample only withholds the external term.
+    An unreadable ledger census refuses nothing here: the token path reports
+    that shortage itself.
     """
     held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
         ledger)
     external_gib, external_bytes, external_unknown = _sample_external_unified_gib(
         sample)
+    try:
+        baseline = float(observed_external_gib or 0)
+    except (TypeError, ValueError):
+        baseline = 0.0
+    baseline = math.ceil(max(0.0, baseline))
+    charged_external_gib = max(0, external_gib - baseline)
     try:
         census = ledger.capacity_census()
     except (AttributeError, OSError, ValueError):
@@ -500,7 +527,7 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None) -> dict[str, 
     candidate_mem = demand.get("mem_gb", 0)
     candidate_mem = float(candidate_mem) if type(candidate_mem) in (int, float) else 0.0
     candidate = candidate_mem
-    if committed + candidate + external_gib <= offer_gib:
+    if committed + candidate + charged_external_gib <= offer_gib:
         return None
     cap_gib = 0.0
     if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
@@ -516,6 +543,8 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None) -> dict[str, 
             "committed_gib": committed,
             "external_gpu_bytes": external_bytes,
             "external_gpu_gib": external_gib,
+            "external_baseline_gib": baseline,
+            "external_charged_gib": charged_external_gib,
             "external_gpu_unknown": external_unknown,
             "candidate_charge_gib": candidate,
             "mem_offer_gib": offer_gib}
@@ -673,7 +702,7 @@ class Controller:
     def sample(self):
         return trusted_sample()
 
-    def decision(self, item, demand, *, contract=None):
+    def decision(self, item, demand, *, contract=None, observed_external_gib=0):
         """Decide under admission; callers may pre-read the sealed contract."""
         self.last_decision = {"reason": "not_evaluated"}
         if not demand.get('gpu'):
@@ -819,9 +848,20 @@ class Controller:
                               sw_cap_idle_exception=sw_cap_exception,
                               **({'baseline': idle} if measurement else {}))
             if device.get("memory_domain") == "shared_system":
+                mem_bytes = (demand.get("mem_gb", 0) * GIB
+                             if type(demand.get("mem_gb", 0)) in (int, float) else 0)
+                if (type(budget) in (int, float) and math.isfinite(budget)
+                        and budget > 0 and budget > mem_bytes):
+                    # The GPU cap is a subset of ``mem_gb`` on unified
+                    # memory (#1661). Discrete VRAM stays independent.
+                    return refuse("unified_gpu_cap_exceeds_mem",
+                                  requested_budget_bytes=budget,
+                                  requested_budget_gib=float(budget) / float(GIB),
+                                  requested_mem_gb=demand.get("mem_gb", 0))
                 if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
                     verdict = unified_memory_verdict(
-                        self.ledger, demand, budget, sample=sample)
+                        self.ledger, demand, budget, sample=sample,
+                        observed_external_gib=observed_external_gib)
                     if verdict is not None:
                         host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
                         return refuse(verdict.pop("reason"),

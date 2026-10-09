@@ -6318,18 +6318,23 @@ subset cap, not a second reservation of the same physical DRAM.
 On `shared_system` hosts, each claimed or starting action charges its
 `mem_gb` once against the node offer (#1661). The GPU cap stays a subset of
 that charge, never a second one. A declared cap above `mem_gb` refuses at
-submission; an absent cap defaults to `mem_gb`. The node offer also subtracts
-unified GPU bytes the broker attributes to no pool holder: the kernel memory
-reading does not reliably show driver-held allocations, and that foreign
-memory is what overfilled the box on 2026-10-08. Attributed bytes never
-subtract twice: their host share sits inside the holder's `mem_gb` charge.
+submission for unified-memory placements, and admission refuses it per device
+with `unified_gpu_cap_exceeds_mem`; an absent cap defaults to `mem_gb`. The
+node offer also subtracts unified GPU bytes the broker attributes to no pool
+holder: the kernel memory reading does not reliably show driver-held
+allocations, and that foreign memory is what overfilled the box on 2026-10-08.
+Attributed bytes never subtract twice: their host share sits inside the
+holder's `mem_gb` charge. The claim gate charges only fresh growth beyond the
+foreign GiB the offer already subtracted, so observation and admission never
+charge the same bytes twice.
 
 CPU-only candidates face the same gate on a GPU host, with the held caps
 identified from ledger metadata when GPU telemetry is absent or stale. A
 missing or stale sample only withholds the external term. New GPU claims
 still require fresh trusted telemetry. The refusal
 `unified_gpu_memory_budget` names each held cap, the cap total, the external
-bytes, the candidate charge, and the offer.
+bytes, the baseline the offer already subtracted, the candidate charge, and
+the offer.
 
 The exact GPU budget follows scope creation, durable recovery, and release.
 This admission change does not alter scope containment or the GPU memory guard.
@@ -6338,7 +6343,8 @@ Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion, refuses
 a budget without GPU demand (explicit or implied by `exclusive`) or under SLURM,
-and refuses a cap above the row's `mem_gb` before any row is submitted.
+and refuses a cap above the row's `mem_gb` on unified-memory placements before
+any row is submitted.
 
 ## Storage prewarm pacing
 

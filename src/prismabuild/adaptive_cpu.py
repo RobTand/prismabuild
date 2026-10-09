@@ -1247,7 +1247,8 @@ class Controller:
                 'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
 
     def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
-                 foreign_load_exempt=False, unified_memory_budget=_UNREAD):
+                 foreign_load_exempt=False, unified_memory_budget=_UNREAD,
+                 observed_external_gib=0):
         """Decide under admission; callers may pre-read sealed action identity.
 
         ``owner`` is the producer a dependent serves, when the caller knows it
@@ -1257,7 +1258,8 @@ class Controller:
         ``unified_memory_budget`` enables the ledger-based unified memory gate
         (#1661). A CPU-only candidate on a GPU host passes ``0``. Each holder
         charges ``mem_gb`` once; the verdict also counts foreign GPU bytes
-        from a fresh broker sample. A missing or stale sample only withholds
+        from a fresh broker sample, minus ``observed_external_gib`` the node
+        offer already subtracted. A missing or stale sample only withholds
         that external term. ``None`` or an unread budget leaves ordinary
         token admission intact.
         """
@@ -1633,11 +1635,14 @@ class Controller:
             # CPU-only candidates share unified DRAM with held GPU caps and
             # foreign GPU allocations alike (#1661). Held metadata identifies
             # the caps even without a current GPU sample; the sample only
-            # adds the external term, and only when fresh.
+            # adds the external term, and only when fresh. The node offer
+            # already subtracted ``observed_external_gib``, so the verdict
+            # charges only the growth beyond it, never the same bytes twice.
             from . import adaptive_gpu
             verdict = adaptive_gpu.unified_memory_verdict(
                 self.ledger, demand, unified_memory_budget,
-                sample=adaptive_gpu.trusted_sample())
+                sample=adaptive_gpu.trusted_sample(),
+                observed_external_gib=observed_external_gib)
             if verdict is not None:
                 return refuse(verdict.pop("reason"), **verdict)
         self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}

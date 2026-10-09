@@ -640,6 +640,16 @@ class CapacityObserver:
         self.ledger_total = ({str(k): int(v) for k, v in ledger_total.items()}
                              if ledger_total else {})
         self._history: deque[dict[str, int]] = deque(maxlen=self.samples)
+        # Foreign unified-GPU GiB behind each window entry, in lockstep with
+        # ``_history`` (#1661). Seeds measured nothing, so they carry zero:
+        # an offer that never subtracted external charges the fresh term in
+        # full at admission, which is exactly once. ``last_offer_external_gib``
+        # is the baseline behind the returned ``mem_gb`` offer: the external
+        # term of the most recent window entry attaining that maximum. The
+        # claim gate charges only fresh growth beyond it, so observation and
+        # admission never charge the same bytes twice.
+        self._external_history: deque[int] = deque(maxlen=self.samples)
+        self.last_offer_external_gib: int = 0
         # The seed pads the window once, on the first reading this observer
         # ever takes.  ``rejoin`` empties the window without setting this
         # back, because a loop coming out of an action must not be padded --
@@ -666,7 +676,7 @@ class CapacityObserver:
         host; that is "no verdict to inherit", not "no capacity".
         """
 
-        self._history.clear()
+        self._external_history.clear()
         # An emptied window is not a new one: the pad is what a start gets, and
         # a return must not be given it -- see the module docstring.
         self._seeded = True
@@ -721,6 +731,7 @@ class CapacityObserver:
             }
             while len(self._history) < self.samples - 1:
                 self._history.append(dict(seed))
+                self._external_history.append(0)
             self._seeded = True
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
         if "mem_gb" in wanted:
@@ -742,8 +753,11 @@ class CapacityObserver:
         # The window remembers what was offered, not what was read: recording
         # the uncapped reading would let the next poll's maximum undo a cap
         # that has already been spent.
+        external = seen.detail.get("external_unified_gpu_gib", 0)
+        external = int(external) if type(external) is int and external > 0 else 0
         self._history.append(sample)
-        return {
+        self._external_history.append(external)
+        offered = {
             # Root-published GPU attribution is a current admission fact, not
             # a noisy per-process estimate. Apply it immediately in both
             # directions; the adaptive controller independently checks the
@@ -754,3 +768,15 @@ class CapacityObserver:
             else min(value, max(s.get(kind, value) for s in self._history))
             for kind, value in wanted.items()
         }
+        self.last_offer_external_gib = 0
+        if "mem_gb" in offered and self._history:
+            # The baseline behind the returned mem offer: the external term
+            # of the most recent entry attaining the window maximum, so the
+            # claim gate charges fresh bytes exactly once (#1661).
+            target = offered["mem_gb"]
+            for entry, entry_external in zip(
+                    reversed(self._history), reversed(self._external_history)):
+                if entry.get("mem_gb", 0) == target:
+                    self.last_offer_external_gib = entry_external
+                    break
+        return offered
