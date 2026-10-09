@@ -16665,6 +16665,19 @@ Do not substitute synthetic capacity or a Spark tag for a measured x86 scratch o
 A supervisor must supply the measured offer and authorize an isolated worker for recovery qualification.
 No runtime publication, worker service restart or public contract approval occurred in this correction.
 
+The admitted x86 probe `ee950a85ee9d` used published generation `c8daa1be416c-1791512870-55b0e8c72f6b`.
+It observed immutable creation time on `/tmp`, but the lifetime and spool guards refused its `tmpfs` filesystem.
+The supervisor also refused a proposed `/tmp` disk offer.
+The roster has no `local_disk` or `--spool-gb` for dl380g10.
+This is a separate deployment prerequisite, not a missing finalizer.
+
+Provide a qualified disk-backed mount beneath `/tmp` through an operator-approved provisioning change.
+Measure its capacity through the existing supervisor before an action reserves it.
+Do not add `tmpfs` to the disk policy or reuse the HDD pool to bypass this prerequisite.
+Decision request `dec-1009-090451-62a1` covers SDK6 and isolated worker fault authority.
+The earlier worker-input plan does not approve SDK6 exports.
+No approval or reduced-scope acceptance is recorded.
+
 **Still open.**
 
 * The export's pool-side cost is unmeasured. The receipt records file-side

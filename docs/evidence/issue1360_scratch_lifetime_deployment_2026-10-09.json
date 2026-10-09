@@ -2,10 +2,10 @@
  "completion": {
   "accepted": false,
   "issue_must_remain_open": true,
-  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. SDK6 requires a person's explicit public contract decision.",
-  "sdk6_contract_decision": "pending",
+  "reason": "Worker-loss recovery and durable cleanup retry remain unqualified. SDK6 requires a person's explicit public contract decision. The x86 scratch prerequisite needs separate provisioning.",
+  "sdk6_contract_decision": "pending: dec-1009-090451-62a1",
   "runtime_publication_authority": "not granted to this correction",
-  "qualification_authority": "No authority permits this worker to stop a live fleet worker service."
+  "qualification_authority": "The decision request asks for isolated worker and broker qualification. No answer authorizes live worker faults."
  },
  "actions": [
   {
@@ -411,6 +411,82 @@
    "claim_receipt_payload_checks": "passed",
    "worker_attestation_verification": "not checked by pb_verify_claim",
    "limit": "This smoke proves the process signal path. It does not qualify worker-loss cleanup or durable cleanup retry."
+  }
+ },
+ "revision_prerequisites": {
+  "retained_head": "18c29990e78102b8c1d01149a50e7dd0d18614b9",
+  "scope": "This revision records prerequisite evidence. It changes no production cleanup, public SDK, filesystem policy, or worker offer.",
+  "history": {
+   "ceo_history_read": true,
+   "prior_plan": "The 2026-10-01 plan preserved SDK3 and selected a versioned worker input. PR1463 supplied the existing cleanup owner.",
+   "decision": "Retain that owner and the observed cleanup evidence. Do not repeat the finalizer, signal tests, or historical launcher scenarios.",
+   "sdk6_limit": "The earlier worker-input plan does not authorize new SDK6 Python exports."
+  },
+  "decision_request": {
+   "id": "dec-1009-090451-62a1",
+   "state": "pending",
+   "needs": "A person must approve or reject SDK6. An operator must authorize isolated worker and broker faults before live qualification.",
+   "recommendation": "Approve the proposed SDK6 interface and assign the prerequisites. Keep full acceptance unchanged."
+  },
+  "x86_offer": {
+   "source": "pbmcp.pb_status",
+   "generated_unix": 1791536642.9147854,
+   "complete": true,
+   "host": "dl380g10",
+   "capacity": {"cpu": 80, "disk_metadata": 0, "gpu": 0, "mem_gb": 96},
+   "scratch_lifetime_v1": true,
+   "spool_gb": "absent",
+   "configuration": "tools/fleet/fleet_boxes.json: dl380g10 has no local_disk or --spool-gb."
+  },
+  "probe": {
+   "action_key": "ee950a85ee9da0d2f87d0e02641dbb2af1bb1b313da6155f0f6ad5043197d478",
+   "host": "dl380g10",
+   "runtime_generation": "c8daa1be416c-1791512870-55b0e8c72f6b",
+   "sdk_version": 5,
+   "demand": {"cpu": 1, "mem_gb": 1},
+   "tags": ["interpreter-path-v1", "x86"],
+   "terminal": "done",
+   "returncode": 0,
+   "attempts": 1,
+   "root": "/tmp",
+   "filesystem": {"device": "51", "filesystem": "9640701706127043701", "filesystem_type": "tmpfs", "root_inode": "1"},
+   "birth_ns": 1791307004462329351,
+   "lifetime_refusal": "scratch filesystem type not supported: tmpfs",
+   "spool_refusal": "spool root is not a known local disk filesystem",
+   "supervisor_verdict": ["refuse", "local_disk /tmp is not a usable local disk: spool root is not a known local disk filesystem"],
+   "claim_sha256": "20de4bd3850b89a07695ac1260c1aef775c041004bf265b789bb1c878b261dae",
+   "receipt_sha256": "901a161693a1c8ae2a288c7c97e1056ee7487c1e5b359495ea2ada12b62563b6",
+   "payload_sha256": "5adc670b84ee340ad687665ad20e15b68598ee46a8ea20aaebca5bd9bc27afdc",
+   "stdout_sha256": "68e14db15e82dfaef3b644610445325b943dd14fb5b0ddc76339803b3375d3d0",
+   "stderr_sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c",
+   "claim_receipt_payload_checks": "passed",
+   "worker_attestation_verification": "not checked by pb_verify_claim",
+   "containment": {"stopped": true, "empty": true, "settled": true, "released": true},
+   "directory_mutations": false,
+   "payload_queue_mutations": false,
+   "scaffold_removed": true,
+   "limit": "The probe proves the current filesystem refusals. It does not qualify directory cleanup or scratch charge retention."
+  },
+  "blocking_prerequisite": {
+   "title": "[P2] Provision disk-backed x86 scratch for lifetime qualification",
+   "repository": "prismabuild",
+   "kind": "chore",
+   "scope": "Provide an operator-approved, measured local disk mount beneath /tmp and its supervisor configuration. Do not implement another cleanup owner.",
+   "release_check": "The published x86 worker offers measured spool_gb and qualified roots beneath /tmp. The unchanged lifetime and spool guards accept their descriptors.",
+   "search": "The open issue search for scratch found no separate x86 provisioning issue."
+  },
+  "remaining_qualification": [
+   "Admit worker-loss recovery through the existing exact-host cleanup owner.",
+   "Inject cleanup and record-commit errors with durable pending state and retained charge.",
+   "Prove no payload reexecution, no duplicate release, and predecessor isolation from retry and successor directories.",
+   "Record safe-path refusal scenarios and persistent-cache survival on the qualified published runtime."
+  ],
+  "requirement_status": {
+   "SC-01": {"target": "PB owns cleanup.", "implemented": "The existing pool owner remains unchanged.", "deployed": "Historical normal and launcher cleanup only."},
+   "SM-01": {"target": "Containment and durable outcomes precede release or retry.", "implemented": "PR1463 supplies source fixtures.", "deployed": "Worker-loss and record-fault qualification remain absent."},
+   "INV-07": {"target": "Required cleanup settles before capacity release.", "implemented": "The source cleanup barrier remains unchanged.", "deployed": "Injected cleanup retry and single release remain unqualified."},
+   "ACC-04": {"target": "Crash recovery preserves attempt identity.", "implemented": "Exact-owner source cases exist.", "deployed": "Worker-loss recovery remains unqualified."},
+   "DUR-01": {"target": "State the storage durability limit.", "implemented": "The existing process-crash contract applies.", "deployed": "No power-loss evidence exists."}
   }
  },
  "verification": [

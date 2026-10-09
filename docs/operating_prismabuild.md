@@ -4291,6 +4291,13 @@ The historical launcher qualifier used numeric PIDs after a delay.
 The corrected qualifier requires Linux pidfds and verifies process identity before any signal.
 Its CPU smoke targets an owned inert process, not a live worker service.
 The current x86 offer advertises no `spool_gb`; obtain a supervisor-owned measured scratch offer before lifetime scenarios.
+The admitted read-only probe `ee950a85ee9d` confirms that `/tmp` is `tmpfs` on this x86 host.
+Its immutable creation time exists, but the lifetime, spool, and supervisor guards refuse that filesystem.
+The roster also lacks `local_disk` and `--spool-gb` for dl380g10.
+Provision a qualified disk-backed mount beneath `/tmp` through an operator-approved change.
+Use the existing supervisor to measure its offer.
+Do not weaken filesystem checks, invent capacity, or place these CPU scenarios on a Spark.
+SDK6 and isolated worker fault authority remain in decision request `dec-1009-090451-62a1`.
 
 ### Write outputs that a later action reads
 
