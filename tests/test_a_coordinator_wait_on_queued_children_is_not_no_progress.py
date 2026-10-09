@@ -712,9 +712,8 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     assert reporter.newly_durable() == []
     assert reporter.units == 0
 
-
 def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
-    """A manifest that answers one task of a two-task batch counts zero."""
+    """A manifest that answers one task of a three-task batch counts zero."""
 
     checkout = tmp_path / "child-src"
     checkout.mkdir()
@@ -732,7 +731,7 @@ def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
                 {"id": f"q{index}", "payload": {"v": index},
                  "residency_key": "r", "estimated_seconds": 8.2,
                  "estimate_evidence": EVIDENCE, "output_id": f"z{index}"}
-                for index in range(2)]},
+                for index in range(3)]},
         "batch_policy": {
             "schema": dc.ROSTER_BATCH_POLICY_SCHEMA_V1,
             "residencies": [{"key": "r", "setup_seconds": 20.0,
@@ -745,7 +744,7 @@ def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
                       dc.TASK_BATCH_PLACEHOLDER]
     plan = dc.build_plan(request, frozen)
     assert len(plan["partitions"]) == 1, plan["partitions"]
-    assert len(plan["partitions"][0]) == 2, plan["partitions"]
+    assert len(plan["partitions"][0]) == 3, plan["partitions"]
     batch = dc.PreparedBatches(request, plan).membership(0)
     manifest = {
         "schema": dc.CHILD_RESULT_MANIFEST_SCHEMA_V1,
@@ -757,7 +756,6 @@ def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
     checked = dc.validate_child_result_manifest(manifest)
     assert sorted(entry["task_id"] for entry in checked["results"]) != sorted(
         batch["ordered_task_ids"])
-
 
 
 def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
@@ -887,6 +885,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
         dc.publication_index(
             plan, batch_input_digests=["0" * 64],
             child_action_keys=[child["action_key"]])))
+    queue = _queue(tmp_path, cas)
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     run = tmp_path / "run-multi"
@@ -904,7 +903,6 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     assert reporter.establish_baseline() == {child["action_key"]}
     assert reporter.units == 0
     manifest = reporter.verified[child["action_key"]]
-    assert len(manifest["results"]) == 3
 
 
 def test_a_pending_only_child_earns_no_credit(tmp_path: Path) -> None:

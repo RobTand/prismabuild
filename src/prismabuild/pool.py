@@ -11367,6 +11367,42 @@ class PoolQueue:
                 pb.CASTamperError, pb.CASUnavailableError):
             return False
 
+    def _sample_queued_child_wait(
+            self, item: Mapping[str, object], key: str, watch: "ProgressWatch",
+            progress: "ProgressPolicy | None", *, now: float) -> None:
+        """Sample the awaited set on the heartbeat cadence (#1666).
+
+        Records verified live samples independently of the credit verdict,
+        so the rung's two-sample rule sees both ends of each interval. The
+        sample credits nothing: it only stores the verdict as the next
+        look's prior through the shared _credit mark at the rung.
+        """
+
+        if progress is None or progress.awaited_batch is None:
+            return
+        try:
+            retained = None
+            if isinstance(watch.queued_child_wait, Mapping):
+                retained = {
+                    str(entry.get("key")): {}
+                    for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
+                    if isinstance(entry, Mapping)
+                    and _is_hex64(entry.get("key"))}
+            verdict = self.queued_child_wait_verdict(
+                key, cas_root=item.get("cas_root"),
+                awaited=progress.awaited_batch,
+                admitted=self._awaited_child_submissions(
+                    item, awaited=progress.awaited_batch,
+                    retained=retained),
+                prior=watch.queued_child_wait,
+                now=_now())
+        except (OSError, ValueError, PoolContractError):
+            return
+        # The sample, not the credit: exempt or not, this verdict becomes
+        # the rung's prior, so a child live at both ends carries. The
+        # shared _credit mark still grants no double credit.
+        watch.queued_child_wait = dict(verdict)
+
     def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
                              ) -> tuple[int | None, int | None, str]:
         """``(landed, total, detail)``: what an export has written so far.
@@ -28599,6 +28635,16 @@ class PoolQueue:
                         # (``movement_actions.mover_report_latency_s``), so a
                         # poll always falls between the last credit and it.
                         credit_contention(checkpoint_started)
+                        # A coordinator's queued children (#1666), sampled on
+                        # the same cadence so the rung's two-sample rule sees
+                        # both ends of each interval: the first sighting is a
+                        # baseline, and only a carried second look credits.
+                        # Without this the rung samples only at the deadline,
+                        # when the first look can never carry and the credit
+                        # never engages.
+                        self._sample_queued_child_wait(
+                            item, key, watch, progress,
+                            now=checkpoint_started)
                         next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
