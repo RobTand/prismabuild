@@ -183,7 +183,14 @@ def _scan_publications(queue: PoolQueue) -> dict:
                     if state == pool.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
-                        governed, requested = pool._declared_run_bound(record, max_bytes=MAX_RECORD_BYTES)
+                        # A row no sealer wrote carries no deadline: legacy,
+                        # never an opportunity (#1506).
+                        try:
+                            governed, requested = pool._declared_run_bound(
+                                record, max_bytes=MAX_RECORD_BYTES)
+                        except (OSError, ValueError,
+                                core.PrismaBuildError):
+                            continue
                         opportunities[key] = {
                             "host": record.get("claimed_host"),
                             "requested": requested if governed == "deadline" else None,
@@ -193,9 +200,18 @@ def _scan_publications(queue: PoolQueue) -> dict:
     for key, versions in rows.items():
         for record in versions:
             # An absent request is the supported legacy direct-publication
-            # path, not a sealed measurement. Corrupt/unreadable is NOT absent.
-            action = pool._sealed_action_request(str(record.get("cas_root")), key,
-                                                max_bytes=MAX_RECORD_BYTES)
+            # path, not a sealed measurement. A present but unreadable one
+            # is legacy too: the row never passed the sealer, so it cannot
+            # name a measurement task (#1506). Corrupt/unreadable is NOT
+            # absent elsewhere in the census; here the question is only
+            # whether this row is a sealed measurement, and a row no sealer
+            # wrote never is.
+            try:
+                action = pool._sealed_action_request(
+                    str(record.get("cas_root")), key,
+                    max_bytes=MAX_RECORD_BYTES)
+            except (OSError, ValueError, core.PrismaBuildError):
+                continue
             task = action.get("task") if action is not None else None
             if isinstance(task, Mapping) and task.get("task_class") == "measurement":
                 measurements.setdefault(key, []).append(record)
