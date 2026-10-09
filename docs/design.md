@@ -4968,71 +4968,122 @@ reserves the whole host; a host ledger that does not read denies the row for the
 pass. Never held: the gang's own members and any gang's (two gangs of one priority
 are ordered by `rank`), higher priority, a verified publication canary slot (its
 own next-free-safe-boundary contract) and the two roles PrismaBuild itself assigns.
-`returns_capacity` marks a node whose whole job is to give capacity back: a stage or
-RAM egress (`stage_release.py`), a produced export (`produced_export.py`) or a
-resident evict. `serves_residency` marks a stage mover or RAM promotion a residency
-consumer waits on (`stage_move.py`, `ram_promote.py`, carrying its residency range).
-Neither is a declaration: `PoolQueue.publish` refuses `returns_capacity` and
-`serves_residency` in a sealed action, and derives the role from the node's EXECUTED
-identity (`movement_actions.capacity_role`), never from a sidecar field or from
-`params.command` alone. `task.argv` must equal exactly the bash capture wrapper that
-`seal_movement_action` builds around `params.command` and `task.result_path`
-(`captured_command`), so `params.command` is what runs; the task must carry the
-`MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`;
-the sealed environment must be exactly the movement launch (`movement_environment`
+
+**Where the reservation applies (#1659).** Only on a host that holds the protected
+copy of the runtime generation its process runs (`runtime_publication.live_authority`).
+A host without that copy keeps what it had before the reservation: the fence against
+strictly lower priority, and nothing more. Equal-priority work is not held, and the
+measurement precedence below does not apply. This is the behaviour of main, and it is
+the rule for every way the copy can be missing: the host is not enrolled, the copy of
+a new generation has not arrived yet, the process is not a published generation (a
+checkout), or the copy was made from other bytes than the generation's receipt. The
+reason is liveness. The reservation spares the movement nodes that the gang waits on
+(below). A host can tell those nodes from other work only through the copy. A host
+without it that held rows by demand would hold the gang's own stage movers and egress
+beside a member that takes every CPU, and that gang could never start. A skipped
+publication step must never deadlock a gang, so a missing or stale copy falls back to
+main and adds no refusal.
+
+**The two roles.** `returns_capacity` marks a node whose whole job is to give
+capacity back: a stage or RAM egress (`stage_release.py`), a produced export
+(`produced_export.py`) or a resident evict. `serves_residency` marks a stage mover
+or RAM promotion a residency consumer waits on (`stage_move.py`, `ram_promote.py`,
+carrying its residency range). Neither is a declaration. `PoolQueue.publish` refuses
+both names in a sealed action and derives the role from the node's EXECUTED identity
+(`movement_actions.capacity_role`), from the sealed definition alone and reading no
+file of the publishing box. `task.argv` must equal exactly the bash capture wrapper
+that `seal_movement_action` builds around `params.command` and `task.result_path`
+(`captured_command`), so `params.command` is what runs. The task must carry the
+`MOVEMENT_TASK` fields and the execution scope must be `MOVEMENT_EXECUTION_SCOPE`.
+The sealed environment must be exactly the movement launch (`movement_environment`
 plus the sealer's Docker ownership), so no `BASH_ENV`, `PYTHONPATH` or other startup
-hook reaches the wrapper. The interpreter must be the root-owned `/usr/bin/python3`, never a submitter-owned executable.
-The script must belong to a protected runtime copy.
-`resource_scope.published_generation_member` checks that independent publication authority.
-The copy lives under `/opt/prismabuild/movement-generations/<generation>`.
-Every path component, receipt, record, script, and import stays under root custody.
-Group or other write access, symlinks in that namespace, or an unknown record grant no role.
-`MOVEMENT_PUBLICATION.json` binds the generation to the administrator-approved SHA-256 of `RUNTIME_VERSION.json`.
-The receipt names the generation, a 40-hex commit, and each copied member digest.
-The classifier checks the receipt binding and the script digest.
-Its cache includes device, inode, ctime, and size for the record, receipt, and script.
-Mode checks alone do not establish publication authority.
+hook reaches the wrapper. The interpreter must be the root-owned `/usr/bin/python3`.
+The script must be spelled as a tool of a protected copy
+(`/opt/prismabuild/movement-generations/<generation>/tools[/fleet]/<name>`), never a
+retained-store path or an alias. The demand is the small one the node is sealed with:
+a returner uses at most one CPU and one GiB and tier kinds only, a mover carries its
+residency range, and neither role permits a GPU. A resident returner needs one literal
+`--operation evict`; duplicate, equals and abbreviated forms stay ordinary.
+`recompute` is not a condition.
 
-The root-only `publish_runtime.py --publish-movement-generation PATH --receipt-sha256 DIGEST` interface creates these copies.
-The administrator selects the receipt digest after review.
-The interface copies all receipt members, including imports, without execution.
-It rejects changed bytes, unsafe member paths, symlinks, and unsafe store ancestry.
-It writes an independent authority record and seals the complete copy before an atomic rename.
-Publications are append-only.
-Ordinary publication, submissions, and tier announcements cannot create this authority.
-This interface grants movement roles only. It does not change runtime activation or add a launch refusal under D32.
+The row records the role and the tool it was derived for (`movement_script`). The host
+that enforces the reservation decides whether the mark stands
+(`movement_actions.authorized_role`): the tool must be a member of a protected copy
+that host holds. That means root custody through every path component, a publication
+record bound to the copy's receipt, the member's digest from that receipt, and a
+spelled path that is the member itself and not a link to it. A mark with no such tool
+exempts nothing: a hand-written row, a tool of a generation this host lacks, an
+altered file. The publishing box needs no copy of its own; the control seat that
+seals movers does not have to be enrolled.
 
-`seal_movement_action` selects the protected copy before it seals the command, wrapper, and Docker ownership.
-It requires an identical source receipt, not just an identical generation name.
-The sealed command must name the protected member exactly.
-A mutable alias or an ordinary retained-store path gets no role at publication.
-The sealer resolves the live `repo` link before it selects a protected copy.
-Without a protected copy, the original command stays an ordinary action.
-The demand limits remain unchanged: returners use at most one CPU and one GiB, with tier kinds only.
-Movers carry their residency range. Neither role permits a GPU.
-A resident returner needs one literal `--operation evict`.
-Duplicate, equals, and abbreviated operation forms stay ordinary.
-`recompute` is not a condition; produced spool exports use the same classifier.
-Anything unreadable, unpublished, or altered stays ordinary.
-Residual: a caller can choose arguments for a genuine published movement script, within that tool's demand limits.
-An ordinary store owner cannot grant a role through a self-written receipt or alter the protected copy.
-The queue writer remains trusted like priority.
-`gang_blocking` accepts a true role mark on a READY row without a new sealed-request check.
-Role exemptions retain real CPU, memory, GPU, and tier ledger admission.
-Thus required movers can use free capacity even when the gang reserves every CPU.
+**Protected copies.** The copy of a generation lives under
+`/opt/prismabuild/movement-generations/<generation>`. It holds every member of the
+generation's receipt, byte for byte, with the receipt itself and
+`MOVEMENT_PUBLICATION.json`, which binds the generation to the SHA-256 of
+`RUNTIME_VERSION.json`. Root owns every path component, and no component is writable
+by group or other, so a submitter and an ordinary store owner can neither create nor
+alter a copy. Copies are append-only and are made without executing a byte of them.
+A mover that runs from the copy imports from the copy, so its imports are as
+protected as the tool.
 
-CEO decision `dec-1009-062221-f41c` requires publication authority outside submitters and ordinary store owners.
-The protected copy interface implements that boundary for PR #1584.
-Deployment must install identical protected copies on the coordinator and each host that executes their movement commands.
-No deployment or live gang qualification is claimed here. D45 remains active.
-SC-01 remains PB-owned admission. SC-02 remains PB-owned movement.
-ID-08 still requires separate runtime deployment evidence; source support does not prove deployment.
+**Publication without a person.** No root step runs per generation. A host is
+enrolled once, by an administrator, with `tools/fleet/install_movement_publisher.sh`.
+That installs `runtime_publication.py` into the root-owned `/opt/prismabuild`, a
+root-owned settings file and a root timer, `prismabuild-movement-publish.timer`. Once
+a minute the timer's unit runs `runtime_publication.converge`: it reads the live
+runtime pointer of the enrolled generation store, and when the generation it names has
+no copy here, publishes one. It publishes only that live generation. A host that still
+runs an older generation has that copy from when it was live. The unit writes
+`/var/lib/prismabuild-movement-publish/status.json` (`published`, `current` or
+`error`, with the generation and the reason). An error leaves the host without a copy,
+which is the fallback above, and the next minute tries again. This delegation is the
+one `docs/client_upgrade.md` already makes for the client upgrader: root copies what
+the store's live pointer names, after checking every member against the receipt. The
+receipt proves copy consistency, not publisher authenticity, so access to publish
+generations must stay with the principals that administer these hosts.
 
-An incomplete movement environment produces an ordinary row.
-This rule also applies when both Docker ownership keys are present.
-`PATH`, `LANG`, and `LC_ALL` must all exist before the classifier compares their values.
+**Tool roots.** A box that holds the copy of its tier loop's generation announces the
+copy's tool directory as `mover_tools_root` (`tier_loop.announced_tools_root`); a box
+without it announces its own directory, as before. The announcement is rebuilt each
+cycle. A submitter on another box seals exactly the path the tier announced
+(`movement_tools`), and `seal_movement_action` never swaps in a path from the sealing
+box. A mover is therefore launched from a file that its own box has. A box that lacks
+the copy gets ordinary paths and no launch refusal. A produced export runs on its
+producer's own host, so the producer seals it from its own host's copy when it holds
+one (`produced_spool.export_tool`). A change of `mover_tools_root` is a new tier
+announcement, and the shared-range registry already replaces a registration sealed
+against another announcement.
 
-A host is never both withheld for a waiting measurement and reserved for a gang:
+Residual and limits. A caller can still choose the arguments of a genuine protected
+tool, within that tool's demand limits. Queue writers remain trusted like priority: a
+hand-written READY row cannot obtain the exemption without a protected tool path that
+verifies on the enforcing host, but it can pair that path with another action. A
+movement node sealed before its host announced the copy (an older generation, a tier
+loop run from a checkout) carries no role. While a reservation is active on a host
+that holds the copy, such a node is held by its demand like any ordinary row. The
+cycle (one minute) and the publication timer (one minute) bound that window after a
+roll; run tier loops from the published generation. A complete copy is about 27 MB per
+generation, and the store only grows. Removing an old copy is an administrator's act,
+and a copy that a sealed row still names must stay. Role exemptions retain real CPU,
+memory, GPU and tier ledger admission, so required movers use free capacity even when
+the gang reserves every CPU. The role check is a scheduling classification. It adds no
+launch refusal under D32 and changes no allocator or kernel path under D41.
+
+CEO decision `dec-1009-062221-f41c` requires publication authority outside submitters
+and ordinary store owners. The decision of 2026-10-09 for PR #1584 keeps that
+authority and removes the person from each generation: no per-generation manual root
+step; if root is needed it is a one-time install per host; a missing or stale copy
+falls back to the behaviour of main and never deadlocks a gang. No deployment or live
+gang qualification is claimed here. D45 remains active. SC-01 remains PB-owned
+admission. SC-02 remains PB-owned movement. ID-08 still requires separate runtime
+deployment evidence; source support does not prove deployment.
+
+An incomplete movement environment produces an ordinary row. This rule also applies
+when both Docker ownership keys are present. `PATH`, `LANG` and `LC_ALL` must all
+exist before the classifier compares their values.
+
+On a host that holds the copy, a host is never both withheld for a waiting
+measurement and reserved for a gang:
 once the gang's ten minutes elapse the reservation wins on that host over a
 measurement of the gang's priority or lower. That measurement's fence and withhold,
 including a carried withhold (one that snapshots a drain deadline), are suspended
@@ -5044,7 +5095,8 @@ and under D45 at 0, so only a ship-window measurement outranks them). A suspende
 measurement row stays READY and withholds again once the gang has started and no
 waiting gang reserves the host. The gang therefore starts within ten minutes plus the
 longest running job on its hosts (each capped), plus the runs of the roles it waits
-on.
+on. On a host without the copy none of this applies and a waiting measurement keeps its
+place, as on main.
 
 Known limit: the roles are exempt from the arithmetic but not unbounded in effect.
 A stream of unrelated movers or releases on a member host can each delay the gang by
@@ -5052,11 +5104,11 @@ one run, and token-bounded movers do not prove that the gang progresses in every
 configuration: the tier ledger can still refuse a mover whose tokens are held by work
 that waits on the gang. The reservation bounds what new ordinary work can take; it
 does not make the tier's own accounting live. A returner or mover published by an
-older generation has the same role only if its sealed definition matches; a row
-published before this change carries no role and is held by its demand, never
-indefinitely, only while running work uses the slack. Before 2026-10-06 equal
-priority was never fenced: a whole-box -10 gang waited fourteen minutes while smaller
--10 singles took both Sparks.
+older generation has the same role only if its sealed definition matches. A row
+published before this change carries no role; on a host that holds the copy it is held
+by its demand while a reservation is active, and on a host without the copy it is not
+held at all. Before 2026-10-06 equal priority was never fenced: a whole-box -10 gang
+waited fourteen minutes while smaller -10 singles took both Sparks.
 
 **Mixed generations.** An old worker offers no `gang-v1` and ignores `gangs/`, so
 it never claims a member. During a rolling publish it may not honour a gang

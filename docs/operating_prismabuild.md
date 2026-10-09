@@ -3479,38 +3479,71 @@ from a umask-002 worktree would have published `0555`/`0444` (issue #316).
 Which members are programs comes from the Git index, not from a filename or the
 local filesystem, so the answer is the repository's and not the shell's.
 
-### Protected movement publications (#1659)
+### Protected movement copies (#1659)
 
-An ordinary runtime receipt does not authorize movement roles.
-Store owners can write their own receipts.
-The role classifier trusts only complete copies under root-controlled `/opt/prismabuild/movement-generations`.
-It requires root custody through every ancestor and an independent receipt-bound publication record.
+A waiting gang (#1579) holds new equal-priority work by its demand and spares the
+movement nodes that it waits on: the stage and RAM movers, the egress, the exports and
+the resident evicts. A host trusts those nodes only from a root-owned copy of the
+runtime generation it runs. An ordinary runtime store belongs to the user that submits
+work, so a receipt written there proves integrity and not authority.
 
-Use the administrative interface after the source review and existing publication gates:
+**Enrollment is one step per host, once.** There is no root step per generation and no
+person in the publication loop. An administrator runs this on each fleet host that
+claims work, with the host's authorized root administration method:
 
-1. Select the approved `RUNTIME_VERSION.json` SHA-256.
-2. Run this command as root on the coordinator and each host that executes the movement commands:
+```bash
+pb_enrollment_dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
+cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
+   /mnt/shared/prismabuild-fleet/repo/src/prismabuild/runtime_publication.py "$pb_enrollment_dir/"
+sudo bash "$pb_enrollment_dir/install_movement_publisher.sh"
+```
 
-   ```bash
-   /usr/bin/python3 -I tools/fleet/publish_runtime.py \
-     --publish-movement-generation /mnt/shared/prismabuild-fleet/runtime-generations/GENERATION \
-     --receipt-sha256 APPROVED_SHA256
-   ```
+Stage both files on local storage as the publishing user, so NFS root squash stays on.
+The installer puts `runtime_publication.py` under the root-owned `/opt/prismabuild`,
+writes `/etc/prismabuild/movement-publish.json` (the live runtime pointer, the
+generation store and the status file) and enables `prismabuild-movement-publish.timer`.
+It refuses an install under an ancestor that has no root custody.
 
-The command copies every manifest member, including imports, without execution.
-It checks the selected receipt digest and every member digest.
-It refuses unsafe paths, symlinks, and an unsafe destination.
-It writes `MOVEMENT_PUBLICATION.json` and seals the copy before an atomic rename.
+**What the timer does.** Once a minute, `runtime_publication.py` reads the live runtime
+pointer. When the generation it names has no copy on this host, the unit copies every
+member of the generation's receipt, byte for byte and without executing any of it, into
+`/opt/prismabuild/movement-generations/<generation>`. It checks each member against the
+receipt, writes `MOVEMENT_PUBLICATION.json`, seals the copy and renames it into place.
+Copies are append-only. Each new live generation therefore gets its copy within about a
+minute of the pointer moving, with no one present. This is the delegation that
+[the client upgrader](client_upgrade.md) already makes: root copies what the store's
+live pointer names. The receipt proves copy consistency, not who published; keep access
+to publish generations with the principals that administer these hosts.
 
-The fixed destination needs no tier setting or submission token.
-The command does not activate a runtime or change its canary verdict.
-Do not grant submitters permission to run this administrative interface.
+**Check a host.**
 
-The movement sealer selects a protected copy only when its receipt matches the original runtime receipt.
-It seals the protected path into both the command and capture wrapper.
-Missing authority leaves the original command ordinary; it does not cause a launch refusal.
-Copies must exist at the same fixed path on all relevant hosts before deployment acceptance.
-This source interface does not establish deployment, live gang qualification, or release of D45.
+```bash
+cat /var/lib/prismabuild-movement-publish/status.json
+systemctl status prismabuild-movement-publish.timer
+journalctl -u prismabuild-movement-publish.service
+ls /opt/prismabuild/movement-generations
+```
+
+`state` is `published`, `current` or `error`, and `generation` names the live one. A
+tier record shows the effect: `mover_tools_root` names a path under
+`/opt/prismabuild/movement-generations` once the host holds the copy of its tier loop's
+generation, and its own generation directory before that.
+
+**A missing or stale copy is not an outage.** The reservation applies only on a host
+that holds the copy of the generation its process runs. Until the copy exists (the host
+is not enrolled, the unit failed, a new generation has not been copied yet) the host
+behaves as before the reservation: it fences strictly lower priority work for an
+elected gang and holds nothing else. No action is refused and no mover fails to launch.
+Movers are sealed from the tool root their tier announces, which a host announces only
+when it has the copy, so a box without the copy is never sent a path it lacks. An
+`error` in the status file is the thing to fix, and nothing waits on it.
+
+**Limits.** A complete copy is about 27 MB per generation and the store only grows.
+Removing an old copy is an administrator's act, and a copy that a sealed row still names
+must stay. A tier loop run from a checkout announces its own directory, so its movers
+carry no role. Run tier loops from the published generation. The unit changes no runtime
+activation and no canary verdict. This is source support; a live gang qualification and
+a deployment record are separate evidence (D45 stays in force until they exist).
 
 ### The rollout canary gate (default-ON)
 
