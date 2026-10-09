@@ -8696,14 +8696,17 @@ landed** (`tier_loop.landed_and_in_flight`), and the record announces
 `capacity_basis: "zfs available + landed"`, with `landed_bytes`,
 `in_flight_bytes`, `in_flight_unknown_gib`, `landed_rounding_gib`
 (`landed_gib` minus whole GiB in `landed_bytes`) and
-`in_flight_rounding_gib` beside them. Landed bytes come from complete
+`in_flight_rounding_gib` beside them. The in-flight waste is
+(`in_flight_gib` minus `in_flight_unknown_gib`) minus whole GiB in
+`in_flight_bytes`, clamped at zero. Landed bytes come from complete
 receipts; in-flight bytes come from each holder's sealed plan range
 (`end_bytes - start_bytes` of its leg, read by mover key), never from
 landed bytes, which are zero while a mover copies. A holder no filed
-plan names reports under `in_flight_unknown_gib`, never as waste.
-Landed rounding costs no free capacity: the same tokens it holds it
-also adds to the supply, so free stays `floor(available / GiB)` minus
-in-flight tokens.
+plan names reports under `in_flight_unknown_gib`, never as waste:
+unknown tokens stay in the `in_flight_gib` admission deduction but
+leave the waste number. Landed rounding costs no free capacity: the
+same tokens it holds it also adds to the supply, so free stays
+`floor(available / GiB)` minus in-flight tokens.
 
 Both simpler formulas failed on `prismabuild-stage:dl380g10` on 2026-09-18.
 `available` alone counted every landed GiB twice -- free fell as

@@ -60,7 +60,7 @@ def _publish_claim_owner(q, owner, template):
     terms = po.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
               checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, **terms},
-              produced_output_template=template)
+              produced_output_template=template, max_attempts=1)
     claimed = q.claim(owner="w-owner")
     assert claimed is not None and claimed["action_key"] == owner
     return claimed
@@ -111,7 +111,7 @@ def _descriptors(tmp_path, template, inst, name="a.bin", payload=b"x" * 1024):
         "producer_generation": po.mint_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
-    }, template, inst)]
+    }, template, inst)], p
 
 
 def _prewrite(q, inst, template, batch_id, tier, descs):
@@ -122,6 +122,27 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
                               tier=TIER, class_bytes=classes, paths=paths)
     assert out.get("ok") is True, out
     return out
+
+
+def _one_batch(q, tmp_path, template, inst, owner, mover, batch_id, name):
+    """One staged and funded output batch through the pool."""
+    ledger = q.tier_ledger(TIER)
+    descs, path = _descriptors(tmp_path, template, inst, name=name)
+    _prewrite(q, inst, template, batch_id, TIER, descs)
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id=batch_id, descriptors=descs)
+    assert staged.get("ok") is True, staged
+    _publish_mover(q, mover, manifest, total, gib=1,
+                   batch_ref=_ref(inst, template, batch_id, descs))
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id=batch_id, descriptors=descs)
+    assert funded.get("ok") is True, funded
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    return path, descs
 
 
 def _publish_mover(q, mover, manifest, total, gib=1, batch_ref=None):
@@ -143,92 +164,159 @@ def _ref(inst, template, batch_id, descs):
         descriptors=descs, tier_id=TIER)
 
 
-def test_stranded_intent_rolls_back_and_live_intent_stays(tmp_path: Path) -> None:
+def _settle(q):
+    return tier_loop._settle_protected(q, {"protected": {}, "grants": {}})
+
+
+def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> None:
+    """A failed producer and absent prewrite paths free the tokens."""
     owner = _hexkey("1555-owner")
     dead_mover = _hexkey("1555-dead-mover")
+    live_owner = _hexkey("1555-live-owner")
     live_mover = _hexkey("1555-live-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
+    live_inst = _bind(q, template, live_owner)
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
+    assert ledger.holder_tokens(live_owner).get(KIND, 0) == 2
 
-    dead_descs = _descriptors(tmp_path, template, inst, name="dead.bin")
-    _prewrite(q, inst, template, "dead", TIER, dead_descs)
-    dead_manifest = po.output_manifest_sha256(dead_descs)
-    dead_total = sum(int(d["bytes"]) for d in dead_descs)
-    staged = q.stage_output_intent(
-        tier_id=TIER, owner_key=owner, mover_key=dead_mover, instance=inst,
-        template=template, batch_id="dead", descriptors=dead_descs)
-    assert staged.get("ok") is True, staged
-    _publish_mover(q, dead_mover, dead_manifest, dead_total, gib=1,
-                   batch_ref=_ref(inst, template, "dead", dead_descs))
-    funded = q.fund_output_batch(
-        tier_id=TIER, owner_key=owner, mover_key=dead_mover, instance=inst,
-        template=template, batch_id="dead", descriptors=dead_descs)
-    assert funded.get("ok") is True, funded
-    dead_gen = str(funded["generation"])
-    assert ledger.holder_tokens(dead_mover).get(KIND, 0) == 1
-
-    live_descs = _descriptors(tmp_path, template, inst, name="live.bin")
-    _prewrite(q, inst, template, "live", TIER, live_descs)
-    live_manifest = po.output_manifest_sha256(live_descs)
-    live_total = sum(int(d["bytes"]) for d in live_descs)
-    staged = q.stage_output_intent(
-        tier_id=TIER, owner_key=owner, mover_key=live_mover, instance=inst,
-        template=template, batch_id="live", descriptors=live_descs)
-    assert staged.get("ok") is True, staged
-    _publish_mover(q, live_mover, live_manifest, live_total, gib=1,
-                   batch_ref=_ref(inst, template, "live", live_descs))
-    funded = q.fund_output_batch(
-        tier_id=TIER, owner_key=owner, mover_key=live_mover, instance=inst,
-        template=template, batch_id="live", descriptors=live_descs)
-    assert funded.get("ok") is True, funded
-    assert ledger.holder_tokens(live_mover).get(KIND, 0) == 1
+    dead_path, _dead_descs = _one_batch(q, tmp_path, template, inst, owner,
+                                        dead_mover, "dead", "dead.bin")
+    _one_batch(q, tmp_path, template, live_inst, live_owner, live_mover,
+               "live", "live.bin")
 
     # No immutable batch commit is filed: the strand in the issue has
-    # funding transferring with no commit, so the authority guard must
-    # not treat this as committed recovery. The producer fails first,
-    # then the dead mover is withdrawn from READY before any claim.
-    # The withdraw proves the mover never started (zero attempts); the
-    # precommit authority still proves the batch it funded.
-    assert q.withdraw(dead_mover, by="test", reason="producer failed") is not None
+    # funding transferring with no commit. An earlier pass runs while
+    # the producer lives, and retains both intents.
+    before = _settle(q)
+    assert not any(e.get("event") == "output-funding-reconcile-released"
+                   for e in before), before
+    assert q.read_output_funding(
+        dead_mover, TIER)["state"] == "transferring"
+
+    # The producer fails, the dead mover leaves READY before any claim,
+    # and its prewrite paths are absent: the mover never laid bytes.
+    q.finish(owner, status="failed", detail={"returncode": 1})
+    assert po._producer_attempt_state(q, inst) == "dead"
+    assert q.withdraw(dead_mover, by="test",
+                      reason="producer failed") is not None
     assert not q.item_path(pool.READY, dead_mover).exists()
     assert not q.item_path(pool.CLAIMED, dead_mover).exists()
     assert not q.item_path(pool.DONE, dead_mover).exists()
     assert not q.item_path(pool.FAILED, dead_mover).exists()
     assert q.item_path(pool.WITHDRAWN, dead_mover).exists()
-    rec = q.read_output_funding(dead_mover, TIER)
-    assert rec is not None and rec["state"] == "transferring"
+    dead_path.unlink()
+    assert q.read_output_funding(
+        dead_mover, TIER)["state"] == "transferring"
 
-    events = tier_loop._settle_protected(q, {"protected": {}, "grants": {}})
-    assert any(e.get("event") == "output-funding-reconcile-released"
-               and e.get("mover") == dead_mover for e in events), events
-    rec = q.read_output_funding(dead_mover, TIER)
-    assert rec is not None and rec["state"] == "released"
-    freed = any(e.get("event") == "output-funding-tokens-released"
-                and e.get("mover") == dead_mover
-                and e.get("released_gib") == 1 for e in events), events
-    assert freed
+    events = _settle(q)
+    released = [e for e in events
+                if e.get("event") == "output-funding-reconcile-released"
+                and e.get("mover") == dead_mover]
+    assert len(released) == 1, events
+    assert q.read_output_funding(
+        dead_mover, TIER)["state"] == "released"
+    freed = [e for e in events
+             if e.get("event") == "output-funding-tokens-released"
+             and e.get("mover") == dead_mover]
+    assert len(freed) == 1, events
+    assert freed[0].get("released_gib") == 1, events
     assert ledger.holder_tokens(dead_mover).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == 5
+    # Minted 6: the failed owner freed its grant, the live owner keeps
+    # 1, the live mover holds 1, and the freed token returns to free.
+    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    assert ledger.available().get(KIND, 0) == 4
 
-    # The live intent is untouched by the same pass.
+    # The live consumer's intent on another producer is untouched.
     live = q.read_output_funding(live_mover, TIER)
     assert live is not None and live["state"] == "transferring"
     assert ledger.holder_tokens(live_mover).get(KIND, 0) == 1
 
-    # The producer now fails; the dead intent stays released and the
-    # live intent is still transferring.
-    q.finish(owner, status="failed")
-    assert q.read_output_funding(
-        dead_mover, TIER)["state"] == "released"
 
-    # No manual release: the production cycle already returned the
-    # dead mover's token to free.
-    live2 = q.read_output_funding(live_mover, TIER)
-    assert live2 is not None and live2["state"] == "transferring"
-    assert str(live2["generation"]) != dead_gen or True
+def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
+    """A republished row after withdrawal keeps its tokens."""
+    owner = _hexkey("1555-owner-repub")
+    mover = _hexkey("1555-mover-repub")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst = _bind(q, template, owner)
+
+    path, descs = _one_batch(q, tmp_path, template, inst, owner, mover,
+                             "repub", "repub.bin")
+    q.finish(owner, status="failed", detail={"returncode": 1})
+    assert po._producer_attempt_state(q, inst) == "dead"
+    assert q.withdraw(mover, by="test", reason="producer failed") is not None
+    path.unlink()
+
+    # The key is published again before the repair reads it: the same
+    # batch and manifest keep the publication gate open, the fresh
+    # READY census refuses the repair, and the new row keeps its
+    # reservation.
+    manifest = po.output_manifest_sha256(descs)
+    total = sum(int(d["bytes"]) for d in descs)
+    _publish_mover(q, mover, manifest, total, gib=1,
+                   batch_ref=_ref(inst, template, "repub", descs))
+    events = _settle(q)
+    assert not any(e.get("event") == "output-funding-reconcile-released"
+                   and e.get("mover") == mover for e in events), events
+    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+
+
+def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
+    """A claimed row before the repair keeps its tokens."""
+    owner = _hexkey("1555-owner-claim")
+    mover = _hexkey("1555-mover-claim")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst = _bind(q, template, owner)
+
+    path, _ = _one_batch(q, tmp_path, template, inst, owner, mover,
+                         "claim", "claim.bin")
+    # A funded-but-uncommitted mover never claims through the gate
+    # (claim refuses output_funding_pending), so the race row is filed
+    # direct: the repair must read any CLAIMED row as live.
+    ready = pool._read_json(q.item_path(pool.READY, mover))
+    assert isinstance(ready, dict)
+    pool._write_json_atomic(q.item_path(pool.CLAIMED, mover), ready)
+    q.item_path(pool.READY, mover).unlink()
+    assert pool._read_json(q.item_path(pool.CLAIMED, mover)) is not None
+    q.finish(owner, status="failed", detail={"returncode": 1})
+    assert po._producer_attempt_state(q, inst) == "dead"
+    # The repair reads a CLAIMED row and refuses, even with the prewrite
+    # paths absent: the mover may still hold the key.
+    path.unlink()
+    events = _settle(q)
+    assert not any(e.get("event") == "output-funding-reconcile-released"
+                   and e.get("mover") == mover for e in events), events
+    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+
+
+def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
+    """A failed producer with a present path keeps tokens."""
+    owner = _hexkey("1555-owner-present")
+    mover = _hexkey("1555-mover-present")
+    q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
+    template = _template(str(tmp_path / "outputs"))
+    inst = _bind(q, template, owner)
+
+    path, _ = _one_batch(q, tmp_path, template, inst, owner, mover,
+                         "present", "present.bin")
+    q.finish(owner, status="failed", detail={"returncode": 1})
+    assert po._producer_attempt_state(q, inst) == "dead"
+    assert q.withdraw(mover, by="test", reason="producer failed") is not None
+    assert path.exists()
+    events = _settle(q)
+    assert not any(e.get("event") == "output-funding-reconcile-released"
+                   and e.get("mover") == mover for e in events), events
+    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
 
 
 def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
@@ -240,7 +328,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
 
-    descs = _descriptors(tmp_path, template, inst, name="partial.bin")
+    descs, _ = _descriptors(tmp_path, template, inst, name="partial.bin")
     _prewrite(q, inst, template, "partial", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
@@ -264,7 +352,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
                           "range_end_bytes": total,
                           "manifest_sha256": manifest})
     assert q.withdraw(mover, by="test", reason="stopped") is not None
-    events = tier_loop._settle_protected(q, {"protected": {}, "grants": {}})
+    events = _settle(q)
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
     assert not any(e.get("event") == "output-funding-tokens-released"
                    and e.get("mover") == mover for e in events), events

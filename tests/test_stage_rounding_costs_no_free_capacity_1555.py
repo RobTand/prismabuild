@@ -106,6 +106,27 @@ def test_landed_sub_gib_movers_keep_free_at_writable_minus_in_flight(tmp_path, c
     assert ledger.capacity()[KIND] == writable_gib + count
 
 
+@pytest.mark.parametrize("writable_gib,flight_tokens", [(50, 3), (2, 5)])
+def test_free_holds_in_flight_deduction_with_zero_floor(tmp_path, writable_gib,
+                                                        flight_tokens):
+    """Free equals writable minus in-flight, bounded below by zero."""
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    _cycle(queue, tmp_path, max(writable_gib, flight_tokens) * GIB)
+    ledger = queue.tier_ledger(TIER)
+    mover = _key(f"1555-flight-{writable_gib}-{flight_tokens}")
+    assert ledger.acquire(mover, {KIND: flight_tokens})
+    record = _cycle(queue, tmp_path, writable_gib * GIB)
+    assert record["landed_gib"] == 0
+    assert record["in_flight_gib"] == flight_tokens
+    assert record["in_flight_unknown_gib"] == flight_tokens
+    assert record["in_flight_rounding_gib"] == 0
+    # The retire keeps held tokens: the total falls only as holders
+    # finish, while free already reads the shrunken supply.
+    assert ledger.capacity()[KIND] == max(writable_gib, flight_tokens)
+    assert ledger.available().get(KIND, 0) == max(0, writable_gib - flight_tokens)
+
+
 def test_empty_tier_reports_zero_rounding(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
@@ -152,4 +173,25 @@ def test_in_flight_holder_without_plan_leg_reports_unknown(tmp_path):
     assert record["in_flight_gib"] == 2
     assert record["in_flight_bytes"] == 0
     assert record["in_flight_unknown_gib"] == 2
-    assert record["in_flight_rounding_gib"] == 2
+    assert record["in_flight_rounding_gib"] == 0
+
+
+def test_mixed_known_and_unknown_excludes_unknown_from_waste(tmp_path):
+    """Known rounding counts; unknown tokens stay in the deduction."""
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    queue.ensure_layout()
+    consumer = _key("1555-consumer-mixed")
+    known = _key("1555-mover-mixed-known")
+    stranger = _key("1555-mover-mixed-unknown")
+    span = int(2.4 * GIB)
+    plan = _plan(queue, consumer, [(known, 0, span)])
+    residency_plan.freeze(queue, plan)
+    _cycle(queue, tmp_path, 100 * GIB)
+    ledger = queue.tier_ledger(TIER)
+    assert ledger.acquire(known, {KIND: 3})
+    assert ledger.acquire(stranger, {KIND: 2})
+    record = _cycle(queue, tmp_path, 100 * GIB)
+    assert record["in_flight_gib"] == 5
+    assert record["in_flight_bytes"] == span
+    assert record["in_flight_unknown_gib"] == 2
+    assert record["in_flight_rounding_gib"] == 3 - span // GIB
