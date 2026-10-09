@@ -3420,6 +3420,12 @@ Publication refuses rather than guesses:
     keeps its `generation` name for adoption. Rollback restores a
     sealed generation and takes neither flag.
 
+The CPU adoption test publishes private generations and runs a real supervisor without `--once`.
+It proves that a matching roster preserves worker PIDs and the supervisor claim across `exec`.
+A removal control proves that a different roster replaces idle loops.
+The fixture binds each worker to its own receipt, so this proof excludes the worker's separate upgrade path.
+This test does not qualify a live Spark or a native gang.
+
 A staged generation's import probe disables bytecode writes, so validation
 does not add unlisted cache files before the generation is sealed.
 A published generation is sealed read-only and is never deleted. That is what
