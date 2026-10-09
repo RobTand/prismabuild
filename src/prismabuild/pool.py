@@ -112,7 +112,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, cast
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 import contextvars
 import errno
 import fcntl
@@ -1090,6 +1090,23 @@ STAGE_OWNERSHIP_HOLDERS = "stage-ownership-holders"
 STAGE_OWNERSHIP_HOLDER_SCHEMA_V1 = "prismabuild.stage_ownership_holder.v1"
 #: A holder record is a few fields; anything larger is not one.
 MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
+#: The two files a coordinator's controller-state directory holds (#1666):
+#: the accepted-members state and its append journal. The worker reads
+#: these two names only, under the exact shape check the D44 decision
+#: fixes, and refuses every other shape without credit.
+CONTROLLER_WAVE_STATE = "wave-state.json"
+CONTROLLER_SUB_KEYS = "sub-keys.txt"
+#: Closed typed projection of the fixed fa37751 routed controller writer.
+CONTROLLER_CUSTODY_SCHEMA_V1 = "prismabuild.d44_controller_custody.v1"
+CONTROLLER_STATE_OPTIONAL_FIELDS = {
+    "pending_submission": dict, "last_completion": dict,
+    "wait_reason": str, "last_disk_check": dict, "disk_checks": list,
+}
+#: The largest controller custody read. A 287-child run states two short
+#: lines per child; a megabyte bounds abuse without bounding the run.
+MAX_CONTROLLER_CUSTODY_BYTES = 1024 * 1024
+#: A journal line that is longer than this is malformed, not a member.
+MAX_CONTROLLER_JOURNAL_LINE_BYTES = 4096
 
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
@@ -1565,6 +1582,10 @@ class ProgressPolicy(NamedTuple):
     #: one (#1010): the evidence the worker samples before it charges quiet
     #: to the action (:class:`PoolContentionProbe`).
     pool_contention: Mapping[str, object] | None = None
+    #: The sealed ``core.AWAITED_BATCH_PARAM``, when a coordinator declared
+    #: one (#1666): the parent and plan keys whose queued children credit
+    #: its quiet while at least one verified member waits for admission.
+    awaited_batch: Mapping[str, object] | None = None
 
     @property
     def no_progress_bound_s(self) -> float:
@@ -1592,6 +1613,8 @@ class ProgressPolicy(NamedTuple):
             # bytes.
             **({"progress_pool_contention": dict(self.pool_contention)}
                if self.pool_contention is not None else {}),
+            **({"progress_awaited_batch": dict(self.awaited_batch)}
+               if self.awaited_batch is not None else {}),
         }
 
 
@@ -1618,6 +1641,7 @@ def progress_policy(
         ceiling,
         cycle=bool(declared.get("cycle")),
         pool_contention=_sealed_progress_policy(item, read=pb.action_pool_contention),
+        awaited_batch=_sealed_progress_policy(item, read=pb.action_awaited_batch),
     )
 
 
@@ -1735,8 +1759,9 @@ class ProgressWatch:
     charged, each interval once (:meth:`_credit`): a verified staged-range
     wait (#989), and for a stage mover the pool over its caps or unreadable
     and a start-gate wait on a live egress (#1010, :class:`PoolContentionProbe`),
-    and a stand-aside for a copy a claimed consumer is blocked on (#1091,
-    :meth:`PoolQueue.reader_plan_stand_aside`).
+    a stand-aside for a copy a claimed consumer is blocked on (#1091,
+    :meth:`PoolQueue.reader_plan_stand_aside`), and a coordinator's wait on
+    a declared queued child (#1666, :meth:`PoolQueue.queued_child_wait_verdict`).
     """
 
     def __init__(
@@ -1782,6 +1807,10 @@ class ProgressWatch:
         # credited through the same mark.
         self.export_wait_exempt_s = 0.0
         self.export_wait: dict[str, object] | None = None
+        # A coordinator waiting on its declared queued children (#1666),
+        # credited through the same mark.
+        self.queued_child_wait_exempt_s = 0.0
+        self.queued_child_wait: dict[str, object] | None = None
         self.first_advance_monotonic: float | None = None
 
     @property
@@ -1993,6 +2022,24 @@ class ProgressWatch:
         self.export_wait_exempt_s += credit
         return credit
 
+    def exempt_queued_child_wait(self, verdict: Mapping[str, object], *,
+                                 now: float, since_monotonic: float) -> float:
+        """Leave a verified wait on a declared queued child out of the quiet (#1666).
+
+        ``verdict`` is :meth:`PoolQueue.queued_child_wait_verdict`'s answer,
+        kept for the record whatever it says. Same arithmetic as
+        :meth:`exempt_staged_wait`: the interval runs from the prior
+        sample's monotonic start, so each verified sample interval
+        credits once and a blocked gap never refunds.
+        """
+
+        self.queued_child_wait = dict(verdict)
+        if not verdict.get("exempt"):
+            return 0.0
+        credit = self._credit(now=now, since_monotonic=since_monotonic)
+        self.queued_child_wait_exempt_s += credit
+        return credit
+
     def exempt_start_gate(self, *, now: float, since_monotonic: float) -> float:
         """Leave a start-gate wait on a live egress out of the quiet (#1010).
 
@@ -2061,6 +2108,10 @@ class ProgressWatch:
             # of them showed progress, verified on the worker's side (#1035).
             "export_wait_exempt_s": self.export_wait_exempt_s,
             "export_wait": self.export_wait,
+            # A coordinator waiting on a declared queued child while one is
+            # ready or claimed, verified on the worker's side (#1666).
+            "queued_child_wait_exempt_s": self.queued_child_wait_exempt_s,
+            "queued_child_wait": self.queued_child_wait,
             "delivered_units_per_s": self.delivered_units_per_s(now=now),
         }
 
@@ -2391,6 +2442,82 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
     return {field: list(keys), "since_unix": float(since)}, ""
 
 
+def verify_durable_child_result(
+        cas, request: Mapping[str, object], receipt: Mapping[str, object], *,
+        child_key: str | None = None,
+        plan: Mapping[str, object] | None = None,
+        publication: Mapping[str, object] | None = None,
+) -> dict[str, object] | None:
+    """Verify one child's durable result through the native CAS (#1666).
+
+    Verifies the receipt, the result blob digest and manifest membership:
+    the receipt names this action, the blob digest matches its name, the
+    manifest validates and carries this child's exact membership. Exact
+    means all four hold: the manifest names the sealed request's parent
+    and plan, its ordinal equals the child's position in the publication's
+    ``child_action_keys``, and its task set equals the plan's partition at
+    that ordinal. A child with several tasks still counts one unit.
+    Returns the verified manifest, or ``None`` when the child has no
+    verified durable result. Raises on unreadable or tampered bytes, like
+    any CAS verification.
+    """
+
+    from . import decomposition as decomposition_mod
+
+    key = str(child_key or request.get("action_key") or "")
+    result = receipt.get("result")
+    assert isinstance(result, Mapping)
+    payload = cas.read_declared_blob(
+        result, max_bytes=pb.MAX_ACTION_PROGRESS_BYTES * 16,
+        where="child result manifest")
+    manifest = decomposition_mod.validate_child_result_manifest(
+        pb._decode_strict_json(payload, where="child result manifest"))
+    params = request.get("params")
+    batch = (params.get("logical_batch")  # type: ignore[union-attr]
+             if isinstance(params, Mapping) else None)
+    if not isinstance(batch, Mapping):
+        return None
+    if (manifest["parent_key"] != batch.get("parent_key")
+            or manifest["plan_key"] != batch.get("plan_key")):
+        return None
+    if (not key or not isinstance(batch.get("child_ordinal"), int)
+            or isinstance(batch.get("child_ordinal"), bool)):
+        return None
+    if manifest["child_ordinal"] != batch.get("child_ordinal"):
+        return None
+    tasks = batch.get("ordered_task_ids")
+    if (not isinstance(tasks, list) or not tasks
+            or any(not isinstance(entry, str) for entry in tasks)):
+        return None
+    if plan is not None and publication is not None:
+        try:
+            checked_plan = decomposition_mod.validate_plan(plan)
+            checked_index = decomposition_mod.validate_publication_index(
+                publication, checked_plan)
+        except (ValueError, pb.ActionContractError):
+            return None
+        if (manifest["parent_key"] != checked_plan["parent_key"]
+                or manifest["plan_key"] != checked_plan["plan_key"]):
+            return None
+        ordinal = int(batch.get("child_ordinal"))
+        if not 0 <= ordinal < len(checked_index["child_action_keys"]):
+            return None
+        if checked_index["child_action_keys"][ordinal] != key:
+            return None
+        if list(checked_plan["partitions"][ordinal]) != list(tasks):
+            return None
+        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+            return None
+    elif key:
+        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+            return None
+    else:
+        return None
+    return manifest
+
+
 def _sealed_execution_policy(
     item: Mapping[str, object], ceiling: float | None
 ) -> tuple[float | None, bool]:
@@ -2659,6 +2786,21 @@ def _read_json_bounded(
         raise PoolContractError(str(exc)) from exc
     if not isinstance(value, dict):
         raise PoolContractError(f"queue record is not an object: {path}")
+    return value
+
+
+def _read_json_confirmed(path: Path, *, max_bytes: int | None = None) -> dict[str, object] | None:
+    """Read after an error-visible directory refresh; never trust a cached miss."""
+    names = os.listdir(path.parent)
+    if path.name not in names:
+        return None
+    # A listed name that cannot be read is uncertain, not absent. Reopen
+    # positive records too; the best-effort poll reader is not commit proof.
+    raw = pb._read_regular_file_nofollow(
+        path, where="terminal proof record", replaced_leaf=True, max_bytes=max_bytes)
+    value = pb._decode_strict_json(raw, where="terminal proof record")
+    if not isinstance(value, dict):
+        raise PoolContractError(f"terminal proof record is not an object: {path}")
     return value
 
 
@@ -5720,6 +5862,9 @@ class PoolQueue:
         #: without a GPU (#1262): evidence for the denial, never a timer.
         self._cpu_host_yields: dict[tuple[str, str], float] = {}
         self._claim_denial_bases: dict[str, Path] = {}
+        # An unseen member must reset inherited evidence. Failed resets stay
+        # owed until storage accepts them; a restart cannot inherit eligibility.
+        self._gang_terminal_resets: dict[tuple[str, str], bool] = {}
         #: Declared prelaunch phases per sealed manifest (#1594 R4), keyed by
         #: ``(cas root, manifest sha256)``.  A manifest blob is immutable, so
         #: one parse serves every later verdict over the same bytes.  Only
@@ -7527,9 +7672,9 @@ class PoolQueue:
         """The export allowance a producer's claim adds to its reservation (#985).
 
         ``None`` unless the box admits adaptively and the row carries a
-        producer's ``produced_output`` reference.  An unbounded-CPU producer
-        gets none, and nor does one that fits this box only without it.  The
-        claim pass and the ready GPU row's room (#1169) read the same answer.
+        producer's ``produced_output`` reference. An unbounded-CPU producer
+        gets none, and nor does one that fits this box only without it.
+        The claim pass and the ready GPU row's room (#1169) read the same answer.
         """
 
         if controller is None or item.get("produced_output") is None:
@@ -7546,8 +7691,9 @@ class PoolQueue:
                 total.get(kind, 0)
                 < reservation_demand.get(kind, 0) + int(allowance[kind])
                 for kind in cpu_admission.EXPORT_DEMAND):
-            # A producer that fits this box only without the allowance runs
-            # as it did before it existed.
+            # Preserve #985: a producer that fits only without the allowance
+            # runs without it. Submission checks incompatible declarations;
+            # learned slots must not turn published work into a permanent refusal.
             return None
         return allowance or None
 
@@ -8359,7 +8505,7 @@ class PoolQueue:
     def move_path(self, action_key: str) -> Path:
         return self.root / MOVERS / f"{action_key}.json"
 
-    def move_record(self, action_key: str) -> dict[str, object] | None:
+    def move_record(self, action_key: str, *, fresh: bool = False) -> dict[str, object] | None:
         """What one movement node staged or released, if it has filed it.
 
         Either receipt :meth:`record_move` files: a mover's, or an egress's
@@ -8382,18 +8528,30 @@ class PoolQueue:
         """
 
         path = self.move_path(action_key)
-        try:
-            os.lstat(path)
-            present = True
-        except FileNotFoundError:
-            present = False
-        record = _read_json_fresh(path)       # malformed JSON raises, as before
+        if fresh:
+            record = _read_json_confirmed(path)
+            present = record is not None
+        else:
+            try:
+                os.lstat(path)
+                present = True
+            except FileNotFoundError:
+                present = False
+            record = _read_json_fresh(path)       # malformed JSON raises, as before
         if record is not None:
             if record.get("schema") in POOL_MOVEMENT_RECEIPT_SCHEMAS:
                 return record
             return None
         if present:
             return None           # present but empty/unknown: no stale fallback
+        if fresh:
+            # Retirement directories are optional. Refresh their parent before
+            # accepting absence, then refresh both mutable checkpoint records
+            # and content-addressed archive names before recovery reads them.
+            directories = os.listdir(self.root)
+            for name in (MOVERS_RETIRED, MOVERS_ARCHIVE):
+                if name in directories:
+                    os.listdir(self.root / name)
         return self.recover_archived_move(action_key)
 
     def mover_retirement_checkpoint_path(self) -> Path:
@@ -10827,6 +10985,682 @@ class PoolQueue:
             return None, ("not-own-export",
                           "its sealed params.produced_spool.owner is not this action")
         return request, ("", "")
+
+    def queued_child_wait_verdict(
+            self, action_key: str, *, cas_root: object,
+            awaited: Mapping[str, object],
+            admitted: Mapping[str, Mapping[str, object]] | None = None,
+            prior: Mapping[str, object] | None = None,
+            now: float | None = None,
+    ) -> dict[str, object]:
+        """Whether a quiet coordinator waits on a declared queued child (#1666).
+
+        ``awaited`` is the coordinator's sealed ``progress_awaited_batch``:
+        the parent and plan keys whose children credit its quiet, and the
+        controller-state directory whose accepted members name them. Every
+        counted child verifies exact membership: its sealed request names
+        that parent and plan, its ordinal equals its position in the stored
+        publication's ``child_action_keys``, and its task set equals the
+        stored plan's partition there. A child with other keys, with no
+        ``logical_batch``, or with an unreadable sealed request earns none.
+
+        ``admitted`` is the SDK-confirmed admitted or attached set, read
+        from the controller's own state by
+        :meth:`_awaited_child_submissions`: each member maps a child key
+        to its submission record. Only members of the set are judged; a
+        child that is only prepared or recorded as intent earns no
+        credit. A missing queue record with a verified durable CAS result
+        reads as durable, not as missing. Cleanup tombstones and
+        late-finish leaves keep their owner-defined custody and are
+        neither credited nor released.
+
+        The interval rule matches the staged-wait credit: the rung credits
+        only the quiet both ends agree on. A first sighting is a baseline
+        and earns no credit; a child live at both ends is carried and
+        credits through the shared _credit mark. A replacement child is a
+        new baseline. A missing or unreadable admitted child stays in the
+        verdict and blocks the credit: a live sibling cannot cover for it.
+        No credit for a missing, unreadable or terminal child, or for a row
+        of another batch. A child keeps its own watchdog and ceiling; the
+        credit moves only the coordinator's deadline.
+        """
+
+        moment = _now() if now is None else float(now)
+        parent_key = str(awaited.get("parent_key") or "")
+        plan_key = str(awaited.get("plan_key") or "")
+        members = (dict(admitted) if isinstance(admitted, Mapping) else {})
+        prior_children = {
+            str(entry.get("key")): entry
+            for entry in ((prior or {}).get("children") or ())  # type: ignore[union-attr]
+            if isinstance(entry, Mapping)}
+        prior_missing = bool((prior or {}).get("missing"))
+        membership = self._awaited_batch_membership(
+            cas_root, parent_key=parent_key, plan_key=plan_key,
+            members=members)
+        if membership["unreadable"]:
+            return {
+                "exempt": False, "children": [], "missing": [],
+                "parent_key": parent_key, "plan_key": plan_key,
+                "checked_unix": moment,
+                "reason": "stored plan or publication is missing or unreadable",
+                "detail": "; ".join(membership["unreadable"])}
+        plan_doc = membership["plan"]
+        index = membership["publication"]
+        assert isinstance(plan_doc, Mapping) and isinstance(index, Mapping)
+        slots = {str(entry): position
+                 for position, entry in enumerate(index["child_action_keys"])}  # type: ignore[union-attr]
+        children: list[dict[str, object]] = []
+        missing: list[str] = []
+        live = False
+        for child_key in sorted(members):
+            entry: dict[str, object] = {"key": child_key}
+            record = members[child_key]
+            refusal = (record.get("custody_refused")  # type: ignore[union-attr]
+                       if isinstance(record, Mapping) else None)
+            if isinstance(refusal, str) and refusal:
+                # The custody reader refused this look: the member stays
+                # in the verdict and blocks the credit, even when its
+                # queue row is live. The credit never rests on a guess.
+                entry.update({"state": "unknown", "evidence": "none",
+                              "detail": f"controller custody refused: {refusal}"})
+                entry["ordinal"] = slots.get(child_key)
+                missing.append(child_key)
+                children.append(entry)
+                continue
+            link, detail = self._queued_child_link(
+                child_key, cas_root=cas_root, parent_key=parent_key,
+                plan_key=plan_key, plan=plan_doc, publication=index)
+            if link is None:
+                # The controller named a key the sealed batch cannot bind:
+                # custody says awaited, membership says nothing verifiable.
+                # It stays in the verdict and blocks the credit, like any
+                # missing member: a live sibling cannot cover for it.
+                entry.update({"state": "foreign", "evidence": "none"})
+                if detail:
+                    entry["detail"] = detail
+                missing.append(child_key)
+                children.append(entry)
+                continue
+            state, evidence_detail = self._queued_child_queue_state(
+                child_key, cas_root=cas_root, request=link,
+                plan=plan_doc, publication=index)
+            entry["state"] = state
+            if evidence_detail:
+                entry["detail"] = evidence_detail
+            if state in (READY, CLAIMED):
+                # Credit only the quiet both ends agree on. A child live at
+                # both ends is carried: a first sighting or a replacement is
+                # a baseline whose entry edge earns nothing through the
+                # shared _credit mark. The prior carries membership-checked
+                # state, so a child that leaves cannot exempt through stale
+                # bytes.
+                before = prior_children.get(child_key)
+                carried = (
+                    isinstance(before, Mapping)
+                    and before.get("state") in (READY, CLAIMED)
+                    and before.get("evidence") in ("baseline", "carried")
+                    and before.get("parent_key", parent_key) == parent_key
+                    and before.get("plan_key", plan_key) == plan_key
+                    and before.get("ordinal") == slots.get(child_key))
+                entry["ordinal"] = slots.get(child_key)
+                entry["parent_key"] = parent_key
+                entry["plan_key"] = plan_key
+                if prior is None or not carried:
+                    entry["evidence"] = "baseline"
+                else:
+                    entry["evidence"] = "carried"
+                    live = True
+            elif state == "durable":
+                entry["evidence"] = "durable"
+                entry["ordinal"] = slots.get(child_key)
+            elif state in ("unknown", "unpublished"):
+                # An admitted child the queue cannot show stays in the
+                # verdict and blocks the credit: a live sibling cannot cover
+                # for it.
+                entry["evidence"] = "none"
+                entry["ordinal"] = slots.get(child_key)
+                missing.append(child_key)
+            else:
+                entry["evidence"] = "none"
+                entry["ordinal"] = slots.get(child_key)
+            children.append(entry)
+        verdict: dict[str, object] = {
+            "exempt": live and not missing and not prior_missing, "children": children,
+            "missing": missing,
+            "parent_key": parent_key, "plan_key": plan_key,
+            "checked_unix": moment}
+        # The credited interval is the two samples' span, not a queue
+        # stamp: the rung credits from the prior sample's monotonic
+        # start (`since_monotonic` on the verdict, carried from the last
+        # heartbeat look) through the shared _credit mark, so an
+        # interval a missing member blocked is never refunded later.
+        earlier = (prior or {}).get("sample_monotonic")  # type: ignore[union-attr]
+        if (verdict["exempt"] and isinstance(earlier, (int, float))
+                and not isinstance(earlier, bool)
+                and math.isfinite(float(earlier))):
+            verdict["since_monotonic"] = float(earlier)
+        if not verdict["exempt"]:
+            if missing:
+                verdict["reason"] = (
+                    "an awaited child is missing or unreadable "
+                    "with no verified durable result")
+            elif prior_missing:
+                verdict["reason"] = (
+                    "the prior sample has a missing or unreadable awaited child")
+            else:
+                verdict["reason"] = "no awaited child is ready or claimed"
+        return verdict
+
+    def _queued_child_link(
+            self, child_key: str, *, cas_root: object,
+            parent_key: str, plan_key: str,
+            plan: Mapping[str, object] | None = None,
+            publication: Mapping[str, object] | None = None,
+    ) -> tuple[dict[str, object] | None, str]:
+        """The child's sealed request when it carries the exact membership."""
+
+        if (len(child_key) != 64
+                or any(ch not in "0123456789abcdef" for ch in child_key)):
+            return None, "not an action key"
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return None, "the coordinator's claim names no CAS"
+        path = Path(str(cas_root)) / "requests" / child_key[:2] / f"{child_key}.json"
+        try:
+            raw = pb._read_regular_file_nofollow(path, where="child action request")
+            request = pb.validate_action(
+                pb._decode_strict_json(raw, where="child action request"))
+        except FileNotFoundError:
+            return None, "no sealed request in the coordinator's CAS"
+        except (OSError, ValueError, RecursionError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError) as exc:
+            return None, f"request unreadable: {type(exc).__name__}"
+        params = request.get("params")
+        batch = (params.get("logical_batch")  # type: ignore[union-attr]
+                 if isinstance(params, Mapping) else None)
+        if not isinstance(batch, Mapping):
+            return None, "its sealed params carry no logical_batch"
+        if (request.get("action_key") != child_key
+                or batch.get("parent_key") != parent_key
+                or batch.get("plan_key") != plan_key):
+            return None, "its sealed logical_batch names another batch"
+        ordinal = batch.get("child_ordinal")
+        if (not isinstance(ordinal, int) or isinstance(ordinal, bool)
+                or not isinstance(batch.get("ordered_task_ids"), list)):
+            return None, "its sealed logical_batch carries no ordinal membership"
+        if plan is not None and publication is not None:
+            keys = publication.get("child_action_keys")
+            partitions = plan.get("partitions")
+            if not isinstance(keys, list) or not isinstance(partitions, list):
+                return None, "the stored publication names no children"
+            if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
+                return None, (
+                    "its sealed ordinal is not its position in the stored "
+                    "publication")
+            if not 0 <= ordinal < len(partitions):
+                return None, "its sealed ordinal is outside the stored plan"
+            if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
+                return None, (
+                    "its sealed task set differs from the stored plan's "
+                    "partition")
+        return request, ""
+
+    def _queued_child_queue_state(
+            self, child_key: str, *, cas_root: object,
+            request: Mapping[str, object],
+            plan: Mapping[str, object] | None = None,
+            publication: Mapping[str, object] | None = None,
+    ) -> tuple[str, str]:
+        """One awaited child's queue state, with durable CAS as durable."""
+
+        try:
+            if self._queued_child_finish_marked(child_key):
+                # A cleanup tombstone or a late-finish leaf: owner-defined
+                # custody, neither credited nor released.
+                return "held", "cleanup holds the claim"
+            if self.item_path(WITHDRAWN, child_key).exists():
+                return WITHDRAWN, ""
+            for state in (READY, CLAIMED):
+                if self.item_path(state, child_key).exists():
+                    try:
+                        row = _read_json(self.item_path(state, child_key))
+                    except (OSError, ValueError, PoolContractError) as exc:
+                        return "unknown", f"{state} row unreadable: {exc!r}"
+                    if not isinstance(row, Mapping):
+                        return "unknown", f"{state} row vanished mid-read"
+                    return state, ""
+            ending = self.current_ending(child_key)
+            state = ending["state"]
+            if state in (DONE, FAILED):
+                return state, ""
+            if ending["unreadable"]:
+                detail = "; ".join(
+                    f"{entry['state']}: {entry['reason']}"
+                    for entry in ending["unreadable"])  # type: ignore[union-attr]
+                if self._queued_child_durable(child_key, cas_root=cas_root,
+                                             request=request, plan=plan,
+                                             publication=publication):
+                    return "durable", detail
+                return "unknown", detail
+            if self._queued_child_durable(child_key, cas_root=cas_root,
+                                         request=request, plan=plan,
+                                         publication=publication):
+                # A missing queue record with a verified durable CAS result
+                # is durable, not missing.
+                return "durable", ""
+            return "unpublished", ""
+        except (OSError, ValueError) as exc:
+            return "unknown", repr(exc)
+
+
+    def _awaited_batch_membership(
+            self, cas_root: object, *, parent_key: str, plan_key: str,
+            members: Mapping[str, object],
+    ) -> dict[str, object]:
+        """The stored plan and publication this batch must match (#1666).
+
+        Read from the coordinator's CAS beside the sealed requests, through
+        the native plan and publication validators: the ordinal of a child
+        is its position in ``child_action_keys``, and its task set is the
+        plan's partition there. A missing or unreadable store refuses the
+        credit rather than guessing membership from queue rows.
+        """
+
+        from . import decomposition as decomposition_mod
+
+        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+            return {"plan": None, "publication": None,
+                    "unreadable": ["the coordinator's claim names no CAS"]}
+        root = Path(str(cas_root))
+        unreadable: list[str] = []
+        plan_doc: Mapping[str, object] | None = None
+        index: Mapping[str, object] | None = None
+        for name in ("plan.json", "publication.json"):
+            path = root / "decompositions" / parent_key[:2] / parent_key / name
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                unreadable.append(f"{name} is missing at {path}")
+                continue
+            except OSError as exc:
+                unreadable.append(f"{name} is unreadable: {exc!r}")
+                continue
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                unreadable.append(f"{name} is not JSON: {exc!r}")
+                continue
+            if name == "plan.json":
+                try:
+                    plan_doc = decomposition_mod.validate_plan(value)
+                except (ValueError, pb.ActionContractError) as exc:
+                    unreadable.append(f"plan.json is invalid: {exc}")
+            else:
+                try:
+                    index = decomposition_mod.validate_publication_index(value)
+                except (ValueError, pb.ActionContractError) as exc:
+                    unreadable.append(f"publication.json is invalid: {exc}")
+        if plan_doc is not None:
+            if (str(plan_doc.get("parent_key")) != parent_key
+                    or str(plan_doc.get("plan_key")) != plan_key):
+                unreadable.append(
+                    "the stored plan names another parent or plan")
+                plan_doc = None
+        if index is not None:
+            if (str(index.get("parent_key")) != parent_key
+                    or str(index.get("plan_key")) != plan_key):
+                unreadable.append(
+                    "the stored publication names another parent or plan")
+                index = None
+            elif (plan_doc is not None and len(index.get("child_action_keys") or ())  # type: ignore[union-attr]
+                    != len(plan_doc.get("partitions") or ())):  # type: ignore[union-attr]
+                unreadable.append(
+                    "the stored publication covers another child count "
+                    "than the stored plan")
+                index = None
+        if plan_doc is None or index is None:
+            if not unreadable:
+                unreadable.append("the stored plan or publication did not read")
+            return {"plan": None, "publication": None, "unreadable": unreadable}
+        return {"plan": plan_doc, "publication": index, "unreadable": []}
+
+    def _awaited_child_submissions(
+            self, item: Mapping[str, object], *,
+            awaited: Mapping[str, object],
+            retained: Mapping[str, Mapping[str, object]] | None = None,
+            custody_read: tuple[dict[str, dict[str, object]] | None, str] | None = None,
+    ) -> dict[str, dict[str, object]]:
+        """The SDK-confirmed admitted or attached set for one batch (#1666).
+
+        The coordinator's sealed declaration names the controller-state
+        directory; the admitted or attached child set comes from the
+        controller's own state there, read under an exact shape check.
+        Anything else gives no credit: an unreadable file, an unknown
+        shape, a missing or malformed member, a key outside the plan, or
+        any read that fails refuses the credit rather than guessing. A
+        key named in only one of the two files earns no credit.
+        Both files must confirm admission. ``pending_submission``
+        records intent only and proves no queue admission. A stored
+        child request, or membership in the plan, does not prove queued
+        work either. Future prepared plan entries earn no credit.
+
+        ``retained`` is the previous call's set. An accepted key stays
+        in the set across unreadable membership documents, unreadable
+        sealed requests and worker restarts, until the controller's own
+        state stops naming it. Queue rows never add or drop a member:
+        they only show what an accepted child does. A live sibling
+        never covers for a missing member: the verdict carries the
+        retained key and refuses the credit while it stays missing.
+        """
+
+        parent_key = str(awaited.get("parent_key") or "")
+        plan_key = str(awaited.get("plan_key") or "")
+        state_dir = awaited.get("controller_state")
+        keep = {str(key): dict(value)
+                for key, value in dict(
+                    retained if isinstance(retained, Mapping) else {}).items()
+                if _is_hex64(key)}
+        custody, refusal = (
+            self._awaited_controller_custody(
+                state_dir, parent_key=parent_key, plan_key=plan_key)
+            if custody_read is None else custody_read)
+        if custody is None:
+            # Refusal, no credit: carry the retained keys so the verdict
+            # names them as missing rather than dropping custody behind
+            # a live sibling, and the rung refuses the whole interval.
+            # The mark tells the verdict the custody did not confirm
+            # them this look: live rows cannot credit through it.
+            return {key: {**value, "custody_refused": refusal}
+                    for key, value in keep.items()}
+        members: dict[str, dict[str, object]] = {}
+        for child_key, candidate in sorted(custody.items()):
+            if candidate["confirmed"]:
+                members[child_key] = {"batch": candidate["batch"]}
+            elif child_key in keep:
+                members[child_key] = {
+                    **keep[child_key],
+                    "custody_refused": "a key in only one custody file is a candidate"}
+        # The controller's state is the set's only writer: a key it
+        # stops naming leaves the set with it. Nothing here re-adds a
+        # key the custody reader drops.
+        return members
+
+    @staticmethod
+    def _awaited_controller_custody(
+            state_dir: object, *, parent_key: str, plan_key: str,
+    ) -> tuple[dict[str, dict[str, object]] | None, str]:
+        """Accepted members from the controller's own state, or the refusal.
+
+        The closed projection has version ``CONTROLLER_CUSTODY_SCHEMA_V1``.
+        Both files contribute candidates. Only agreement confirms a member.
+        Optional diagnostic fields have declared types and grant no credit.
+        Unknown fields and conflicting batch/key mappings refuse the read.
+        """
+
+        if not parent_key or not plan_key:
+            return None, "the declaration names no parent or plan"
+        if not isinstance(state_dir, str) or not state_dir:
+            return None, "the declaration names no controller state"
+        root = Path(state_dir)
+        if not root.is_absolute() or ".." in root.parts:
+            return None, "the controller state is not an absolute path"
+        try:
+            state_raw = pb._read_regular_file_nofollow(
+                root / CONTROLLER_WAVE_STATE, where="controller wave state",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+        except FileNotFoundError:
+            return None, f"{CONTROLLER_WAVE_STATE} is missing"
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
+            return None, f"{CONTROLLER_WAVE_STATE} is unreadable: {type(exc).__name__}"
+        try:
+            state_value = pb._decode_strict_json(
+                state_raw, where="controller wave state")
+        except (pb.ActionContractError, RecursionError):
+            return None, f"{CONTROLLER_WAVE_STATE} is not JSON"
+        state_members, reason = PoolQueue._awaited_wave_members(state_value)
+        if state_members is None:
+            return None, reason
+        try:
+            journal_raw = pb._read_regular_file_nofollow(
+                root / CONTROLLER_SUB_KEYS, where="controller journal",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+        except FileNotFoundError:
+            return None, f"{CONTROLLER_SUB_KEYS} is missing"
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
+            return None, f"{CONTROLLER_SUB_KEYS} is unreadable: {type(exc).__name__}"
+        journal_members, reason = PoolQueue._awaited_journal_members(journal_raw)
+        if journal_members is None:
+            return None, reason
+        combined = dict(state_members)
+        batches = {batch: key for key, batch in state_members.items()}
+        for key, batch in journal_members.items():
+            if key in combined and combined[key] != batch:
+                return None, f"custody names {key[:12]} for two batches"
+            if batch in batches and batches[batch] != key:
+                return None, f"custody names batch {batch} for two keys"
+            combined[key] = batch
+            batches[batch] = key
+        return {
+            key: {"batch": batch,
+                  "confirmed": state_members.get(key) == journal_members.get(key)}
+            for key, batch in combined.items()}, ""
+
+    @staticmethod
+    def _awaited_wave_members(
+            value: object) -> tuple[dict[str, str] | None, str]:
+        """Accepted ``{key: batch}`` from ``wave-state.json``, or the refusal."""
+
+        if not isinstance(value, Mapping) or "waves" not in value:
+            return None, f"{CONTROLLER_WAVE_STATE} must hold waves"
+        unknown = set(value) - {"waves", *CONTROLLER_STATE_OPTIONAL_FIELDS}
+        if unknown:
+            return None, f"{CONTROLLER_WAVE_STATE} has undeclared fields: {sorted(unknown)}"
+        for name, expected in CONTROLLER_STATE_OPTIONAL_FIELDS.items():
+            if name in value and type(value[name]) is not expected:
+                return None, f"{CONTROLLER_WAVE_STATE} {name} must be {expected.__name__}"
+        pending = value.get("pending_submission")
+        if pending is not None and (
+                set(pending) != {"batch", "key"}
+                or not isinstance(pending["batch"], str) or not pending["batch"]
+                or not _is_hex64(pending["key"])):
+            return None, f"{CONTROLLER_WAVE_STATE} pending_submission must hold batch and key"
+        if "last_disk_check" in value:
+            reason = PoolQueue._awaited_disk_check(value["last_disk_check"])
+            if reason:
+                return None, f"{CONTROLLER_WAVE_STATE} last_disk_check {reason}"
+        for entry in value.get("disk_checks", []):
+            reason = PoolQueue._awaited_disk_check(entry)
+            if reason:
+                return None, f"{CONTROLLER_WAVE_STATE} disk_checks {reason}"
+        waves = value["waves"]
+        if not isinstance(waves, list):
+            return None, f"{CONTROLLER_WAVE_STATE} waves is not a list"
+        members: dict[str, str] = {}
+        batches: dict[str, str] = {}
+        for position, wave in enumerate(waves):
+            where = f"{CONTROLLER_WAVE_STATE} waves[{position}]"
+            if not isinstance(wave, Mapping) or not {"closed", "members", "wave"} <= set(wave):
+                return None, f"{where} must hold closed, members and wave"
+            unknown = set(wave) - {"closed", "members", "wave"}
+            if unknown:
+                return None, f"{where} has undeclared fields: {sorted(unknown)}"
+            if type(wave["wave"]) is not int or type(wave["closed"]) is not bool:
+                return None, f"{where} wave is not an integer or closed is not a boolean"
+            entries = wave["members"]
+            if not isinstance(entries, list):
+                return None, f"{where} members is not a list"
+            for index, entry in enumerate(entries):
+                at = f"{where} members[{index}]"
+                if not isinstance(entry, Mapping) or not {"batch", "key"} <= set(entry):
+                    return None, f"{at} must hold batch and key"
+                unknown = set(entry) - {"batch", "key", "published_unix"}
+                if unknown:
+                    return None, f"{at} has undeclared fields: {sorted(unknown)}"
+                if "published_unix" in entry:
+                    stamp = entry["published_unix"]
+                    if (type(stamp) not in (int, float)
+                            or not math.isfinite(stamp) or stamp < 0):
+                        return None, f"{at} published_unix must be a finite nonnegative number"
+                batch = entry["batch"]
+                key = entry["key"]
+                if type(batch) is not str or not batch:
+                    return None, f"{at} batch is not a non-empty string"
+                if not _is_hex64(key):
+                    return None, f"{at} key is not a 64-hex action key"
+                assert isinstance(key, str)
+                if key in members and members[key] != batch:
+                    return None, (
+                        f"{at} names {key[:12]} for another batch")
+                if batch in batches and batches[batch] != key:
+                    return None, f"{at} names batch {batch} for two keys"
+                batches[batch] = key
+                members[key] = batch
+        return members, ""
+
+    @staticmethod
+    def _awaited_disk_check(value: object) -> str:
+        """Validate the routed writer's disk diagnostic envelope."""
+
+        if (not isinstance(value, dict) or set(value) != {"action_key", "evidence"}
+                or not _is_hex64(value["action_key"])
+                or not isinstance(value["evidence"], dict)):
+            return "must hold an action_key and an evidence object"
+        return ""
+
+    @staticmethod
+    def _awaited_journal_members(
+            raw: bytes) -> tuple[dict[str, str] | None, str]:
+        """Accepted ``{key: batch}`` from ``sub-keys.txt``, or the refusal."""
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, f"{CONTROLLER_SUB_KEYS} is not UTF-8 text"
+        if text and not text.endswith("\n"):
+            return None, f"{CONTROLLER_SUB_KEYS} has an incomplete line"
+        members: dict[str, str] = {}
+        batches: dict[str, str] = {}
+        for number, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                return None, f"{CONTROLLER_SUB_KEYS} line {number} is empty"
+            if len(line.encode("utf-8")) > MAX_CONTROLLER_JOURNAL_LINE_BYTES:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} is too long")
+            parts = line.split()
+            if len(parts) != 2:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    "is not a batch and key pair")
+            batch, key = parts
+            if not _is_hex64(key):
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    "key is not a 64-hex action key")
+            if key in members and members[key] != batch:
+                return None, (
+                    f"{CONTROLLER_SUB_KEYS} line {number} "
+                    f"names {key[:12]} for another batch")
+            if batch in batches and batches[batch] != key:
+                return None, f"{CONTROLLER_SUB_KEYS} batch {batch} has two keys"
+            batches[batch] = key
+            members[key] = batch
+        return members, ""
+
+    def _queued_child_finish_marked(self, child_key: str) -> bool:
+        """Whether a finish mark holds this key's claim aside (#1666)."""
+
+        prefix = f"{child_key}."
+        try:
+            names = os.listdir(self.dir(CLAIMED))
+        except OSError:
+            return False
+        return any(name.startswith(prefix)
+                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
+                   for name in names)
+
+    def _queued_child_durable(self, child_key: str, *, cas_root: object,
+                              request: Mapping[str, object],
+                              plan: Mapping[str, object] | None = None,
+                              publication: Mapping[str, object] | None = None) -> bool:
+        """Whether the CAS verifies this child's durable result (#1666)."""
+
+        try:
+            cas = pb.PrismaBuildCAS(Path(str(cas_root)))
+            receipt = cas.lookup(request)
+        except (OSError, ValueError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError):
+            return False
+        if receipt is None:
+            return False
+        try:
+            return verify_durable_child_result(
+                cas, request, receipt, child_key=child_key,
+                plan=plan, publication=publication) is not None
+        except (OSError, ValueError, pb.ActionContractError,
+                pb.CASTamperError, pb.CASUnavailableError):
+            return False
+
+    def _sample_queued_child_wait(
+            self, item: Mapping[str, object], key: str, watch: "ProgressWatch",
+            progress: "ProgressPolicy | None", *, now: float) -> None:
+        """Sample the awaited set on the heartbeat cadence, and credit it (#1666).
+
+        Judges the interval since the last look, credits an eligible one
+        through the shared _credit mark, and stores the verdict as the
+        next look's prior. A first sighting is a baseline and earns no
+        credit; a child live at both ends carries and credits only this
+        interval's span, from the prior sample's monotonic start. A
+        blocked interval earns nothing and is never refunded later: the
+        shared mark and the monotonic start bound every credit. A child
+        that ends keeps the credit its verified intervals earned; the
+        rung below judges only the interval since the last sample.
+        """
+
+        if progress is None or progress.awaited_batch is None:
+            return
+        try:
+            retained = None
+            if isinstance(watch.queued_child_wait, Mapping):
+                retained = {
+                    str(entry.get("key")): (
+                        dict(entry) if isinstance(entry, Mapping) else {})
+                    for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
+                    if isinstance(entry, Mapping)
+                    and _is_hex64(entry.get("key"))}
+            custody_read = self._awaited_controller_custody(
+                progress.awaited_batch.get("controller_state"),
+                parent_key=str(progress.awaited_batch["parent_key"]),
+                plan_key=str(progress.awaited_batch["plan_key"]))
+            verdict = self.queued_child_wait_verdict(
+                key, cas_root=item.get("cas_root"),
+                awaited=progress.awaited_batch,
+                admitted=self._awaited_child_submissions(
+                    item, awaited=progress.awaited_batch,
+                    retained=retained, custody_read=custody_read),
+                prior=watch.queued_child_wait,
+                now=_now())
+            if custody_read[0] is None:
+                verdict.update({"exempt": False, "reason": custody_read[1]})
+        except (OSError, ValueError, PoolContractError) as exc:
+            verdict = {"exempt": False, "children": [],
+                       "reason": f"unreadable: {exc!r}"}
+        verdict["sample_monotonic"] = float(now)
+        # The sample and the credit: an eligible interval credits now,
+        # through the shared mark, bounded by the prior sample's start.
+        # Exempt or not, this verdict becomes the rung's prior, so a
+        # child live at both ends carries and a blocked gap never
+        # refunds. The shared _credit mark still grants no double credit.
+        if verdict.get("exempt") and isinstance(
+                verdict.get("since_monotonic"), (int, float)):
+            try:
+                watch.exempt_queued_child_wait(
+                    verdict, now=float(now),
+                    since_monotonic=float(verdict["since_monotonic"]))  # type: ignore[arg-type]
+            except (TypeError, ValueError, OverflowError):
+                watch.queued_child_wait = dict(verdict)
+        else:
+            watch.queued_child_wait = dict(verdict)
 
     def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
                              ) -> tuple[int | None, int | None, str]:
@@ -15515,6 +16349,29 @@ class PoolQueue:
             return True
         if state not in ("reserved", "transferring"):
             return False
+        proven = self._output_funding_nonexecution_locked(
+            current, dead_input=dead_input)
+        if proven is not True:
+            return proven
+        if self._advance_output_funding_state_locked(
+                mover, str(tier_id), expect=state, advance_to="released",
+                generation=str(current.get("generation"))):
+            return True
+        # Every proven refusal answered above; a False here is a read or
+        # write fault under the advance's own idempotence, which the next
+        # pass retries (#1202 review N3).
+        return None
+
+    def _output_funding_nonexecution_locked(
+            self, current: Mapping[str, object], *,
+            dead_input: Mapping[str, object] | None = None) -> bool | None:
+        """Prove nonexecution without a state change; hold the mover lock.
+
+        Return True for proof, False for refusal, or None for a read fault.
+        A released marker alone does not prove that the mover never started.
+        """
+
+        mover = str(current["mover_action_key"])
         if dead_input is not None:
             # #1202's dead-input ending: the caller proved this funding's
             # producer attempt dead and its bound origin gone, so the batch's
@@ -15536,7 +16393,6 @@ class PoolQueue:
                 return False
         except (OSError, PoolContractError, ValueError):
             return None
-        exp_gen = str(current.get("generation"))
         # Durable claim: CLAIMED row of any shape means the mover may hold
         # the fence while the consumed marker failed.
         try:
@@ -15580,15 +16436,8 @@ class PoolQueue:
             return None
         if isinstance(lease, Mapping):
             return False
-        _ = exp_gen
-        if self._advance_output_funding_state_locked(
-                mover, str(tier_id), expect=state, advance_to="released",
-                generation=str(current.get("generation"))):
-            return True
-        # Every proven refusal answered above; a False here is a read or
-        # write fault under the advance's own idempotence, which the next
-        # pass retries (#1202 review N3).
-        return None
+
+        return True
 
     def output_census_for_owner(self, owner_key: str) -> tuple[list[dict], bool]:
         """Outstanding output intents for owner + census-unknown flag (R2).
@@ -15607,6 +16456,9 @@ class PoolQueue:
         that fails `validate_output_funding` (corrupt binding that may own
         source-held names). Files for other owners that parse cleanly (or
         fail with a proven different owner) do not taint this census.
+
+        A released marker with held mover tokens remains outstanding until
+        token release completes. Retain its prewrite recovery authority.
         """
 
         intents: list[dict] = []
@@ -15663,8 +16515,17 @@ class PoolQueue:
                 # source-held names => unknown, retain.
                 unknown = True
                 continue
-            if str(record.get("state")) in ("reserved", "transferring"):
+            state = str(record.get("state"))
+            if state in ("reserved", "transferring"):
                 intents.append(record)
+            elif state == "released":
+                try:
+                    if held_names_visible(
+                            self.tier_ledger(str(record["tier_id"])),
+                            str(record["mover_action_key"])):
+                        intents.append(record)
+                except (OSError, PoolContractError, ValueError):
+                    unknown = True
         return (intents, unknown)
 
     def _output_spoken_token_names(
@@ -17771,7 +18632,7 @@ class PoolQueue:
 
     def _unless_requeued(self, lead: str, entry: dict[str, object],
                          ended: Mapping[str, object] | None,
-                         wanted: object = None) -> dict[str, object]:
+                         wanted: object = None, *, fresh: bool = False) -> dict[str, object]:
         """``entry``, or the lead's live requeue when it is newer than ``ended`` (#1186).
 
         A stage mover's key is its range's content address, so a range that
@@ -17803,8 +18664,9 @@ class PoolQueue:
             return float(stamp)
 
         before = generation(ended)
+        read_record = _read_json_confirmed if fresh else _read_json
         for state in (CLAIMED, READY):
-            live = _read_json(self.item_path(state, lead))
+            live = read_record(self.item_path(state, lead))
             if not isinstance(live, Mapping):
                 continue
             after = generation(live)
@@ -17826,7 +18688,7 @@ class PoolQueue:
                     "replaces": replaced}
         return entry
 
-    def _superseded_status_of(self, action_key: str) -> str | None:
+    def _superseded_status_of(self, action_key: str, *, fresh: bool = False) -> str | None:
         """The newest drop filed for this key, or ``None`` if it was never dropped.
 
         ``_file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
@@ -17838,8 +18700,15 @@ class PoolQueue:
         """
 
         newest: tuple[str, str] | None = None
-        for path in _glob(self.superseded_dir(), f"{action_key}.*.json"):
-            record = _read_json(path)
+        directory = self.superseded_dir()
+        if fresh:
+            paths = [directory / name for name in os.listdir(directory)
+                     if fnmatch.fnmatchcase(name, f"{action_key}.*.json")]
+        else:
+            paths = _glob(directory, f"{action_key}.*.json")
+        read_record = _read_json_confirmed if fresh else _read_json
+        for path in paths:
+            record = read_record(path)
             if not isinstance(record, Mapping):
                 continue
             status = record.get("status")
@@ -18035,7 +18904,8 @@ class PoolQueue:
                         "sibling_verdict": verdict["state"]}
         return None
 
-    def residency_verdict(self, item: Mapping[str, object]) -> dict[str, object]:
+    def residency_verdict(self, item: Mapping[str, object], *,
+                          fresh: bool = False) -> dict[str, object]:
         """Whether this item's declared bytes are resident, and why not.
 
         ``not_requested`` when an item has no residency request; the verdict is
@@ -18046,6 +18916,9 @@ class PoolQueue:
         *other* manifest resident has made none of this consumer's bytes
         resident.  Both are traps a deterministic descriptor invites, because
         it is what lets a consumer bind a mover's result before the mover runs.
+
+        ``fresh`` requires error-visible record and pin reads for terminal
+        gang proof. Ordinary admission retains its existing read policy.
         """
         shape = self._prelaunch_shape_verdict(item)
         if shape is not None:
@@ -18072,13 +18945,15 @@ class PoolQueue:
             return {"state": "no_leads"}
         wanted = residency.get("manifest_sha256")
         pending: list[dict[str, object]] = []
+        read_record = _read_json_confirmed if fresh else _read_json
+        proof = {"fresh": True} if fresh else {}
         for lead in leads:
-            record = _read_json(self.item_path(DONE, str(lead)))
+            record = read_record(self.item_path(DONE, str(lead)))
             status = record.get("status") if isinstance(record, Mapping) else None
             if status == "executed":
                 declared = self._residency_manifest_of(record)
                 if wanted is None or declared is None or declared == wanted:
-                    if self._lead_is_pinned(residency, str(lead)):
+                    if self._lead_is_pinned(residency, str(lead), **proof):
                         continue
                     # ``executed`` is not residency once tokens are pinned.  A
                     # mover that moved nothing, or that refused for an overrun,
@@ -18089,7 +18964,7 @@ class PoolQueue:
                     # mover whose bytes an egress has since deleted.
                     pending.append(self._unless_requeued(
                         str(lead), {"lead": str(lead), "status": "unpinned"},
-                        record, wanted))
+                        record, wanted, **proof))
                     continue
                 # The pool cannot open the manifest -- it holds records, not
                 # the CAS -- but it holds both blocks, and two blocks naming
@@ -18098,11 +18973,11 @@ class PoolQueue:
                     str(lead), {"lead": str(lead), "status": "manifest_mismatch",
                                 "declared_manifest_sha256": declared,
                                 "expected_manifest_sha256": str(wanted)},
-                    record, wanted))
+                    record, wanted, **proof))
                 continue
             ended = record
             if status is None:
-                if self._lead_was_adopted(residency, str(lead)):
+                if self._lead_was_adopted(residency, str(lead), **proof):
                     # No terminal record because it never ran: this range was
                     # already on the tier and the coordinator handed it the
                     # tokens instead of publishing a copy (#598).  Checked
@@ -18120,18 +18995,18 @@ class PoolQueue:
                 # No drop policy is implied for the consumer: the item stays
                 # ready, exactly as it does while its mover is still queued.
                 for state in (FAILED, WITHDRAWN):
-                    ended = _read_json(self.item_path(state, str(lead)))
+                    ended = read_record(self.item_path(state, str(lead)))
                     if isinstance(ended, Mapping):
                         status = str(ended.get("status") or state)
                         break
                 else:
                     ended = None
-                    status = self._superseded_status_of(str(lead))
+                    status = self._superseded_status_of(str(lead), **proof)
             if status is None:
                 pending.append({"lead": str(lead), "status": "absent"})
                 continue
             pending.append(self._unless_requeued(
-                str(lead), {"lead": str(lead), "status": status}, ended, wanted))
+                str(lead), {"lead": str(lead), "status": status}, ended, wanted, **proof))
         if pending:
             # Two denials, because they mean different things to whoever reads
             # them: a lead that has not finished may still finish, while a lead
@@ -18366,7 +19241,8 @@ class PoolQueue:
                             on_unreadable=refusals.append)
         return repr(refusals[0]) if refusals else None
 
-    def _lead_was_adopted(self, residency: Mapping[str, object], lead: str) -> bool:
+    def _lead_was_adopted(self, residency: Mapping[str, object], lead: str, *,
+                          fresh: bool = False) -> bool:
         """Did this lead take over a range that was already on the tier (#598)?
 
         An adopted mover is never published and never claimed, so it files no
@@ -18383,7 +19259,8 @@ class PoolQueue:
         manifest is a trap the binding invites rather than an impossibility.
         """
 
-        receipt = self.move_record(str(lead))
+        proof = {"fresh": True} if fresh else {}
+        receipt = self.move_record(str(lead), **proof)
         if not isinstance(receipt, Mapping):
             return False
         if not receipt.get(MOVE_ADOPTED_FROM_FIELD):
@@ -18396,9 +19273,10 @@ class PoolQueue:
         tier_id = residency.get("tier_id")
         if tier_id is not None and receipt.get("tier_id") != tier_id:
             return False
-        return self._lead_is_pinned(residency, str(lead))
+        return self._lead_is_pinned(residency, str(lead), **proof)
 
-    def _lead_is_pinned(self, residency: Mapping[str, object], lead: str) -> bool:
+    def _lead_is_pinned(self, residency: Mapping[str, object], lead: str, *,
+                        fresh: bool = False) -> bool:
         """Does this finished lead still hold tokens for the bytes it staged?
 
         Contained, and ``True`` on a read failure that is not a missing
@@ -18413,6 +19291,19 @@ class PoolQueue:
             # Nothing to check against.  A block that declares leads without a
             # tier predates the pin and is read as it was before.
             return True
+        if fresh:
+            ledger = self.tier_ledger(tier_id)
+            # A missing holder counts only after its parent lists it absent.
+            # Unlike holder_tokens' tolerant glob, every listing error raises.
+            if lead not in os.listdir(ledger.held_dir):
+                return False
+            if not any("-" in name for name in os.listdir(ledger.held_dir / lead)):
+                return False
+            if _read_json_confirmed(self.item_path(CLAIMED, lead)) is not None:
+                return False
+            receipt = self.move_record(lead, fresh=True)
+            return (isinstance(receipt, Mapping) and receipt.get("complete") is True
+                    and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
         try:
             if not self.tier_ledger(tier_id).holder_tokens(lead):
                 return False
@@ -21323,6 +22214,15 @@ class PoolQueue:
         #: measurement stayed READY behind 'reader busy'.  Refusing never
         #: authorizes anything; the next pass takes the fence afresh.
         census_refusal: dict[str, object] | None = None
+        #: One successful census this pass reuses for later candidates
+        #: (#1571): with a free fence each candidate otherwise paid two
+        #: bounded-child scans, the discovery read and the refresh read.
+        #: Later candidates re-take only the elected keys of this host
+        #: plus host admission, never the fence or the scan.  Reset where
+        #: authority may have changed: this pass's own claim, gang
+        #: election, or measurement election.
+        from . import _measurement_reservation as _pass_reservation
+        pass_census = _pass_reservation.PassCensus(self, ledger, host_gate)
         for item in ready:
             key = str(item.get("action_key", ""))
             measurement_suspended = False
@@ -21705,6 +22605,11 @@ class PoolQueue:
                     residency_block = item.get("residency")
                     leads = (residency_block.get("leads")
                              if isinstance(residency_block, Mapping) else None)
+                    if item.get("gang") is not None:
+                        # A read that failed, not a verdict: it must not
+                        # confirm an earlier terminal reading, so the wait
+                        # starts over on the next pass (#1583 review).
+                        self._gang_clear_terminal(item, key)
                     # A read that failed, not a verdict: this host's live
                     # withhold for the row holds for the pass (#1143).
                     carried = carry_withhold(item, key)
@@ -21760,8 +22665,29 @@ class PoolQueue:
                             # generation has not finished, whatever its old
                             # ending says (#1186).
                             reason = "residency_lead_terminal"
+                    if item.get("gang") is not None:
+                        if reason != "residency_lead_terminal":
+                            self._gang_clear_terminal(item, key)
+                        elif self._gang_terminal_confirmed(item, key, residency):
+                            # This member can never start, so its gang cannot:
+                            # its elected siblings would fence their hosts
+                            # until someone withdrew the gang, because
+                            # elections never expire and the sweep tears a
+                            # gang down only on an unsuccessful member
+                            # (#1543).  The confirmation above proved the
+                            # verdict once more under the leads' locks and
+                            # filed the one-shot teardown marker there, so no
+                            # requeue can win between the proof and the
+                            # commit; the siblings are withdrawn here, after
+                            # the leads' locks are released, and this row's
+                            # lock is held, so the sweep withdraws it.
+                            self._gang_teardown_withdraw(
+                                item, by=key, exclude={key},
+                                reason=f"member {key[:12]} cannot start: residency_lead_terminal")
                     self.record_denial(item, reason, {"residency": residency})
                     continue
+                if item.get("gang") is not None:
+                    self._gang_clear_terminal(item, key)
                 try:
                     sealed_demand = self.demand_of(item)
                 except (TypeError, ValueError) as exc:
@@ -22014,7 +22940,8 @@ class PoolQueue:
                         if census_refusal is not None:
                             self.record_denial(item, "measurement_census_unavailable", census_refusal)
                             continue
-                        census_guard = measurement_reservation.admission_census(self, ledger, host_gate)
+                        census_guard = measurement_reservation.pass_admission_census(
+                            pass_census, self, ledger, host_gate)
                         with census_guard as census:
                             if "unavailable" in census:
                                 census_refusal = census
@@ -22686,9 +23613,12 @@ class PoolQueue:
                         continue
                     # This pass renamed into ``claimed/``: a later candidate
                     # of the same pass lists it again (#993), and reads the
-                    # tiers' reading sets again (#1091 review 1).
+                    # tiers' reading sets again (#1091 review 1). The rename
+                    # also moves a publication the reused census read, so the
+                    # next candidate reads fresh (#1571).
                     claimed_listed = None
                     reader_plans.clear()
+                    pass_census.invalidate()
                     moved_record = _read_json(dst)
                     moved = moved_record or item
                     if container_class_policy is not None:
@@ -25696,6 +26626,128 @@ class PoolQueue:
             return int(record["priority"])
         except (_gang.GangContractError, OSError, pb.PrismaBuildError, KeyError, TypeError, ValueError):
             return None
+    def _gang_member_group(self, item: Mapping[str, object]) -> str | None:
+        from . import _gang
+        gang = item.get("gang")
+        declared = _gang.declaration(gang) if gang is not None else None
+        return str(declared["group"]) if declared else None
+
+    def _gang_clear_terminal(self, item: Mapping[str, object], key: str) -> bool:
+        """Reset terminal evidence, and retain the obligation if storage refuses."""
+        from . import _gang
+        group = self._gang_member_group(item)
+        if group is None:
+            return True
+        identity = (group, key)
+        self._gang_terminal_resets[identity] = True
+        try:
+            if not _gang.clear_terminal(self, group, key):
+                _gang.note_terminal(self, group, key, "", now=_now())
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            return False
+        self._gang_terminal_resets[identity] = False
+        return True
+
+    def _terminal_signature(self, residency: Mapping[str, object]) -> str | None:
+        """The leads' endings and generations behind a terminal reading.
+
+        Every state record of every pending lead is read, with its
+        ``published_unix`` and ending stamps, so a lead that was requeued and
+        ended again between two readings is a different signature, not the
+        old reading confirmed.  ``None`` when the reading is not terminal.
+        """
+        pending = residency.get("pending")
+        if not (isinstance(pending, list) and pending and all(
+                isinstance(entry, Mapping) and entry.get("status") is not None
+                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                for entry in pending)):
+            return None
+        rows = []
+        for entry in sorted(pending, key=lambda e: str(e.get("lead"))):
+            lead = str(entry.get("lead"))
+            seen = []
+            for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+                record = _read_json_confirmed(self.item_path(state, lead))
+                if isinstance(record, Mapping):
+                    if state in (READY, CLAIMED):
+                        return None
+                    seen.append([state, record.get("published_unix"),
+                                 record.get("finished_unix"),
+                                 record.get("withdrawn_unix"), record.get("status")])
+            rows.append([lead, entry.get("status"), seen])
+        return pb.canonical_sha256(rows)
+
+    def _terminal_leads(self, residency: Mapping[str, object]) -> list[str] | None:
+        """The pending leads of a terminal reading, in lock order, or ``None``."""
+        pending = residency.get("pending")
+        if not (isinstance(pending, list) and pending and all(
+                isinstance(entry, Mapping) and entry.get("status") is not None
+                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                for entry in pending)):
+            return None
+        return sorted({str(entry.get("lead")) for entry in pending})
+
+    def _gang_terminal_confirmed(self, item: Mapping[str, object], key: str,
+                                 residency: Mapping[str, object]) -> bool:
+        """Whether a member's terminal reading has stood and still holds (#1543).
+
+        One reading is not enough: a lead mid-requeue (READY -> CLAIMED) reads
+        as ended for a moment, and tearing a gang down is permanent.  The
+        first reading leaves a durable mark (``_gang.note_terminal``); the
+        teardown waits for the mark to age past the confirmation window with
+        an unchanged signature, then proves the verdict once more under the
+        leads' transition locks -- every requeue publishes under its lead's
+        lock, so a requeue that won before the proof reads live in it and a
+        requeue that starts after it waits until the tear-down marker is
+        filed -- and requires the same terminal signature.  A lock that is
+        busy, a read that fails, or any change is no confirmation: the
+        mark is reset and the gang waits for a new window.  Never blocks
+        and never sleeps; the leads' locks are released before the caller
+        withdraws any sibling.
+        """
+        from . import _gang
+        group: str | None = None
+        try:
+            group = self._gang_member_group(item)
+            if group is not None and self._gang_terminal_resets.get((group, key), True):
+                if not self._gang_clear_terminal(item, key):
+                    return False
+            signature = self._terminal_signature(residency)
+            leads = self._terminal_leads(residency)
+            if group is None or signature is None or not leads:
+                if group is not None:
+                    self._gang_clear_terminal(item, key)
+                return False
+            if not _gang.note_terminal(self, group, key, signature, now=_now()):
+                return False
+            with ExitStack() as held:
+                for lead in leads:
+                    acquired = held.enter_context(
+                        self._transition_locked(lead, blocking=False))
+                    if not acquired:
+                        self._gang_clear_terminal(item, key)
+                        return False
+                # No live row can cross this proof/commit boundary. Failed
+                # refreshes and listed-but-unreadable records end the window.
+                for lead in leads:
+                    for state in (READY, CLAIMED):
+                        if _read_json_confirmed(self.item_path(state, lead)) is not None:
+                            self._gang_clear_terminal(item, key)
+                            return False
+                fresh = self.residency_verdict(item, fresh=True)
+                if (fresh["state"] not in ("lead_not_resident", "lead_unpinned")
+                        or fresh.get("plan_superseded") is not None
+                        or self._terminal_signature(fresh) != signature):
+                    self._gang_clear_terminal(item, key)
+                    return False
+                return self._gang_teardown_mark(
+                    item,
+                    reason=f"member {key[:12]} cannot start: residency_lead_terminal",
+                    by=key)
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            if group is not None:
+                self._gang_clear_terminal(item, key)
+            return False
 
     @_serialized_key
     def _gang_teardown(self, item: Mapping[str, object] | None, *, reason: str,
@@ -25709,6 +26761,14 @@ class PoolQueue:
         checkpoints. ``exclude`` names keys whose transition lock the caller
         holds: the sweep withdraws those once the caller lets go.
         """
+        if not self._gang_teardown_mark(item, reason=reason, by=by):
+            return False
+        self._gang_teardown_withdraw(item, reason=reason, by=by, exclude=exclude)
+        return True
+
+    def _gang_teardown_mark(self, item: Mapping[str, object] | None, *,
+                            reason: str, by: str) -> bool:
+        """File the gang's one teardown marker; ``True`` if this call did."""
         from . import _gang
         gang = item.get("gang") if isinstance(item, Mapping) else None
         if gang is None:
@@ -25723,6 +26783,30 @@ class PoolQueue:
             print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             return False
+        return True
+
+    def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
+                                reason: str, by: str,
+                                exclude: Container[str] = ()) -> None:
+        """Withdraw the torn-down gang's live members through the ordinary path.
+
+        The marker is already filed: a reader that finds none withdraws
+        nothing.  ``exclude`` names keys whose transition lock the caller
+        holds: the sweep withdraws those once the caller lets go.
+        """
+        from . import _gang
+        gang = item.get("gang") if isinstance(item, Mapping) else None
+        if gang is None:
+            return
+        try:
+            declared = _gang.declaration(gang)
+            record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is None or _gang.teardown(self, record["group"]) is None:
+                return
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return
         for member in record["members"]:
             if member["action_key"] == by or member["action_key"] in exclude:
                 continue
@@ -25731,7 +26815,6 @@ class PoolQueue:
                               by=f"gang:{record['group']}")
             except (PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
-        return True
 
     def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,
                             heartbeat_s: float) -> dict[str, object] | None:
@@ -28047,7 +29130,8 @@ class PoolQueue:
                                 "pool_contention": watch.pool_contention_exempt_s,
                                 "start_gate": watch.start_gate_exempt_s,
                                 "reader_plan": watch.reader_plan_exempt_s,
-                                "export_wait": watch.export_wait_exempt_s},
+                                "export_wait": watch.export_wait_exempt_s,
+                                "queued_child_wait": watch.queued_child_wait_exempt_s},
                             "delivered_units_per_s": delivered,
                             "delivered_bytes_per_s": (
                                 delivered if contention is not None else None),
@@ -28186,6 +29270,16 @@ class PoolQueue:
                         # (``movement_actions.mover_report_latency_s``), so a
                         # poll always falls between the last credit and it.
                         credit_contention(checkpoint_started)
+                        # A coordinator's queued children (#1666), sampled on
+                        # the same cadence so the rung's two-sample rule sees
+                        # both ends of each interval: the first sighting is a
+                        # baseline, and only a carried second look credits.
+                        # Without this the rung samples only at the deadline,
+                        # when the first look can never carry and the credit
+                        # never engages.
+                        self._sample_queued_child_wait(
+                            item, key, watch, progress,
+                            now=checkpoint_started)
                         next_progress_poll = time.monotonic() + heartbeat_s
                     if time.monotonic() >= next_heartbeat:
                         self.write_lease(
@@ -28365,6 +29459,24 @@ class PoolQueue:
                                     since_monotonic=aside_checkpoint
                                     - max(0.0, now_unix - since))
                             spent = time.monotonic() - aside_checkpoint
+                            watch.shift(spent)
+                            if deadline is not None:
+                                deadline += spent
+                        if (not advanced
+                                and time.monotonic() >= watch.stall_deadline()):
+                            # A coordinator waiting on its declared queued
+                            # children, one of which is ready or claimed, is
+                            # waiting on admission rather than stuck (#1666).
+                            # The heartbeat cadence already credited each
+                            # eligible sample interval; the rung judges only
+                            # the interval since the last sample, bounded by
+                            # its monotonic start, and credited through the
+                            # same mark. A blocked gap never refunds, and a
+                            # child that ended keeps its earned credit.
+                            queued_checkpoint = time.monotonic()
+                            self._sample_queued_child_wait(
+                                item, key, watch, progress, now=queued_checkpoint)
+                            spent = time.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent

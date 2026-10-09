@@ -27,7 +27,8 @@
     "15",
     "--python",
     "/home/rob/venvs/pb-cpu/bin/python",
-    "--all-cores"
+    "--all-cores",
+    "--gang-admission"
    ],
    "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. The supervisor measures f_bavail minus the 5% floor, in whole GiB: at start, into the loops' arguments, and then on every tick, into a host-local offer file the loops read on each poll (#1190). It measures only while the host ledger shows no spool_gb held; while an action holds some, the offer stays what it was. No number is written here, so freeing space on the disk raises the offer on the next tick, and filling it lowers the offer. A whole number in place of auto caps the measured value."
   },
@@ -56,7 +57,8 @@
     "20",
     "--python",
     "/home/rob/venvs/pb-cpu/bin/python",
-    "--all-cores"
+    "--all-cores",
+    "--gang-admission"
    ],
    "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. The supervisor measures f_bavail minus the 5% floor, in whole GiB: at start, into the loops' arguments, and then on every tick, into a host-local offer file the loops read on each poll (#1190). It measures only while the host ledger shows no spool_gb held; while an action holds some, the offer stays what it was. No number is written here, so freeing space on the disk raises the offer on the next tick, and filling it lowers the offer. A whole number in place of auto caps the measured value."
   },
