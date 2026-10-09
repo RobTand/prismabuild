@@ -112,7 +112,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, cast
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 import contextvars
 import errno
 import fcntl
@@ -21004,6 +21004,11 @@ class PoolQueue:
                     residency_block = item.get("residency")
                     leads = (residency_block.get("leads")
                              if isinstance(residency_block, Mapping) else None)
+                    if item.get("gang") is not None:
+                        # A read that failed, not a verdict: it must not
+                        # confirm an earlier terminal reading, so the wait
+                        # starts over on the next pass (#1583 review).
+                        self._gang_reset_terminal(item, key)
                     # A read that failed, not a verdict: this host's live
                     # withhold for the row holds for the pass (#1143).
                     carried = carry_withhold(item, key)
@@ -21068,14 +21073,14 @@ class PoolQueue:
                             # until someone withdrew the gang, because
                             # elections never expire and the sweep tears a
                             # gang down only on an unsuccessful member
-                            # (#1543).  The documented remedy -- withdraw the
-                            # gang when a member's residency can no longer
-                            # land -- is done here, once, through the ordinary
-                            # teardown; this row's lock is held, so the sweep
-                            # withdraws it.  Only a reading that has stood
-                            # for the confirmation window and still holds on
-                            # a fresh read gets here (``_gang_terminal_confirmed``).
-                            self._gang_teardown(
+                            # (#1543).  The confirmation above proved the
+                            # verdict once more under the leads' locks and
+                            # filed the one-shot teardown marker there, so no
+                            # requeue can win between the proof and the
+                            # commit; the siblings are withdrawn here, after
+                            # the leads' locks are released, and this row's
+                            # lock is held, so the sweep withdraws it.
+                            self._gang_teardown_withdraw(
                                 item, by=key, exclude={key},
                                 reason=f"member {key[:12]} cannot start: residency_lead_terminal")
                     self.record_denial(item, reason, {"residency": residency})
@@ -24937,15 +24942,48 @@ class PoolQueue:
         declared = _gang.declaration(gang) if gang is not None else None
         return str(declared["group"]) if declared else None
 
-    def _gang_clear_terminal(self, item: Mapping[str, object], key: str) -> None:
-        """Member ``key`` reads live: forget any terminal reading of it (#1543)."""
+    def _gang_clear_terminal(self, item: Mapping[str, object], key: str) -> bool:
+        """Member ``key`` reads live: forget any terminal reading of it (#1543).
+
+        ``True`` when no mark survives.  A live reading whose mark cannot
+        be removed is not a reset: the mark is replaced with an empty
+        signature instead, so the next terminal reading restarts the
+        window rather than confirming the old one (#1583 review, second
+        round).
+        """
         from . import _gang
         try:
             group = self._gang_member_group(item)
-            if group is not None:
-                _gang.clear_terminal(self, group, key)
-        except (_gang.GangContractError, OSError, pb.PrismaBuildError):
-            pass  # a mark that stays is only ever reset by the next reading
+            if group is None:
+                return True
+            if _gang.clear_terminal(self, group, key):
+                return True
+            _gang.note_terminal(self, group, key, "", now=_now())
+            return False
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            try:
+                group = self._gang_member_group(item)
+                if group is not None:
+                    _gang.note_terminal(self, group, key, "", now=_now())
+            except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+                pass
+            return False
+
+    def _gang_reset_terminal(self, item: Mapping[str, object], key: str) -> None:
+        """An uncertain reading ends the wait: the next pass starts over (#1543).
+
+        A failed confirmation read is not a terminal reading, so the mark
+        it would have confirmed must not survive to confirm a later pass.
+        A mark that cannot be read or removed is replaced on the next
+        terminal reading, which restarts the window there.
+        """
+        from . import _gang
+        try:
+            group = self._gang_member_group(item)
+            if group is not None and not _gang.clear_terminal(self, group, key):
+                _gang.note_terminal(self, group, key, "", now=_now())
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            pass
 
     def _terminal_signature(self, residency: Mapping[str, object]) -> str | None:
         """The leads' endings and generations behind a terminal reading.
@@ -24966,7 +25004,7 @@ class PoolQueue:
             lead = str(entry.get("lead"))
             seen = []
             for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-                record = _read_json(self.item_path(state, lead))
+                record = _read_json_fresh(self.item_path(state, lead))
                 if isinstance(record, Mapping):
                     seen.append([state, record.get("published_unix"),
                                  record.get("finished_unix"),
@@ -24974,6 +25012,16 @@ class PoolQueue:
             rows.append([lead, entry.get("status"), seen])
         return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str)
                               .encode()).hexdigest()
+
+    def _terminal_leads(self, residency: Mapping[str, object]) -> list[str] | None:
+        """The pending leads of a terminal reading, in lock order, or ``None``."""
+        pending = residency.get("pending")
+        if not (isinstance(pending, list) and pending and all(
+                isinstance(entry, Mapping) and entry.get("status") is not None
+                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                for entry in pending)):
+            return None
+        return sorted({str(entry.get("lead")) for entry in pending})
 
     def _gang_terminal_confirmed(self, item: Mapping[str, object], key: str,
                                  residency: Mapping[str, object]) -> bool:
@@ -24983,25 +25031,46 @@ class PoolQueue:
         as ended for a moment, and tearing a gang down is permanent.  The
         first reading leaves a durable mark (``_gang.note_terminal``); the
         teardown waits for the mark to age past the confirmation window with
-        an unchanged signature, then reads the verdict once more -- fresh
-        generations, fresh pins -- and requires the same terminal signature.
-        A read that fails, or any change, is no confirmation: the gang waits
-        another pass.  Never blocks and never sleeps.
+        an unchanged signature, then proves the verdict once more under the
+        leads' transition locks -- every requeue publishes under its lead's
+        lock, so a requeue that won before the proof reads live in it and a
+        requeue that starts after it waits until the tear-down marker is
+        filed -- and requires the same terminal signature.  A lock that is
+        busy, a read that fails, or any change is no confirmation: the
+        mark is reset and the gang waits for a new window.  Never blocks
+        and never sleeps; the leads' locks are released before the caller
+        withdraws any sibling.
         """
         from . import _gang
+        group: str | None = None
         try:
             group = self._gang_member_group(item)
             signature = self._terminal_signature(residency)
-            if group is None or signature is None:
+            leads = self._terminal_leads(residency)
+            if group is None or signature is None or not leads:
                 return False
             if not _gang.note_terminal(self, group, key, signature, now=_now()):
                 return False
-            fresh = self.residency_verdict(item)
-            if self._terminal_signature(fresh) != signature:
-                _gang.clear_terminal(self, group, key)
-                return False
-            return True
+            with ExitStack() as held:
+                for lead in leads:
+                    acquired = held.enter_context(
+                        self._transition_locked(lead, blocking=False))
+                    if not acquired:
+                        self._gang_reset_terminal(item, key)
+                        return False
+                fresh = self.residency_verdict(item)
+                if self._terminal_signature(fresh) != signature:
+                    self._gang_reset_terminal(item, key)
+                    return False
+                return self._gang_teardown_mark(
+                    item,
+                    reason=f"member {key[:12]} cannot start: residency_lead_terminal",
+                    by=key)
         except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
+            if group is not None:
+                with suppress(_gang.GangContractError, OSError, ValueError,
+                              pb.PrismaBuildError):
+                    _gang.note_terminal(self, group, key, "", now=_now())
             return False
 
     @_serialized_key
@@ -25016,6 +25085,14 @@ class PoolQueue:
         checkpoints. ``exclude`` names keys whose transition lock the caller
         holds: the sweep withdraws those once the caller lets go.
         """
+        if not self._gang_teardown_mark(item, reason=reason, by=by):
+            return False
+        self._gang_teardown_withdraw(item, reason=reason, by=by, exclude=exclude)
+        return True
+
+    def _gang_teardown_mark(self, item: Mapping[str, object] | None, *,
+                            reason: str, by: str) -> bool:
+        """File the gang's one teardown marker; ``True`` if this call did."""
         from . import _gang
         gang = item.get("gang") if isinstance(item, Mapping) else None
         if gang is None:
@@ -25030,6 +25107,30 @@ class PoolQueue:
             print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             return False
+        return True
+
+    def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
+                                reason: str, by: str,
+                                exclude: Container[str] = ()) -> None:
+        """Withdraw the torn-down gang's live members through the ordinary path.
+
+        The marker is already filed: a reader that finds none withdraws
+        nothing.  ``exclude`` names keys whose transition lock the caller
+        holds: the sweep withdraws those once the caller lets go.
+        """
+        from . import _gang
+        gang = item.get("gang") if isinstance(item, Mapping) else None
+        if gang is None:
+            return
+        try:
+            declared = _gang.declaration(gang)
+            record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is None or _gang.teardown(self, record["group"]) is None:
+                return
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+            print(f"pool gang teardown failed for {by[:12]}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return
         for member in record["members"]:
             if member["action_key"] == by or member["action_key"] in exclude:
                 continue
@@ -25038,7 +25139,6 @@ class PoolQueue:
                               by=f"gang:{record['group']}")
             except (PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
-        return True
 
     def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,
                             heartbeat_s: float) -> dict[str, object] | None:

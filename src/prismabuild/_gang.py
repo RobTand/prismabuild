@@ -285,7 +285,9 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     generations and endings; a later reading confirms only when the mark is
     at least ``confirm_s`` old and names the same signature.  A different or
     unreadable mark is replaced and starts the wait again, as is a mark
-    stamped in the future (another host's clock).  The caller holds the
+    stamped in the future (another host's clock).  An empty signature is
+    never a terminal reading: it is the reset an uncertain reading
+    leaves, and it only ever restarts the wait.  The caller holds the
     member's row lock, so a member's mark has one writer.
     """
     path = terminal_mark_path(queue, group, key)
@@ -294,7 +296,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     except (GangContractError, OSError, ValueError):
         mark = None
     stamp = mark.get("first_seen_unix") if isinstance(mark, Mapping) else None
-    if (isinstance(mark, Mapping) and mark.get("schema") == TERMINAL_SCHEMA
+    if (signature and isinstance(mark, Mapping) and mark.get("schema") == TERMINAL_SCHEMA
             and mark.get("signature") == signature
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
@@ -307,9 +309,23 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     return False
 
 
-def clear_terminal(queue, group: str, key: str) -> None:
-    """Forget member ``key``'s terminal reading: it read live again."""
-    terminal_mark_path(queue, group, key).unlink(missing_ok=True)
+def clear_terminal(queue, group: str, key: str) -> bool:
+    """Forget member ``key``'s terminal reading: it read live again.
+
+    ``True`` when no mark survives: the mark was absent or the unlink
+    removed it.  ``False`` when the mark is still on file, so the caller
+    must not treat the live reading as a reset of the confirmation
+    window (#1583 review, second round).
+    """
+    path = terminal_mark_path(queue, group, key)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    try:
+        return not path.exists()
+    except OSError:
+        return False
 
 
 def sibling_states(queue, record: Mapping[str, object], entry: Mapping[str, object]) -> dict[int, str]:

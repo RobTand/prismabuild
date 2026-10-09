@@ -4687,10 +4687,14 @@ moment and teardown is permanent. The first reading writes a durable mark,
 `gangs/<group>/terminal-<member>.json`, holding a signature of every pending
 lead's state records and generations; any pass that reads the member live
 again clears it. The gang is torn down by a pass that finds the mark at least
-`TERMINAL_CONFIRM_S` (120 s) old with the same signature and whose own fresh
-re-read of the verdict is terminal with that same signature; a changed
-signature, a failed read or a mark stamped in the future restarts the wait. No
-pass blocks, and the one-shot `teardown.json` is the gang-level arbiter. A
+`TERMINAL_CONFIRM_S` (120 s) old with the same signature and then proves the
+verdict once more under the leads' transition locks, in lead-key order and
+without waiting, and files the one-shot `teardown.json` there before it
+releases them; a requeue that won first reads live in that proof, and one
+that starts after it waits until the commit. A busy lock, a changed
+signature, a failed read or a mark stamped in the future restarts the wait.
+No pass blocks, and the one-shot `teardown.json` is the gang-level arbiter.
+The siblings are withdrawn after the leads' locks are released. A
 lead re-queued after teardown does not bring the gang back, so submit the
 movers before the gang.
 A refused plan (`plan_unreadable`, `plan_superseded`) is not covered: the gang
