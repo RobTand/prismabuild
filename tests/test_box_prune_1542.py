@@ -2,12 +2,15 @@
 
 The dry run lists only stale entries and changes nothing. Apply
 removes only the stale ones, honours the per-pass bound, keeps an
-entry whose digest belongs to a served queue, keeps a held lock, a
-partial census publication, a live coordination marker, and any entry
-whose evidence is unreadable. Apply refuses without the maintenance
-acknowledgement, and refuses when the box is not provably quiet
-(a held lock, a live loop, an unresolved claim, a live scope, or
-unreadable evidence). Deletion while workers run stays refused.
+entry whose digest belongs to a served queue, keeps a held admission
+or preemption lock, a partial census publication, and any entry whose
+evidence is unreadable. An old unheld sweep marker and a released
+preemption lock never keep an entry alone. Apply refuses without the
+maintenance acknowledgement, and refuses when the box is not provably
+quiet (a held lock, a live loop, an unresolved claim, a live scope,
+incomplete queue evidence, or unreadable evidence). A missing queue
+never reads as an empty queue. Deletion while workers run stays
+refused.
 """
 from __future__ import annotations
 
@@ -50,6 +53,7 @@ def _fixture(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root)
     queue = tmp_path / "live-queue"
     (queue / "reservations" / "live-host").mkdir(parents=True)
+    (queue / "ready").mkdir(parents=True)
     (queue / "claimed").mkdir(parents=True)
     live_base = queue / "reservations" / "live-host"
     _, live_digest = adaptive_cpu.box_state(live_base)
@@ -116,7 +120,7 @@ def test_a_held_lock_refuses_apply_and_keeps_everything(tmp_path, monkeypatch):
         os.close(descriptor)
 
 
-def test_apply_keeps_partial_reader_and_coordination_markers(tmp_path, monkeypatch):
+def test_apply_keeps_a_partial_reader_but_not_idle_markers(tmp_path, monkeypatch):
     root, queue, _live_base, _live, _stale, _fresh = _fixture(monkeypatch, tmp_path)
     old = time.time() - 8 * 24 * 3600
     _, partial = adaptive_cpu.box_state(tmp_path / "partial" / "reservations" / "h")
@@ -124,22 +128,85 @@ def test_apply_keeps_partial_reader_and_coordination_markers(tmp_path, monkeypat
     state.mkdir(mode=0o700, exist_ok=True)
     (state / "cpu-sample.json").write_text("{}")
     (root / (partial + ".measurement-reader-v1.writing")).write_text("partial")
-    _, marked = adaptive_cpu.box_state(tmp_path / "marked" / "reservations" / "h")
-    marked_state = root / (marked + ".adaptive-cpu-v1")
-    marked_state.mkdir(mode=0o700, exist_ok=True)
-    (marked_state / "cpu-sample.json").write_text("{}")
-    (root / (marked + ".sweep")).touch()
+    _, retired = adaptive_cpu.box_state(tmp_path / "retired" / "reservations" / "h")
+    retired_state = root / (retired + ".adaptive-cpu-v1")
+    retired_state.mkdir(mode=0o700, exist_ok=True)
+    (retired_state / "cpu-sample.json").write_text("{}")
+    (root / (retired + ".lock")).touch()
+    (root / (retired + ".sweep")).touch()
+    (root / (retired + ".preemption")).touch()
     for path in list(root.iterdir()) + [state, state / "cpu-sample.json",
-                                        marked_state, marked_state / "cpu-sample.json"]:
+                                        retired_state, retired_state / "cpu-sample.json"]:
         try:
             os.utime(path, (old, old))
         except OSError:
             pass
     survey = adaptive_cpu.survey_box_state(root, queue_roots=[queue])
     assert survey["kept"][partial] == "unresolved census reader"
-    assert survey["kept"][marked] == "live coordination marker"
     assert partial not in survey["candidates"]
-    assert marked not in survey["candidates"]
+    assert retired in survey["candidates"]
+
+
+def test_a_held_preemption_lock_keeps_its_entry(tmp_path, monkeypatch):
+    import fcntl
+    root, queue, _live_base, _live, stale, _fresh = _fixture(monkeypatch, tmp_path)
+    old = time.time() - 8 * 24 * 3600
+    _, digest = adaptive_cpu.box_state(tmp_path / "handoff" / "reservations" / "h")
+    state = root / (digest + ".adaptive-cpu-v1")
+    state.mkdir(mode=0o700, exist_ok=True)
+    (state / "cpu-sample.json").write_text("{}")
+    (root / (digest + ".lock")).touch()
+    slot = root / (digest + ".preemption")
+    slot.touch()
+    for path in list(root.iterdir()) + [state, state / "cpu-sample.json"]:
+        try:
+            os.utime(path, (old, old))
+        except OSError:
+            pass
+    descriptor = os.open(slot, os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        survey = adaptive_cpu.survey_box_state(root, queue_roots=[queue])
+        assert survey["kept"][digest] == "held preemption lock"
+        assert digest not in survey["candidates"]
+        with pytest.raises(adaptive_cpu.PruneRefused):
+            adaptive_cpu.prune_box_state(queue_roots=[queue], apply=True,
+                                         maintenance_held=True,
+                                         proc_root=_quiet_proc(tmp_path))
+        assert (root / (stale + ".lock")).exists()
+    finally:
+        os.close(descriptor)
+
+
+def test_apply_removes_a_retired_entry_with_its_markers(tmp_path, monkeypatch):
+    root, queue, _live_base, live_digest, stale, fresh = _fixture(monkeypatch, tmp_path)
+    old = time.time() - 8 * 24 * 3600
+    _, retired = adaptive_cpu.box_state(tmp_path / "retired" / "reservations" / "h")
+    retired_state = root / (retired + ".adaptive-cpu-v1")
+    retired_state.mkdir(mode=0o700, exist_ok=True)
+    (retired_state / "cpu-sample.json").write_text("{}")
+    (root / (retired + ".lock")).touch()
+    (root / (retired + ".sweep")).touch()
+    (root / (retired + ".preemption")).touch()
+    for path in list(root.iterdir()) + [retired_state, retired_state / "cpu-sample.json"]:
+        try:
+            os.utime(path, (old, old))
+        except OSError:
+            pass
+    live_stamp = time.time()
+    for path in (root / (live_digest + ".lock"), root / (fresh + ".lock")):
+        if path.exists():
+            os.utime(path, (live_stamp, live_stamp))
+    report = adaptive_cpu.prune_box_state(queue_roots=[queue], apply=True,
+                                          maintenance_held=True,
+                                          proc_root=_quiet_proc(tmp_path))
+    assert retired in report["removed"]
+    assert stale in report["removed"]
+    assert not (root / (retired + ".sweep")).exists()
+    assert not (root / (retired + ".preemption")).exists()
+    assert not (root / (retired + ".lock")).exists()
+    assert (root / (live_digest + ".lock")).exists()
+    assert (root / (fresh + ".lock")).exists()
 
 
 def test_apply_protects_a_bare_queue_root_entry(tmp_path, monkeypatch):
@@ -147,6 +214,7 @@ def test_apply_protects_a_bare_queue_root_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root)
     queue = tmp_path / "pb-queue"
     (queue / "reservations" / "HOSTX").mkdir(parents=True)
+    (queue / "ready").mkdir(parents=True)
     (queue / "claimed").mkdir(parents=True)
     ledger_base = queue / "reservations" / "HOSTX"
     _, digest = adaptive_cpu.box_state(ledger_base)
@@ -215,4 +283,53 @@ def test_apply_refuses_when_evidence_is_unreadable(tmp_path, monkeypatch):
         adaptive_cpu.prune_box_state(queue_roots=[queue], apply=True,
                                      maintenance_held=True,
                                      proc_root=tmp_path / "no-such-proc")
+    assert (root / (stale + ".lock")).exists()
+
+
+def test_a_missing_queue_keeps_everything_and_refuses_apply(tmp_path, monkeypatch):
+    root, queue, _live_base, _live, stale, _fresh = _fixture(monkeypatch, tmp_path)
+    gone = tmp_path / "no-such-queue"
+    survey = adaptive_cpu.survey_box_state(root, queue_roots=[queue, gone])
+    assert survey["queue_evidence"]["complete"] is False
+    assert survey["queue_evidence"]["errors"]
+    assert survey["candidates"] == []
+    assert survey["kept"][stale] == "unresolved queue evidence"
+    with pytest.raises(adaptive_cpu.PruneRefused):
+        adaptive_cpu.prune_box_state(queue_roots=[queue, gone], apply=True,
+                                     maintenance_held=True,
+                                     proc_root=_quiet_proc(tmp_path))
+    assert (root / (stale + ".lock")).exists()
+
+
+def test_a_queue_without_state_directories_refuses_apply(tmp_path, monkeypatch):
+    root, _queue, _live_base, _live, stale, _fresh = _fixture(monkeypatch, tmp_path)
+    bare = tmp_path / "bare-queue"
+    (bare / "reservations" / "live-host").mkdir(parents=True)
+    proof = adaptive_cpu.prove_box_quiescent(root, queue_roots=[bare],
+                                             proc_root=_quiet_proc(tmp_path))
+    assert proof["quiet"] is False
+    with pytest.raises(adaptive_cpu.PruneRefused):
+        adaptive_cpu.prune_box_state(queue_roots=[bare], apply=True,
+                                     maintenance_held=True,
+                                     proc_root=_quiet_proc(tmp_path))
+    assert (root / (stale + ".lock")).exists()
+
+
+def test_an_unreadable_reservations_census_keeps_everything(tmp_path, monkeypatch):
+    root, queue, _live_base, _live, stale, _fresh = _fixture(monkeypatch, tmp_path)
+    real_scandir = os.scandir
+
+    def fail_reservations(path, *args, **kwargs):
+        if str(path) == str(queue / "reservations"):
+            raise OSError("lost mount")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", fail_reservations)
+    survey = adaptive_cpu.survey_box_state(root, queue_roots=[queue])
+    assert survey["queue_evidence"]["complete"] is False
+    assert survey["candidates"] == []
+    with pytest.raises(adaptive_cpu.PruneRefused):
+        adaptive_cpu.prune_box_state(queue_roots=[queue], apply=True,
+                                     maintenance_held=True,
+                                     proc_root=_quiet_proc(tmp_path))
     assert (root / (stale + ".lock")).exists()

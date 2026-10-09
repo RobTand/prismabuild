@@ -495,6 +495,13 @@ BOX_STATE_ROOT = Path(os.environ.get('PRISMABUILD_BOX_STATE_ROOT')
                       or Path('/tmp') / f'prismabuild-admission-{os.getuid()}')
 
 
+#: Digest suffixes this module and its callers own under the box-state root.
+BOX_STATE_SUFFIXES = ('.lock', '.origin.json', '.adaptive-cpu-v1',
+                      '.measurement-reader-v1', '.measurement-reader-v1.guard',
+                      '.measurement-reader-v1.writing',
+                      '.preemption', '.sweep')
+
+
 def box_state(base):
     """Return ``(directory, digest)`` naming host-local state for ONE box.
 
@@ -555,44 +562,45 @@ def box_state(base):
             # The chmod did not take.  Now there is nothing left to try.
             raise RuntimeError('unsafe PrismaBuild admission lock directory')
     digest = box_identity(base)
-    _record_box_origin(directory, digest, base, not _digest_has_state(directory, digest))
+    _record_box_origin_if_new(directory, digest, base)
     return directory, digest
 
 
-def _digest_has_state(directory, digest):
-    """Whether ``digest`` already owns admission state under ``directory``.
-
-    Any owned file counts: the lock, the state directory, the census
-    fence, the preemption and sweep markers. Only a digest with no state
-    at all is genuinely new; an existing entry without an origin record
-    is a legacy entry, never the first reader's creation.
-    """
-    prefix = digest + '.'
-    try:
-        names = [entry.name for entry in os.scandir(directory)]
-    except OSError:
-        return False
-    for name in names:
-        if not name.startswith(prefix):
-            continue
-        if _box_state_digest_of(name) == digest:
-            return True
-    return False
-
-
-def _record_box_origin(directory, digest, base, is_new=True):
+def _record_box_origin_if_new(directory, digest, base):
     """File ``<digest>.origin.json`` once, with ``O_EXCL``, naming the writer.
 
     The record names the resolved queue root, hostname, pid, ``argv[0]``,
-    and creation time. A second call for the same digest keeps the first
-    record: the origin is who first created the entry, not who last
-    touched it. An entry that already owns state when the code first sees
-    it keeps no record: it is a legacy entry, and nothing invents its
+    and creation time. Only bounded work runs here: one origin probe,
+    then one probe per owned sibling path, never a directory scan. The
+    admission directory holds tens of thousands of entries, and this
+    path runs on every admission call, so a scan here taxes every
+    claim. The full census belongs to the maintenance survey only.
+
+    A second call for the same digest keeps the first record: the
+    origin is who first created the entry, not who last touched it.
+    An entry that already owns state when the code first sees it
+    keeps no record: it is a legacy entry, and nothing invents its
     origin. A missing file elsewhere stays "no information".
+
+    Returns ``'recorded'``, ``'present'``, ``'legacy'`` or
+    ``'unavailable'``. ``'unavailable'`` (an unreadable probe or a
+    failed write) files nothing and refuses nothing: origin evidence
+    never gates admission.
     """
-    if not is_new:
-        return 'legacy'
     path = Path(directory) / (digest + '.origin.json')
+    try:
+        if os.path.lexists(path):
+            return 'present'
+    except OSError:
+        return 'unavailable'
+    for suffix in BOX_STATE_SUFFIXES:
+        if suffix == '.origin.json':
+            continue
+        try:
+            if os.path.lexists(os.path.join(directory, digest + suffix)):
+                return 'legacy'
+        except OSError:
+            return 'unavailable'
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
@@ -775,11 +783,6 @@ PRUNE_MAX_ENTRIES_PER_PASS = 100
 #: Most digests one prune pass removes when the root holds too many. The
 #: oldest idle entry goes first, never a fresh one.
 PRUNE_HARD_CAP_ENTRIES = 5000
-#: Digest suffixes this module and its callers own under the box-state root.
-BOX_STATE_SUFFIXES = ('.lock', '.origin.json', '.adaptive-cpu-v1',
-                      '.measurement-reader-v1', '.measurement-reader-v1.guard',
-                      '.measurement-reader-v1.writing',
-                      '.preemption', '.sweep')
 
 
 class PruneRefused(RuntimeError):
@@ -830,38 +833,69 @@ def _box_state_entry_mtime(entry):
     return newest
 
 
-def _live_box_state_digests(queue_roots):
-    """Digests of the queue roots this box serves, never prune candidates.
+def _served_box_state_digests(queue_roots):
+    """``(digests, complete, errors)`` for the queue roots this box serves.
 
-    Each entry names a queue root (the directory that holds ``ready/`` and
-    ``claimed/``). Production hashes the host ledger base
+    Each entry names a queue root (the directory that holds ``ready/``
+    and ``claimed/``). Production hashes the host ledger base
     ``<queue>/reservations/<host>`` through :func:`box_identity`
-    (``pool.py``), one digest per reservation host present. A bare queue
-    root alone protects nothing: its own hash names no ledger. Missing
-    or unreadable evidence protects nothing either; the caller keeps
-    such entries by treating the survey as incomplete.
+    (``pool.py``), one digest per reservation host present. A bare
+    queue root alone protects nothing: its own hash names no ledger.
+
+    Missing or unreadable evidence protects nothing either, and it is
+    reported, never hidden: a missing queue root, an unreadable
+    ``reservations/`` listing, or a partial host census yields
+    ``complete`` false with the cause in ``errors``. An empty
+    ``reservations/`` directory that lists cleanly is complete
+    evidence of zero hosts. The survey keeps every entry and the
+    apply refuses while evidence is incomplete.
     """
     found = set()
+    errors = []
     for root in queue_roots or ():
         try:
             queue = Path(root)
-            reservations = queue / 'reservations'
-            try:
-                hosts = sorted(entry.name for entry in os.scandir(reservations))
-            except OSError:
-                continue
-            if not hosts:
-                continue
-            for host in hosts:
-                if host.startswith('.') or '/' in host or host in ('.', '..'):
-                    continue
-                try:
-                    found.add(box_identity(reservations / host))
-                except OSError:
-                    continue
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            errors.append('%r: queue root unreadable: %s' % (root, exc))
             continue
-    return found
+        try:
+            queue_stat = queue.lstat()
+        except FileNotFoundError:
+            errors.append('%s: queue root missing' % queue)
+            continue
+        except OSError as exc:
+            errors.append('%s: queue root unreadable: %s' % (queue, exc))
+            continue
+        if not stat.S_ISDIR(queue_stat.st_mode):
+            errors.append('%s: queue root is not a directory' % queue)
+            continue
+        reservations = queue / 'reservations'
+        try:
+            ledger_stat = reservations.lstat()
+        except FileNotFoundError:
+            errors.append('%s: reservations missing' % queue)
+            continue
+        except OSError as exc:
+            errors.append('%s: reservations unreadable: %s' % (queue, exc))
+            continue
+        if not stat.S_ISDIR(ledger_stat.st_mode):
+            errors.append('%s: reservations is not a directory' % queue)
+            continue
+        try:
+            with os.scandir(reservations) as iterator:
+                hosts = sorted(entry.name for entry in iterator)
+        except OSError as exc:
+            errors.append('%s: reservations unreadable: %s' % (queue, exc))
+            continue
+        for host in hosts:
+            if host.startswith('.') or '/' in host or host in ('.', '..'):
+                continue
+            try:
+                found.add(box_identity(reservations / host))
+            except (OSError, ValueError) as exc:
+                errors.append('%s: host %r unreadable: %s' % (queue, host, exc))
+                continue
+    return found, not errors, errors
 
 
 def _held_lock_digest(path):
@@ -900,30 +934,45 @@ def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_
                      max_entries=PRUNE_HARD_CAP_ENTRIES, now=None):
     """Sort every digest under the box-state root into keep or candidate.
 
-    Returns ``{'candidates': [...], 'kept': {digest: reason}}``. A digest is
-    a candidate only when every file under its entry is older than
-    ``older_than_s`` and no live evidence names it: a digest of a served
-    queue root, a held admission lock, any census fence (the final
-    marker, its guard lock, or a partial publication write), a live
-    preemption or sweep marker, or an unreadable census. Missing,
-    partial or unreadable evidence keeps, never removes. Age and count
-    only select; neither permits unsafe removal. Queue roots name queue
+    Returns ``{'candidates': [...], 'kept': {digest: reason}}``, plus
+    ``'queue_evidence': {'complete': bool, 'errors': [...]}``. A digest
+    is a candidate only when every file under its entry is older than
+    ``older_than_s`` and no live evidence names it: a digest of a
+    served queue root, a held admission lock, a held preemption lock,
+    any census fence (the final marker, its guard lock, or a partial
+    publication write), or an unreadable census. Missing, partial or
+    unreadable evidence keeps, never removes. Age and count only
+    select; neither permits unsafe removal. Queue roots name queue
     directories; protection derives from their reservation hosts.
+
+    The ``.sweep`` marker is a scheduling timestamp, unlocked by
+    design (``pool.py``): its presence alone never keeps an entry,
+    and its age joins the entry's age. The ``.preemption`` file is a
+    permanent lock inode (``pool.py`` opens it with ``O_CREAT`` and
+    never unlinks it): only a held preemption lock keeps its entry.
+    Both leave with the rest of an obsolete entry inside a
+    proven-quiet maintenance window. Incomplete queue evidence keeps
+    every entry: every digest reads ``'unresolved queue evidence'``.
     """
     root = Path(directory) if directory is not None else Path(BOX_STATE_ROOT)
     moment = time.time() if now is None else float(now)
+    live, queue_complete, queue_errors = _served_box_state_digests(queue_roots)
+    queue_evidence = {'complete': queue_complete, 'errors': list(queue_errors)}
     try:
         names = sorted(entry.name for entry in os.scandir(root))
     except OSError:
-        return {'candidates': [], 'kept': {}}
+        return {'candidates': [], 'kept': {}, 'queue_evidence': queue_evidence}
     by_digest = {}
     for name in names:
         digest = _box_state_digest_of(name)
         if digest is not None:
             by_digest.setdefault(digest, []).append(name)
-    live = _live_box_state_digests(queue_roots)
-    candidates = []
     kept = {}
+    if not queue_complete:
+        for digest in sorted(by_digest):
+            kept[digest] = 'unresolved queue evidence'
+        return {'candidates': [], 'kept': kept, 'queue_evidence': queue_evidence}
+    candidates = []
     for digest in sorted(by_digest):
         names = by_digest[digest]
         if digest in live:
@@ -935,6 +984,13 @@ def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_
             continue
         if held:
             kept[digest] = 'held admission lock'
+            continue
+        preemption = _held_lock_digest(root / (digest + '.preemption'))
+        if preemption is None:
+            kept[digest] = 'unreadable state'
+            continue
+        if preemption:
+            kept[digest] = 'held preemption lock'
             continue
         newest = _box_state_entry_mtime(root / (digest + '.adaptive-cpu-v1'))
         if newest is None:
@@ -967,18 +1023,16 @@ def survey_box_state(directory=None, *, queue_roots=(), older_than_s=PRUNE_IDLE_
         if reader_exists:
             kept[digest] = 'unresolved census reader'
             continue
-        if any(name == digest + '.preemption' or name == digest + '.sweep'
-               for name in names):
-            kept[digest] = 'live coordination marker'
-            continue
         candidates.append((newest, digest))
     candidates.sort()
     if len(by_digest) > max_entries:
         over = len(by_digest) - max_entries
         aged = [digest for _stamp, digest in candidates[:over]]
         rest = [digest for _stamp, digest in candidates[over:]]
-        return {'candidates': aged, 'kept': kept, 'over_cap': rest}
-    return {'candidates': [digest for _stamp, digest in candidates], 'kept': kept}
+        return {'candidates': aged, 'kept': kept, 'over_cap': rest,
+                'queue_evidence': queue_evidence}
+    return {'candidates': [digest for _stamp, digest in candidates], 'kept': kept,
+            'queue_evidence': queue_evidence}
 
 
 def prove_box_quiescent(directory=None, *, queue_roots=(), proc_root='/proc'):
@@ -986,11 +1040,16 @@ def prove_box_quiescent(directory=None, *, queue_roots=(), proc_root='/proc'):
 
     Returns ``{'quiet': True}`` only when every check passes: no live
     worker loop of this box, no claim not yet resolved on any served
-    queue, no live resource scope, and every ``.lock``, ``.preemption``,
-    ``.sweep`` and ``.guard`` file under the root is unheld (a
-    non-blocking ``flock`` probe that releases at once). Partial or
-    unreadable evidence counts as "not quiet": an unknown box never
-    reads as idle. The function changes nothing; it only reports.
+    queue, no live resource scope, and every ``.lock``, ``.preemption``
+    and ``.guard`` file under the root is unheld (a non-blocking
+    ``flock`` probe that releases at once). The ``.sweep`` marker is
+    a scheduling timestamp, unlocked by design, so it is never a
+    holder and never probed. Partial or unreadable evidence counts
+    as "not quiet": an unknown box never reads as idle. A supplied
+    queue whose ``ready/``, ``claimed/`` or ``reservations/``
+    evidence is missing or unreadable is "not quiet": a missing
+    queue never reads as an empty queue. The function changes
+    nothing; it only reports.
     """
     root = Path(directory) if directory is not None else Path(BOX_STATE_ROOT)
     try:
@@ -998,36 +1057,44 @@ def prove_box_quiescent(directory=None, *, queue_roots=(), proc_root='/proc'):
     except OSError as exc:
         return {'quiet': False, 'reason': 'box-state root unreadable: %s' % exc}
     for name in names:
-        if name.endswith(('.lock', '.preemption', '.sweep', '.guard')):
+        if _box_state_digest_of(name) is None:
+            continue
+        if (name.endswith('.lock') or name.endswith('.preemption')
+                or name.endswith('.measurement-reader-v1.guard')):
             held = _held_lock_digest(root / name)
             if held is None:
                 return {'quiet': False, 'reason': 'lock probe unreadable: %s' % name}
             if held:
                 return {'quiet': False, 'reason': 'lock held: %s' % name}
+    _served, queue_complete, queue_errors = _served_box_state_digests(queue_roots)
+    if not queue_complete:
+        return {'quiet': False, 'reason': 'queue evidence incomplete: %s' % queue_errors[0]}
     for queue in queue_roots or ():
         try:
             queue_path = Path(queue)
-            for state in ('ready', 'claimed'):
-                try:
-                    entries = sorted(entry.name for entry in os.scandir(queue_path / state))
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    return {'quiet': False, 'reason': 'queue %s unreadable: %s' % (state, exc)}
-                live = [entry for entry in entries if entry.endswith('.json')]
-                if live:
-                    return {'quiet': False, 'reason': 'unresolved %s claim: %s' % (state, live[0])}
-            try:
-                leases = [entry.name for entry in os.scandir(queue_path / 'claimed')
-                          if entry.name.endswith('.lease')]
-            except FileNotFoundError:
-                leases = []
-            except OSError as exc:
-                return {'quiet': False, 'reason': 'queue leases unreadable: %s' % exc}
-            if leases:
-                return {'quiet': False, 'reason': 'unresolved claim lease: %s' % leases[0]}
         except (TypeError, ValueError) as exc:
             return {'quiet': False, 'reason': 'queue root unreadable: %s' % exc}
+        for state in ('ready', 'claimed'):
+            try:
+                entries = sorted(entry.name for entry in os.scandir(queue_path / state))
+            except FileNotFoundError:
+                return {'quiet': False,
+                        'reason': 'queue %s missing: %s' % (state, queue_path / state)}
+            except OSError as exc:
+                return {'quiet': False, 'reason': 'queue %s unreadable: %s' % (state, exc)}
+            live = [entry for entry in entries if entry.endswith('.json')]
+            if live:
+                return {'quiet': False, 'reason': 'unresolved %s claim: %s' % (state, live[0])}
+        try:
+            leases = [entry.name for entry in os.scandir(queue_path / 'claimed')
+                      if entry.name.endswith('.lease')]
+        except FileNotFoundError:
+            return {'quiet': False,
+                    'reason': 'queue claimed missing: %s' % (queue_path / 'claimed')}
+        except OSError as exc:
+            return {'quiet': False, 'reason': 'queue leases unreadable: %s' % exc}
+        if leases:
+            return {'quiet': False, 'reason': 'unresolved claim lease: %s' % leases[0]}
     scopes = _live_resource_scopes(proc_root=proc_root)
     if scopes is None:
         return {'quiet': False, 'reason': 'resource scope census unreadable'}
@@ -1132,7 +1199,8 @@ def prune_box_state(*, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
                               max_entries=max_entries, now=now)
     if not apply:
         return {'dry_run': True, 'candidates': list(survey['candidates']),
-                'kept': dict(survey['kept'])}
+                'kept': dict(survey['kept']),
+                'queue_evidence': dict(survey['queue_evidence'])}
     if not maintenance_held:
         raise PruneRefused(
             'prune apply needs the maintenance acknowledgement: stop every '
@@ -1173,7 +1241,8 @@ def prune_box_state(*, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
             removed.append(digest)
     return {'dry_run': False, 'removed': removed,
             'candidates': list(survey['candidates']),
-            'kept': dict(survey['kept'])}
+            'kept': dict(survey['kept']),
+            'queue_evidence': dict(survey['queue_evidence'])}
 
 
 

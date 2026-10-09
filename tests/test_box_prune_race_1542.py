@@ -64,6 +64,8 @@ def test_a_holder_before_removal_refuses_the_prune(tmp_path, monkeypatch):
     base = tmp_path / "queue" / "reservations" / "h"
     base.mkdir(parents=True)
     queue = tmp_path / "served"
+    (queue / "reservations").mkdir(parents=True)
+    (queue / "ready").mkdir(parents=True)
     (queue / "claimed").mkdir(parents=True)
 
     stale = _aged_entry(root, base, age_s=8 * 24 * 3600)
@@ -96,6 +98,8 @@ def test_an_opener_between_probe_and_removal_breaks_quiescence(tmp_path, monkeyp
     base = tmp_path / "queue" / "reservations" / "h"
     base.mkdir(parents=True)
     queue = tmp_path / "served"
+    (queue / "reservations").mkdir(parents=True)
+    (queue / "ready").mkdir(parents=True)
     (queue / "claimed").mkdir(parents=True)
 
     stale = _aged_entry(root, base, age_s=8 * 24 * 3600)

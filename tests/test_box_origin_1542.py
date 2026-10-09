@@ -5,7 +5,8 @@ the digest owns no state yet. The record names the resolved queue
 root, hostname, pid, ``argv[0]`` and creation time. A second call for
 the same root keeps the first record. An entry that already owns
 state when the code first sees it keeps no record: it is a legacy
-entry, and nothing invents its origin.
+entry, and nothing invents its origin. The admission path probes
+only this digest's own paths, never the whole directory.
 """
 from __future__ import annotations
 
@@ -88,3 +89,36 @@ def test_an_entry_without_a_record_is_a_legacy_entry(tmp_path, monkeypatch):
     origins, legacy = adaptive_cpu.census_box_origins(root)
     assert origins == {}
     assert legacy == [digest]
+
+
+def test_admission_lists_no_directory_on_new_or_known_digests(tmp_path, monkeypatch):
+    root = tmp_path / "box-state"
+    root.mkdir()
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root)
+    for index in range(50):
+        (root / ("%064x.lock" % index)).touch()
+    known = tmp_path / "known" / "reservations" / "h"
+    known.mkdir(parents=True)
+    _, known_digest = adaptive_cpu.box_state(known)
+    assert adaptive_cpu.read_box_origin(root, known_digest) is not None
+    fresh = tmp_path / "fresh" / "reservations" / "h"
+    fresh.mkdir(parents=True)
+    listings = []
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+
+    def count_scandir(path, *args, **kwargs):
+        listings.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    def count_listdir(path, *args, **kwargs):
+        listings.append(str(path))
+        return real_listdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", count_scandir)
+    monkeypatch.setattr(os, "listdir", count_listdir)
+    _, again = adaptive_cpu.box_state(known)
+    assert again == known_digest
+    _, created = adaptive_cpu.box_state(fresh)
+    assert adaptive_cpu.read_box_origin(root, created) is not None
+    assert listings == []
