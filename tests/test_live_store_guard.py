@@ -577,6 +577,48 @@ def test_an_absolute_open_ignores_the_directory_descriptor(
         os.chdir(original)
         os.close(directory)
 
+def test_a_conflicting_base_open_resolves_the_descriptor(
+        guarded: Path, tmp_path: Path, monkeypatch) -> None:
+    """A cwd inside the store never moves a descriptor-relative open (#1723).
+
+    The descriptor base and the working directory conflict in both
+    directions here, and an absolute path names the store while its dir_fd
+    points elsewhere. The guard resolves the descriptor for the relative
+    names and still refuses the absolute one.
+    """
+    target = guarded / "pb-queue/done/old.json"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "old.json").write_text("outside bytes")
+    with conftest._LiveAccess():
+        store_directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    outside_directory = os.open(outside, os.O_RDONLY | os.O_DIRECTORY)
+    original = os.getcwd()
+    try:
+        # The cwd is outside the store; the descriptor is inside it.
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(RuntimeError, match=str(target)):
+            descriptor = os.open("old.json", os.O_RDONLY, dir_fd=store_directory)
+            os.close(descriptor)
+        with conftest._LiveAccess():
+            assert target.read_text() == "{}"
+        conftest.REFUSALS.clear()
+        # The cwd is inside the store; the descriptor is outside it.
+        monkeypatch.chdir(guarded / "pb-queue/done")
+        descriptor = os.open("old.json", os.O_RDONLY, dir_fd=outside_directory)
+        with os.fdopen(descriptor) as handle:
+            assert handle.read() == "outside bytes"
+        assert conftest.REFUSALS == []
+        # An absolute path into the store refuses despite an outside dir_fd.
+        with pytest.raises(RuntimeError, match=str(target)):
+            descriptor = os.open(target, os.O_RDONLY, dir_fd=outside_directory)
+            os.close(descriptor)
+        conftest.REFUSALS.clear()
+    finally:
+        os.chdir(original)
+        os.close(store_directory)
+        os.close(outside_directory)
+
 
 def test_pytest_removes_scratch_directories_with_descriptor_relative_opens(
         tmp_path: Path) -> None:

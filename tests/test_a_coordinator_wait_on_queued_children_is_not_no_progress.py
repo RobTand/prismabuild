@@ -572,6 +572,47 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
     assert verdict["missing"] == [children[1]["action_key"]], verdict
 
 
+def test_an_unreadable_ready_row_blocks_the_credit(tmp_path: Path) -> None:
+    """Telemetry loss on a live child earns no credit (#1723).
+
+    The child is ready at the baseline look, but its ready row stops
+    parsing before the next one. The verdict reads unknown, keeps the
+    child in missing, and refuses the credit: a carried prior never
+    covers lost telemetry.
+    """
+    cas, plan, children = _batch(tmp_path)
+    queue = _queue(tmp_path, cas)
+    checkout = tmp_path / "held-src"
+    checkout.mkdir()
+    (checkout / "t.py").write_text("x")
+    queue.publish(
+        action_key=children[0]["action_key"], cas_root=cas.root,
+        checkout_root=checkout, worker_script="/bin/true")
+    state = _controller_state(
+        tmp_path, [children[0]], name="controller-telemetry-loss")
+    awaited = _awaited(plan, state)
+    admitted = _admitted(queue, cas, plan, state)
+    assert set(admitted) == {children[0]["action_key"]}, admitted
+    first = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=admitted, prior=None)
+    assert first["exempt"] is False
+    assert first["children"][0]["evidence"] == "baseline"
+    first["sample_monotonic"] = 100.0
+    queue.item_path(pool.READY, children[0]["action_key"]).write_text("not a record")
+    retained = _admitted(queue, cas, plan, state, retained={
+        key: {} for key in admitted})
+    assert children[0]["action_key"] in retained, retained
+    verdict = queue.queued_child_wait_verdict(
+        "c" * 64, cas_root=str(cas.root), awaited=awaited,
+        admitted=retained, prior=first)
+    assert verdict["exempt"] is False
+    assert verdict["missing"] == [children[0]["action_key"]], verdict
+    (entry,) = verdict["children"]
+    assert entry["state"] == "unknown", verdict
+    assert entry["evidence"] == "none", verdict
+
+
 def test_an_older_worker_cannot_claim_an_awaited_coordinator(
         tmp_path: Path) -> None:
     """The declaration requires the queued-child capability tag."""
