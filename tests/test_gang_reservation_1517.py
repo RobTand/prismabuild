@@ -24,7 +24,12 @@ HOSTS = ("sparklina", "sparky")
 
 
 @pytest.fixture()
-def gang_fleet(fleet, tmp_path, monkeypatch):
+def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
+    """The two-host fleet, on a host that holds the protected copy of its runtime (#1579).
+
+    The reservation of an aged gang applies only there; the fallback tests of
+    ``test_gang_demand_fence_claims_1579`` take the copy away.
+    """
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
 
     def finish(key, host):
@@ -41,7 +46,8 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
         return None if result is None else result["action_key"]
 
     def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
-                residency=None, residency_all=False, declares_manifest=False, inputs=None):
+                residency=None, residency_all=False, declares_manifest=False, inputs=None,
+                measurement_member=None, member_cpu=2):
         """Seal and publish a two-member gang, one member pinned per host.
 
         ``residency`` is published as a row residency block (the
@@ -86,7 +92,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
                 member_inputs += [entry, snap_entry]
                 params.update({
                     "command": [sys.executable, "task.py"], "cwd": str(checkout),
-                    "demand": {"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
+                    "demand": {"cpu": member_cpu, "gpu": 1, "mem_gb": mem_gb},
                     "placement": {"required_tags": [host]},
                     "retry_policy": {"max_attempts": 1},
                     "data_manifest": {
@@ -100,21 +106,28 @@ def gang_fleet(fleet, tmp_path, monkeypatch):
             action = pb.seal_action({
                 "schema": pb.ACTION_SCHEMA_V2,
                 "task": {"definition_id": "tests/gang-member", "definition_version": "v1",
-                         "task_class": "generation", "determinism": "deterministic",
+                         "task_class": "measurement" if index == measurement_member else "generation",
+                         "determinism": "deterministic",
                          "artifact_family": "generic", "artifact_kind": "generic",
                          "argv": [sys.executable, "task.py"], "working_directory": ".",
                          "result_path": f"{name}-{index}"},
                 "inputs": member_inputs, "code_closure": pb.build_code_closure(checkout, ["task.py"]),
                 "params": params,
-                "environment": {"variables": {}, "toolchain": {}},
-                "execution_scope": {"portability": "portable", "platform_key": None,
-                                    "host_class": None},
+                "environment": {"variables": {}, "toolchain": {
+                    **pb.executable_toolchain_contract(sys.executable),
+                    "system": platform.system(), "machine": platform.machine(),
+                    "libc": "-".join(platform.libc_ver()),
+                } if index == measurement_member else {}},
+                "execution_scope": ({"portability": "host_class_keyed", "platform_key": None,
+                                     "host_class": "gb10"} if index == measurement_member else
+                                    {"portability": "portable", "platform_key": None,
+                                     "host_class": None}),
             })
             cas.publish_action_request(action)
             key = action["action_key"]
             queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
                           worker_script="worker.py",
-                          resources={"cpu": 2, "gpu": 1, "mem_gb": mem_gb},
+                          resources={"cpu": member_cpu, "gpu": 1, "mem_gb": mem_gb},
                           needs_gpu=True, tags=[host], priority=priority, gang=gang,
                           max_attempts=1,
                           **({} if residency is None or (index and not residency_all)

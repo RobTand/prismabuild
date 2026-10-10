@@ -3507,6 +3507,106 @@ from a umask-002 worktree would have published `0555`/`0444` (issue #316).
 Which members are programs comes from the Git index, not from a filename or the
 local filesystem, so the answer is the repository's and not the shell's.
 
+### Protected movement copies (#1659)
+
+A waiting gang (#1579) holds new equal-priority work by its demand and spares the
+movement nodes that it waits on: the stage and RAM movers, the egress, the exports and
+the resident evicts. A host trusts those nodes only from a root-owned copy of the
+runtime generation it runs. An ordinary runtime store belongs to the user that submits
+work, so a receipt written there proves integrity and not authority.
+
+**Enrollment is one step per host, once, plus one publisher account once.** There is
+no root step per generation and no person in the publication loop. A person (Rob or
+the CEO) creates the dedicated publisher account once (for example
+`prismabuild-publisher`, with no submit or worker rights) and approves it as the
+signing principal. Generate one 64-hex secret once and keep it with that account:
+the publisher signs with it, every host verifies with it. Ordinary submitters and
+store owners never hold it.
+
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))" > /tmp/movement-approval.key
+chmod 0600 /tmp/movement-approval.key
+# On the publisher host, as the dedicated publisher account (never as a worker or
+# store owner; its home is readable only by that account):
+mkdir -p ~/.config/prismabuild
+cp /tmp/movement-approval.key ~/.config/prismabuild/movement-approval.key
+chmod 0600 ~/.config/prismabuild/movement-approval.key
+# Then, as an administrator, on each fleet host that claims work:
+pb_enrollment_dir=$(mktemp -d /tmp/pb-movement-enrollment.XXXXXX)
+cp /mnt/shared/prismabuild-fleet/repo/tools/fleet/install_movement_publisher.sh \
+   /mnt/shared/prismabuild-fleet/repo/src/prismabuild/{runtime_publication,digest_primitives}.py "$pb_enrollment_dir/"
+sudo bash "$pb_enrollment_dir/install_movement_publisher.sh" --approval-key-file /tmp/movement-approval.key
+```
+
+Stage all three files on local storage as the publisher, so NFS root squash stays on.
+The installer puts both Python files under the root-owned `/opt/prismabuild`.
+It writes `/etc/prismabuild/movement-publish.json` with the runtime pointer, generation store, and status path.
+It writes the verification secret to `/etc/prismabuild/movement-approval.key` with root ownership and mode 0400.
+It enables `prismabuild-movement-publish.timer`.
+It refuses an install under an ancestor that has no root custody.
+The program uses isolated Python and imports the digest owner from that directory.
+The digest owner supplies SHA-256 and sorted JSON without a package installation.
+These functions preserve receipt bytes and signature inputs.
+
+**What the timer does.** The timer reads the live pointer once a minute.
+It requires a valid `<generation>.approval` before it creates a protected copy.
+`publish_runtime.py` constructs the receipt bytes and retains their digest in memory.
+The dedicated account signs that digest with its 0600 secret.
+The signer never reads approval input from the exposed generation.
+A replacement receipt cannot obtain approval for replacement tools.
+The timer checks the exposed receipt and every copied member against the approved digest.
+It creates the copy without executing its code.
+It records `published_unix`, seals the copy, and renames it into place.
+Copies remain append-only. Each publication requires no manual root command.
+
+A copy needs 600 seconds before it can support reservation.
+This delay does not prove that legacy movers have drained.
+Claim admission also requires a complete census with no live, unqualified movement row on the host.
+
+**Check a host.**
+
+```bash
+cat /var/lib/prismabuild-movement-publish/status.json
+systemctl status prismabuild-movement-publish.timer
+journalctl -u prismabuild-movement-publish.service
+ls /opt/prismabuild/movement-generations
+```
+
+`state` is `published`, `current` or `error`, and `generation` names the live one. A
+tier record shows the effect: `mover_tools_root` names a path under
+`/opt/prismabuild/movement-generations` once the host holds the copy of its tier loop's
+generation, and its own generation directory before that.
+
+**Fallback preserves main's behavior.** A missing, stale, or fresh copy disables equal-priority reservation.
+A READY or CLAIMED movement row without protected authority also disables reservation on its eligible hosts.
+The fallback lasts until that row ends, even when an incumbent outlasts the copy's 600-second delay.
+The host preserves its lower-priority fence and ordinary resource admission.
+Legacy rows never obtain roles from mutable retained bytes.
+Their sealed requests remain unchanged.
+
+Each pass reads complete drain proof under admission.
+Later candidates retain known obligations until the pass ends.
+A successful claim ends the pass. The next pass reads new publications.
+The same proof controls measurement precedence and measurement election.
+Tier announcements select tool roots on the execution host.
+The sealer does not substitute a path from another host.
+Inspect a timer `error` before you claim publication support.
+
+**Limits.** A complete copy is about 27 MB per generation and the store only grows. The
+unit publishes nothing when less than 1 GiB is free on the filesystem, and the status
+file then says `error`. Removing an old copy is an administrator's act, and a copy that
+a sealed row still names must stay. A tier loop run from a checkout, or under another
+interpreter than `/usr/bin/python3`, announces its own directory or interpreter, so its
+movers carry no role. Run tier loops from the published generation as the supervisor
+starts them. The local resident tier loop does not announce a protected root yet, so a
+local resident evict carries no role. The unit changes no runtime
+activation and no canary verdict. This is source support; a live gang qualification and
+a deployment record are separate evidence (D45 stays in force until they exist).
+
+Use a private `--basetemp` below an existing, owned `/tmp` directory for parallel clock-controlled test suites.
+This prevents another pytest session from removing numbered scratch directories during the claim tests.
+Keep terminal results, logs, and CAS receipts distinct from deployment evidence.
+
 ### The rollout canary gate (default-ON)
 
 `tools/fleet/publish_runtime.py` submits the fleet canary (issue #688)
