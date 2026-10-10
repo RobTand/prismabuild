@@ -5065,8 +5065,13 @@ Per member host, inside the ordinary claim pass:
    expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
    once. The writer withdraws the other members through the ordinary withdrawal
    path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
-   orphan-passes schedule, withdraws leftover READY members and prunes the
-   records of a gang whose every member has an exact ending.
+   orphan-passes schedule, withdraws leftover READY and CLAIMED members, retries
+   every sweep until each member reaches an exact ending, and prunes the
+   records of a gang whose every member has one. It also withdraws gang-tagged
+   READY rows whose group record never arrived past `ORPHAN_ROW_AFTER_S`
+   (ten minutes), and tears down a group past its opt-in `wait_deadline_unix`;
+   only that gang is affected. A malformed group, teardown or election record
+   refuses only its own gang; the census stays available for the rest.
 
 **Ranking between gangs.** Gangs are totally ordered by (higher priority,
 earliest member publication, group). Before electing or readying, a member is
@@ -5074,13 +5079,18 @@ deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranke
 live gang holds an election on any host its gang uses. Two gangs sharing hosts
 therefore never each commit one member and then wait on each other until both
 fail. Residual: a better-ranked gang that first appears after a lower gang has
-already committed one member costs that lower gang its run, bounded by `skew_s`.
+already committed one member costs that lower gang its run, bounded by `skew_s`;
+so do two hosts that make their first elections for different gangs at the same
+moment, before either census sees the other.
 
 **Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
 sweep. It also tears down any gang with a member whose exact-generation ending is
 FAILED or WITHDRAWN, including a one-attempt member the reaper failed after a lost
 lease, so a sibling that is already running is withdrawn rather than left waiting
-in its collective.
+in its collective. A fenced host otherwise admits only proven-preemptible loans;
+past a continuous ten-minute absence of the partner's host on both signals (no
+live offer for the member's tags, host absent) it also admits work with a
+declared deadline of 30 minutes or less, one bounded job at most.
 
 **Priority rule.** A gang fences strictly lower priority work from the moment a
 member's host elects. Work of the gang's own priority is untouched while the gang

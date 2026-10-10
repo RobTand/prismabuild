@@ -10087,23 +10087,30 @@ class PoolQueue:
         return pruned
 
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
-        """Finish torn-down gangs and prune ended ones (#1517).
+        """Finish torn-down gangs and prune ended ones (#1517, #1521).
 
-        Runs on the orphan-passes schedule. A torn-down gang's members still
-        READY are withdrawn here (a claim pass that found the teardown could
-        not withdraw the row whose lock it held). A gang whose every member
-        has an exact ending -- none READY or CLAIMED -- loses its record and
-        state, so the census never reads a dead gang. A gang with a live or
-        unaccounted member is kept; failures are per gang.
+        Runs on the orphan-passes schedule. A torn-down gang's live members
+        (READY and CLAIMED) are withdrawn here and retried every sweep until
+        each reaches an exact ending: a claim pass that found the teardown
+        could not withdraw the row whose lock it held, and a failed
+        withdrawal of a running member is never left unretried. A gang whose
+        every member has an exact ending -- none READY or CLAIMED -- loses
+        its record and state, so the census never reads a dead gang. A gang
+        with a live or unaccounted member is kept; failures are per gang.
+        Gang-tagged READY rows with no group record (``pbgang`` died between
+        publishing members and filing the group) are withdrawn past
+        ``_gang.ORPHAN_ROW_AFTER_S``. A group record past its opt-in
+        ``wait_deadline_unix`` is torn down; only its own gang is affected.
         """
         from . import _gang
         pruned: list[str] = []
+        now = _now()
         try:
             with os.scandir(_gang.root(self)) as entries:
                 names = sorted(entry.name for entry in entries
                                if entry.name.endswith(".json") and not entry.name.startswith("."))
         except OSError:
-            return pruned
+            names = []
         for name in names[:limit]:
             group = name[: -len(".json")]
             try:
@@ -10112,6 +10119,13 @@ class PoolQueue:
                     continue
                 keys = [str(member["action_key"]) for member in record["members"]]
                 torn = _gang.teardown(self, group)
+                if torn is None:
+                    deadline = record.get("wait_deadline_unix")
+                    if (isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+                            and now >= float(deadline)):
+                        _gang.tear_down(self, group, reason="queue wait deadline exceeded",
+                                        by=f"sweep:{group[:12]}", now=now)
+                        torn = _gang.teardown(self, group)
                 if torn is None:
                     # Every terminal path, including the reaper failing a
                     # member whose lease was lost, ends the gang here: a
@@ -10128,12 +10142,15 @@ class PoolQueue:
                         torn = _gang.teardown(self, group)
                 if torn is not None:
                     for key in keys:
-                        if self.item_path(READY, key).exists():
-                            try:
-                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
+                        live = (self.item_path(READY, key).exists()
+                                or self.item_path(CLAIMED, key).exists())
+                        if not live:
+                            continue
+                        try:
+                            self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
                                               by=f"gang:{group}")
-                            except (PoolContractError, OSError, pb.PrismaBuildError):
-                                continue
+                        except (PoolContractError, OSError, pb.PrismaBuildError):
+                            continue  # retry on the next sweep until it ends
                 if any(self.item_path(READY, key).exists() or self.item_path(CLAIMED, key).exists()
                        for key in keys):
                     continue
@@ -10145,6 +10162,39 @@ class PoolQueue:
             except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
                 continue
             pruned.append(group)
+        try:
+            ready_names = sorted(os.listdir(self.dir(READY)))
+        except OSError:
+            return pruned
+        orphaned = 0
+        for name in ready_names:
+            if orphaned >= limit:
+                break
+            if not name.endswith(".json"):
+                continue
+            key = name[: -len(".json")]
+            try:
+                row = _read_json(self.item_path(READY, key))
+                if not isinstance(row, dict) or not isinstance(row.get("gang"), Mapping):
+                    continue
+                try:
+                    declared = _gang.declaration(row["gang"])
+                except _gang.GangContractError:
+                    continue
+                if declared is None:
+                    continue
+                if _gang.read_group(self, declared["group"]) is not None:
+                    continue
+                published = row.get("published_unix")
+                if (not isinstance(published, (int, float)) or isinstance(published, bool)
+                        or not math.isfinite(published)
+                        or now - float(published) < _gang.ORPHAN_ROW_AFTER_S):
+                    continue
+                self.withdraw(key, reason="gang group record never filed",
+                              by=f"gang:{declared['group'][:12]}")
+                orphaned += 1
+            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
+                continue
         return pruned
 
     def sweep_consumer_events(
@@ -21476,7 +21526,11 @@ class PoolQueue:
         """Request reclamation BEFORE capacity gates; never credit future releases."""
         from . import _gang
         here = ledger.base.name
-        mine = _gang.elections(self, record["group"], record["size"]).get(entry["index"])
+        try:
+            mine = _gang.elections(self, record["group"], record["size"]).get(entry["index"])
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                KeyError, TypeError, ValueError):
+            return []  # malformed election refuses only its gang (#1521)
         if mine is None or mine["host"] != here:
             return []
         # Timing observation must not become a correctness or identity gate.
@@ -21486,7 +21540,12 @@ class PoolQueue:
         def pending():
             return [key for key, holder in _gang.backfill_holders(self, mine).items()
                     if self.withdrawal_covers(holder, action_key=key) is not None]
-        if not holders or not (_gang.backfill_reclaiming(self, record)
+        try:
+            reclaiming = _gang.backfill_reclaiming(self, record)
+        except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                KeyError, TypeError, ValueError):
+            return []  # malformed election refuses only its gang (#1521)
+        if not holders or not (reclaiming
                 or _gang.sibling_readiness(
                     self, record, entry, here, _now(), reclaimable=True)["complete"]):
             return pending()
@@ -23056,6 +23115,16 @@ class PoolQueue:
                                     capacity=reservation_capacity, exempt=role_exempt,
                                     authority=reservation_authority, demand=reservation_demand)
                             if gang_blocked is not None:
+                                from . import _gang
+                                try:
+                                    bounded_loan = _gang.dead_partner_loan_allowed(
+                                        self, gang_blocked, item, now=_now())
+                                except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                        KeyError, TypeError, ValueError):
+                                    bounded_loan = False
+                                if bounded_loan:
+                                    gang_blocked = None
+                            if gang_blocked is not None:
                                 self.record_denial(item, "deferred_for_gang_reservation", {
                                     "withheld_for": gang_blocked["action_key"],
                                     "gang_election": gang_blocked})
@@ -23374,9 +23443,19 @@ class PoolQueue:
                                 # handoff lock spans withdrawal/requeue as well. A
                                 # stalled handoff cannot stop ordinary fitting work.
                                 exclusion = None
-                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
-                                    exclusion = _gang.elections(
-                                        self, gang["group"], gang["size"]).get(gang["index"])
+                                try:
+                                    reclaiming = (gang_record is not None
+                                                  and _gang.backfill_reclaiming(self, gang_record))
+                                except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                        KeyError, TypeError, ValueError):
+                                    reclaiming = True
+                                if gang_record is not None and not reclaiming:
+                                    try:
+                                        exclusion = _gang.elections(
+                                            self, gang["group"], gang["size"]).get(gang["index"])
+                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                                            KeyError, TypeError, ValueError):
+                                        exclusion = None
                                 preempted = self._preempt_background_holder(
                                     ledger, action_key=key, demand=asked,
                                     priority=int(item.get("priority", 0)),
