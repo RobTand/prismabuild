@@ -110,6 +110,7 @@ FLAG_FIELDS: dict[str, tuple[str, str]] = {
     "priority_reason": ("--priority-reason", "value"),
     "max_attempts": ("--max-attempts", "value"),
     "data_manifest": ("--data-manifest", "value"),
+    "resident_set": ("--resident-set", "value"),
     "residency": ("--residency", "value"),
     "residency_tier": ("--residency-tier", "value"),
     "residency_ram": ("--residency-ram", "value"),
