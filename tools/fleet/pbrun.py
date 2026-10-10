@@ -2579,7 +2579,7 @@ def timeout_ceiling_notice(
     """Report eligible workers whose payload budgets cut ``--timeout-s`` short.
 
     Every worker loop enforces a safety ceiling of its own (7200 s by
-    default) and ``pool._execution_timeout`` applies it as a silent ``min``.
+    default) and ``pool._execution_timeout`` applies it as a ``min``.
     Nothing said so: the PrismaQuant #275 campaign asked for 13000 s, was
     admitted without a word, and was killed at 7200 s -- its own
     ``--deadline-seconds`` never fired, so the attempt ended rc=1 with no
@@ -2625,6 +2625,42 @@ def timeout_ceiling_notice(
             "(offers predating the field), so what they would enforce is "
             "unknown rather than unlimited."
         )
+    return "\n".join(lines)
+
+
+def stall_watch_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    stall_s: float | None,
+    requested_timeout_s: float | None,
+) -> str:
+    """Say what ends a no-policy action: a stall, never elapsed time (#1707)."""
+
+    allowance = (pool.DEFAULT_STALL_ALLOWANCE_S if stall_s is None
+                 else float(stall_s))
+    basis = (f"--stall-s {allowance:g}s" if stall_s is not None
+             else f"default {allowance:g}s (one LONG-JOB interval)")
+    lines = [
+        "pbrun: stall watch: this action declares no progress phases, so it "
+        f"ends on output and CPU silence past {basis}"
+        + (" with no total-duration limit."
+           if requested_timeout_s is None else
+           f" or on its explicit payload execution budget of "
+           f"{requested_timeout_s:g}s, whichever comes first."),
+    ]
+    ceilings = queue.placement_timeout_ceilings(intent)
+    for host in sorted(ceilings):
+        ceiling = ceilings.get(host)
+        if ceiling is None:
+            lines.append(
+                f"pbrun: {host} announces no phase-grace ceiling; "
+                "its effective stall allowance is unknown until execution.")
+        elif ceiling < allowance:
+            lines.append(
+                f"pbrun: {host} limits the stall allowance to {ceiling:g}s "
+                f"(requested {allowance:g}s); an explicit payload "
+                "execution budget is unchanged.")
     return "\n".join(lines)
 
 
@@ -4320,6 +4356,16 @@ def require_awaited_batch_scope(
             "total duration")
 
 
+def require_stall_scope(*, stall_s: float | None, transport: str) -> None:
+    """Refuse an explicit stall allowance where nothing enforces it."""
+
+    if stall_s is not None and transport != "pool":
+        raise ValueError(
+            "--stall-s requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration (--timeout-s becomes --time).")
+
+
 def require_host_class_scope(
     *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
 ) -> None:
@@ -5532,6 +5578,7 @@ def freeze_action_template(
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
     progress: Mapping[str, object] | None,
+    stall_allowance_s: float | None = None,
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
@@ -5850,6 +5897,11 @@ def freeze_action_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if stall_allowance_s is not None:
+        # Sealed like the deadline: an action with a shorter stall watch is
+        # a different action from one with a longer watch. Absent, the key
+        # is byte-identical to what it was before this flag existed.
+        params[pb.STALL_ALLOWANCE_PARAM] = float(stall_allowance_s)
     if gang is not None:
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
@@ -7460,8 +7512,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     help="positive execution deadline in seconds, enforced by "
                          "both transports; the pool worker's safety ceiling "
                          "(7200 s by default, announced per box and reported "
-                         "here when it would cut this request short) also "
-                         "applies. Queue waiting is bounded by --wait-s")
+                         "here when it would cut this request short) still "
+                         "clamps an explicit budget. Without it the pool ends "
+                         "the run on a progress stall instead of elapsed time. "
+                         "Queue waiting is bounded by --wait-s")
+    ap.add_argument("--stall-s", type=float, default=None,
+                    help="how long an action without --progress-phase may go "
+                         "without output or CPU activity before the pool ends "
+                         "it as a stall (default 1800 s, one LONG-JOB "
+                         "interval; the worker ceiling clamps it like a phase "
+                         "grace). Refused with --progress-phase")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "
@@ -7593,9 +7653,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         not math.isfinite(args.timeout_s) or args.timeout_s <= 0
     ):
         raise SystemExit("pbrun: --timeout-s must be a positive finite number")
+    if args.stall_s is not None and (
+        not math.isfinite(args.stall_s) or args.stall_s <= 0
+    ):
+        raise SystemExit("pbrun: --stall-s must be a positive finite number")
     args.progress_policy = parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
-    args.awaited_batch = parse_awaited_batch(args.awaited_batch)
+    if args.stall_s is not None and args.progress_policy is not None:
+        raise SystemExit("pbrun: --stall-s needs no --progress-phase: phases already set the quiet")
     # Some things an argument gets wrong can only be judged once the demand
     # is resolved -- a GPU budget on a slot that reserves no GPU is the case
     # -- and they are argument errors all the same.  So the parser that
@@ -7987,6 +8052,8 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         require_awaited_batch_scope(
             awaited=getattr(args, "awaited_batch", None),
             progress=progress_policy, transport=args.transport)
+        require_stall_scope(
+            stall_s=getattr(args, "stall_s", None), transport=args.transport)
     except ValueError as exc:
         args.refuse_argument(str(exc))
     if not demand.get("gpu"):
@@ -8025,6 +8092,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
         progress=progress_policy,
+        stall_allowance_s=getattr(args, "stall_s", None),
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
         container_image_refs=images,
@@ -8137,6 +8205,14 @@ def announce_placement(
     )
     if progress_notice:
         print(progress_notice, file=sys.stderr, flush=True)
+    if progress_policy is None:
+        stall_notice = stall_watch_notice(
+            queue, intent,
+            stall_s=getattr(args, "stall_s", None),
+            requested_timeout_s=args.timeout_s,
+        )
+        if stall_notice:
+            print(stall_notice, file=sys.stderr, flush=True)
 
     image_notice = container_image_notice(queue, intent)
     if image_notice:

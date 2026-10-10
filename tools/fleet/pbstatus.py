@@ -758,10 +758,12 @@ def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str
     """How long this action has been quiet, against what it is allowed.
 
     The column beside it -- OUTPUT age -- is the number #480 says proves
-    nothing: a launcher writing log lines is not an application committing
-    work.  This is the other reading, and it is the one the watchdog acts on.
-    ``None`` when the action declared no policy, so a whole-run ceiling still
-    governs it and ``KILL AT`` is the number to read.
+    nothing on its own for a progress action: a launcher writing log lines
+    is not an application committing work. This is the other reading, and
+    it is the one the watchdog acts on. For a progress action it names the
+    last accepted phase and counters; for a default stall watch (#1707) it
+    names the output and CPU totals that restart the quiet. ``None`` when
+    no observation is available, never as proof of a policy.
 
     Held to the same attempt identity as the execution observation: a lease
     naming another claim describes another run.
@@ -783,6 +785,13 @@ def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str
     said += f"quiet {float(quiet):.0f}/{float(grace):g}s"
     if type(accepted) is int:
         said += f" ({accepted} accepted)"
+    if value.get("source") == "activity":
+        out = value.get("stdout_bytes")
+        cpu = value.get("cpu_seconds")
+        if type(out) is int:
+            said += f" out {out}B"
+        if type(cpu) in (int, float) and math.isfinite(cpu):
+            said += f" cpu {float(cpu):.0f}s"
     return said
 
 
@@ -1910,8 +1919,8 @@ def _starvation_starved(jobs: Sequence[Mapping[str, object]]) -> list[dict]:
     """Ready items a box refused and will not withhold for (#924).
 
     A starved item withholds its box only while the holders in its way will
-    drain soon.  When one of them will not -- a progress-governed campaign
-    holder with no total bound, a bounded one already past the pool's
+    drain soon.  When one of them will not -- a progress- or stall-governed
+    campaign holder with no total bound, a bounded one already past the
     transient line, one past its own declared end (#939), load the pool does
     not own, or a veto that work ahead of
     it kept refilling -- the item stops holding the box shut, and this is

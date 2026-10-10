@@ -1132,8 +1132,8 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         # No optimistic timeout-derived safe-fit/backfill permission follows.
         # Every incumbent must be a claimed action on this host, whose own
         # lifetime bounds the wait. A claimed action that declared no finite
-        # deadline (``pbrun`` without ``--timeout-s``, a progress-governed
-        # action) still elects: refusing left the host open to refill once
+        # deadline (``pbrun`` without ``--timeout-s``, a progress- or
+        # stall-governed action) still elects: refusing left the host open
         # the bounded attention lapsed, and a continuous lower-priority stream
         # starved the measurement (#1419). A RAM-tier fill hold (#1222) or a
         # raw holder with no readable claim is not an action lifetime: no

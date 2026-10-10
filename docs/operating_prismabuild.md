@@ -1317,8 +1317,19 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 `pbrun --timeout-s` seals a positive finite execution budget into the action.
 Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
-`--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
-budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+`--timeout-s` safety ceiling (7200 seconds by default) when the action
+declares no progress phases. Without an explicit budget, SLURM receives no
+`--time` and the pool sets no wall-clock deadline at all: the run ends on
+a progress stall, the D30 memory guard, or withdrawal -- never on elapsed
+time. An action without `--progress-phase` runs under the default stall
+watch: output or payload CPU activity restarts its quiet, and silence past
+its allowance ends it as a stall (`status: timeout`,
+`termination_reason: no_progress`). The allowance defaults to 1800 s (one
+ceod LONG-JOB interval, half the old 3600 s pytest ceiling and a quarter of
+the worker ceiling); `pbrun --stall-s SECONDS` seals another value, and the
+worker's ceiling clamps it like a phase grace. `pbstatus` shows each running
+action's age, last phase, counters and silence in its AGE, OUTPUT and
+PROGRESS columns.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the
