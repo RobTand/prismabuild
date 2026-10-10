@@ -268,13 +268,28 @@ def test_member_demand_reads_the_matching_generation_only():
         record, "k" * 64) is None
 
 
-def test_authority_follows_the_executing_hosts_live_announcement(monkeypatch):
-    import socket
-    monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
-    live = [{"host": "sparky"}, {"host": "sparklina"}]
-    assert pool.PoolQueue._gang_reservation_authority(object(), live) is True
-    assert pool.PoolQueue._gang_reservation_authority(object(), [{"host": "sparklina"}]) is False
-    assert pool.PoolQueue._gang_reservation_authority(object(), []) is False
+def test_reservation_needs_a_mature_copy_and_a_drained_host():
+    # Authority (#1579, adopted by #1721): the host holds a mature protected
+    # copy of its runtime, and no live movement row without a protected role
+    # may run there. A young gang or a host without authority reserves nothing.
+    old = 100.0
+    now = old + reservation.GANG_RESERVE_AFTER_S + 1.0
+    assert reservation.reserves_after(old, now, authority=True) is True
+    assert reservation.reserves_after(old, now, authority=False) is False
+    assert reservation.reserves_after(now - 1.0, now, authority=True) is False
+    queue = types.SimpleNamespace(
+        _placement_matches=lambda row, tags=None, has_gpu=False: True)
+    assert reservation.movement_drained(
+        {}, queue, tags=frozenset(), has_gpu=False, host="h") is False
+    assert reservation.movement_drained(
+        {"movements": {}}, queue, tags=frozenset(), has_gpu=False,
+        host="h") is True
+    assert reservation.movement_drained(
+        {"movements": {"k" * 64: [{"claimed_host": "h"}]}}, queue,
+        tags=frozenset(), has_gpu=False, host="h") is False
+    assert reservation.movement_drained(
+        {"movements": {"k" * 64: [{"claimed_host": "other"}]}}, queue,
+        tags=frozenset(), has_gpu=False, host="h") is True
 
 
 # --- class-scoped rows ---------------------------------------------------------------
