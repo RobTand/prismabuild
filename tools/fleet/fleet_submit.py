@@ -55,6 +55,7 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import container_images, core as pb, local_dependencies, pool, slurm_lane  # noqa: E402
+import d38_gate  # noqa: E402
 
 TRANSPORTS = ("pool", "slurm")
 DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
@@ -75,6 +76,61 @@ DEFAULT_TIMEOUT_S: float | None = None
 
 class SubmitRefused(Exception):
     """The transport cannot carry this action, said before anything is queued."""
+
+
+def check_d38(action: Mapping[str, object], *, demand, tags, needs_gpu: bool,
+              d38_receipt: str | None, d38_exception: str | None,
+              cas, queue_root, transport: str) -> None:
+    """Refuse a GPU publication without preflight evidence (D38, #1639).
+
+    The sealed body is the authority for what runs; the row arguments say
+    where the scheduler may put it. Either half can carry GPU intent --
+    sealed demand, tags or host class, or row resources, tags or
+    ``needs_gpu`` -- and either half needs the evidence that binds the
+    sealed job: its key, normalized images and namespace. A row that adds
+    GPU placement the sealed job does not declare cannot be authorized by
+    any receipt, so it is refused outright. Raises ``SubmitRefused``,
+    before anything is queued; an authorization files its audit event.
+    """
+
+    if not d38_gate.ENFORCE:
+        return
+    key = str(action["action_key"])
+    sealed = action.get("params")
+    sealed = sealed if isinstance(sealed, Mapping) else {}
+    sealed_demand = sealed.get("demand") or {}
+    placement = sealed.get("placement") or {}
+    sealed_tags = placement.get("required_tags") or []
+    scope = action.get("execution_scope")
+    host_class = scope.get("host_class") if isinstance(scope, Mapping) else None
+    row_demand = dict(demand or {})
+    if needs_gpu:
+        row_demand["gpu"] = max(int(row_demand.get("gpu") or 0), 1)
+    sealed_intent = d38_gate.requires_receipt(
+        sealed_demand, sealed_tags, host_class=host_class)
+    if not sealed_intent and not d38_gate.requires_receipt(
+            row_demand, list(tags or [])):
+        return
+    if not sealed_intent:
+        raise SubmitRefused(
+            f"D38 refuses GPU publication: the queue row asks for GPU "
+            f"placement (resources={dict(row_demand)}, "
+            f"tags={list(tags or [])}) the sealed job {key} does not "
+            f"declare, so no preflight receipt can bind it. Seal the GPU "
+            f"demand into the action or drop the row placement. No runnable "
+            f"submission was published.")
+    args = argparse.Namespace(d38_receipt=d38_receipt,
+                              d38_exception=d38_exception,
+                              host_class=host_class)
+    verdict = d38_gate.judge_publication(
+        args, action, cas=cas, queue_root=queue_root, transport=transport)
+    if verdict is not None:
+        reason, namespace = verdict
+        raise SubmitRefused(
+            f"D38 refuses GPU publication: {reason}. job={key} "
+            f"images={json.dumps(d38_gate.target_images(action))} "
+            f"namespace={namespace or 'none'}. No runnable submission was "
+            f"published.")
 
 
 @dataclass(frozen=True)
@@ -324,6 +380,8 @@ def submit(
     lane_root: str | Path | None = None,
     job_entry: str | Path = JOB_ENTRY,
     sbatch: str = "sbatch",
+    d38_receipt: str | None = None,
+    d38_exception: str | None = None,
     checkout_snapshot_max_bytes: int | None = None,
 ) -> Submission:
     """Enqueue one sealed action on the named transport.
@@ -360,6 +418,10 @@ def submit(
         lane_root: The SLURM lane root, or ``None`` for the configured one.
         job_entry: The batch job's entry point.
         sbatch: The submit binary, for tests.
+        d38_receipt: The CPU preflight action key that proves this GPU
+            action (D38); never together with ``d38_exception``.
+        d38_exception: The CEO decision id that grants D38 for exactly
+            this action; never together with ``d38_receipt``.
         checkout_snapshot_max_bytes: A lowered snapshot disk bound.
 
     Returns:
@@ -367,7 +429,8 @@ def submit(
 
     Raises:
         SubmitRefused: The transport cannot carry this action, said before
-            anything is queued.
+            anything is queued -- including a GPU action without D38
+            evidence (#1639).
     """
 
     if transport not in TRANSPORTS:
@@ -411,6 +474,11 @@ def submit(
         queue_root = SH / "pb-queue"
 
     if transport == "pool":
+        # D38 before the row goes in: a GPU action without a receipt or a
+        # scoped grant publishes nothing (#1639).
+        check_d38(action, demand=resources, tags=tags, needs_gpu=needs_gpu,
+                  d38_receipt=d38_receipt, d38_exception=d38_exception,
+                  cas=cas, queue_root=queue_root, transport=transport)
         queue = pool.PoolQueue(queue_root)
         path = queue.publish(
             action_key=key,
@@ -458,6 +526,12 @@ def submit(
             "(pass checkout_root, or build one as pbrun does) before "
             "submitting this action to SLURM."
         )
+    # D38 against the final key: sealing the checkout above moved it, and a
+    # receipt binds one job, so the check reads the action the scheduler
+    # gets (#1639).
+    check_d38(action, demand=resources, tags=tags, needs_gpu=needs_gpu,
+              d38_receipt=d38_receipt, d38_exception=d38_exception,
+              cas=cas, queue_root=queue_root, transport=transport)
 
     lane_resources = slurm_lane.LaneResources.from_demand(dict(resources or {}))
     job = slurm_lane.submit(

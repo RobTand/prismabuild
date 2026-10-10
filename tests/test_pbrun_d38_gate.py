@@ -1155,3 +1155,65 @@ def test_fleet_submit_still_publishes_cpu_work_without_evidence(
         resources={"cpu": 1, "mem_gb": 1}, checkout_root=str(work))
     assert submission.transport == "pool"
     assert len(_ready(tmp_path)) == 1
+
+
+def test_decomposed_common_carries_the_namespace_but_no_evidence() -> None:
+    """The namespace is key material every child shares; a receipt or a
+    grant names one job, so neither is a shared policy."""
+
+    import pbcampaign
+    from prismabuild import decomposition as dc
+
+    common = dc.validate_common_spec({
+        "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+        "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+        "gpu_memory_gb": None, "data_manifest": None, "env": {},
+        "d38_namespace": "/work/namespace.json"})
+    assert common["d38_namespace"] == "/work/namespace.json"
+    flags = pbcampaign.pbrun_argv(common)
+    assert flags[flags.index("--d38-namespace") + 1] == "/work/namespace.json"
+
+
+@pytest.mark.parametrize("field", ["d38_receipt", "d38_exception"])
+def test_decomposed_common_refuses_per_child_evidence(field: str) -> None:
+    from prismabuild import decomposition as dc
+
+    with pytest.raises(dc.ActionContractError, match="extra"):
+        dc.validate_common_spec({
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {},
+            field: "x"})
+
+
+def test_a_campaign_gpu_row_with_a_grant_publishes(
+        tmp_path, monkeypatch, capsys, _isolated) -> None:
+    """Manifest evidence authorizes end to end: refused without it, then
+    published with it, with an audit event under the row's job hash."""
+
+    import pbcampaign
+    import re
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    _prepare(tmp_path, monkeypatch)
+    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    row = {"argv": ["true"], "cwd": str(work),
+           "demand": {"cpu": 1, "mem_gb": 1, "gpu": 1},
+           "d38_namespace": str(ns)}
+    refused = pbcampaign.submit_row(row, transport="pool")
+    assert refused["status"] == "refused"
+    assert _ready(tmp_path) == []
+    match = re.search(r"job=([0-9a-f]{64})", capsys.readouterr().err)
+    assert match is not None
+    key = match.group(1)
+    _grant(_isolated, "dec-1008-000000-row1", {"action_key": key})
+    published = pbcampaign.submit_row(
+        {**row, "d38_exception": "dec-1008-000000-row1"}, transport="pool")
+    assert published["status"] == "submitted", published
+    assert published["action_key"] == key
+    assert len(_ready(tmp_path)) == 1
+    events = _audit(tmp_path, key)
+    assert len(events) == 1
+    assert events[0]["authorization"] == "exception"

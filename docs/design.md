@@ -17536,6 +17536,27 @@ grant can bind it.  GPU intent is refused at registration, and the release check
 again for a record an older client filed (the two flags ride in its publication options, as
 optional keys so older records still read).  Deferred GPU work needs a separate design.
 
+Campaign rows carry the same three flags (`d38_receipt`, `d38_exception`,
+`d38_namespace`), spelled the same way as `pbrun` flags, so a GPU row can
+authorize through `submit_row` exactly as a hand-typed submission does. A
+decomposed child is a new publication: `child_record` judges each child
+after the cache-hit and live-attachment answers and before any row goes
+in, on the pull queue the decomposition runs on. A logical parent cannot
+carry per-child evidence, so it carries only `d38_namespace` (key material
+every child shares through the template); a receipt or grant in `common`
+is refused as an unknown field, and a GPU child without evidence of its
+own is refused at publication.
+
+`fleet_submit.submit` is the other door to a runnable row, for producers
+that seal their own bodies, so it judges too: sealed demand, tags and host
+class, or row resources, tags and `needs_gpu`, either one is GPU intent,
+and the evidence binds the sealed job. A row that adds GPU placement the
+sealed job does not declare is refused outright, because no receipt can
+bind it. On SLURM the check reads the final action, after the checkout
+seal moves the key. The dispatcher smoke tool (`seal_and_publish`) is
+CPU-only and pins no host class: a `gb10` tag is GPU intent no smoke run
+can prove.
+
 The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
 flags and retiring old installed clients are later changes; until the producer lands a GPU job
 is publishable only through a scoped exception, and enforcement must not be published before
