@@ -1,18 +1,18 @@
 # GPU closure device-use signal: decision note (prismabuild#1743)
 
-Serves parent prismabuild#1740 criterion C2. No product code changes. All paths and lines cite `origin/main` at `561e3177be3c8e6f3e21e2f7ffa5abddf0c91663`. Revision 3 corrects three review findings: the CPU route keeps the `gb10` tag, the probe belongs in the launcher, and the file list names the wrong test.
+Serves parent prismabuild#1740 criterion C2. No product code changes. All paths and lines cite `origin/main` at `561e3177be3c8e6f3e21e2f7ffa5abddf0c91663`. Revision 4 defines what the launcher probe counts (see "What the probe counts"), fixes the pool spawn cite, and names the closure's `needs_gpu` source, its exit code, and the cache-hit path.
 
 ## Signal source (one)
 
-The one signal source is a launcher-observed device count on the attempt record. The launcher counts devices inside the sealed launch environment at execution time. The closure reads the count from the adopted attempt. One field answers zero versus one or more devices for every GPU run.
+The one signal source is a launcher-observed device count on the attempt record. The count means: devices visible in the sealed launch environment. It does not mean devices used. The launcher counts them at execution time (see "What the probe counts"). The closure reads the count from the adopted attempt. One field answers zero versus one or more devices for every GPU run.
 
 A new record field is needed. No existing per-action field carries executed-on device fact. Sealed `demand.gpu` and sealed `CUDA_VISIBLE_DEVICES` state submit-time intent, not fact. Broker and power telemetry are host-level. The canary stamp covers canary runs only (see below).
 
 ## Writer that emits the signal for every GPU run
 
-Correction: the pool worker is the wrong writer. `PoolQueue._execute_in_checkout` (in `src/prismabuild/pool.py`, line 28820) runs in the pool process. It spawns the launcher as a child (lines 28855-28862) and reads the launcher's stdout afterwards (lines 29559-29576). A probe there sees host devices, not task devices.
+Correction: the pool worker is the wrong writer. `PoolQueue._execute_in_checkout` (in `src/prismabuild/pool.py`, line 28820) runs in the pool process. It spawns the launcher as a child with `subprocess.Popen` (lines 28976-28990; lines 28855-28862 only build `argv`) and reads the launcher's stdout afterwards (lines 29559-29576). A probe there sees host devices, not task devices.
 
-The sealed environment is built in the launcher. `run_local_action` (in `src/prismabuild/core.py`, line 7965) builds `launch_environment` (lines 8066-8071), applies the profile wrapper (lines 8072-8078), and execs the sealed argv in it (lines 8079-8092). The probe must run there, after line 8078, so it sees the same devices the payload sees. `docs/design.md` (lines 17515-17518) rules anything else out: the check reads the sealed environment, and host accelerator inventory is not task visibility.
+The sealed environment is built in the launcher. `run_local_action` (in `src/prismabuild/core.py`, line 7965) builds `launch_environment` (lines 8066-8071), applies the profile wrapper (lines 8072-8078), and execs the sealed argv in it (lines 8079-8092). The probe must run there, after line 8078, so it sees the devices that the sealed launch environment makes visible. For a container payload that is not the same set as the container sees (see "What the probe counts"). `docs/design.md` (lines 17515-17518) rules anything else out: the check reads the sealed environment, and host accelerator inventory is not task visibility.
 
 The lift pattern already exists. The launcher result object carries its own `profile` key (in `src/prismabuild/core.py`, lines 8260-8264). `core.main` prints the result object as the last stdout line (line 8987). The pool lifts that key out of the launcher stdout with `profile_from_launcher_stdout` (in `src/prismabuild/pool.py`, line 29703) and files it into the outcome (lines 29573-29575). k3 adds the device count the same way: the launcher emits it in its result object, and the pool lifts it into the outcome beside `profile`.
 
@@ -27,7 +27,22 @@ Fields the closure reads for each GPU-demanded run:
 
 - New launcher field `devices` on the adopted attempt detail: the executed-on count.
 - `detail.returncode` / `detail.action_returncode`: the exit-zero gate.
-- Sealed `demand.gpu` / `needs_gpu`: the GPU-run gate.
+- Sealed `demand.gpu` / `needs_gpu`: the GPU-run gate. The closure takes it from the sealed action, `params.demand.gpu` (the submitter writes `needs_gpu` from it in `tools/fleet/pbrun.py`, line 8415; the pool item stores it in `src/prismabuild/pool.py`, line 7459). `await_outcome` has no such parameter today (signature at `tools/fleet/pbrun.py`, line 3792). k3 passes the value from the submit path, which holds `demand`, and reads the pool item's `needs_gpu` when only the key is known (the deferred-release call at line 8764 and `tools/fleet/qualify_claim_recovery.py`, line 321).
+
+## What the probe counts
+
+The count is the number of devices visible in the sealed launch environment. It is a visibility count, not a use count. It answers: can the payload process see a device? It does not answer: did the payload run a kernel?
+
+The probe is one short child process that the launcher starts with `env=launch_environment`, the same dict as the payload (built at `src/prismabuild/core.py`, lines 8066-8071). The child calls the CUDA driver API through `ctypes`: `cuInit(0)`, then `cuDeviceGetCount`, on `libcuda.so.1`. It imports no `torch`. This call honours `CUDA_VISIBLE_DEVICES` the same way `torch.cuda.device_count()` does, so a CPU slot sealed with `CUDA_VISIBLE_DEVICES=""` (`tools/fleet/pbrun.py`, line 8001) counts zero.
+
+Rejected inputs for this count: `nvidia-smi -L` and NVML (`nvmlDeviceGetCount`). Both ignore `CUDA_VISIBLE_DEVICES`, so they would count the host inventory. That is the host view that `docs/design.md` (lines 17515-17518) rules out.
+
+If `libcuda.so.1` is missing, `cuInit` fails, or the child times out, the launcher writes `devices: null` and a short `devices_probe_error` string, not `0`. Only an integer `0` refuses.
+
+Limit for container payloads. `tools/fleet/pbcanary_legs/leg2.py`, line 116, runs `docker run --rm --gpus all`. The container devices come from the docker flags and the NVIDIA container runtime, not from the launcher environment. So for a container payload the launcher count is the visibility of the launching environment, not of the container. The note makes no claim that it equals the container's own device count. Two effects follow:
+
+- A GPU-demanded run whose sealed environment shows zero devices is a placement or masking fault, and the refusal is correct even for a container payload.
+- A container payload that sees zero devices inside the container while the launcher sees one or more is not caught by this signal. The payload self-stamp (the canary pattern below) is the only evidence for that case. k3 states this gap in `docs/design.md` and does not claim container coverage.
 
 ## Canary stamp is the pattern, not the source
 
@@ -59,7 +74,9 @@ Test note: `tests/test_pbcanary_legs12.py` builds stamp shapes in `_leg2_artifac
 
 ## Closure site that must refuse
 
-File: `tools/fleet/pbrun.py`. Function: `await_outcome` (line 3792). It blocks until the pool action lands, renders the summary, prints the headline (line 4042), and returns 0 for `executed` / `cache_hit` / `returncode` 0 (lines 4043-4049). k3 adds the refusal there: a GPU-demanded exit-zero run whose launcher `devices` field reads zero returns nonzero instead of 0 and names the reason. Field reduction stays in `outcome_summary` (line 3453). A pre-field record with no `devices` field closes as before; absence is a recorded gap, not a refusal.
+File: `tools/fleet/pbrun.py`. Function: `await_outcome` (line 3792). It blocks until the pool action lands, renders the summary, prints the headline (line 4042), and returns 0 for `executed` / `cache_hit` / `returncode` 0 (lines 4043-4049). k3 adds the refusal there: a GPU-demanded exit-zero run whose launcher `devices` field reads zero returns nonzero instead of 0 and names the reason. The exit code is a new named constant beside `RECORD_WRITE_FAILED_EXIT` (`tools/fleet/pbrun.py`, line 161), added to `RESERVED_EXITS` (line 174) so that `reported_exit` (line 4153) cannot let an action's own status impersonate it. k3 picks the number; it must not be 0, 2, 74, 75 or 143.
+
+Cache-hit path. `await_outcome` returns 0 for `cache_hit` at lines 4043-4044, before it reads `detail.returncode` at line 4045. A resubmit of a zero-device run would then close with 0 and bypass the refusal. k3 must run the device check before that early return, on the adopted attempt of the cached result, or the cache must not serve a run whose record has `devices: 0`. A test must cover the resubmit. k3 states the choice in `design`. Field reduction stays in `outcome_summary` (line 3453). A pre-field record with no `devices` field closes as before; absence is a recorded gap, not a refusal.
 
 ## CPU routing site for a device-free module (corrected)
 
@@ -77,7 +94,7 @@ k3 decision: the device-free module submits with explicit `--tag x86` and no `gp
 
 - Sealed `CUDA_VISIBLE_DEVICES` and sealed `demand.gpu`: they state submit-time intent, not executed-on fact. `pbrun.py` masks the variable for CPU slots (lines 7992-8001). The D38 design reads device hiding from the sealed environment only (in `docs/design.md`, lines 17515-17519).
 - A pool-process probe beside `returncode` in `_execute_in_checkout`: it runs in the pool process, outside the sealed environment. It reads host inventory, which `docs/design.md` (lines 17515-17518) excludes from task visibility.
-- Broker and cgroup telemetry (`src/prismabuild/resource_scope.py`, lines 406-410; `PoolQueue._resource_profile` in `src/prismabuild/pool.py`, line 28697): they carry CPU, memory, and I/O totals. They carry no per-action device counter.
+- Broker and cgroup telemetry (`src/prismabuild/resource_scope.py`, `read_cgroup` at lines 60-69 returns `cpu_seconds`, `memory_current_bytes` and `memory_peak_bytes`; `PoolQueue._resource_profile` in `src/prismabuild/pool.py`, line 28697): they carry CPU, memory, and I/O totals. They carry no per-action device counter.
 - Host GPU power (`src/prismabuild/box_capacity.py`, lines 376-397; `resource_profile_summary` in `src/prismabuild/pool.py`, line 3814): it is host-level. The placement proxy reads 1.0 on a throttled idle device, so it cannot tell zero use from idle.
 - Per-process `nvidia-smi`: it reads null on GB10 (`src/prismabuild/slurm_lane.py`, lines 1626-1633). The node-side power seam returns `None` today (line 1712).
 - The canary stamp alone: it covers only payloads that print it. Real GPU runs print none, so a stamp-only refusal would never fire for them.
