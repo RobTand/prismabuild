@@ -7,9 +7,11 @@ coordinator. Standard library only; the sealed checkout carries it.
 
 Three legs:
   space: statvfs of / and the Docker root, D1 verdict for the A8S set.
-  speed: 1/4/16-stream cold and warm reads of staged A8S bytes from the
-    stage tier (/stage/prewarm, NFS ro) and the HDD pool (/mnt/shared),
-    plus a bounded host-local NVMe write/read when space allows.
+  speed: 1/4/16-stream client-cold and warm reads of a fixed byte total
+    (16 files x 512 MiB prefix = 8 GiB) from the stage tier
+    (/stage/prewarm, NFS ro), the HDD pool (/mnt/shared), and a matching
+    host-local NVMe file set. Every arm reads the same bytes with one
+    file per thread at 16 streams, so no thread idles.
   bind:  Docker nested bind over a subdirectory of -v /mnt/shared:/mnt/shared.
 """
 from __future__ import annotations
@@ -38,8 +40,16 @@ CANONICAL_DIR = "/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release
 STAGE_DIR = "/stage/prewarm/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported"
 
 CHUNK = 1024 * 1024
-SUBSET_GIB = 8.0
-LOCAL_TEST_GIB = 2.0
+
+#: Fixed arm shape: 16 distinct files, 512 MiB prefix each, 8 GiB total.
+#: 16 streams then map one file per thread; no thread idles.
+ARM_FILES = 16
+PREFIX_MIB = 512
+PREFIX_BYTES = PREFIX_MIB * 1024 * 1024
+
+#: Arm order: the 16-stream cold arm touches the bytes first, so it is
+#: the closest to a true cold read. Warm arms follow their cold pair.
+ARM_ORDER = [(16, True), (16, False), (4, True), (4, False), (1, True), (1, False)]
 
 
 def d1_verdict(avail_bytes: int, total_bytes: int, need_bytes: int) -> dict:
@@ -97,16 +107,27 @@ def list_files(root: str) -> list[tuple[str, int]]:
     return found
 
 
-def pick_subset(files: list[tuple[str, int]], budget_bytes: int) -> list[tuple[str, int]]:
-    """First files in sorted order until the budget is met."""
-    picked: list[tuple[str, int]] = []
-    total = 0
-    for entry in files:
-        picked.append(entry)
-        total += entry[1]
-        if total >= budget_bytes:
-            break
-    return picked
+def select_arm_files(files: list[tuple[str, int]], count: int = ARM_FILES,
+                     prefix_cap: int = PREFIX_BYTES) -> dict:
+    """Pick count large files of similar size; one prefix fits them all.
+
+    Takes the count largest files so each thread reads a similar share.
+    The prefix is the cap clipped to the smallest pick, so every arm
+    reads exactly len(picked) * prefix bytes.
+    """
+    usable = [(path, size) for path, size in files if size > 0]
+    usable.sort(key=lambda entry: (-entry[1], entry[0]))
+    picked = usable[:count]
+    if not picked:
+        return {"paths": [], "prefix": 0, "total": 0, "count": 0, "full": False}
+    prefix = min(prefix_cap, min(size for _, size in picked))
+    return {
+        "paths": [path for path, _ in picked],
+        "prefix": prefix,
+        "total": len(picked) * prefix,
+        "count": len(picked),
+        "full": len(picked) == count,
+    }
 
 
 def drop_cache(path: str) -> bool:
@@ -125,19 +146,40 @@ def drop_cache(path: str) -> bool:
         os.close(fd)
 
 
-def read_file_bytes(path: str) -> int:
-    """Sequential buffered read; returns bytes read."""
+def read_prefix_bytes(path: str, limit: int) -> int:
+    """Sequential buffered read of at most limit bytes; returns bytes read."""
     total = 0
     with open(path, "rb") as stream:
-        while True:
-            buf = stream.read(CHUNK)
+        while total < limit:
+            buf = stream.read(min(CHUNK, limit - total))
             if not buf:
                 return total
             total += len(buf)
+    return total
 
 
-def run_arm(paths: list[str], streams: int, cold: bool) -> dict:
-    """One stream-count pass over disjoint shards. Aggregate rate."""
+def allocated_bytes(path: str) -> int:
+    """Device bytes backing path (st_blocks), or -1 when unreadable."""
+    try:
+        return os.stat(path).st_blocks * 512
+    except OSError:
+        return -1
+
+
+def is_sparse(size: int, allocated: int) -> bool | None:
+    """True when allocated device bytes fall short of the file size."""
+    if allocated < 0:
+        return None
+    return allocated < size
+
+
+def run_arm(paths: list[str], streams: int, cold: bool, prefix: int) -> dict:
+    """One stream-count pass over disjoint shards. Aggregate rate.
+
+    Every shard holds at least one file when len(paths) >= streams.
+    Cold drops the client page cache first; the file server cache is
+    outside client reach (see read_arcstats), so cold means client-cold.
+    """
     if cold:
         dropped = sum(1 for p in paths if drop_cache(p))
     else:
@@ -145,6 +187,7 @@ def run_arm(paths: list[str], streams: int, cold: bool) -> dict:
     shards: list[list[str]] = [[] for _ in range(max(streams, 1))]
     for i, path in enumerate(paths):
         shards[i % len(shards)].append(path)
+    idle = sum(1 for shard in shards if not shard)
     per_thread: list[float] = []
     started = time.monotonic()
 
@@ -152,7 +195,7 @@ def run_arm(paths: list[str], streams: int, cold: bool) -> dict:
         begin = time.monotonic()
         count = 0
         for path in shard:
-            count += read_file_bytes(path)
+            count += read_prefix_bytes(path, prefix)
         return count, time.monotonic() - begin
 
     total = 0
@@ -170,24 +213,52 @@ def run_arm(paths: list[str], streams: int, cold: bool) -> dict:
         "wall_s": round(wall, 3),
         "mib_s": mib_s,
         "per_thread_s": per_thread,
+        "idle_threads": idle,
         "load": list(os.getloadavg()),
     }
 
 
+def read_arcstats() -> dict | None:
+    """ZFS ARC counters when this host serves ZFS; else None.
+
+    The Sparks are NFS clients, so this is None there. It records the
+    attempt: a client cannot prove a server-cold read.
+    """
+    try:
+        with open("/proc/spl/kstat/zfs/arcstats") as stream:
+            rows = stream.read().splitlines()
+    except OSError:
+        return None
+    want = {"hits", "misses", "l2_hits", "l2_misses", "size", "c"}
+    out: dict = {}
+    for line in rows[2:]:
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] in want:
+            try:
+                out[parts[0]] = int(parts[2])
+            except ValueError:
+                continue
+    return out or None
+
+
 def measure_source(label: str, root: str) -> dict:
-    """Cold/warm 1/4/16-stream reads of an ~8 GiB subset at root."""
+    """Cold/warm 1/4/16-stream reads of a fixed 8 GiB arm at root."""
     out: dict = {"label": label, "root": root, "present": os.path.isdir(root)}
+    out["arcstats_before"] = read_arcstats()
     if not out["present"]:
         return out
     files = [entry for entry in list_files(root) if entry[1] > 0]
     out["file_count"] = len(files)
     out["total_gib"] = round(sum(size for _, size in files) / GIB, 3)
-    subset = pick_subset(files, int(SUBSET_GIB * GIB))
-    out["subset_files"] = len(subset)
-    out["subset_gib"] = round(sum(size for _, size in subset) / GIB, 3)
-    out["subset_names"] = [os.path.basename(p) for p, _ in subset[:8]]
-    paths = [p for p, _ in subset]
-    out["arms"] = [run_arm(paths, n, cold) for n in (1, 4, 16) for cold in (True, False)]
+    sel = select_arm_files(files)
+    out["arm_files"] = sel["count"]
+    out["arm_full"] = sel["full"]
+    out["arm_prefix_mib"] = round(sel["prefix"] / 1024 / 1024, 3)
+    out["arm_total_gib"] = round(sel["total"] / GIB, 3)
+    out["arm_names"] = [os.path.basename(p) for p in sel["paths"][:20]]
+    paths = sel["paths"]
+    out["arms"] = [run_arm(paths, n, cold, sel["prefix"]) for n, cold in ARM_ORDER]
+    out["arcstats_after"] = read_arcstats()
     return out
 
 
@@ -215,47 +286,58 @@ def host_local_root() -> dict:
     return best
 
 
-def measure_local_nvme() -> dict:
-    """Bounded write/fsync + cold/warm read on host-local disk."""
+def write_test_file(path: str, size: int) -> None:
+    """Write size non-sparse bytes (varied pattern, no holes), then fsync."""
+    blk = bytes(((i * 31 + 17) & 0xFF) for i in range(CHUNK))
+    with open(path, "wb") as stream:
+        left = size
+        while left > 0:
+            step = min(CHUNK, left)
+            stream.write(blk[:step])
+            left -= step
+        stream.flush()
+        os.fsync(stream.fileno())
+    drop_cache(path)
+
+
+def measure_local_nvme(target_total: int) -> dict:
+    """Same fixed arm shape on host-local disk: 16 files, 1/4/16 streams.
+
+    File bytes match the NFS arm total, so rates compare directly. Each
+    file is checked non-sparse (du backing vs size) before the arms run.
+    """
     out: dict = host_local_root()
     if out["path"] is None:
         out["skipped"] = True
         return out
-    avail = out["avail_gib"]
-    if avail < 6.0:
+    per_file = (target_total + ARM_FILES - 1) // ARM_FILES if target_total > 0 else PREFIX_BYTES
+    need_gib = target_total / GIB + 1.0
+    if out.get("avail_gib", 0) < need_gib:
         out["skipped"] = True
-        out["reason"] = "less than 6 GiB free; refuse to press a full disk"
+        out["reason"] = "free space below arm total plus 1 GiB margin"
         return out
-    size = int(LOCAL_TEST_GIB * GIB)
     tmpdir = tempfile.mkdtemp(prefix="gate-1730-", dir=out["path"])
-    target = os.path.join(tmpdir, "nvme-test.bin")
-    out["test_gib"] = LOCAL_TEST_GIB
+    paths = [os.path.join(tmpdir, "nvme-%02d.bin" % i) for i in range(ARM_FILES)]
+    out["arm_files"] = ARM_FILES
+    out["arm_prefix_mib"] = round(per_file / 1024 / 1024, 3)
+    out["arm_total_gib"] = round(ARM_FILES * per_file / GIB, 3)
     try:
         started = time.monotonic()
-        with open(target, "wb") as stream:
-            left = size
-            blk = b"\x00" * CHUNK
-            while left > 0:
-                stream.write(blk[: min(CHUNK, left)])
-                left -= CHUNK
-            stream.flush()
-            os.fsync(stream.fileno())
+        for path in paths:
+            write_test_file(path, per_file)
         write_s = time.monotonic() - started
-        out["write_mib_s"] = round(size / GIB * 1024 / write_s, 1)
-        drop_cache(target)
-        t0 = time.monotonic()
-        n1 = read_file_bytes(target)
-        cold_s = time.monotonic() - t0
-        t0 = time.monotonic()
-        n2 = read_file_bytes(target)
-        warm_s = time.monotonic() - t0
-        out["cold_read_mib_s"] = round(n1 / GIB * 1024 / cold_s, 1)
-        out["warm_read_mib_s"] = round(n2 / GIB * 1024 / warm_s, 1)
+        out["write_mib_s"] = round(ARM_FILES * per_file / GIB * 1024 / write_s, 1)
+        backing = [allocated_bytes(p) for p in paths]
+        out["sparse_flags"] = [is_sparse(per_file, b) for b in backing]
+        if any(flag is not False for flag in out["sparse_flags"]):
+            out["sparse_alarm"] = True
+        out["arms"] = [run_arm(paths, n, cold, per_file) for n, cold in ARM_ORDER]
     finally:
-        try:
-            os.unlink(target)
-        except OSError:
-            pass
+        for path in paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         try:
             os.rmdir(tmpdir)
         except OSError:
@@ -369,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="", help="Write the JSON report here too.")
     args = ap.parse_args(argv)
     report: dict = {
-        "schema": "prismabuild.gate_1730_probe.v1",
+        "schema": "prismabuild.gate_1730_probe.v2",
         "host": socket.gethostname(),
         "started_unix": time.time(),
     }
@@ -389,7 +471,9 @@ def main(argv: list[str] | None = None) -> int:
         report["docker_root_vfs"] = statvfs_gib(report["docker_root"])
     report["stage_source"] = measure_source("stage", STAGE_DIR)
     report["hdd_source"] = measure_source("hdd-pool", CANONICAL_DIR)
-    report["local_nvme"] = measure_local_nvme()
+    nfs_totals = [report[k].get("arm_total_gib", 0) for k in ("stage_source", "hdd_source")]
+    target = int(max(nfs_totals) * GIB) if any(nfs_totals) else ARM_FILES * PREFIX_BYTES
+    report["local_nvme"] = measure_local_nvme(target)
     report["bind"] = measure_bind()
     report["finished_unix"] = time.time()
     text = json.dumps(report, indent=1)
