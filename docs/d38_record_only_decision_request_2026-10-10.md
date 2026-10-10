@@ -1,6 +1,31 @@
-# D38 record-only setting: draft for person approval (prismabuild#1741)
+# D38 record-only setting: recorded person decision (prismabuild#1741)
 
-Status: draft. This note is not a decision. A person must record the decision. It serves parent prismabuild#1740 criterion C1. It unblocks sibling prismabuild#1742 (k2).
+Status: decided. CEO decision dec-1010-033751-ef1d states the rule. It serves parent prismabuild#1740 criterion C1. It unblocks sibling prismabuild#1742 (k2).
+
+## Recorded person decision
+
+Id: dec-1010-033751-ef1d. Date: 2026-10-10 03:39Z. Decider: CEO as Rob delegate under D60. Rob can overrule it.
+
+Source: RobTand comment of 2026-10-10T04:37:43Z on prismabuild#1741. Sections below hold draft options. The decision in this section prevails. Sibling k2 cites this id.
+
+### Setting source
+
+A reviewed file in the prismabuild repository holds the D38 record-only mode. It sits next to tools/fleet/d38_gate.py. A change needs a reviewed pull request. No flag carries it. No environment variable carries it. No caller input reaches it.
+
+### Producer-readiness evidence
+
+A record file in the same repository holds producer readiness. Its owner is the fleet owner, pb-integrator. The gate reads both files at the deployed main commit. The gate refuses only when the record for that invocation is absent.
+
+### Signer
+
+The fleet owner signs. A merged pull request is the sign-off. D32 stopped seal use. Rob does not sign each change.
+
+### Verbatim CEO text
+
+```text
+CEO decision (D32, D60), id dec-1010-033751-ef1d, 2026-10-10 03:39Z. D38 record-only setting and producer readiness. (1) Setting source: a reviewed setting file in the prismabuild repository, next to tools/fleet/d38_gate.py. A change needs a reviewed pull request. It is not a flag or an environment variable. (2) Producer-readiness evidence: a record file in the same repository. Its owner is the fleet owner, pb-integrator. The gate reads both files at the deployed main commit. It refuses only when the record for that invocation is missing. (3) Signer: the fleet owner. The merged PR is the sign-off, because D32 turned sealing off. Rob does not sign each change. The CEO decides this as Rob's delegate under D60, and Rob can overrule it.
+```
+
 
 ## Source brief
 
@@ -14,7 +39,7 @@ Decider: CEO. Date: 2026-10-10 (brief date). Stated id: `fleetgraph#16`.
 
 ## Check of the stated id
 
-The GitHub thread `RobTand/fleetgraph#16` holds CEO-session uplift requests. A scan of all 31 comments on 2026-10-10 found no D38 record-only text. It mentions the D38 dry run once, in the measurement route. So the D38 text above is verifiable only from the brief, not from that thread. The person must confirm the canonical id. Sibling k2 must cite that id.
+The GitHub thread `RobTand/fleetgraph#16` holds CEO-session uplift requests. A scan of all 31 comments on 2026-10-10 found no D38 record-only text. It mentions the D38 dry run once, in the measurement route. So the D38 text above is verifiable only from the brief, not from that thread. Decision dec-1010-033751-ef1d supersedes that label. Sibling k2 cites dec-1010-033751-ef1d.
 
 ## Setting source: options
 
@@ -36,23 +61,21 @@ Recommendation: option A. It matches the parent goal ("require fleet-owner produ
 
 ## Gate check
 
-The gate reads both files at the deployed main commit. Rules for sibling k2:
+Decision dec-1010-033751-ef1d sets the refuse rule. The gate reads both files at the deployed main commit. The gate refuses only when the record for that invocation is absent.
 
 - With no setting file, pool, SLURM, and deferred-GPU submissions publish. The gate records each check as an audit event.
-- With enforcement on, a fresh bound readiness record, and a failed check, the gate refuses.
-- With enforcement on and no fresh bound record, the gate records and does not refuse.
 - No flag, variable, or caller input changes the setting. The `ENFORCE` docstring (`tools/fleet/d38_gate.py:54-59`) and `docs/design.md` state the new contract.
 
-Fresh means `recorded_at` is past and `expires` is future. Bound means `setting_digest` equals the digest of the deployed setting file.
+K2 cites dec-1010-033751-ef1d for the exact check.
 
 ## Signer
 
-The fleet owner signs. Owner `pb-integrator` owns the readiness file. Merge of its reviewed pull request is the sign-off. Rob signs nothing per change. The person must confirm this split. The issue lists it as the open ambiguity.
+The fleet owner signs. Owner `pb-integrator` owns the readiness file. Merge of its reviewed pull request is the sign-off. Rob signs nothing per change. Decision dec-1010-033751-ef1d settles this split.
 
 ## Open point for the person
 
-The brief holds two refuse rules. One says the gate refuses when the record is missing, stale, or not signed. The other says it refuses only when the record for that invocation is missing. Sibling k2 says the gate records and does not refuse without evidence. These conflict. Recommendation: adopt the k2 rule. The person must settle it.
+The brief holds two refuse rules. One says the gate refuses when the record is absent, stale, or not signed. The other says it refuses only when the record for that invocation is absent. Decision dec-1010-033751-ef1d settles it. The gate refuses only when the record for that invocation is absent.
 
 ## Link to k2
 
-Sibling k2 is prismabuild#1742. It waits on this issue (`issuegraph:after ref=prismabuild#1741`). Its ambiguities state that the exact form of the evidence comes from k1. Once the person records the decision with an id, k2 cites that id and implements the gate change.
+Sibling k2 is prismabuild#1742. It waits on this issue (`issuegraph:after ref=prismabuild#1741`). Its ambiguities state that the exact form of the evidence comes from k1. The person recorded the decision dec-1010-033751-ef1d. K2 cites that id and implements the gate change.
