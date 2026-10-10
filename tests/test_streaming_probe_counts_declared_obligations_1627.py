@@ -105,7 +105,9 @@ def _fixture(tmp_path: Path):
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE,
                    "manifest_sha256": MANIFEST, "manifest_bytes": 2 * GIB,
                    "leads": residency_plan.leads_for(window_plan)})
-    return queue, stage, orphans, units[0].holder
+    prefix = [units[0].holder] + [str(lead) for lead in
+                                   residency_plan.leads_for(plan)]
+    return queue, stage, orphans, prefix
 
 
 def _tiers(stage: Path) -> dict:
@@ -132,10 +134,12 @@ def test_the_probe_asks_for_the_obligation_it_gates_on(tmp_path: Path) -> None:
 
 def test_the_sweep_reaches_the_asked_room(tmp_path: Path) -> None:
     """The sweep frees both orphans the fixed probe asks for."""
-    queue, stage, orphans, holder = _fixture(tmp_path)
+    queue, stage, orphans, prefix = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
     assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
     assert not queue.tier_ledger(STAGE).holder_tokens(orphans[1])
-    assert queue.tier_ledger(STAGE).holder_tokens(holder).get(
-        "stage_gib") == 10
+    ledger = queue.tier_ledger(STAGE)
+    held_prefix = sum(
+        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in prefix)
+    assert held_prefix == 10, "the admitted prefix stays"
