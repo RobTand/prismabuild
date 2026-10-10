@@ -1,0 +1,7 @@
+# Provenance of the pre-edit copies (read-only, 2026-10-09, pb-integrator)
+tools-fleet_boxes.json birth=2026-10-08 22:48:13.519528269 -0400 mtime=2026-10-08 21:33:38.581669469 -0400
+fleet-fleet_boxes.json birth=2026-10-08 22:48:13.601528459 -0400 mtime=2026-10-08 21:33:38.581669469 -0400
+fleet_boxes.json birth=2026-10-08 22:48:22.969550208 -0400 mtime=2026-10-08 22:48:13.580528410 -0400
+live tools/fleet_boxes.json mtime=2026-10-08 22:48:13.580528410 -0400
+live tools/fleet/fleet_boxes.json mtime=2026-10-08 22:48:13.642528554 -0400
+NOTE: the FIRST version of the incident packet (6156 bytes) was overwritten in place by the corrected one (7256 bytes). I did not keep a copy of it. My reports rep-1009-025824-e7a1, rep-1009-025957-4f16 and rep-1009-030228-797d quote it.

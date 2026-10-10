@@ -1,0 +1,7 @@
+{"id":"pb-dl380-root-inventory-20261005T0457Z","at":"2026-10-05T04:56:52Z","host":"dl380g10","filesystem":"/dev/nvme1n1p4 mounted at /","size_gib":128,"used_gib":103,"avail_gib":7.4,"method":"read-only du -x over ssh, nothing deleted or moved",
+"top_level_mib":{"/home/rob":95280,"/home/rob/venvs":50740,"/home/rob/tmp":31040,"/usr":19071,"/var":10911,"/tmp(tmpfs, not root)":892,"/opt":59,"/var/lib/docker":0},
+"home_rob_tmp_mib":{"kernel-6.18.50":7349,"pytest-of-rob":5208,"astra-resume-20261002":2911,"codex-campaign-takeover-20261002":1967,"pq1414-x86":1237,"prismabuild-checkouts":1218,"pq2259-source-bind-zb29gpi4":910,"pr1411-torch214-overlay":770,"torchinductor_rob":594,"alloc-lead-dl380":490},
+"protected":"venvs (all seven qualified environments, ancestors and copies), campaign inputs, anything an in-flight job or a lead record references",
+"provenance_proved_disposable":"NONE. I own none of these directories; kernel-6.18.50, astra-resume and codex-campaign-takeover have no owner record I can find; pytest-of-rob is live scratch shared by concurrent consumers.",
+"authority":"D2 deletion authority is scoped to sparky; CEO Option B and the 04:50Z message forbid cleanup, readers and floor waivers on dl380g10.",
+"note":"venvs is half of the used space and is the reason root cannot be freed without owner-proved removal."}

@@ -1,0 +1,7 @@
+{"priority": 0,
+ "priority_reason": "eng-serve-measure A8S serve window, dec-1006-235656-2a25, D44 keeps first claim",
+ "timeout_s": 1800,
+ "skew_s": 120,
+ "members": [
+  {"tag": "sparklina", "demand": "gpu=1,mem_gb=100", "measurement": true, "argv": ["REPLACE_PYTHON", "REPLACE_RANK0_SCRIPT"]},
+  {"tag": "sparky", "demand": "gpu=1,mem_gb=100", "measurement": true, "argv": ["REPLACE_PYTHON", "REPLACE_RANK1_SCRIPT"]}]}

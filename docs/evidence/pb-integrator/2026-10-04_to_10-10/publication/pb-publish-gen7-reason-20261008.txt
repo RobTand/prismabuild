@@ -1,0 +1,1 @@
+Carry the same-consumer prelaunch fix for issue 1630 onto the live generation 2399c0008f: PR 1633 reserves the new funding generation before any token moves, removes the post-transfer rotation, and lets a partial transfer retry move only the missing tokens. Review: Sol approved 5fe70a903a. Shape gate and neighbour files passed on this commit.

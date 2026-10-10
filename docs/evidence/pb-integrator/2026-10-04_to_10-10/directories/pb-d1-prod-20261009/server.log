@@ -1,0 +1,2 @@
+D44_D1_SERVICE_READY {"pid": 2693013, "bind": "192.168.1.68", "port": 22449, "fixed_command": ["/home/rob/fleet/ceo/bin/fleet-diskcheck", "--need-gb", "2", "--hosts", "sparky,sparklina", "--paths", "/,/mnt/shared"], "max_requests": 400}
+D44_D1_SERVICE_READY {"pid": 2998480, "bind": "192.168.1.68", "port": 22449, "fixed_command": ["/home/rob/fleet/ceo/bin/fleet-diskcheck", "--need-gb", "2", "--hosts", "sparky,sparklina", "--paths", "/,/mnt/shared"], "max_requests": 400}

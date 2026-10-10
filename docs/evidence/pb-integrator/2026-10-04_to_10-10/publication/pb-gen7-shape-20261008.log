@@ -1,0 +1,16 @@
+pbtest: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the shards publish, the claim-time check guards every box, and the fleet's next poll places them where the path lives.
+pbtest: each shard seals execution_timeout_s=1800 (--timeout-s 1800; ceilings announced: dl380g10 3600s); admission reads it as the shard's declared end (#939)
+pbtest: per-test bound 1770s (PRISMABUILD_TEST_TIMEOUT_S); a test that outlives it fails as itself instead of holding the shard to its ceiling
+pbtest: each shard also seals its remaining budget (PRISMABUILD_SHARD_BUDGET_S=1800); a test starting with less time left than its bound is failed at what is left
+1 files -> 1 shards (min 1, max 1 files per shard), tags=['x86'], transport=pool
+shard   0 pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.
+shard   0 pbrun: queued eb142b977097e1e7084d7c48d7f03db907414e665bcc27b92c646c9c17a21fe9 tags=['x86'] demand={'mem_gb': 8, 'cpu': 3}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791453380.7868953
+shard   0 action eb142b977097e1e7084d7c48d7f03db907414e665bcc27b92c646c9c17a21fe9 (queued): tests/gate_campaign_shape.py
+shard   0 pbrun: attempt 1/1 executed (done)
+shard   0 pbrun: log capture executable=/usr/bin/gnutee
+shard   0 pbrun: executed on dl380g10 in 749s; rss=1.3G io w=3.6G r=120.0K
+shard   0 ok       2 passed in 747.38s (0:12:27) [action eb142b977097e1e7084d7c48d7f03db907414e665bcc27b92c646c9c17a21fe9]
+
+reconciliation: 2 collected, 2 ran; the summaries count 2 outcome(s) = 2 test(s) + 0 at collection + 0 extra phase(s)
+
+1/1 shards green

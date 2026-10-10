@@ -1,0 +1,33 @@
+pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.
+pbrun: queued 624e6c5e92e411f8db3ee5aa6cc87ba875ef68264088fabd23a7a3ee2715c5a3 tags=['x86'] demand={'mem_gb': 8, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791172723.0549407
+pbrun: attempt 1/1 failed (failed)
+Traceback (most recent call last):
+  File "/home/rob/tmp/prismabuild-checkouts/624e6c5e92e4.umhi2fqn/checkout/tools/fleet/publish_runtime.py", line 2142, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/rob/tmp/prismabuild-checkouts/624e6c5e92e4.umhi2fqn/checkout/tools/fleet/publish_runtime.py", line 1949, in main
+    return _run_publication(args)
+  File "/home/rob/tmp/prismabuild-checkouts/624e6c5e92e4.umhi2fqn/checkout/tools/fleet/publish_runtime.py", line 1983, in _run_publication
+    commit = _commit_identity()
+  File "/home/rob/tmp/prismabuild-checkouts/624e6c5e92e4.umhi2fqn/checkout/tools/fleet/publish_runtime.py", line 434, in _commit_identity
+    result = _git_result("rev-parse", "--verify", "HEAD")
+  File "/home/rob/tmp/prismabuild-checkouts/624e6c5e92e4.umhi2fqn/checkout/tools/fleet/publish_runtime.py", line 421, in _git_result
+    from prismabuild import core as pb
+ModuleNotFoundError: No module named 'prismabuild'
+pbrun: log capture executable=/usr/bin/gnutee
+Traceback (most recent call last):
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/8b1ca256b0f4-1791149333-491f29398f94/tools/prismabuild_worker.py", line 72, in <module>
+    raise SystemExit(main(worker_launcher_identity=_WORKER_LAUNCHER_IDENTITY))
+                     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/8b1ca256b0f4-1791149333-491f29398f94/src/prismabuild/core.py", line 8890, in main
+    result = run_local_action(
+        action,
+    ...<5 lines>...
+        initial_miss_rendezvous=args.initial_miss_rendezvous,
+    )
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/8b1ca256b0f4-1791149333-491f29398f94/src/prismabuild/core.py", line 8147, in run_local_action
+    raise LocalActionError(
+    ...<14 lines>...
+    )
+prismabuild.core.LocalActionError: action argv exited with status 1
+pbrun: failed on dl380g10 in 1s; rss=39.0M io w=0B r=0B

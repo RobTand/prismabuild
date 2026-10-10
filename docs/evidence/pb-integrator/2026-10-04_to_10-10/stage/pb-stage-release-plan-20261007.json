@@ -1,0 +1,192 @@
+[
+ {
+  "holder": "5996ffb1b54b9f640142098a7110e4fa6b6e64cdc879a197fb421303b29e3d2f",
+  "gib": 40,
+  "consumer": "cf6c31d824b9f78ee85ef30b0d28e8599fb413add9f6dd3a734388853cac9f5b",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "eng-pact-pricing",
+  "basis": "proved: consumer 4f5fe756 command capture_launch.py --root .../eng-pact-pricing-20261006",
+  "age_h": 29.5
+ },
+ {
+  "holder": "797cb37391bc8a54209ee8246711b36bccc6d1277e51e1b11939ef08dc2d543c",
+  "gib": 40,
+  "consumer": "5d0d7be6e9555784ee7f677700c371ce47884f2633f9005d3380a36dd64e6435",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "eng-pact-energy",
+  "basis": "proved: consumer 3abe4a4a command writes under .../eng-pact-energy-20261007/first-native-L03-01/gpu",
+  "age_h": 446.7
+ },
+ {
+  "holder": "ad9787e28fad496bbfc8de241d125c4d2037a53d73180472733a5f24bf976ce9",
+  "gib": 40,
+  "consumer": "c36c5c4ba69ea2fe2070f0131e3c0d9f0d7efaa18ad5506bd82cd97480da4f6a",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "eng-pact-energy",
+  "basis": "proved: same consumer 3abe4a4a",
+  "age_h": 29.6
+ },
+ {
+  "holder": "d44016e194272deefcc279607214da657dd9f4fa30758c96060b6bc876385382",
+  "gib": 22,
+  "consumer": "696664617ef9f39c14eb4103dcdf07eaa6520e97851c8672cafbd0512dcb86b6",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "eng-pact-energy",
+  "basis": "proved: same consumer 3abe4a4a",
+  "age_h": 19.3
+ },
+ {
+  "holder": "c2ea745cb049db4f89ac00dc38952c05404ff3c38af077aa6cd95a92d16b23cd",
+  "gib": 8,
+  "consumer": "16bf2900fa587f5786a6ce26c478df74ad8171d0f753747b319e1f9d541eb499",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "eng-pact-pricing",
+  "basis": "proved: same consumer 4f5fe756",
+  "age_h": 29.6
+ },
+ {
+  "holder": "96706464064db68a46693ddc64bd763f8195cc87236ba9657fe25f591d5edc80",
+  "gib": 7,
+  "consumer": "6b042bb8065a909c76bd14aac57a1380b4af5c0692bfbc13f9ba77ed56fa9bf7",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "D44 lane (eng-d44-*)",
+  "basis": "inferred: consumer command encode_launch.py --stage select-unit",
+  "age_h": 19.9
+ },
+ {
+  "holder": "22773bc1bf42f641a44c37d3f7229d8c02240a45ecfc038b709f0c921ce0f811",
+  "gib": 2,
+  "consumer": null,
+  "release": true,
+  "consumer_state": "no registration",
+  "owner": "unknown (glm campaign?)",
+  "basis": "inferred: no queue row, no registration; env PRISMABUILD_PRODUCED_SPOOL_ROOT=/home/rob/pb-spool/glm-campaign; runtime generation 05b5fe513815",
+  "age_h": 446.5
+ },
+ {
+  "holder": "28501a4b8ab97dc098cca8e3535654d18673e235ac376fa9ea4b22b885f53304",
+  "gib": 1,
+  "consumer": "4f88d1fbafa8f6b404ae10b40d49bd2bd6e09c97311f89eebad435abe315ca76",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T181252Zc134",
+  "age_h": 19.9
+ },
+ {
+  "holder": "42cae3588b75d56c26d9a1b255801f0b753d56fd1bd46192401d04541eb023ce",
+  "gib": 1,
+  "consumer": "aca7101343ca53f3d8c67fb398023f5ab53e31ab5a4ae33e0ad0faa315cadd70",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T181252Zc134",
+  "age_h": 19.9
+ },
+ {
+  "holder": "554c204ef07e2439476f5b30b7744594a0e97b95e8175dde1095df39ad9a3088",
+  "gib": 1,
+  "consumer": "428c8323ce492122895dd8654e1c95fd89889c2348646ff6db0465bdbd90d255",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator or the earlier canary driver",
+  "basis": "inferred: canary leg 3 command; consumer dacb6414 done, 29 h old",
+  "age_h": 29.4
+ },
+ {
+  "holder": "69828b1074c15398ff8250a426efb65eec6639397c81da8913c2392268fbd439",
+  "gib": 1,
+  "consumer": "a3400174ee64c15b69b8599f521fc4a7497cfa24695fb4c7674faa633cc8f325",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T182237Zc4",
+  "age_h": 19.9
+ },
+ {
+  "holder": "7b571f42035b7f469eda302a337870ec219ef9f6d27b156e56cf282e6279bf16",
+  "gib": 1,
+  "consumer": "c03eaa978cc60292d2e95c6891dbdb095de219caa7dbd40dd2cd035328ff87d2",
+  "release": false,
+  "consumer_state": "ready",
+  "owner": "kernels",
+  "basis": "inferred: consumer 83480ca5fe6b READY, command experiments/graph_attest_702, ORACLE_IMAGE",
+  "age_h": 19.9
+ },
+ {
+  "holder": "86d65ceae7607dd6b45e1358482cb721666fb41d4877ee475c98a9c0d3cff909",
+  "gib": 1,
+  "consumer": "23f59b8a87e830494c1421f17b2cb58ce902a46d0f95ed56ea40c626bb886cd3",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer 8a778837 failed, stage1a_energy.py",
+  "age_h": 29.4
+ },
+ {
+  "holder": "8e9adb3d77a6bf779644209cf4d3c31b8bfa2e88fe4fb8ab5df3e0c9acd85bc4",
+  "gib": 1,
+  "consumer": "da51369898719094af4c6dad088a3fbaa1d6cdb8968b24d321fac9ea373bbbd7",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator or the earlier canary driver",
+  "basis": "inferred: canary leg 3 command; consumer dacb6414 done, 29 h old",
+  "age_h": 29.4
+ },
+ {
+  "holder": "a01df75a5e850ba37d2dca4c814a86087092df20237343304b9202280ce76a3c",
+  "gib": 1,
+  "consumer": "2eaace66a60505fb5680a44e071d492184d99f11d4602bd733c3999c71298685",
+  "release": false,
+  "consumer_state": "ready",
+  "owner": "kernels",
+  "basis": "inferred: consumer 1e7f5150fcc4 READY, command experiments/t4_code/t4_fused_qualify_action.sh",
+  "age_h": 29.6
+ },
+ {
+  "holder": "a5d7cc85a3addd9d053298d799447291084a396c1a9ed446d006f7474eac5dc5",
+  "gib": 1,
+  "consumer": "fca3df03a31a0c7b6abd45335eb39b8af22392a05fd11803363333a9970320ff",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer af0909e9 done, stage1a_energy.py",
+  "age_h": 29.4
+ },
+ {
+  "holder": "bd517f986da5d02be33620b75e9aa5f9bc45fb0b45618f962c770e535c83ae3f",
+  "gib": 1,
+  "consumer": "f9ec195b53627fc722d1ae78987017f3081aa0de9561e938b043a8d5910e0e78",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T182237Zc4",
+  "age_h": 19.9
+ },
+ {
+  "holder": "d433fc71c97b7804841f9390589b62916bf943d2c3d6727947f004bf25ebfa93",
+  "gib": 1,
+  "consumer": "00f19b341e307b1a291b3020d488a60f308fb3549fd878cd6ab4ea112817075c",
+  "release": true,
+  "consumer_state": "failed",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer 8a778837 failed, stage1a_energy.py",
+  "age_h": 29.4
+ },
+ {
+  "holder": "e33e50502949a70047cc901e48dea8a00dff3767a9fef99ff3e5004a08162317",
+  "gib": 1,
+  "consumer": "940a0b96b95b871769ef5a44f04cc5c1ec65a0cd57415bb8961a2350273856a8",
+  "release": true,
+  "consumer_state": "done",
+  "owner": "kernels",
+  "basis": "inferred: consumer 7b1a0db8a5d2 done, command experiments/t4_c...",
+  "age_h": 2.9
+ }
+]

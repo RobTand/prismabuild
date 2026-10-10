@@ -1,0 +1,39 @@
+{
+  "at": "2026-10-04T16:54:23.377301+00:00",
+  "owner": "pb-integrator",
+  "standing_decisions_applied": [
+    "D1",
+    "D2",
+    "D5",
+    "D7",
+    "D11"
+  ],
+  "live_main": "c111602d8326758502362645e1ebfa9ca5118cbf",
+  "PB1491": {
+    "issue_state": "CLOSED",
+    "pr1493": "MERGED",
+    "source_only": "Published runtime remains c437; no rollout performed"
+  },
+  "PB1490": {
+    "head": "e43fcc762a24793e7fcaddb75d0e3ac7edcea666",
+    "mergeable": "CONFLICTING",
+    "record_state": "revising",
+    "failed_revisions": 2,
+    "independent_review_request": "rev-1004-164046-a20c",
+    "CEO_response": "D5 review already commissioned for exact e43 and smallest operative guard path without FSID",
+    "next_lead_work": "Recompose against main, conservative whole-allowance cutover without privileged FSID prerequisite; admitted causal controls and independent exact-head review before merge"
+  },
+  "deferred": [
+    "prismabuild-pr-1325",
+    "prismabuild-pr-1326"
+  ],
+  "active_workers": {
+    "sparky-headroom-D2": "fleet-sparky-headroom",
+    "SDK5-wheel-install-PB1485": "prismabuild-1485",
+    "PB1494-native-sample-rate": "prismabuild-1494",
+    "PB1495-per-test-capability-fence": "prismabuild-1495"
+  },
+  "P0_packet": "/home/rob/fleet/records/fleet-admission-telemetry-p0.json",
+  "grant_unused": "grant-1004-164810-8c28: P0 publisher outage not reproduced; no extra repair workers or restarts justified after admitted smokes passed",
+  "integration": "No eligible accepted batch this burst:1325/1326 D11-deferred;1490 conflicts and needs continued takeover work. Do not run full suite per child."
+}

@@ -1,0 +1,86 @@
+[
+ {
+  "holder": "04c5ce06acf81899d2c9bc873b6e5bb6fa1a77422bf07b734f878cb6aee84895",
+  "gib": 1,
+  "consumer": "a669d4c8547cafb6bf7761ebfc87a6dd066565a03f275c4f7ca6f8e4272fa62a",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   0,
+   86146111
+  ]
+ },
+ {
+  "holder": "0f91dfe20a523ff07f9e094ad9c41a6208eed9133f601cf9f58f17dc4a5d2b93",
+  "gib": 40,
+  "consumer": "0313b2bb4dc010b8448698c2dc94b35c9be244f8cc7065c7e3917d72131d3924",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   42935213532,
+   85884318692
+  ]
+ },
+ {
+  "holder": "7b571f42035b7f469eda302a337870ec219ef9f6d27b156e56cf282e6279bf16",
+  "gib": 1,
+  "consumer": "c03eaa978cc60292d2e95c6891dbdb095de219caa7dbd40dd2cd035328ff87d2",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   0,
+   1955233
+  ]
+ },
+ {
+  "holder": "a01df75a5e850ba37d2dca4c814a86087092df20237343304b9202280ce76a3c",
+  "gib": 1,
+  "consumer": "2eaace66a60505fb5680a44e071d492184d99f11d4602bd733c3999c71298685",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   0,
+   42087
+  ]
+ },
+ {
+  "holder": "d832b3f123b296cd2e29b497e3dbb2b347806dc6cafab30bfe44af674c6997a1",
+  "gib": 8,
+  "consumer": "c8d9e8952d4fef0e91e91c4586719dd8b59b741754d82ac1b492ed81a2a3b9e8",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   85884318692,
+   93715104356
+  ]
+ },
+ {
+  "holder": "e41e2e0e2a4c0811c374131282ec7aea82d3a0dc1c4eb34cecb81cc4a8f33f21",
+  "gib": 40,
+  "consumer": "2f19b76374be75d63cf5600f777aabe2492e11e2dd5c274ddc269ea3a3849655",
+  "consumer_state": "absent",
+  "own_state": "done",
+  "live_claim": false,
+  "stage_root": "/stage/prewarm",
+  "complete": true,
+  "range": [
+   0,
+   42935213532
+  ]
+ }
+]

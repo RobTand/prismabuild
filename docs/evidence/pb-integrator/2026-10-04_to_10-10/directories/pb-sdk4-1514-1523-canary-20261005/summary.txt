@@ -1,0 +1,5 @@
+pbcanary 20261005T042033Z
+leg-1: FAIL: precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+leg-2: FAIL: precondition refused (leg-2): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+leg-3: FAIL: precondition refused (leg-3): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+leg-4: ok: leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93… verified

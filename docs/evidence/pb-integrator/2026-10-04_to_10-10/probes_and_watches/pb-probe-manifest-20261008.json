@@ -1,0 +1,90 @@
+{
+ "schema": "prismaquant.prismabuild.data_manifest.v2",
+ "mount_prefix": "/mnt/shared",
+ "entries": [
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00112-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5362972824,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00113-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5368753864,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00114-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5356708288,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00115-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5366143376,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00116-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5368753872,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00117-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5362972664,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00118-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5368753864,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00119-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 5368753800,
+   "sha256": null
+  },
+  {
+   "path": "/mnt/shared/models/GLM-5.3-Flash-BF16/model-00120-of-00120.safetensors",
+   "offset": 0,
+   "bytes": 4173417528,
+   "sha256": null
+  }
+ ],
+ "entry_count": 9,
+ "total_bytes": 47097230080,
+ "produced_by": {
+  "tool": "pb1627_live_probe_20261008"
+ },
+ "annotations": {
+  "scope": "One declared prelaunch CPU probe for issue 1627: nine model shards, read by nothing, so the stage tier must make room before the row can launch."
+ },
+ "read_plan": {
+  "phases": [
+   {
+    "name": "probe",
+    "entry_indices": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "bytes": 47097230080,
+    "cumulative_bytes": 47097230080,
+    "resident_before_launch": true
+   }
+  ],
+  "read_bytes": 47097230080
+ }
+}

@@ -1,0 +1,1727 @@
+{
+ "id": "prismabuild-batch-a-failure-comparison-20261005",
+ "generated_at": "2026-10-05T01:54:58.399305+00:00",
+ "purpose": "Attribute the 48 FAILED + 2 ERROR batch-A suite IDs against pristine main; input to the reduced-batch decision. Classifications are evidence for parent + GLM/Opus review, not self-approved root-cause verdicts.",
+ "inputs": {
+  "candidate_head": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+  "candidate_worktree": "/home/rob/tmp/pb-batch-a-compose-20261004 (preserved, clean, untouched)",
+  "main_commit": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+  "main_worktree": "/home/rob/prismabuild-wt/main-7fb7fa6b13 (pre-existing clean detached worktree, used read-only)",
+  "batch_a_suite_results": "/home/rob/tmp/pb-batch-a-20261004-results/ (pbtest.json, failed-errors.txt). The RED 11730 passed / 48 failed / 2 errors / 26 skipped of 11806 remains the ground truth; nothing rerun changes it.",
+  "batch_a_suite_resources": "20 shards, cpu=2 mem_gb=4 per shard, tag x86, serial pytest, native threads 1, tmpdir /home/rob/tmp on dl380g10",
+  "no_code_edits": true,
+  "no_master_baseline_run": true,
+  "gpus_used": 0
+ },
+ "method": [
+  "Per-ID candidate outcomes, stages and signatures parsed from the 20 retained shard outputs (CAS-bound action keys).",
+  "Main-side evidence reused only where the SAME case is proved failing on a checkout sealed at snapshot_parent 7fb7fa6b13 (untouched main) at matched cpu2/mem4 resources: 41 retained actions, including pbtest shard records with per-node outcome rows and dedicated x86 runs.",
+  "3 IDs with no main observation (warm_listing x2, replaced_progress ten_thousand_polls) plus tier_ledger[None] (main observation cross-host only) ran in ONE matched two-arm diagnostic: identical pbrun invocation except --cwd, 4 CPUs, mem_gb=4, tag x86, OMP/MKL/OPENBLAS threads 1, no GPU, submitted from celestia, executed on dl380g10.",
+  "kill_names x2 attributed with the retained candidate 4-CPU diagnostic a62dfa3cd868... plus main RED records at 2 and 4 CPU.",
+  "Absence of a main 20-shard suite is recorded; in-suite-only failures are labeled contention-sensitive, never pre-existing."
+ ],
+ "matched_diagnostic": {
+  "candidate_action": "f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7",
+  "main_action": "0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9",
+  "command": "pbrun.py --cwd TREE --tag x86 --cpus 4 --demand mem_gb=4 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- /home/rob/venvs/pb-cpu/bin/python -m pytest -q <4 node IDs>",
+  "node_ids": [
+   "tests/test_a_replaced_progress_record_is_read_again.py::test_ten_thousand_polls_against_a_tight_replace_loop_reject_nothing",
+   "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py::test_a_warm_listing_is_read_again_when_its_trust_leaves",
+   "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py::test_the_current_version_is_refused_once_trust_leaves",
+   "tests/test_tier_ledger_directory_names.py::test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves[None]"
+  ],
+  "result": "4 passed in 2.42s (candidate dd4a3e9630) / 4 passed in 3.08s (main 7fb7fa6b13); both dl380g10; environment identical except tree",
+  "d1_diskcheck": "/home/rob/tmp/pb-failure-comparison-20261005/diskcheck-diag-final.json (pass, all hosts, need_gb=1)",
+  "completion_clients": "both pbrun clients waited in-session (bg jobs bg_306/bg_307); receipts in their outputs under /home/rob/tmp/pb-failure-comparison-20261005/"
+ },
+ "totals": {
+  "failed_plus_error_ids": 50,
+  "same_failure_on_main": 44,
+  "resource_fixture_limitation_proven": 2,
+  "source_difference": 0,
+  "UNRESOLVED": 0,
+  "note": "Computed from the per-case records in this file, not narrative sums. The batch-A suite remains RED; matched diagnostics are attribution evidence, not a suite pass.",
+  "unresolved_suite_context_failures_isolated_pass_on_both_sources": 4
+ },
+ "main_evidence_index": "/home/rob/tmp/pb-failure-comparison-20261005/main-actions-index.json (41 actions sealed at parent 7fb7fa6b13); per-node outcomes in main-outcomes.json",
+ "candidate_evidence": "/home/rob/tmp/pb-failure-comparison-20261005/candidate-failures-parsed.json; shard action bindings in /home/rob/tmp/pb-batch-a-20261004-results/pbtest.json",
+ "reduced_batch_recommendation": "No observed ID is a batch-A source regression; no PR needs dropping on this evidence (retain-six with no established exclusions). 44 IDs are pre-existing failures on untouched main (same case, matched resources, raw records). 2 kill_names IDs are resource/fixture proven (suite must give that file >=4 assigned CPUs; #1516 fixture already correct at >=4). 4 IDs are unresolved suite-context failures with isolated pass on both sources; mechanism open, grouped with the #1506 timing cases. PR-source-level notes for the repair owner: the _Queue.root AttributeError group and the x86-default expectation fail identically on main, so their repairs belong to main-side fixes, not batch-A reverts. These classifications are attribution evidence for parent + GLM/Opus review, not self-approved root-cause verdicts.",
+ "cases": [
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_a_campaign_whose_every_row_passed_still_fails_on_an_open_cover",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == 3",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a929a7b0>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_a_child_answering_under_the_wrong_output_id_fails_the_cover",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == 3",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a92996d0>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_a_child_without_a_receipt_is_never_a_group_success",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == (3 - 1)",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a9298b90>, limit=(3 - 1))"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_a_group_receipt_is_refused_rather_than_replaced",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 1 == 0",
+    "+  where 1 = <function close_group at 0x7397a97de6c0>({'request': {'schema': 'prismabuild.logical_request.v1', 'common': {'argv': ['/home/rob/venvs/pb-cpu/bin/python', '-c'...eaaccde', 'bytes': 153}], 'closure_sha256': 'b21a096fb88476b32ee59e88c780d15222c214ab8269f2c3e6e14ec68fb2a4de'}, ...}]}, cas=<prismabuild.core.PrismaBuildCAS object at 0x7397a93026d0>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_a_manifest_attached_to_another_child_receipt_fails_the_cover",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == 3",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a9298230>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_children_that_answered_their_own_batches_earn_one_group_receipt",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == 3",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a9298eb0>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_closing_the_same_group_twice_publishes_the_same_bytes",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 1 == 0",
+    "+  where 1 = <function close_group at 0x7397a97de6c0>({'request': {'schema': 'prismabuild.logical_request.v1', 'common': {'argv': ['/home/rob/venvs/pb-cpu/bin/python', '-c'...efccbd3', 'bytes': 153}], 'closure_sha256': '558a61a83aaa2bb8a18bcf92417c9d5a2760f0d27b419d02f34e9319b26ad35b'}, ...}]}, cas=<prismabuild.core.PrismaBuildCAS object at 0x7397a933be50>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py::test_the_group_receipt_is_what_a_re_run_without_detach_adds",
+   "file": "tests/test_a_decomposed_campaign_closes_on_an_exact_cover.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: assert 0 == 3",
+    "+  where 0 = _serve(<prismabuild.pool.PoolQueue object at 0x7397a9298690>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_kill_names_what_it_waited_on.py::test_a_stall_kill_names_its_refused_export_its_ready_age_and_the_reason",
+   "file": "tests/test_a_kill_names_what_it_waited_on.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 3,
+   "batch_a_action_key": "eb46c143b1d8ddd1ac6db772e5246b38a9d49d73253e59a04ee139e8a45f895e",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "51f11d622482f169fabe37e3481747c68945748945728eedf188d63485976dcd",
+     "host": "dl380g10",
+     "cpu": 4,
+     "mem_gb": 8,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "cda4e5045c11730bb40bec1f0a6c1235914063444a97a78994cb9febd876843b",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "85b8669e3d9783529a868e98533b0f7f94ea31809f15fa68f9849feefdf18253",
+     "host": "dl380g10",
+     "cpu": 4,
+     "mem_gb": 8,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "resource_fixture_limitation_proven",
+   "notes": "Fail on untouched main at 2 CPU (suite shard 51f11d622482) AND at 4 CPU (#1516 main RED actions 51f11d622482..., 85b8669e3d97...). On the candidate they fail only under the sealed 2-CPU shard (PoolContractError: CPU capacity exceeds the inherited CPU map; shard 3 taskset 6-7) and PASS at 4 CPUs: action a62dfa3cd868c5e3341ec89c9c31100c36835c610ed37fe46babc39a658592ed (x86, taskset 0-3, 14 passed). #1516 (in the candidate) repairs the fixture to a declared 4-CPU capacity; the suite must give this file >=4 assigned CPUs. Not a batch-A source regression.",
+   "additional_evidence": [
+    "a62dfa3cd868c5e3341ec89c9c31100c36835c610ed37fe46babc39a658592ed",
+    "51f11d622482f169fabe37e3481747c68945748945728eedf188d63485976dcd",
+    "85b8669e3d9783529a868e98533b0f7f94ea31809f15fa68f9849feefdf18253"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_kill_names_what_it_waited_on.py::test_pbstatus_starvation_reads_a_starved_producer_in_one_place",
+   "file": "tests/test_a_kill_names_what_it_waited_on.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 3,
+   "batch_a_action_key": "eb46c143b1d8ddd1ac6db772e5246b38a9d49d73253e59a04ee139e8a45f895e",
+   "batch_a_signature": [
+    "prismabuild.pool.PoolContractError: CPU capacity exceeds the inherited CPU map",
+    "assert (None is not None)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "51f11d622482f169fabe37e3481747c68945748945728eedf188d63485976dcd",
+     "host": "dl380g10",
+     "cpu": 4,
+     "mem_gb": 8,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "cda4e5045c11730bb40bec1f0a6c1235914063444a97a78994cb9febd876843b",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "85b8669e3d9783529a868e98533b0f7f94ea31809f15fa68f9849feefdf18253",
+     "host": "dl380g10",
+     "cpu": 4,
+     "mem_gb": 8,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "resource_fixture_limitation_proven",
+   "notes": "Fail on untouched main at 2 CPU (suite shard 51f11d622482) AND at 4 CPU (#1516 main RED actions 51f11d622482..., 85b8669e3d97...). On the candidate they fail only under the sealed 2-CPU shard (PoolContractError: CPU capacity exceeds the inherited CPU map; shard 3 taskset 6-7) and PASS at 4 CPUs: action a62dfa3cd868c5e3341ec89c9c31100c36835c610ed37fe46babc39a658592ed (x86, taskset 0-3, 14 passed). #1516 (in the candidate) repairs the fixture to a declared 4-CPU capacity; the suite must give this file >=4 assigned CPUs. Not a batch-A source regression.",
+   "additional_evidence": [
+    "a62dfa3cd868c5e3341ec89c9c31100c36835c610ed37fe46babc39a658592ed",
+    "51f11d622482f169fabe37e3481747c68945748945728eedf188d63485976dcd",
+    "85b8669e3d9783529a868e98533b0f7f94ea31809f15fa68f9849feefdf18253"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_record_the_queue_cannot_order_is_filed_not_thrown.py::test_the_other_records_still_claim",
+   "file": "tests/test_a_record_the_queue_cannot_order_is_filed_not_thrown.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 3,
+   "batch_a_action_key": "eb46c143b1d8ddd1ac6db772e5246b38a9d49d73253e59a04ee139e8a45f895e",
+   "batch_a_signature": [
+    "assert (None is not None)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "77caa8c76557183cfd99f7d31f2e7fdde347b6bb7985a3115a76e230c4768023",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_replaced_progress_record_is_read_again.py::test_ten_thousand_polls_against_a_tight_replace_loop_reject_nothing",
+   "file": "tests/test_a_replaced_progress_record_is_read_again.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 10,
+   "batch_a_action_key": "682b83a6c22168df7919abf7ce947ef9c561227d9c42ee20c8cba0a31032c884",
+   "batch_a_signature": [
+    "AssertionError: (1, ['unreadable: CASTamperError'])",
+    "assert ['unreadable: CASTamperError'] == []"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [],
+   "attribution_class": "unresolved_suite_context_failures_isolated_pass_on_both_sources",
+   "notes": "Unresolved suite-context failure; isolated pass on both sources. Failed inside the 20-shard parallel run on the candidate, but PASSES in isolation on BOTH trees (identical pbrun invocation except --cwd; 4 CPUs, mem_gb=4, tag x86, threads 1, dl380g10): candidate action f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7 (4 passed in 2.42s), pristine-main action 0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9 (4 passed in 3.08s). These runs establish pass-in-isolation on both sources only; they do NOT establish why the original suite failed, because both resources (4 vs 2 CPUs) and suite/process context (1 process, 4 tests vs 20 parallel shards) changed. No main 20-shard arm exists, so the in-suite main behavior is unobserved; not labeled pre-existing and not labeled load-flake. tier_ledger[None] additionally passed in a main suite shard on sparky (16bed29d97ea...). Mechanism open; grouped with the #1506 timing cases.",
+   "additional_evidence": [
+    "f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7",
+    "0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_staged_wait_is_not_no_progress.py::test_a_ready_mover_is_waited_on_as_well",
+   "file": "tests/test_a_staged_wait_is_not_no_progress.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 4,
+   "batch_a_action_key": "6b1814eb2d049cff947abde7b0a14f8ae46809c21442eaaefa59e740f1a56136",
+   "batch_a_signature": [
+    "AssertionError: assert 'timeout' == 'executed'",
+    "E         - executed"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "16bed29d97ea720805f38785af04c74369c7a4008f2c6d6e9906380034a8e511",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "passed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "85b8669e3d9783529a868e98533b0f7f94ea31809f15fa68f9849feefdf18253",
+     "host": "dl380g10",
+     "cpu": 4,
+     "mem_gb": 8,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "08e780ab4d77b7f3d7a791211f3651ef7c9077758a6a6ceed0bad883c18fffe6",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "passed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_steady_reading_cycle_reuses_the_validated_checkpoint",
+   "file": "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 15,
+   "batch_a_action_key": "2a8b7b79a4b45f6baee16e8fe8d230e2443ab81231f947cfaa96dea40c30e663",
+   "batch_a_signature": [
+    "AssertionError: None keeps no trusted stamp; run this on a local-clock filesystem (TMPDIR)",
+    "assert None in {'btrfs', 'ext4', 'tmpfs', 'xfs', 'zfs'}"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py::test_a_tampered_projection_after_a_warm_cache_is_never_reused",
+   "file": "tests/test_a_terminal_receipt_retires_behind_a_covered_fold.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 15,
+   "batch_a_action_key": "2a8b7b79a4b45f6baee16e8fe8d230e2443ab81231f947cfaa96dea40c30e663",
+   "batch_a_signature": [
+    "Failed: DID NOT RAISE PoolContractError"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py::test_a_warm_listing_is_read_again_when_its_trust_leaves",
+   "file": "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 0,
+   "batch_a_action_key": "89c04e264bd9935ca37c0d505eae8244099fc8577fe64e481a72874f890c3b79",
+   "batch_a_signature": [
+    "AssertionError: a listing whose trust left is listed and read again",
+    "assert (1, 2, 1) == (2, 1, 2)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [],
+   "attribution_class": "unresolved_suite_context_failures_isolated_pass_on_both_sources",
+   "notes": "Unresolved suite-context failure; isolated pass on both sources. Failed inside the 20-shard parallel run on the candidate, but PASSES in isolation on BOTH trees (identical pbrun invocation except --cwd; 4 CPUs, mem_gb=4, tag x86, threads 1, dl380g10): candidate action f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7 (4 passed in 2.42s), pristine-main action 0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9 (4 passed in 3.08s). These runs establish pass-in-isolation on both sources only; they do NOT establish why the original suite failed, because both resources (4 vs 2 CPUs) and suite/process context (1 process, 4 tests vs 20 parallel shards) changed. No main 20-shard arm exists, so the in-suite main behavior is unobserved; not labeled pre-existing and not labeled load-flake. tier_ledger[None] additionally passed in a main suite shard on sparky (16bed29d97ea...). Mechanism open; grouped with the #1506 timing cases.",
+   "additional_evidence": [
+    "f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7",
+    "0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py::test_the_current_version_is_refused_once_trust_leaves",
+   "file": "tests/test_a_warm_listing_loses_trust_with_its_filesystem.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 0,
+   "batch_a_action_key": "89c04e264bd9935ca37c0d505eae8244099fc8577fe64e481a72874f890c3b79",
+   "batch_a_signature": [
+    "AssertionError: assert (31, 256629627, 1791158747324525543, 1791158747324525543) is None",
+    "+  where (31, 256629627, 1791158747324525543, 1791158747324525543) = <function _current_directory_version at 0x7688ae10bc10>(PosixPath('/home/rob/tmp/pytest-of-rob/pytest-21415/test_the_current_version_is_re0/ready'))"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [],
+   "attribution_class": "unresolved_suite_context_failures_isolated_pass_on_both_sources",
+   "notes": "Unresolved suite-context failure; isolated pass on both sources. Failed inside the 20-shard parallel run on the candidate, but PASSES in isolation on BOTH trees (identical pbrun invocation except --cwd; 4 CPUs, mem_gb=4, tag x86, threads 1, dl380g10): candidate action f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7 (4 passed in 2.42s), pristine-main action 0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9 (4 passed in 3.08s). These runs establish pass-in-isolation on both sources only; they do NOT establish why the original suite failed, because both resources (4 vs 2 CPUs) and suite/process context (1 process, 4 tests vs 20 parallel shards) changed. No main 20-shard arm exists, so the in-suite main behavior is unobserved; not labeled pre-existing and not labeled load-flake. tier_ledger[None] additionally passed in a main suite shard on sparky (16bed29d97ea...). Mechanism open; grouped with the #1506 timing cases.",
+   "additional_evidence": [
+    "f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7",
+    "0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_an_arbitration_rereads_only_what_moved.py::test_2000_names_of_one_dead_owner_list_the_forest_once",
+   "file": "tests/test_an_arbitration_rereads_only_what_moved.py",
+   "batch_a_status": "ERROR",
+   "batch_a_stage": "setup",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: None \u2014 fixture gate assert _filesystem_type(queue.root) in LOCAL_CLOCK failed: mountinfo parser cannot classify dl380g10 /home"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "080a2d83c62bc81db6e2a3f3c2e14ef146897a8f7e365cd8cde15426138089f5",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "error",
+     "stage": "setup",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "ERROR at setup on untouched main too (080a2d83c62b..., cpu2/mem4 dl380g10, default tmpdir): the fixture gate assert _filesystem_type(queue.root) in LOCAL_CLOCK fails because the tests-own mountinfo parser cannot classify dl380g10 /home. Corroborated on untouched base c111602d83 (ancestor of 7fb7fa6b13) by b477b82929c0... (dl380g10): both ERRORs plus unreadable_ledger and live_promotion reproduce without any batch-A diff. The same file PASSES on main with --basetemp=/tmp (c76c722736c2, bd67b85520f7, aa0f8827fc39): environment fact, not a regression. The test body never ran on either side.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_an_arbitration_rereads_only_what_moved.py::test_a_fragment_filed_mid_range_is_seen_by_the_next_decision",
+   "file": "tests/test_an_arbitration_rereads_only_what_moved.py",
+   "batch_a_status": "ERROR",
+   "batch_a_stage": "setup",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AssertionError: None \u2014 fixture gate assert _filesystem_type(queue.root) in LOCAL_CLOCK failed: mountinfo parser cannot classify dl380g10 /home"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "080a2d83c62bc81db6e2a3f3c2e14ef146897a8f7e365cd8cde15426138089f5",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "error",
+     "stage": "setup",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "ERROR at setup on untouched main too (080a2d83c62b..., cpu2/mem4 dl380g10, default tmpdir): the fixture gate assert _filesystem_type(queue.root) in LOCAL_CLOCK fails because the tests-own mountinfo parser cannot classify dl380g10 /home. Corroborated on untouched base c111602d83 (ancestor of 7fb7fa6b13) by b477b82929c0... (dl380g10): both ERRORs plus unreadable_ledger and live_promotion reproduce without any batch-A diff. The same file PASSES on main with --basetemp=/tmp (c76c722736c2, bd67b85520f7, aa0f8827fc39): environment fact, not a regression. The test body never ran on either side.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_dead_owner_fragment_blocks_then_retires.py::test_unreadable_ledger_retains_without_crashing",
+   "file": "tests/test_dead_owner_fragment_blocks_then_retires.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 5,
+   "batch_a_action_key": "a4e00c39b26e15552eb0a6a80a406bf56f8511445fce3e3a12799269fafaee7b",
+   "batch_a_signature": [
+    "assert False",
+    "+  where False = all(<generator object _assert_retained.<locals>.<genexpr> at 0x70e1ad4b5000>)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "72edf65cc2109629ed672b50c5a122c85e1ef11663a44563363159a8f12bd5a1",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+   "file": "tests/test_duplication_baseline.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 8,
+   "batch_a_action_key": "78f00209a9b4183d98d657466bbff035b21d423e9fcc7fd4413fbfeedf0fe422",
+   "batch_a_signature": [
+    "AssertionError: new primitive digest sites outside ['src/prismabuild/core.py']: ['hashlib:src/prismabuild/checkout_recovery.py::_hash_stream', 'hashlib:src/prismabuild/checkout_recovery.py::_json', 'hashlib:src/prismabuild/checkout_recovery.py::_manifest_digest', 'hashlib:tools/fleet/pbtest_outcomes.py::main.OutcomeRecorder.trace', 'sorted-json:tools/fleet/pbrecover_checkout.py::_JSONParser.error', 'sorted-json:tools/fleet/pbrecover_checkout.py::main'] -- use the digest owner's named profiles instead of a new raw hashlib or sorted-JSON call (PB #1328)",
+    "assert not ({'hashlib:src/prismabuild/action_edges.py::pending_id_of', 'hashlib:src/prismabuild/adaptive_cpu.py::action_identity',...ashlib:src/prismabuild/checkout_recovery.py::_hash_stream', 'hashlib:src/prismabuild/checkout_recovery.py::_json', ...} - {'hashlib:src/prismabuild/action_edges.py::pending_id_of', 'hashlib:src/prismabuild/adaptive_cpu.py::action_identity',...ib:src/prismabuild/container_images.py::content_ref', 'hashlib:src/prismabuild/decomposition.py::document_sha256', ...})"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "6de43f6ada55d4970e2165561814079eaf896be7ab9c6ab511f8ee25e044ab46",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+   "file": "tests/test_duplication_baseline.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 8,
+   "batch_a_action_key": "78f00209a9b4183d98d657466bbff035b21d423e9fcc7fd4413fbfeedf0fe422",
+   "batch_a_signature": [
+    "AssertionError: helpers defined again in another module {'_capture': ['src/prismabuild/_measurement_reservation.py', 'src/prismabuild/checkout_recovery.py'], '_digest': ['src/prismabuild/checkout_recovery.py', 'src/prismabuild/residency_map.py'], '_identity': ['src/prismabuild/checkout_recovery.py'], '_path': ['src/prismabuild/checkout_recovery.py'], '_read': ['tools/fleet/pbrecover_checkout.py'], '_refuse': ['src/prismabuild/checkout_recovery.py', 'tools/fleet/pbcampaign.py'], '_terminal': ['src/prismabuild/checkout_recovery.py', 'tools/fleet/bench_tier_cycle.py'], 'canonical': ['src/prismabuild/posix_lock.py', 'tools/fleet/qualify_rollout.py']}: import the existing one, or register the exact name and path with its reason in same_name_distinct (PB #1328, #1386)",
+    "assert not {'_capture': ['src/prismabuild/_measurement_reservation.py', 'src/prismabuild/checkout_recovery.py'], '_digest': ['src...ap.py'], '_identity': ['src/prismabuild/checkout_recovery.py'], '_path': ['src/prismabuild/checkout_recovery.py'], ...}"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "6de43f6ada55d4970e2165561814079eaf896be7ab9c6ab511f8ee25e044ab46",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_fleet_membership_busy_resign.py::test_resign_preserves_newer_unrelated_publication",
+   "file": "tests/test_fleet_membership_busy_resign.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 2,
+   "batch_a_action_key": "b6f379b66d3fcaa8b9e73f46482963656a88d20f30ee390d6d3e37e6577dff61",
+   "batch_a_signature": [
+    "assert None is not None"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "c7d83e55cf965ee57d2011774be90026ed3cc4dca103e95914bae9eccd772bca",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_fleet_membership_busy_resign.py::test_resign_resumes_withdrawn_row_after_crash",
+   "file": "tests/test_fleet_membership_busy_resign.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 2,
+   "batch_a_action_key": "b6f379b66d3fcaa8b9e73f46482963656a88d20f30ee390d6d3e37e6577dff61",
+   "batch_a_signature": [
+    "assert None is not None",
+    "assert None is not None"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "c7d83e55cf965ee57d2011774be90026ed3cc4dca103e95914bae9eccd772bca",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_fleet_tool_flags_have_help.py::test_every_declared_argument_explains_itself[pbrecover_checkout.py]",
+   "file": "tests/test_fleet_tool_flags_have_help.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 5,
+   "batch_a_action_key": "a4e00c39b26e15552eb0a6a80a406bf56f8511445fce3e3a12799269fafaee7b",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "a64d7591ff0d56fb7611dc76d7d644aa2dd06db83dad4a4c7c295e2de1d3d3b2",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "f8dd7f046f003e678429be66900e27a3a55e523538b9c605491635c5d878b79d",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "16bed29d97ea720805f38785af04c74369c7a4008f2c6d6e9906380034a8e511",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_generation_drift_refusals.py::test_a_worker_whose_fleet_moves_at_the_claim_refuses_it",
+   "file": "tests/test_generation_drift_refusals.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 12,
+   "batch_a_action_key": "bff15acd0aa74af560a2d699a521f8c423f86651f1a0bd64e992d07a6e5c6093",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "3fe30e911cdadc52479187cddf904210bc98fcae5b044399cbf728fb1225a3a0",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_generation_drift_refusals.py::test_an_agreeing_worker_claims_and_stamps_nothing",
+   "file": "tests/test_generation_drift_refusals.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 12,
+   "batch_a_action_key": "bff15acd0aa74af560a2d699a521f8c423f86651f1a0bd64e992d07a6e5c6093",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AssertionError: these constants name the live store and nothing repoints them, so a test that reaches one reads or writes the real fleet: pbcanary_watch.DEFAULT_REPO_LINK (pbcanary_watch.py:32). Add each to LIVE_DEFAULTS in tests/conftest.py, or to EXEMPT here with the reason it cannot be reached."
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "3fe30e911cdadc52479187cddf904210bc98fcae5b044399cbf728fb1225a3a0",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_generation_drift_refusals.py::test_the_refusal_stamps_one_record_naming_both_generations",
+   "file": "tests/test_generation_drift_refusals.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 12,
+   "batch_a_action_key": "bff15acd0aa74af560a2d699a521f8c423f86651f1a0bd64e992d07a6e5c6093",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "3fe30e911cdadc52479187cddf904210bc98fcae5b044399cbf728fb1225a3a0",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_live_store_constants_are_repointed.py::test_every_live_store_constant_is_in_the_repoint_list[pbcanary_watch.py]",
+   "file": "tests/test_live_store_constants_are_repointed.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 12,
+   "batch_a_action_key": "bff15acd0aa74af560a2d699a521f8c423f86651f1a0bd64e992d07a6e5c6093",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_one_publisher_parses_unchanged_publication_metadata_once.py::test_a_second_lookup_parses_no_metadata_file_again",
+   "file": "tests/test_one_publisher_parses_unchanged_publication_metadata_once.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 18,
+   "batch_a_action_key": "85d1c5860c1c8cd7c6e96a4693c81ccc937438bcdaafefc98cb7154ca9ae5fe5",
+   "batch_a_signature": [
+    "AssertionError: the second pass re-opened 25 metadata files under an unchanged residency root (the first pass opened 35)",
+    "assert 25 == 0"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecc988f1d094af58ce2a5dbb4d491107ccd772fe790ab04cc77583f357b3dc6d",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_one_publisher_parses_unchanged_publication_metadata_once.py::test_one_pass_parses_each_metadata_file_at_most_once",
+   "file": "tests/test_one_publisher_parses_unchanged_publication_metadata_once.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 18,
+   "batch_a_action_key": "85d1c5860c1c8cd7c6e96a4693c81ccc937438bcdaafefc98cb7154ca9ae5fe5",
+   "batch_a_signature": [
+    "AssertionError: 5 metadata file(s) were opened more than once for 5 destinations: ['/home/rob/tmp/pytest-of-rob/pytest-21455/test_one_pass_parses_each_meta0/residency', '/home/rob/tmp/pytest-of-rob/pytest-21455/test_one_pass_parses_each_meta0/residency/636f6e73756d657230636f6e73756d657230636f6e73756d657230636f6e7375', '/home/rob/tmp/pytest-of-rob/pytest-21455/test_one_pass_parses_each_meta0/residency/6e6f69736530636e6f69736530636e6f69736530636e6f69736530636e6f6973']",
+    "assert not {'/home/rob/tmp/pytest-of-rob/pytest-21455/test_one_pass_parses_each_meta0/residency', '/home/rob/tmp/pytest-of-rob/py...test-21455/test_one_pass_parses_each_meta0/residency/6e6f69736532636e6f69736532636e6f69736532636e6f69736532636e6f6973'}"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecc988f1d094af58ce2a5dbb4d491107ccd772fe790ab04cc77583f357b3dc6d",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_output_window_obligation.py::test_a_batch_census_it_cannot_read_charges_the_upper_bound",
+   "file": "tests/test_output_window_obligation.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 1,
+   "batch_a_action_key": "43baa88aeec44e40e4e0a6ab44b187a4ac0ddb1a22d2473ed1a3fcce566561f9",
+   "batch_a_signature": [
+    "AttributeError: <class 'admitted_queue_fixture.AdmittedQueueFixture'> has no attribute '_output_outstanding_window_tokens'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "3010e1b14a47bf1c002e8b1e1d5ce320a6a11e6a231b1f2990bc6ce4f2d3040d",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_pbmetrics_kept_reads.py::test_idle_scrape_reads_no_record_and_lists_no_directory",
+   "file": "tests/test_pbmetrics_kept_reads.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AssertionError: 1846 opens on an unchanged queue, e.g. [('decisions', 1800), ('pb-queue', 17), ('held', 10), ('residency', 8), ('withdrawn', 3)]",
+    "assert ['/home/rob/t...vations', ...] == []"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "6de43f6ada55d4970e2165561814079eaf896be7ab9c6ab511f8ee25e044ab46",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "4bd9b88934669b0b8f7376d18d62560dc0f10ef7cc3e832eba0834f976c943ba",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [
+      "dl380g10"
+     ],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "a3f181250b7d7a14e4b2f6a56e080ec49fc6ef9cc886a4e7f80573e077857cb4",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_pbmetrics_kept_reads.py::test_one_new_ending_is_the_only_record_read",
+   "file": "tests/test_pbmetrics_kept_reads.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AssertionError: 30002 records opened after one new ending, e.g. [('done', 30002)]",
+    "assert ['/home/rob/t...91.json', ...] == ['/home/rob/t...59b3706.json']"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "6de43f6ada55d4970e2165561814079eaf896be7ab9c6ab511f8ee25e044ab46",
+     "host": "sparklina",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "passed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "4bd9b88934669b0b8f7376d18d62560dc0f10ef7cc3e832eba0834f976c943ba",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [
+      "dl380g10"
+     ],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "a3f181250b7d7a14e4b2f6a56e080ec49fc6ef9cc886a4e7f80573e077857cb4",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "passed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_pbrun_help.py::test_priority_says_what_it_is_and_what_each_transport_does_with_it",
+   "file": "tests/test_pbrun_help.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 18,
+   "batch_a_action_key": "85d1c5860c1c8cd7c6e96a4693c81ccc937438bcdaafefc98cb7154ca9ae5fe5",
+   "batch_a_signature": [
+    "AssertionError: assert 'higher runs sooner' in '--priority-reason PRIORITY_REASON\\n                        optional explanation of the priority, stored with the subm...ead per mode is in docs/operating_prismabuild.md, with the box load it was\\n                        measured under\\n  '",
+    "assert (None is not None)"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "52bc99b6d72abeb955aee8e9c52366ef69cdb9b1e0daa3d3d259934defbb19f1",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    },
+    {
+     "action_key": "be939d656774fa3d840b884d108a3a5ab763aee23fb3120ee2a66f6573bac317",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 3,
+     "tags": [
+      "x86"
+     ],
+     "rc": 1,
+     "outcome": "FAILED",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_placement_can_open_the_runtime_it_seals.py::test_a_published_pbtest_still_defaults_to_x86",
+   "file": "tests/test_placement_can_open_the_runtime_it_seals.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 14,
+   "batch_a_action_key": "e30ffea48bc10aea9ba76e4150fdfa5f828f1f1a38ba8b106249fff6da0fb40f",
+   "batch_a_signature": [
+    "AssertionError: assert [] == ['x86']",
+    "E         Right contains one more item: 'x86'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "6e7518b67f868624dc5218a6e8a72b5f4b588e92b23211c9174dfab1a566aa0c",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_pool_cpu_tiers.py::test_concurrent_claimants_have_disjoint_cpu_reservations",
+   "file": "tests/test_pool_cpu_tiers.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 11,
+   "batch_a_action_key": "eb4cff9abc305c63db105011d957ca47b72022f227160269db52d9fd7277faf2",
+   "batch_a_signature": [
+    "AssertionError: assert 1 == 4",
+    "+  where 1 = len([{'action_key': '0000000000000000000000000000000000000000000000000000000000000000', 'attempts': 0, 'cas_root': '/home/...laimants_have0/cas', 'checkout_root': '/home/rob/tmp/pytest-of-rob/pytest-21423/test_concurrent_claimants_have0', ...}])"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "16bed29d97ea720805f38785af04c74369c7a4008f2c6d6e9906380034a8e511",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_r6_tier_mutation_exclusion.py::test_a_holder_that_stays_unreadable_is_reported_every_cycle[interpreter]",
+   "file": "tests/test_r6_tier_mutation_exclusion.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 18,
+   "batch_a_action_key": "85d1c5860c1c8cd7c6e96a4693c81ccc937438bcdaafefc98cb7154ca9ae5fe5",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "da026754a519961d10d8b66173fd80a7c7e2ff345ac318fd15293dff94913a85",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_r6_tier_mutation_exclusion.py::test_a_holder_that_stays_unreadable_is_reported_every_cycle[python314]",
+   "file": "tests/test_r6_tier_mutation_exclusion.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 18,
+   "batch_a_action_key": "85d1c5860c1c8cd7c6e96a4693c81ccc937438bcdaafefc98cb7154ca9ae5fe5",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "da026754a519961d10d8b66173fd80a7c7e2ff345ac318fd15293dff94913a85",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_stale_material_done_owner_retires.py::test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes",
+   "file": "tests/test_stale_material_done_owner_retires.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 0,
+   "batch_a_action_key": "89c04e264bd9935ca37c0d505eae8244099fc8577fe64e481a72874f890c3b79",
+   "batch_a_signature": [
+    "assert (None)",
+    "AssertionError: pbtest.py does work when it is merely imported. Move it into a function called under `if __name__ == \"__main__\"`."
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "c9c897f8dc445140602ea82411936a6fe4119e44395259daef8e6157c3c17b72",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_tier_ledger_directory_names.py::test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves[None]",
+   "file": "tests/test_tier_ledger_directory_names.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 17,
+   "batch_a_action_key": "75358bfd9a38ca019c1545c1ea31e9f26b7ad71e4a6f824a2d856e7dd16e7da7",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "16bed29d97ea720805f38785af04c74369c7a4008f2c6d6e9906380034a8e511",
+     "host": "sparky",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "passed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "unresolved_suite_context_failures_isolated_pass_on_both_sources",
+   "notes": "Unresolved suite-context failure; isolated pass on both sources. Failed inside the 20-shard parallel run on the candidate, but PASSES in isolation on BOTH trees (identical pbrun invocation except --cwd; 4 CPUs, mem_gb=4, tag x86, threads 1, dl380g10): candidate action f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7 (4 passed in 2.42s), pristine-main action 0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9 (4 passed in 3.08s). These runs establish pass-in-isolation on both sources only; they do NOT establish why the original suite failed, because both resources (4 vs 2 CPUs) and suite/process context (1 process, 4 tests vs 20 parallel shards) changed. No main 20-shard arm exists, so the in-suite main behavior is unobserved; not labeled pre-existing and not labeled load-flake. tier_ledger[None] additionally passed in a main suite shard on sparky (16bed29d97ea...). Mechanism open; grouped with the #1506 timing cases.",
+   "additional_evidence": [
+    "f37c96a8b41dfbb1ee8520da6b96423bf484cb8ea385f4776bc43d90a27204f7",
+    "0f3c964864750d31f1dbac8d77ebfce0736c52d1a5e765b33c8be984d704e0a9"
+   ],
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_tools_do_not_run_on_import.py::test_a_tool_does_no_work_at_module_level[pbtest.py]",
+   "file": "tests/test_tools_do_not_run_on_import.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 0,
+   "batch_a_action_key": "89c04e264bd9935ca37c0d505eae8244099fc8577fe64e481a72874f890c3b79",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_tools_do_not_run_on_import.py::test_a_tool_drives_none_of_its_own_objects_at_module_level[pbtest.py]",
+   "file": "tests/test_tools_do_not_run_on_import.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 0,
+   "batch_a_action_key": "89c04e264bd9935ca37c0d505eae8244099fc8577fe64e481a72874f890c3b79",
+   "batch_a_signature": [],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "60d11c638c0ca654df3df2a5395be84d5f319260b0932dba09ab6796869a33fe",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_gpu_adaptive_contract.py::test_worker_autodetects_one_physical_gpu_from_the_trusted_snapshot",
+   "file": "tests/test_worker_gpu_adaptive_contract.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecaa3a5fef187aee2dfa2190c2869d406c6fd7e46198fcfa64b9897fe608302a",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_gpu_adaptive_contract.py::test_worker_backs_off_to_configured_cadence_when_queue_is_empty",
+   "file": "tests/test_worker_gpu_adaptive_contract.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecaa3a5fef187aee2dfa2190c2869d406c6fd7e46198fcfa64b9897fe608302a",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_gpu_adaptive_contract.py::test_worker_default_has_no_implicit_four_gpu_capacity",
+   "file": "tests/test_worker_gpu_adaptive_contract.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecaa3a5fef187aee2dfa2190c2869d406c6fd7e46198fcfa64b9897fe608302a",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_gpu_adaptive_contract.py::test_worker_rechecks_a_nonempty_queue_at_one_second_cadence",
+   "file": "tests/test_worker_gpu_adaptive_contract.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 19,
+   "batch_a_action_key": "2d6e196e56f383bb4bd4a02f51bd3cae2e29b46d67c3f1edc135f4cc7cafd4e0",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "ecaa3a5fef187aee2dfa2190c2869d406c6fd7e46198fcfa64b9897fe608302a",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_loop_follows_a_rename.py::test_a_box_that_was_not_renamed_announces_exactly_what_it_did",
+   "file": "tests/test_worker_loop_follows_a_rename.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 5,
+   "batch_a_action_key": "a4e00c39b26e15552eb0a6a80a406bf56f8511445fce3e3a12799269fafaee7b",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "cda4e5045c11730bb40bec1f0a6c1235914063444a97a78994cb9febd876843b",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_loop_follows_a_rename.py::test_a_loop_announces_the_name_the_box_has_now",
+   "file": "tests/test_worker_loop_follows_a_rename.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 5,
+   "batch_a_action_key": "a4e00c39b26e15552eb0a6a80a406bf56f8511445fce3e3a12799269fafaee7b",
+   "batch_a_signature": [
+    "AttributeError: '_Queue' object has no attribute 'root'",
+    "AttributeError: '_Queue' object has no attribute 'root'"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "cda4e5045c11730bb40bec1f0a6c1235914063444a97a78994cb9febd876843b",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  },
+  {
+   "node_id": "tests/test_worker_loop_reloads_unversioned.py::test_a_stale_loop_reloads_before_touching_the_queue",
+   "file": "tests/test_worker_loop_reloads_unversioned.py",
+   "batch_a_status": "FAILED",
+   "batch_a_stage": "call",
+   "batch_a_shard": 10,
+   "batch_a_action_key": "682b83a6c22168df7919abf7ce947ef9c561227d9c42ee20c8cba0a31032c884",
+   "batch_a_signature": [
+    "AssertionError: stale worker touched queue before reloading: root"
+   ],
+   "candidate_tree_parent": "dd4a3e9630e61719b7b514c921b99838cbbf3e86",
+   "batch_a_resources": "cpu=2 mem_gb=4 tag=x86 serial pytest (20-shard fanout), tmpdir /home/rob/tmp on dl380g10",
+   "main_observations": [
+    {
+     "action_key": "080a2d83c62bc81db6e2a3f3c2e14ef146897a8f7e365cd8cde15426138089f5",
+     "host": "dl380g10",
+     "cpu": 2,
+     "mem_gb": 4,
+     "tags": [],
+     "rc": 1,
+     "outcome": "failed",
+     "stage": "call",
+     "snapshot_parent": "7fb7fa6b13868c33f82be3bf094448f06e99627d",
+     "cwd": "."
+    }
+   ],
+   "attribution_class": "same_failure_on_main",
+   "notes": "Fails on untouched main 7fb7fa6b13 with retained raw records (main_observations). Test file unchanged by batch A. Signature spot-checks confirmed equal failure text on main for the structural groups (_Queue.root AttributeError on ecaa3a5fef18/3fe30e911cda/cda4e5045c11; assert 0 == 3 with _serve(...) on 60d11c638c0c; LOCAL_CLOCK gate on 080a2d83c62b; _assert_retained on 72edf65cc210; _output_outstanding_window_tokens on 3010e1b14a47; re-opened metadata on ecc988f1d094; _capture ratchet on 6de43f6ada55; x86 default on 6e7518b67f86; missing \"higher runs sooner\" on 52bc99b6d72a; promotion/owner on c9c897f8dc44). Where the only main observation is on sparky/sparklina, the host is recorded per row; those cases are not filesystem-sensitive.",
+   "owning_pr_suspect": null
+  }
+ ]
+}

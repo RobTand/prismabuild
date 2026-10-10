@@ -1,0 +1,400 @@
+{
+ "captured_unix": 1791429767.5818708,
+ "verdicts": [
+  {
+   "who": "19c85918",
+   "event": "ram-window-stalled",
+   "tier": "ram:dl380g10",
+   "record": {
+    "unix": 1791429763.8609955,
+    "event": "ram-window-stalled",
+    "consumer": "19c859187133a58c53dd32bae44c94025f3f843c5df8f4b8b69a05a410db3a51",
+    "accepted_phase": null,
+    "reading_phase": "source",
+    "blocked_phase": "source",
+    "blocked_gib": 102,
+    "runahead_gib": 0,
+    "runahead_budget_gib": 0,
+    "free_gib": 26,
+    "capacity_gib": 160,
+    "reason": "prelaunch_waiting_for_room",
+    "waiting_for": "the prelaunch group reservation",
+    "chunk_index": null,
+    "tier_id": "ram:dl380g10",
+    "verdict_since_unix": 1791424615.2520254,
+    "waited_s": 5148.609
+   }
+  },
+  {
+   "who": "19c85918",
+   "event": "prelaunch-begin-declined",
+   "tier": "prismabuild-stage:dl380g10",
+   "record": {
+    "unix": 1791429764.382738,
+    "event": "prelaunch-begin-declined",
+    "unit": "19c859187133a58c53dd32bae44c94025f3f843c5df8f4b8b69a05a410db3a51",
+    "consumer": "19c859187133a58c53dd32bae44c94025f3f843c5df8f4b8b69a05a410db3a51",
+    "tier_id": "prismabuild-stage:dl380g10",
+    "state": "unreserved",
+    "verdict_since_unix": 1791424615.813244,
+    "waited_s": 5148.569
+   }
+  },
+  {
+   "who": "19c85918",
+   "event": "window-stalled",
+   "tier": null,
+   "record": {
+    "unix": 1791429764.3830311,
+    "event": "window-stalled",
+    "consumer": "19c859187133a58c53dd32bae44c94025f3f843c5df8f4b8b69a05a410db3a51",
+    "accepted_phase": null,
+    "reading_phase": "source",
+    "blocked_phase": "source",
+    "blocked_gib": 62,
+    "runahead_gib": 0,
+    "runahead_budget_gib": 0,
+    "free_gib": 49,
+    "capacity_gib": 197,
+    "reason": "prelaunch_waiting_for_room",
+    "waiting_for": "the prelaunch group reservation",
+    "chunk_index": null,
+    "verdict_since_unix": 1791424615.8135984,
+    "waited_s": 5148.569
+   }
+  },
+  {
+   "who": "5c71d52a",
+   "event": "window-gated",
+   "tier": "prismabuild-stage:dl380g10",
+   "record": {
+    "unix": 1791429764.3832176,
+    "event": "window-gated",
+    "consumer": "5c71d52a74056ad17082a39f298f9701290fda8fa216e9c71fd88d7c611b8b97",
+    "tier_id": "prismabuild-stage:dl380g10",
+    "reason": "higher-priority-window-waiting",
+    "permanent": false,
+    "need_gib": 5,
+    "output_note": "output-scope-unenforced",
+    "waiting_on": {
+     "consumer": "a37edddd785bbe72ea98afae4a604d7a1e67b5348421f9337071cd5080efdba3",
+     "reason": "joint-fit-stall"
+    },
+    "verdict_since_unix": 1791425192.385963,
+    "waited_s": 4571.997
+   }
+  },
+  {
+   "who": "82c0a263",
+   "event": "window-gated",
+   "tier": "prismabuild-stage:dl380g10",
+   "record": {
+    "unix": 1791429764.3833969,
+    "event": "window-gated",
+    "consumer": "82c0a263068562c7e02ce22e5afab0807bbe7d9533c07f3309ceaf5c06d931ef",
+    "tier_id": "prismabuild-stage:dl380g10",
+    "reason": "higher-priority-window-waiting",
+    "permanent": false,
+    "need_gib": 4,
+    "output_note": "output-scope-unenforced",
+    "waiting_on": {
+     "consumer": "a37edddd785bbe72ea98afae4a604d7a1e67b5348421f9337071cd5080efdba3",
+     "reason": "joint-fit-stall"
+    },
+    "verdict_since_unix": 1791425192.386235,
+    "waited_s": 4571.997
+   }
+  },
+  {
+   "who": "a37edddd",
+   "event": "window-gated",
+   "tier": "prismabuild-stage:dl380g10",
+   "record": {
+    "unix": 1791429764.3835292,
+    "event": "window-gated",
+    "consumer": "a37edddd785bbe72ea98afae4a604d7a1e67b5348421f9337071cd5080efdba3",
+    "tier_id": "prismabuild-stage:dl380g10",
+    "reason": "joint-fit-stall",
+    "permanent": false,
+    "need_gib": 1,
+    "output_note": "output-scope-unenforced",
+    "commitment": {
+     "capacity_gib": 197,
+     "held_gib": 148,
+     "evictable_gib": 108,
+     "queued_gib": 0,
+     "unheld_output_gib": 0,
+     "admitted_growth_gib": 0,
+     "committed_gib": 40,
+     "footprint_gib": 1,
+     "holding_gib": 0,
+     "growth_gib": 1,
+     "consumption_basis": "undeclared",
+     "readahead_basis": "memory-reservation",
+     "landing_basis": "sealed",
+     "lone": false
+    },
+    "verdict_since_unix": 1791424685.8136802,
+    "waited_s": 5078.57
+   }
+  },
+  {
+   "who": "5c71d52a",
+   "event": "ram-window-gated",
+   "tier": "ram:dl380g10",
+   "record": {
+    "unix": 1791428586.2754962,
+    "event": "ram-window-gated",
+    "consumer": "5c71d52a74056ad17082a39f298f9701290fda8fa216e9c71fd88d7c611b8b97",
+    "tier_id": "ram:dl380g10",
+    "reason": "higher-priority-window-waiting",
+    "permanent": false,
+    "need_gib": 5,
+    "output_note": "output-scope-unenforced",
+    "verdict_since_unix": 1791428573.214686,
+    "waited_s": 13.061
+   }
+  },
+  {
+   "who": "82c0a263",
+   "event": "ram-window-gated",
+   "tier": "ram:dl380g10",
+   "record": {
+    "unix": 1791428586.2760084,
+    "event": "ram-window-gated",
+    "consumer": "82c0a263068562c7e02ce22e5afab0807bbe7d9533c07f3309ceaf5c06d931ef",
+    "tier_id": "ram:dl380g10",
+    "reason": "higher-priority-window-waiting",
+    "permanent": false,
+    "need_gib": 4,
+    "output_note": "output-scope-unenforced",
+    "verdict_since_unix": 1791428573.2148511,
+    "waited_s": 13.061
+   }
+  },
+  {
+   "who": "a37edddd",
+   "event": "ram-window-gated",
+   "tier": "ram:dl380g10",
+   "record": {
+    "unix": 1791428586.2762597,
+    "event": "ram-window-gated",
+    "consumer": "a37edddd785bbe72ea98afae4a604d7a1e67b5348421f9337071cd5080efdba3",
+    "tier_id": "ram:dl380g10",
+    "reason": "joint-fit-stall",
+    "permanent": false,
+    "need_gib": 1,
+    "output_note": "output-scope-unenforced",
+    "verdict_since_unix": 1791428573.2150006,
+    "waited_s": 13.061
+   }
+  }
+ ],
+ "last_tier_cycle": {
+  "event": "tier-cycle",
+  "unix": 1791429765.6840963,
+  "host": "dl380g10",
+  "tiers": [
+   {
+    "tier_id": "arc:dl380g10",
+    "tier": "arc",
+    "capacity_bytes": 18168417544,
+    "fill_mb_s_pool_side": 509.8,
+    "fill_source": "measured-probing",
+    "fill_supply": {
+     "ceiling_mb_s": 208.0,
+     "best_mb_s": 172.6,
+     "may_grow": false,
+     "probing": true,
+     "probe_offer_mb_s": 264.35,
+     "probe_basis": {
+      "basis": "median-single-reader-share",
+      "share_mb_s": 56.35,
+      "receipts_priced": 2805
+     }
+    },
+    "tokens": {
+     "arc_gib": 16,
+     "fill_mb_s_pool_side": 264
+    }
+   },
+   {
+    "tier_id": "prismabuild-stage:dl380g10",
+    "tier": "stage",
+    "capacity_bytes": 53684760576,
+    "fill_mb_s_pool_side": 509.8,
+    "fill_source": "measured-probing",
+    "fill_supply": {
+     "ceiling_mb_s": 208.0,
+     "best_mb_s": 172.6,
+     "may_grow": false,
+     "probing": true,
+     "probe_offer_mb_s": 264.3,
+     "probe_basis": {
+      "basis": "median-single-reader-share",
+      "share_mb_s": 56.3,
+      "receipts_priced": 2781
+     }
+    },
+    "tokens": {
+     "stage_gib": 197,
+     "fill_mb_s_pool_side": 264
+    },
+    "committed_gib": 40,
+    "waiting": 3,
+    "waiting_need_gib": 10
+   },
+   {
+    "tier_id": "ram:dl380g10",
+    "tier": "ram",
+    "capacity_bytes": 203994169344,
+    "fill_mb_s_pool_side": null,
+    "fill_source": "measured-probing",
+    "fill_supply": {
+     "ceiling_mb_s": 208.0,
+     "best_mb_s": 172.6,
+     "may_grow": false,
+     "probing": true,
+     "probe_offer_mb_s": 264.35,
+     "probe_basis": {
+      "basis": "median-single-reader-share",
+      "share_mb_s": 56.35,
+      "receipts_priced": 2805
+     }
+    },
+    "tokens": {
+     "ram_gib": 160,
+     "fill_mb_s_pool_side": 264
+    }
+   }
+  ],
+  "cycle_seconds": 5.82587,
+  "completed": true,
+  "phases": {
+   "reclaim_idle_rates": 0.005248,
+   "receipts": 0.037306,
+   "sync_ram_host_mirror": 0.007746,
+   "discover": 0.111813,
+   "mint_announce": 0.074169,
+   "manifest_promotion": 0.039326,
+   "drop_prior_ram_epochs": 0.07374,
+   "release_incomplete_ram_promotions": 0.004366,
+   "planned_consumers": 0.012861,
+   "withdrawn_keys": 0.001254,
+   "withdraw_dead_consumer_movers": 0.663747,
+   "adopt_resident_ranges": 0.06961,
+   "window_pressure": 0.507973,
+   "reclaim_failed_mover_partials": 0.001665,
+   "sweep_orphans": 2.075646,
+   "evict_beyond_horizon": 0.005427,
+   "fan_out_shared_ranges": 0.000355,
+   "ram_residency_window": 0.311042,
+   "residency_window": 0.522445,
+   "retire_terminal_output_funding": 0.001118,
+   "origin_retirement_tick": 1.296046,
+   "deferred_release": 0.000549,
+   "census_cost_and_retired_tiers": 0.000163
+  },
+  "reads": {
+   "records_listed": 4,
+   "records_kept": 3878,
+   "records_parsed": 7,
+   "census_listed": 0,
+   "census_kept": 32565,
+   "census_parses": 0,
+   "census_reuses": 0,
+   "census_walk_listed": 0,
+   "census_walk_kept": 52206,
+   "census_walk_probed": 0,
+   "census_walk_reused": 53827,
+   "census_stale_skipped": 11,
+   "census_stale_censused": 0,
+   "ledger_listed": 2,
+   "ledger_kept": 1592,
+   "ledger_parsed": 0
+  },
+  "receipts_unreadable": {},
+  "transition_lock_busy": 0,
+  "liveness": {
+   "bound_s": 120.0,
+   "poll_s": 30.0,
+   "horizon_s": 90.0,
+   "interval_s": 5.0,
+   "write_s": 0.000934,
+   "stretch_s": 1.795895,
+   "outside_s": 4.68913,
+   "spent_s": 1.136794,
+   "budget_s": 80.309936,
+   "units": {
+    "failed-mover-reclaim": 4,
+    "dead-owner": 49,
+    "consumed-origin-retirement": 1287,
+    "ended-prewrites": 60
+   },
+   "deferred": {},
+   "refreshes": 0,
+   "refresh_errors": [],
+   "oldest_age_s": 5.822447,
+   "overran": false
+  }
+ },
+ "holders_snapshot": [
+  {
+   "gib": 40,
+   "holder": "f66666734381042d745a2d4036b3ed422602b5dd010db0ce62d62ea6b850c708",
+   "consumer": "f7fba8728f50307400adde7770c8c3f6529718b08b8e293e8483c6db969c9deb",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  },
+  {
+   "gib": 40,
+   "holder": "92f67e99152576378739010d39980f4b6472e54ce44088f70c92cc940ec3cfbd",
+   "consumer": "73f0f0a1c4e26bd0bce89b468201cfd6cd7556fbc816daea281541bdc2774ec7",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  },
+  {
+   "gib": 40,
+   "holder": "063ae70e809aaba9c9adefffb39fc9e4ef3d380f922f0e09a8209b9fe4538020",
+   "consumer": "ae362d9df9bcd3f4c12d883ef2980c9a08e6b1688496b8379ea104d24a54972f",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": true
+  },
+  {
+   "gib": 22,
+   "holder": "fb5965ed2bbdff86002e3b51afdb5c05472738bbcdb0c6dacb65eb43d164658c",
+   "consumer": "79e2e21579759aaeed22eb5569ea8d8861b263392229511a057236f1f88ff8d2",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  },
+  {
+   "gib": 4,
+   "holder": "8db251f6316d31e8e2da86783f58beb2568b7b236be6b523adb8cc0f33afc691",
+   "consumer": "b2aa9c1860fc28c97823c4ddedc058c48b7d3409a3a38d9f30dcbfb7a372a0cf",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  },
+  {
+   "gib": 1,
+   "holder": "aaad02523ea42d7817df01066476ee49cf433dfcb395780e3a420f2e06c8ad0c",
+   "consumer": "d1298f9d6588ad72328759b3885b80d079f51ee1ca0c14c06eb96d16314b2eaa",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  },
+  {
+   "gib": 1,
+   "holder": "45022de3c55f510f69ab40317a4bdaa4972077a0748589836807b8887f008d5d",
+   "consumer": "cf9e8f61590a44fd8989aa681304592a1885b19f89f36fd7f9ea8b2c3c776e48",
+   "consumer_state": "absent",
+   "holder_row": "done",
+   "live": false
+  }
+ ],
+ "note": "Read-only snapshot taken BEFORE any release, 2026-10-08, for the gate defect. Sources: dl380g10:/home/rob/tmp/pb-role-tiers.log (tier loop) and the stage ledger."
+}

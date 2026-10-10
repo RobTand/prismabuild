@@ -1,0 +1,16 @@
+pbtest: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the shards publish, the claim-time check guards every box, and the fleet's next poll places them where the path lives.
+pbtest: each shard seals execution_timeout_s=1800 (--timeout-s 1800; ceilings announced: dl380g10 3600s); admission reads it as the shard's declared end (#939)
+pbtest: per-test bound 1770s (PRISMABUILD_TEST_TIMEOUT_S); a test that outlives it fails as itself instead of holding the shard to its ceiling
+pbtest: each shard also seals its remaining budget (PRISMABUILD_SHARD_BUDGET_S=1800); a test starting with less time left than its bound is failed at what is left
+4 files -> 1 shards (min 4, max 4 files per shard), tags=['x86'], transport=pool
+shard   0 pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.
+shard   0 pbrun: queued 62d92ebd416b45b4c3fa0b6914db8ee366a3f9b857c8a4a6e49b6671b589b98c tags=['x86'] demand={'mem_gb': 8, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791171465.728144
+shard   0 action 62d92ebd416b45b4c3fa0b6914db8ee366a3f9b857c8a4a6e49b6671b589b98c (queued): tests/gate_campaign_shape.py tests/test_census_lock_set_1498.py tests/test_measurement_census_reader_fence_1498.py tests/test_measurement_reservation_census_1419.py
+shard   0 pbrun: attempt 1/1 executed (done)
+shard   0 pbrun: log capture executable=/usr/bin/gnutee
+shard   0 pbrun: executed on dl380g10 in 1185s; rss=1.3G io w=2.4G r=184.0K
+shard   0 ok       31 passed, 19 warnings in 1181.57s (0:19:41) [action 62d92ebd416b45b4c3fa0b6914db8ee366a3f9b857c8a4a6e49b6671b589b98c]
+
+reconciliation: 31 collected, 31 ran; the summaries count 31 outcome(s) = 31 test(s) + 0 at collection + 0 extra phase(s)
+
+1/1 shards green

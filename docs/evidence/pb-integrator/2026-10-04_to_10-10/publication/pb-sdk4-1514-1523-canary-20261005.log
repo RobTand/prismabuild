@@ -1,0 +1,9 @@
+pbcanary: leg-1: precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-2: precondition refused (leg-2): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-3: precondition refused (leg-3): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-4: verified: leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93… verified (sparky+sparklina)
+pbcanary: leg-1: FAIL: precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-2: FAIL: precondition refused (leg-2): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-3: FAIL: precondition refused (leg-3): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test
+pbcanary: leg-4: ok: leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93… verified
+pbcanary: precondition refused (leg leg-1): precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test

@@ -1,0 +1,1 @@
+Carry the claim-gate fix for issue 1594 onto the live generation f79b6e6d02: PR 1632 makes a declared prelaunch prefix wait until the composed map holds every entry of each shared lead, so a strict consumer is not claimed on a partial map. Review: Sol approved 4963b0c52a. Shape gate and neighbour files passed on this commit.

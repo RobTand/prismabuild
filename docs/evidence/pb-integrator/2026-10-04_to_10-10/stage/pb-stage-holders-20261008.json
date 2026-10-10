@@ -1,0 +1,58 @@
+[
+ {
+  "gib": 40,
+  "holder": "f66666734381042d745a2d4036b3ed422602b5dd010db0ce62d62ea6b850c708",
+  "consumer": "f7fba8728f50307400adde7770c8c3f6529718b08b8e293e8483c6db969c9deb",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ },
+ {
+  "gib": 40,
+  "holder": "92f67e99152576378739010d39980f4b6472e54ce44088f70c92cc940ec3cfbd",
+  "consumer": "73f0f0a1c4e26bd0bce89b468201cfd6cd7556fbc816daea281541bdc2774ec7",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ },
+ {
+  "gib": 40,
+  "holder": "063ae70e809aaba9c9adefffb39fc9e4ef3d380f922f0e09a8209b9fe4538020",
+  "consumer": "ae362d9df9bcd3f4c12d883ef2980c9a08e6b1688496b8379ea104d24a54972f",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": true
+ },
+ {
+  "gib": 22,
+  "holder": "fb5965ed2bbdff86002e3b51afdb5c05472738bbcdb0c6dacb65eb43d164658c",
+  "consumer": "79e2e21579759aaeed22eb5569ea8d8861b263392229511a057236f1f88ff8d2",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ },
+ {
+  "gib": 4,
+  "holder": "8db251f6316d31e8e2da86783f58beb2568b7b236be6b523adb8cc0f33afc691",
+  "consumer": "b2aa9c1860fc28c97823c4ddedc058c48b7d3409a3a38d9f30dcbfb7a372a0cf",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ },
+ {
+  "gib": 1,
+  "holder": "aaad02523ea42d7817df01066476ee49cf433dfcb395780e3a420f2e06c8ad0c",
+  "consumer": "d1298f9d6588ad72328759b3885b80d079f51ee1ca0c14c06eb96d16314b2eaa",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ },
+ {
+  "gib": 1,
+  "holder": "45022de3c55f510f69ab40317a4bdaa4972077a0748589836807b8887f008d5d",
+  "consumer": "cf9e8f61590a44fd8989aa681304592a1885b19f89f36fd7f9ea8b2c3c776e48",
+  "consumer_state": "absent",
+  "holder_row": "done",
+  "live": false
+ }
+]

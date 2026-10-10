@@ -1,0 +1,1 @@
+Carry the prelaunch second-capture fix for issues 1594 and 1628 onto the live generation f575f0a313: PR 1629 writes the new funding generation before any token moves, so an interrupted rotation resumes from a matching record and a second prelaunch capture can publish its chunks. Review: Sol approved e1fdef25b0. Shape gate and neighbour files passed on this commit.

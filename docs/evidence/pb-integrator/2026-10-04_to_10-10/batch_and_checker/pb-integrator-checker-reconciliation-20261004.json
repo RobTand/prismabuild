@@ -1,0 +1,44 @@
+{
+  "owner": "pb-integrator",
+  "checked_at": "2026-10-04T16:56:10.010962+00:00",
+  "digest_path": "/home/rob/fleet/ceo/state/checker-digest-PrismaBuildIntegrator.md",
+  "digest_generated_at": "2026-10-04T16:31:17+00:00",
+  "findings": [
+    {
+      "kind": "blocker_unchanged",
+      "record": "prismabuild-1485",
+      "disposition": "superseded",
+      "evidence": "Current record implementing with no blockers; D1 released exact SDK5 admitted CPU packaging and worker owns qualification."
+    },
+    {
+      "kind": "blocker_unchanged",
+      "record": "prismabuild-1483",
+      "disposition": "superseded",
+      "evidence": "Current record revising with no blockers, updated16:52:25; D1 removed inherited registration gate; takeover counter2 preserved."
+    },
+    {
+      "kind": "blocker_unchanged",
+      "record": "prismabuild-pr-1325",
+      "disposition": "superseded_by_D11",
+      "evidence": "Current plain-English campaign-supplied blocker updated16:52:25; real campaign export producer required, PB1483 not prerequisite."
+    },
+    {
+      "kind": "blocker_unchanged",
+      "record": "prismabuild-pr-1326",
+      "disposition": "superseded_by_D11",
+      "evidence": "Current plain-English campaign-supplied blocker updated16:52:25; real campaign export producer required, PB1483 not prerequisite."
+    },
+    {
+      "kind": "accepted_unintegrated",
+      "record": "prismabuild-pr-1325",
+      "disposition": "intentional_D11_deferral",
+      "evidence": "Accepted source only; CEO D11 forbids activation before real producer evidence. Not merge-ready; no acceptance reset or unsafe merge."
+    },
+    {
+      "kind": "accepted_unintegrated",
+      "record": "prismabuild-pr-1326",
+      "disposition": "intentional_D11_deferral",
+      "evidence": "Accepted source only; CEO D11 deferral retained. No fabricated measurement, acceptance reset or unsafe merge."
+    }
+  ]
+}

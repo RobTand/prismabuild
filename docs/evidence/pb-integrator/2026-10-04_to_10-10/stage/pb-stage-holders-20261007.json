@@ -1,0 +1,321 @@
+[
+ {
+  "holder": "5996ffb1b54b9f640142098a7110e4fa6b6e64cdc879a197fb421303b29e3d2f",
+  "gib": 40,
+  "age_h": 29.5,
+  "holder_state": "done",
+  "range": [
+   0,
+   42935213532,
+   "f6df62948a57"
+  ],
+  "consumer": "4f5fe7566599a996d619a0d7260c5070980a64ee2b7f4e4b955508c82d36f601",
+  "consumer_state": "failed",
+  "consumer_hint": "python3 | capture_launch.py --root /mnt/shared/tessera-measurements/eng-pact-pricing-20261006/clean-",
+  "holder_hint": "",
+  "owner": "eng-pact-pricing",
+  "basis": "proved: consumer 4f5fe756 command capture_launch.py --root .../eng-pact-pricing-20261006"
+ },
+ {
+  "holder": "797cb37391bc8a54209ee8246711b36bccc6d1277e51e1b11939ef08dc2d543c",
+  "gib": 40,
+  "age_h": 446.7,
+  "holder_state": "done",
+  "range": [
+   0,
+   42947508462,
+   "bd9def4f5629"
+  ],
+  "consumer": "3abe4a4a360a31292bcf9152bc91a24f33fe4109d713a36afec4b877bae71b96",
+  "consumer_state": "failed",
+  "consumer_hint": "python3 | -c import json,os,pathlib,sys\nroot=pathlib.Path(sys.argv[1]);root.mkdir(parents=True,exist",
+  "holder_hint": "",
+  "owner": "eng-pact-energy",
+  "basis": "proved: consumer 3abe4a4a command writes under .../eng-pact-energy-20261007/first-native-L03-01/gpu"
+ },
+ {
+  "holder": "ad9787e28fad496bbfc8de241d125c4d2037a53d73180472733a5f24bf976ce9",
+  "gib": 40,
+  "age_h": 29.6,
+  "holder_state": "done",
+  "range": [
+   42947508462,
+   85887746806,
+   "bd9def4f5629"
+  ],
+  "consumer": "3abe4a4a360a31292bcf9152bc91a24f33fe4109d713a36afec4b877bae71b96",
+  "consumer_state": "failed",
+  "consumer_hint": "python3 | -c import json,os,pathlib,sys\nroot=pathlib.Path(sys.argv[1]);root.mkdir(parents=True,exist",
+  "holder_hint": "",
+  "owner": "eng-pact-energy",
+  "basis": "proved: same consumer 3abe4a4a"
+ },
+ {
+  "holder": "d44016e194272deefcc279607214da657dd9f4fa30758c96060b6bc876385382",
+  "gib": 22,
+  "age_h": 19.3,
+  "holder_state": "done",
+  "range": [
+   85887746806,
+   108820324060,
+   "bd9def4f5629"
+  ],
+  "consumer": "3abe4a4a360a31292bcf9152bc91a24f33fe4109d713a36afec4b877bae71b96",
+  "consumer_state": "failed",
+  "consumer_hint": "python3 | -c import json,os,pathlib,sys\nroot=pathlib.Path(sys.argv[1]);root.mkdir(parents=True,exist",
+  "holder_hint": "",
+  "owner": "eng-pact-energy",
+  "basis": "proved: same consumer 3abe4a4a"
+ },
+ {
+  "holder": "c2ea745cb049db4f89ac00dc38952c05404ff3c38af077aa6cd95a92d16b23cd",
+  "gib": 8,
+  "age_h": 29.6,
+  "holder_state": "done",
+  "range": [
+   85884318692,
+   93715104356,
+   "f6df62948a57"
+  ],
+  "consumer": "4f5fe7566599a996d619a0d7260c5070980a64ee2b7f4e4b955508c82d36f601",
+  "consumer_state": "failed",
+  "consumer_hint": "python3 | capture_launch.py --root /mnt/shared/tessera-measurements/eng-pact-pricing-20261006/clean-",
+  "holder_hint": "",
+  "owner": "eng-pact-pricing",
+  "basis": "proved: same consumer 4f5fe756"
+ },
+ {
+  "holder": "96706464064db68a46693ddc64bd763f8195cc87236ba9657fe25f591d5edc80",
+  "gib": 7,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   0,
+   7083244894,
+   "c2b3ee95fff8"
+  ],
+  "consumer": "f0afae41b6e3dfea633a6a676efe611b4cc1cf59c40be72635d6ce98accadc17",
+  "consumer_state": "done",
+  "consumer_hint": "python | encode_launch.py --stage select-unit",
+  "holder_hint": "",
+  "owner": "D44 lane (eng-d44-*)",
+  "basis": "inferred: consumer command encode_launch.py --stage select-unit"
+ },
+ {
+  "holder": "22773bc1bf42f641a44c37d3f7229d8c02240a45ecfc038b709f0c921ce0f811",
+  "gib": 2,
+  "age_h": 446.5,
+  "holder_state": "no queue row",
+  "range": null,
+  "consumer": null,
+  "consumer_state": "no registration",
+  "consumer_hint": "",
+  "holder_hint": "python3 | /mnt/shared/prismabuild-fleet/runtime-generations/05b5fe513815-1790291756-b8a4920e8570/too | PRISMABUILD_PRODUCED_SPOOL_ROOT=/home/rob/pb-spool/glm-campaign",
+  "owner": "unknown (glm campaign?)",
+  "basis": "inferred: no queue row, no registration; env PRISMABUILD_PRODUCED_SPOOL_ROOT=/home/rob/pb-spool/glm-campaign; runtime generation 05b5fe513815"
+ },
+ {
+  "holder": "28501a4b8ab97dc098cca8e3535654d18673e235ac376fa9ea4b22b885f53304",
+  "gib": 1,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   6291456,
+   14680064,
+   "5ba8d8be79f4"
+  ],
+  "consumer": "8ff507e6010f2da721c9f9c627d65f51dbc3ec5f37ca766efa49db328c647fe8",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T181252Zc134"
+ },
+ {
+  "holder": "42cae3588b75d56c26d9a1b255801f0b753d56fd1bd46192401d04541eb023ce",
+  "gib": 1,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   14680064,
+   25165824,
+   "5ba8d8be79f4"
+  ],
+  "consumer": "8ff507e6010f2da721c9f9c627d65f51dbc3ec5f37ca766efa49db328c647fe8",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T181252Zc134"
+ },
+ {
+  "holder": "554c204ef07e2439476f5b30b7744594a0e97b95e8175dde1095df39ad9a3088",
+  "gib": 1,
+  "age_h": 29.4,
+  "holder_state": "done",
+  "range": [
+   14680064,
+   25165824,
+   "8ec6232171dd"
+  ],
+  "consumer": "dacb6414d2597cf64a8940444c667e3e0d0a2b766f3a089761ed3883f336aa78",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator or the earlier canary driver",
+  "basis": "inferred: canary leg 3 command; consumer dacb6414 done, 29 h old"
+ },
+ {
+  "holder": "69828b1074c15398ff8250a426efb65eec6639397c81da8913c2392268fbd439",
+  "gib": 1,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   6291456,
+   14680064,
+   "3cf38cead690"
+  ],
+  "consumer": "fca08d38473480ba74e629c25e19179968e47cb256ad17a580a63086efb4a0f8",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T182237Zc4"
+ },
+ {
+  "holder": "7b571f42035b7f469eda302a337870ec219ef9f6d27b156e56cf282e6279bf16",
+  "gib": 1,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   0,
+   1955233,
+   "46de21ab3af1"
+  ],
+  "consumer": "83480ca5fe6b2479ff3776d6f2dbe3e98105668eeecd95bb6d0dc72231c7ee69",
+  "consumer_state": "ready",
+  "consumer_hint": "bash | -lc set -euo pipefail\nCHECKOUT=\"$PWD\"; WORK=\"$2\"; IMAGE=${ORACLE_IMAGE:?}\nmkdir -p \"$WORK/",
+  "holder_hint": "",
+  "owner": "kernels",
+  "basis": "inferred: consumer 83480ca5fe6b READY, command experiments/graph_attest_702, ORACLE_IMAGE"
+ },
+ {
+  "holder": "86d65ceae7607dd6b45e1358482cb721666fb41d4877ee475c98a9c0d3cff909",
+  "gib": 1,
+  "age_h": 29.4,
+  "holder_state": "done",
+  "range": [
+   0,
+   310695487,
+   "680af31d319b"
+  ],
+  "consumer": "8a778837e6b485d6c5909985b868d548c34588ea9e84551bba7d992154477b8a",
+  "consumer_state": "failed",
+  "consumer_hint": "python | stage1a_energy.py --pq-root /mnt/shared/tessera-measurements/t8-nextarm-source-preparation",
+  "holder_hint": "",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer 8a778837 failed, stage1a_energy.py"
+ },
+ {
+  "holder": "8e9adb3d77a6bf779644209cf4d3c31b8bfa2e88fe4fb8ab5df3e0c9acd85bc4",
+  "gib": 1,
+  "age_h": 29.4,
+  "holder_state": "done",
+  "range": [
+   6291456,
+   14680064,
+   "8ec6232171dd"
+  ],
+  "consumer": "dacb6414d2597cf64a8940444c667e3e0d0a2b766f3a089761ed3883f336aa78",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator or the earlier canary driver",
+  "basis": "inferred: canary leg 3 command; consumer dacb6414 done, 29 h old"
+ },
+ {
+  "holder": "a01df75a5e850ba37d2dca4c814a86087092df20237343304b9202280ce76a3c",
+  "gib": 1,
+  "age_h": 29.6,
+  "holder_state": "done",
+  "range": [
+   0,
+   42087,
+   "b47fed9f607d"
+  ],
+  "consumer": "1e7f5150fcc42a10c0c008574abf80d81228c1a037f03f266522d180da63d87a",
+  "consumer_state": "ready",
+  "consumer_hint": "bash | experiments/t4_code/t4_fused_qualify_action.sh --mode timing | PB_CLIENT_ROOT=/mnt/shared/prismabuild-fleet/repo",
+  "holder_hint": "",
+  "owner": "kernels",
+  "basis": "inferred: consumer 1e7f5150fcc4 READY, command experiments/t4_code/t4_fused_qualify_action.sh"
+ },
+ {
+  "holder": "a5d7cc85a3addd9d053298d799447291084a396c1a9ed446d006f7474eac5dc5",
+  "gib": 1,
+  "age_h": 29.4,
+  "holder_state": "done",
+  "range": [
+   0,
+   361117460,
+   "267398cdc289"
+  ],
+  "consumer": "af0909e97017d4863805c0c61581a393063b249ba3ab85d250d89670f6efe9c8",
+  "consumer_state": "done",
+  "consumer_hint": "python | stage1a_energy.py --pq-root /mnt/shared/tessera-measurements/t8-nextarm-source-preparation",
+  "holder_hint": "",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer af0909e9 done, stage1a_energy.py"
+ },
+ {
+  "holder": "bd517f986da5d02be33620b75e9aa5f9bc45fb0b45618f962c770e535c83ae3f",
+  "gib": 1,
+  "age_h": 19.9,
+  "holder_state": "done",
+  "range": [
+   14680064,
+   25165824,
+   "3cf38cead690"
+  ],
+  "consumer": "fca08d38473480ba74e629c25e19179968e47cb256ad17a580a63086efb4a0f8",
+  "consumer_state": "done",
+  "consumer_hint": "python3 | tools/fleet/pbcanary_legs/leg3.py --run-action",
+  "holder_hint": "",
+  "owner": "pb-integrator",
+  "basis": "proved: canary leg 3 of my run 20261007T182237Zc4"
+ },
+ {
+  "holder": "d433fc71c97b7804841f9390589b62916bf943d2c3d6727947f004bf25ebfa93",
+  "gib": 1,
+  "age_h": 29.4,
+  "holder_state": "done",
+  "range": [
+   310695487,
+   361117460,
+   "680af31d319b"
+  ],
+  "consumer": "8a778837e6b485d6c5909985b868d548c34588ea9e84551bba7d992154477b8a",
+  "consumer_state": "failed",
+  "consumer_hint": "python | stage1a_energy.py --pq-root /mnt/shared/tessera-measurements/t8-nextarm-source-preparation",
+  "holder_hint": "",
+  "owner": "campaign (t8-nextarm source preparation)",
+  "basis": "inferred: consumer 8a778837 failed, stage1a_energy.py"
+ },
+ {
+  "holder": "e33e50502949a70047cc901e48dea8a00dff3767a9fef99ff3e5004a08162317",
+  "gib": 1,
+  "age_h": 2.9,
+  "holder_state": "done",
+  "range": [
+   0,
+   1881833,
+   "ecbf762f8ef9"
+  ],
+  "consumer": "7b1a0db8a5d2068aaa4ee373793c27ef9f6183190b23e15d47e32019d4dcc161",
+  "consumer_state": "done",
+  "consumer_hint": "bash | -lc set -euo pipefail; export PYTHONPATH=\"$PWD/src:$PWD/tests:$PWD\"; bash experiments/t4_c",
+  "holder_hint": "",
+  "owner": "kernels",
+  "basis": "inferred: consumer 7b1a0db8a5d2 done, command experiments/t4_c..."
+ }
+]

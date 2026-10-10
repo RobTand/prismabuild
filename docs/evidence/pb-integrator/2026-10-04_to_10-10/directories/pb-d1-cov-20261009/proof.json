@@ -1,0 +1,16 @@
+{
+ "unit": "pb-d44-d1-cov-22450.service",
+ "pid": 2730751,
+ "epoch_active_enter": "Fri 2026-10-09 03:55:24 EDT",
+ "address": "192.168.1.68:22450",
+ "max_requests": 400,
+ "token_file": "/home/rob/fleet/inventory/pb-d1-cov-20261009/token",
+ "audit": "/home/rob/fleet/inventory/pb-d1-cov-20261009/audit.jsonl",
+ "log": "/home/rob/fleet/inventory/pb-d1-cov-20261009/server.log",
+ "production_port_22449_listeners": [],
+ "wrong_token_probe_bytes": 0,
+ "audit_empty_after_probe": true,
+ "ok": true,
+ "stop": "systemctl --user stop pb-d44-d1-cov-22450.service",
+ "at": "2026-10-09T07:55:24+00:00"
+}

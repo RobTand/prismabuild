@@ -1,0 +1,63 @@
+{
+ "at": "2026-10-09T08:48:28+00:00",
+ "unit": "pb-d44-d1-22449.service",
+ "checks": {
+  "P1 preconditions: custody hashes match, port free, the owner unit is not active, audit untouched": {
+   "pass": true,
+   "detail": {
+    "server": "d93bb59c601d",
+    "token": "3cdafea97cb3",
+    "port_listeners": [],
+    "owner_unit_state": "inactive",
+    "audit_lines": 1
+   }
+  },
+  "P2 active, one listener on the declared address, exact arguments, nothing else on the port": {
+   "pass": true,
+   "detail": {
+    "pid": 2998480,
+    "listeners": [
+     "192.168.1.68:22449"
+    ],
+    "max_requests": "400",
+    "enabled": "static",
+    "restart": "on-failure"
+   }
+  },
+  "P3 READY line names the fixed command and the limit": {
+   "pass": true,
+   "detail": "D44_D1_SERVICE_READY {\"pid\": 2998480, \"bind\": \"192.168.1.68\", \"port\": 22449, \"fixed_command\": [\"/home/rob/fleet/ceo/bin/fleet-diskcheck\", \"--need-gb\", \"2\", \"--hosts\", \"sparky,sparklina\", \"--paths\", \"/,/mnt/shared\"], \"max"
+  },
+  "P4 wrong-token probe: no data, custody audit unchanged (no real request used the count)": {
+   "pass": true,
+   "detail": {
+    "audit_before": [
+     1,
+     1370
+    ],
+    "audit_after": [
+     1,
+     1370
+    ],
+    "bytes_received": 0
+   }
+  },
+  "P5 custody files unchanged": {
+   "pass": true,
+   "detail": {
+    "server": "d93bb59c601d",
+    "token": "3cdafea97cb3"
+   }
+  }
+ },
+ "summary": {
+  "unit": "pb-d44-d1-22449.service",
+  "unit_file": "/home/rob/.config/systemd/user/pb-d44-d1-22449.service",
+  "pid": 2998480,
+  "address": "192.168.1.68:22449",
+  "max_requests": 400,
+  "stop_command": "systemctl --user stop pb-d44-d1-22449.service",
+  "log": "/home/rob/fleet/inventory/pb-d1-prod-20261009/server.log",
+  "audit": "/home/rob/fleet/ceo/exec/eng-d44-execution-sol/autonomous-phase-fa37751-D1-service-audit.jsonl"
+ }
+}

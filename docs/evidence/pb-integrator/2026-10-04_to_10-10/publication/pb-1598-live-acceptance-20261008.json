@@ -1,0 +1,62 @@
+{
+ "schema": "pb-integrator.issue1598_live_acceptance.v1",
+ "at": "2026-10-08T11:06:13.682653+00:00",
+ "owner": "pb-integrator",
+ "authority": "CEO 2026-10-08 relaying kernels: idle-Spark ship work at priority 0 when PACT has no ready GPU work queued",
+ "accepted_scope": "Live two-host target-evidence submission from celestia: packet collected on a Spark by a PrismaBuild action; accepted by the live pbrun client; a two-member pbgang measurement gang sealed its class facts from the packet; each member was checked by its own worker, admitted exclusive on its own GB10, executed, published a receipt and released its scope.",
+ "not_accepted": [
+  "GPU use or measurement isolation under a real workload (members ran /bin/true)",
+  "PACT single-action command (pbrun --gpu --measurement --host-class gb10 --tag gb10 --target-evidence); issue 1598 stays open for it",
+  "the MNBT matrix or any resource or image behaviour of it",
+  "a barrier record: the gang record was retired before I read it, so the start barrier itself was not observed"
+ ],
+ "collective_admission_evidence": "Both members carry sealed params.gang group 18d6c778a39962ba4eeb7cfc24e524e9 (index 0 and 1, size 2). Their GPU admissions are 1.64 s apart on two different Sparks. Start skew bound 120 s. No barrier record survived.",
+ "runtime": "54600c279f74-1791454732-72ee56a0cf48 (carries PR 1600 and PR 1611; not republished for this)",
+ "preflight": "no GPU job and no priority>=10 job READY or CLAIMED at 10:58:09Z and 10:59:31Z; fleet-diskcheck need 1 GiB passed on sparky and sparklina",
+ "packet": {
+  "action_key": "2439ecb1514111adb94bd112980dfa13238db9a708fc785f08eec3f0d00bef00",
+  "host": "sparklina",
+  "file": "/mnt/shared/fleet-ceo/pb-1598-canary-20261008/packet-20261008T105819Z.json",
+  "class": "gb10",
+  "accelerator": "NVIDIA GB10 cc 12.1 driver 595.91.07",
+  "accepted_by": "live pbrun.load_target_evidence(host_class=gb10)"
+ },
+ "gang": {
+  "group": "18d6c778a39962ba4eeb7cfc24e524e9",
+  "priority": 0,
+  "members": [
+   {
+    "action_key": "537c0190dae8419457d6f2d2217b41a46b8abcf48b79071e57438953e0a68134",
+    "host": "sparklina",
+    "claimed_unix": 1791457199.5871158,
+    "finished_unix": 1791457201.9999852,
+    "status": "executed",
+    "gpu_admitted_unix": 1791457199.3859508,
+    "device_uuid": "GPU-b1eceeea-fec7-371e-2cf3-cd10f2e7b705",
+    "exclusive": true,
+    "measurement": true,
+    "cas_receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/53/537c0190dae8419457d6f2d2217b41a46b8abcf48b79071e57438953e0a68134.json"
+   },
+   {
+    "action_key": "0a276285e787867d41b13bcabf03bf9d6935342539db83cf8bb5239c55c42ccb",
+    "host": "sparky",
+    "claimed_unix": 1791457201.2237756,
+    "finished_unix": 1791457202.4776347,
+    "status": "executed",
+    "gpu_admitted_unix": 1791457201.0299351,
+    "device_uuid": "GPU-e76c7efc-c157-b1f4-1348-83e4eb5092f4",
+    "exclusive": true,
+    "measurement": true,
+    "cas_receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/0a/0a276285e787867d41b13bcabf03bf9d6935342539db83cf8bb5239c55c42ccb.json"
+   }
+  ],
+  "sealed": "task_class measurement; execution_scope platform_keyed, platform_key linux-aarch64-sm121, host_class null; params.gpu_exclusive true"
+ },
+ "submit_route_proven": "pbgang --manifest M --cwd CHECKOUT --target-evidence PACKET, from celestia, one member per Spark",
+ "caveats": [
+  "celestia saw files written on another host after about one to five minutes; my script first misreported a missing packet and receipt for that reason; both files existed",
+  "the packet declares facts; each worker checked them against its own live facts, and the members ran, so the check passed"
+ ],
+ "logs": "/mnt/shared/fleet-ceo/pb-1598-canary-20261008/canary.log",
+ "comment": "https://github.com/RobTand/prismabuild/issues/1598#issuecomment-6058431425"
+}

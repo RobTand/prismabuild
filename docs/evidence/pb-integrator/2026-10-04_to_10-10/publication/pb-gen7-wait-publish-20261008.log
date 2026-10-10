@@ -1,0 +1,8 @@
+10:18:16Z GPU jobs READY or CLAIMED: 0 (quiet checks in a row: 1)
+10:18:48Z GPU jobs READY or CLAIMED: 0 (quiet checks in a row: 2)
+10:18:48Z publishing: the GPU census rows ended (two quiet checks)
+10:18:54Z publish rc=0; live generation now 54600c279f74-1791454732-72ee56a0cf48
+10:18:54Z starting the four-leg canary against 54600c279f74-1791454732-72ee56a0cf48
+10:18:59Z canary run 20261008T101854Zg7; result file /mnt/shared/prismabuild-fleet/pb-canary/20261008T101854Zg7/canary-result.json
+10:21:29Z canary driver rc=0; verdict (exit failed_leg failed_check): 0 None None
+10:21:29Z CANARY PASSED

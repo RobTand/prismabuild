@@ -1,0 +1,6 @@
+14:07:05Z publishing gen10 over c8daa1be416c-1791512870-55b0e8c72f6b
+14:07:14Z publish rc=0; live generation now cfe060ca7205-1791554831-7b15cf417d57
+14:07:22Z starting the four-leg canary against cfe060ca7205-1791554831-7b15cf417d57
+14:07:27Z canary run 20261009T140722Zg10; result file /mnt/shared/prismabuild-fleet/pb-canary/20261009T140722Zg10/canary-result.json
+14:10:27Z canary driver rc=0; verdict (exit failed_leg failed_check): 0 None None
+14:10:27Z CANARY PASSED

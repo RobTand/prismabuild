@@ -1,0 +1,48 @@
+13:55:52Z {"msg": "watching for a new declared-prelaunch consumer", "ready_or_claimed_before": 1}
+13:55:52Z {"waiting": true, "tier": {"cap": 148, "held": 35, "free": 113}}
+13:56:12Z {"waiting": true, "tier": {"cap": 148, "held": 35, "free": 113}}
+13:56:32Z {"waiting": true, "tier": {"cap": 148, "held": 35, "free": 113}}
+13:56:52Z {"waiting": true, "tier": {"cap": 148, "held": 35, "free": 113}}
+13:57:12Z {"waiting": true, "tier": {"cap": 148, "held": 35, "free": 113}}
+13:57:32Z {"msg": "tracking", "consumer": "2a9e70d3081013d3f47eace5f84d8c956c501deaa3283d1445cc52ad49672007", "declared_phases": ["source"], "tier": {"cap": 148, "held": 35, "free": 113}}
+13:57:32Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 2}, "skips": []}
+13:57:52Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 6}, "skips": []}
+13:58:12Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 10}, "skips": []}
+13:58:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 14}, "skips": []}
+13:58:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 18}, "skips": []}
+13:59:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 22}, "skips": []}
+13:59:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 148, "held": 35, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 26}, "skips": []}
+13:59:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 147, "held": 34, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 29}, "skips": []}
+14:00:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 145, "held": 32, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 34}, "skips": []}
+14:00:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 144, "held": 31, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 37}, "skips": []}
+14:00:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 143, "held": 30, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 41}, "skips": []}
+14:01:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 141, "held": 28, "free": 113}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 45}, "skips": []}
+14:01:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 141, "held": 21, "free": 120}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 49}, "skips": []}
+14:01:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 131, "held": 11, "free": 120}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 53}, "skips": []}
+14:02:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 57}, "skips": []}
+14:02:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 61}, "skips": []}
+14:02:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 65}, "skips": []}
+14:03:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 69}, "skips": []}
+14:03:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 73}, "skips": []}
+14:03:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 77}, "skips": []}
+14:04:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 80}, "skips": []}
+14:04:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 83}, "skips": []}
+14:04:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 86}, "skips": []}
+14:05:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 88}, "skips": []}
+14:05:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 90}, "skips": []}
+14:05:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 92}, "skips": []}
+14:06:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 94}, "skips": []}
+14:06:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 96}, "skips": []}
+14:06:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 98}, "skips": []}
+14:07:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 100}, "skips": []}
+14:07:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 102}, "skips": []}
+14:07:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 104}, "skips": []}
+14:08:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 106}, "skips": []}
+14:08:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 108}, "skips": []}
+14:08:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 110}, "skips": []}
+14:09:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 112}, "skips": []}
+14:09:33Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 114}, "skips": []}
+14:09:53Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 116}, "skips": []}
+14:10:13Z {"consumer": "2a9e70d30810", "state": "ready", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 4, "leads_holding": 1, "events": {"ram-window-stalled": 118}, "skips": []}
+14:10:33Z {"consumer": "2a9e70d30810", "state": "withdrawn", "tier": {"cap": 130, "held": 1, "free": 129}, "leads": 0, "leads_holding": 0, "events": {}, "skips": []}
+14:10:33Z {"msg": "stopping: the consumer reached withdrawn"}

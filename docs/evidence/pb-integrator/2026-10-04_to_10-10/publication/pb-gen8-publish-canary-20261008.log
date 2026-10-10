@@ -1,0 +1,6 @@
+23:22:09Z publishing gen8 over 54600c279f74-1791454732-72ee56a0cf48
+23:22:19Z publish rc=0; live generation now 8f58b7f33ef6-1791501736-15af5a3300de
+23:22:24Z starting the four-leg canary against 8f58b7f33ef6-1791501736-15af5a3300de
+23:22:29Z canary run 20261008T232224Zg8; result file /mnt/shared/prismabuild-fleet/pb-canary/20261008T232224Zg8/canary-result.json
+23:42:19Z canary driver rc=2; verdict (exit failed_leg failed_check): none [Errno 2] No such file or directory: '/mnt/shared/prismabuild-fleet/pb-canary/20261008T232224Zg8/canary-result.json'
+23:42:19Z NO RESULT FILE: not a pass and not proven a failure; NOT rolling back; waiting for a human

@@ -1,0 +1,77 @@
+{
+ "worker": "MNBTQ3Q4",
+ "ticket": "kernels-mnbt-q3-q4-execution-flash-20261009",
+ "authority": {
+  "decisions": ["dec-1009-013555-7163 APPROVE A (publish Q3 and Q4 from reviewed source62f5093, honest profile reruns, no suppression claim)",
+                 "dec-1009-020754-f4cf approves B (split Q4 into two single-cell groups [[4096,8192,4]] and [[4096,8192,8]]; same trials, 1800 s caps, priority 0; prepared two-cell root preserved as feasibility evidence)"],
+  "execution_only": "This worker edited no source. All executing trees verified clean at head 62f5093ffae3591638bebd72783c083231c4d891 (celestia, dl380g10, sparky, sparklina); producer digest d7404b08720c417aac73f2c2b918123d9248e1ecf0728ee962a26d8be9b69d85 matched by direct computation; branch ref and tree state recorded in this packet.",
+  "works_in_scope": ["timing results as measured GPU-exclusive rows on the two Sparks",
+                      "energy rows limited to the named Netdata window scope",
+                      "publication, admission, completion-custody and cleanup evidence"],
+  "not_claimed": ["no served quality, no KL, no default change, no source qualification, no shipping claim",
+                   "predictions in this packet are estimates, not timing results; measured labels only from retained timing.json/evidence"]
+ },
+ "incidents": [
+  {
+   "name": "gang-admission mirror regression during runtime swarm c8daa1be416c publication",
+   "packet": "/mnt/shared/tessera-measurements/mnbt-q3q4-exec-evidence-20261009/incident-packet-gang-admission.md",
+   "effect_on_quanta": "First Q4a publication attempt refused by pbgang (no gang worker offered); q4a root preserved as failed invocation; repaired fleet state at the supervisor read-point; Q4a published from a fresh root (mnbt-q4a-62f5093f-20261009-r2). Q3 unaffected.",
+   "repair_authority": "Out of the worker's execution scope; named to Main and routed to pb-integrator; no further mirror or runtime mutations per Main directive."
+  }
+ ],
+ "q3": {
+  "published_at": "2026-10-09T02:03:14Z (driver campaign.log native_gang_published)",
+  "cells": [[4096, 2048, 8], [4096, 8192, 1]],
+  "gang": {"group": "a46d67aec2a0cd6d9e62902f9751ca46", "schema": "prismabuild.pbgang.v1", "priority": 0, "skew_s": 120.0},
+  "members": {
+   "rank0_sparklina": {"action_key": "a5b9e30782f31ade2a94f03285327065b4f0ba0e98e1c8ad9f325d24ffd4e355", "demand": {"cpu": 8, "mem_gb": 104, "gpu": 1}, "gpu_memory_gb": 102.0, "timeout_s": 1800.0},
+   "rank1_sparky": {"action_key": "cbc4a3c97b4f1e76b562015af7009f34374ec1e4c981f5ac96f362a4407de367", "demand": {"cpu": 6, "mem_gb": 104, "gpu": 1}, "gpu_memory_gb": 102.0, "timeout_s": 1800.0}
+  },
+  "member_requests_sealed": "Both CAS requests (requests/a5/..., requests/cb/...) carry execution_timeout_s 1800.0, gang {group a46d67ae..., size 2, index 0/1}, placement tags [container-image-v1, gang-v1, gb10, <host>], max_attempts 1, gpu_exclusive true, the reviewed image digest localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705..., and environment/variables MATRIX_CELLS=the quantum cells with GRAPH_WINDOW_INPUT_SHA256=e3411db1b9c0ffe1174f3972c0a78a4ac119dc3923f6f115d46416808e09900d; no MATRIX_PROFILE_SUPPRESS variable in either request.",
+  "pre_publication": {
+   "same_entry_cpu_preflight": {"action_key": "e40536f547f1dbbb103e3a78cde20ceb90c8ae59b0b7772aecda90751e4fca62", "returncode": 0, "host": "dl380g10", "observed_line": "1800-second whole-window including rendezvous/all named arms/owned cleanup; 180s cleanup reserve", "selected_cells": [[4096, 2048, 8], [4096, 8192, 1]], "profile_cells_declared": ["prefill-L512", "prefill-L8192", "decode-L512"], "rendered_arms": 2, "artifact_files": 128, "retained": "/mnt/shared/tessera-measurements/mnbt-q3q4-exec-evidence-20261009/d38-q3-preflight.json", "retained_sha256": "29d5c6e4db5d783b3a305f717c7aff8ef817419f7e351c1803c456a523709f3b"},
+   "fresh_d1": [{"tool": "fleet-diskcheck", "need_gb": 8.0, "paths": "/home/rob/tmp", "pass": true, "hosts": ["sparky", "sparklina"], "retained": "d1-model-tmp-q3q4.json"},
+                 {"tool": "fleet-diskcheck", "need_gb": 1.0, "paths": "/mnt/shared", "pass": true, "hosts": ["sparky", "sparklina"], "retained": "d1-shared-q3q4.json"}],
+   "pool_posture": "PACT priority-10 action 52e1c405d2 CLAIMED (running); no priority-10 row waiting; no paired window live; priority 0 order preserved. Retained pool-posture-pre-q3.json."
+  },
+  "terminal": {
+   "handoff": {"ownership_released": true, "error": null},
+   "completed_arms": ["graph_mnbt4096_on"],
+   "invocation_failed": false,
+   "abort_errors": 0,
+   "simulation": false,
+   "rank0": {"claimed_unix": 1791511524.8, "ended_unix": 1791512833.9, "elapsed_s": 1309.2, "window_end_unix": 1791513324.8, "returncode": 0, "containers_empty": true, "gpu_descendants_empty": true},
+   "rank1": {"claimed_unix": 1791511526.7, "ended_unix": 1791512833.9, "elapsed_s": 1307.2, "window_end_unix": 1791513324.8, "returncode": 0, "containers_empty": true, "gpu_descendants_empty": true},
+   "completion_owner": "Window driver's single published pbwait client (--wait-s 6000, both members plus physical collector); driver PID 2375466/2375465 launch lineage on sparky; no second completion client."
+  },
+  "cas_bindings": {
+   "rank0": {"receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/a5/a5b9e30782f31ade2a94f03285327065b4f0ba0e98e1c8ad9f325d24ffd4e355.json", "receipt_sha256": "fdf5595ce6ac56046d6609fe0082bb970e55930673d7dde3349e3133ad7c02fb", "result_payload_sha256": "98b4e2d7a175bc34e6462b8effb0927b6b087e98bc59d961d8a7ba4407ce457e", "result_payload_bytes": 207949, "queue_state": "done", "status": "executed"},
+   "rank1": {"receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cb/cbc4a3c97b4f1e76b562015af7009f34374ec1e4c981f5ac96f362a4407de367.json", "receipt_sha256": "a7ea0d7b5fc0f479335dcaa69406d9fffb75054bff37427ca1e61ecd89e7e562", "result_payload_sha256": "5d7b6fe306e5e4aa24c8e32c487b8eee4cbae9d5674754b95ee577cc770a5c04", "result_payload_bytes": 222831, "queue_state": "done", "status": "executed"}
+  },
+  "integrity": {
+   "sha256sums": {"graph_mnbt4096_on.rank0.SHA256SUMS": "returncode 0, 5 OK lines, 0 failed", "graph_mnbt4096_on.rank1.SHA256SUMS": "returncode 0, 5 OK lines, 0 failed"},
+   "trace_digests": "6 of 6 retained pt.trace.json.gz digests matched their verified-rank0/1 receipt bytes on each rank (12 matches, 0 missing)",
+   "events_binding": "events.jsonl holds 5 lines: one cell event per selected timing cell (2) plus one profile event per declared profile cell (3), bound to invocation d46f52ee7a0b4ee4b21b14eeb2c08b63",
+   "invocation_binding": "graph_mnbt4096_on on socket/fabric with the release graph flags (NONE + FULL_DECODE_ONLY), eager 0, spec null, max_batched 4096, explicit ON lever env (E4M3_DECODE_ONCE=1, KDA_CONV_SPLIT=on, ROUTED_PIECE_MAJOR=1); timing_sha256 95af8b6fcadf..., events_sha256 9ff3b0366cf5...; profile_finished stamped",
+   "verifier": "/mnt/shared/tessera-measurements/mnbt-q3q4-exec-evidence-20261009/harvest_verify.py output retained as q3-harvest-verify.json"
+  },
+  "timing_cells": {
+   "host-L2048-c8": {"trials": 10, "decode_tok_s_median": 31.314, "decode_tok_s_min": 29.156, "decode_tok_s_p90": 32.292, "tpot_ms_median": 189.651, "ttft_ms_median": 11093.3, "itl_ms_median": 159.7, "prefill_tok_s_median": 1080.1, "output_tokens": 10240, "requests_ok": 80, "errors": 0},
+   "host-L8192-c1": {"trials": 10, "decode_tok_s_median": 11.81, "decode_tok_s_min": 11.495, "decode_tok_s_p90": 12.184, "tpot_ms_median": 84.674, "ttft_ms_median": 7391.3, "itl_ms_median": 83.475, "prefill_tok_s_median": 1108.3, "output_tokens": 1280, "requests_ok": 10, "errors": 0},
+   "timing_episode_s": 589.4,
+   "per_cell_files": {"timing-L2048-c8.json": "sha256 37d7aeba22f0d6074f0b90e6c8ee886a0671e52caf498df970cc134f63c37d81", "timing-L8192-c1.json": "sha256 a8890290ad00649e2e125a90230f898c5409e24909f69aa9072f98e2f93847ef"}
+  },
+  "profiles_honest_rerun": "All three declared graph_mnbt4096_on profile cells (L512 prefill mt1, L8192 prefill mt1, L512 decode mt8) executed freshly in this root on both ranks: six new traces retained under profiles/graph_mnbt4096_on with per-cell receipts in graph_mnbt4096_on-verified-rank0/1.json (12 trace digests matched against on-disk bytes). No reuse, no suppression claim; MATRIX_PROFILE_SUPPRESS unset and absent from source.",
+  "power_energy_row": {
+   "limit": "One-second Netdata series over the timing episode window (591 s requested per rank); GPU-exclusive, not quiet-host certified; profile windows excluded; no interpolation.",
+   "scope": "Entire timing episode including warmups; profile windows outside. Raw Netdata coverage governs any work/J claim.",
+   "sparklina": {"envelope_w": 140.0, "points_requested": 591, "window_s": 591, "peak_w": 70.27},
+   "sparky": {"envelope_w": 140.0, "points_requested": 591, "window_s": 591, "peak_w": 74.85}
+  },
+  "publication_attempts": [
+   {"attempt": 1, "outcome": "driver argparse refusal (missing plan positional); nothing sealed; no submission-started.json", "evidence": "transcript + relaunch"},
+   {"attempt": 2, "outcome": "driver refused at launch-diskcheck: fleet-diskcheck absent from the non-interactive PATH on sparky; nothing sealed; retried with PATH=/home/rob/fleet/ceo/bin", "evidence": "prior driver.log content quoted in the packet transcript"},
+   {"attempt": 3, "outcome": "published gang a46d67aec2a0cd6d9e62902f9751ca46; normal terminal"}
+  ]
+ }
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "fleet.pb_d2_scope_accounting.v1",
+  "owner": "pb-integrator",
+  "action_key": "281130c618e0c972a44b96d459f25ea2b206acad3845c2486aafc57e08c6f475",
+  "host": "sparky",
+  "nonce": "a0617e735fad4f63ae304166afe1df51",
+  "scope_id": "prismabuild-job649fa0d86b301b205b8cf18478389f13.slice",
+  "logical_outcome": {"complete": true, "state": "withdrawn", "withdrawn_from": "claimed", "receipt_present": false},
+  "physical_verification": {
+    "method": "Read-only export_stopped and status RPCs to sparky /run/prismabuild/resources.sock using the exact attempt identity retained in the withdrawn row",
+    "export_stopped": {"ok": true, "stopped": true, "empty": true, "released": true, "retired": false, "settled": true, "tickets_pending": false, "stop_reason": "withdrawn", "stopped_unix": 1791170313.465624, "last_cleanup_reason": "withdrawn"},
+    "status": {"ok": true, "released": true, "stop_reason": "withdrawn", "stopped_unix": 1791170313.465624},
+    "durable_worker_attestation": "/mnt/shared/prismabuild-fleet/pb-queue/broker-attestations/281130c618e0c972a44b96d459f25ea2b206acad3845c2486aafc57e08c6f475/a0617e735fad4f63ae304166afe1df51.json",
+    "durable_attestation_fields": {"host": "sparky", "incarnation": "sparky:3771440:d42512c8", "scope_empty": true, "empty": true, "released": true, "settled": true, "tickets_pending": false, "unix": 1791170314.0146713},
+    "ledger": "Complete sparky held directory lists four unrelated action directories and no target action; exact target grep returned zero matches without truncation"
+  },
+  "integrator_mutations": "None to broker, cgroup, queue or tokens. No kill, stop, release, lock unlink or deletion RPC sent.",
+  "handoff": "Claimed-stopped old scope is accounted. Builder may launch NEW versioned read-only corrective captures through PrismaBuild; do not resurrect the old logical actions.",
+  "limits": "No inventory completed by this action; no reference absence or cleanup eligibility inferred. Every cleanup candidate remains held. Source-control success and other withdrawal states are CEO/consumer-reported, not independently requalified here. D28 remains in force pending the separate combined1514/1523 runtime rollout."
+}

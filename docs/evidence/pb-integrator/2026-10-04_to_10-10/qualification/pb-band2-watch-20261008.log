@@ -1,0 +1,49 @@
+{"at": "14:16:37Z", "key": "82bd1d23716e", "live": [{"state": "claimed", "accepted_phase": null, "reported_phase": null}], "live_total": 1, "events": {"ram-window-stalled": 47, "prelaunch-group-begun": 1, "window-stalled": 2, "prelaunch-acquisition-committed": 1, "prelaunch-group-committed": 1, "mover-published": 3, "prelaunch-chunk-published": 3}, "last_events": [{"unix": 1791468983.0293632, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791468988.7360666, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791468994.2548573, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}], "stage": {"cap": 156, "free": 34, "holders": 5}}
+ holder tokens {'stage_gib': 1}
+ free {'fill_mb_s_pool_side': 412, 'stage_gib': 34} cap {'fill_mb_s_pool_side': 412, 'stage_gib': 156}
+ census h/p/m/r 1 0 120 0 accounted ('splitting', True)
+{"at": "14:17:22Z", "key": "82bd1d23716e", "live": [{"state": "claimed", "accepted_phase": null, "reported_phase": null}], "live_total": 1, "events": {"ram-window-stalled": 56, "prelaunch-group-begun": 1, "window-stalled": 2, "prelaunch-acquisition-committed": 1, "prelaunch-group-committed": 1, "mover-published": 3, "prelaunch-chunk-published": 3}, "last_events": [{"unix": 1791469030.0093558, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469035.2886353, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469040.3450472, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}], "stage": {"cap": 156, "free": 34, "holders": 5}}
+ holder tokens {'stage_gib': 1}
+ free {'fill_mb_s_pool_side': 412, 'stage_gib': 34} cap {'fill_mb_s_pool_side': 412, 'stage_gib': 156}
+ census h/p/m/r 1 0 120 0 accounted ('splitting', True)
+{"at": "14:18:08Z", "key": "82bd1d23716e", "live": [{"state": "claimed", "accepted_phase": null, "reported_phase": null}], "live_total": 1, "events": {"ram-window-stalled": 65, "prelaunch-group-begun": 1, "window-stalled": 2, "prelaunch-acquisition-committed": 1, "prelaunch-group-committed": 1, "mover-published": 3, "prelaunch-chunk-published": 3}, "last_events": [{"unix": 1791469075.3382943, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469081.0016835, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469085.872972, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}], "stage": {"cap": 156, "free": 34, "holders": 5}}
+ holder tokens {'stage_gib': 1}
+ free {'fill_mb_s_pool_side': 412, 'stage_gib': 34} cap {'fill_mb_s_pool_side': 412, 'stage_gib': 156}
+ census h/p/m/r 1 0 120 0 accounted ('splitting', True)
+{"at": "14:18:54Z", "key": "82bd1d23716e", "live": [{"state": "claimed", "accepted_phase": null, "reported_phase": null}], "live_total": 1, "events": {"ram-window-stalled": 74, "prelaunch-group-begun": 1, "window-stalled": 2, "prelaunch-acquisition-committed": 1, "prelaunch-group-committed": 1, "mover-published": 3, "prelaunch-chunk-published": 3}, "last_events": [{"unix": 1791469123.2405348, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469128.3220012, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469133.2030578, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}], "stage": {"cap": 156, "free": 34, "holders": 5}}
+ holder tokens {'stage_gib': 1}
+ free {'fill_mb_s_pool_side': 412, 'stage_gib': 34} cap {'fill_mb_s_pool_side': 412, 'stage_gib': 156}
+ census h/p/m/r 1 0 120 0 accounted ('splitting', True)
+{"at": "14:19:39Z", "key": "82bd1d23716e", "live": [{"state": "claimed", "accepted_phase": null, "reported_phase": null}], "live_total": 1, "events": {"ram-window-stalled": 82, "prelaunch-group-begun": 1, "window-stalled": 2, "prelaunch-acquisition-committed": 1, "prelaunch-group-committed": 1, "mover-published": 3, "prelaunch-chunk-published": 3}, "last_events": [{"unix": 1791469166.4316356, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469172.177862, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}, {"unix": 1791469176.9259589, "event": "ram-window-stalled", "free_gib": 21, "capacity_gib": 160, "reason": "prelaunch_waiting_for_room"}], "stage": {"cap": 156, "free": 34, "holders": 5}}
+ holder tokens {'stage_gib': 1}
+ free {'fill_mb_s_pool_side': 412, 'stage_gib': 34} cap {'fill_mb_s_pool_side': 412, 'stage_gib': 156}
+ census h/p/m/r 1 0 120 0 accounted ('splitting', True)
+{"at": "14:20:25Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:21:11Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:21:56Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:22:42Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:23:28Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:24:13Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:24:59Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:25:44Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:26:30Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:27:16Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:28:01Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:28:47Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:29:33Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:30:18Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 156, "free": 35, "holders": 4}}
+{"at": "14:31:04Z", "key": "82bd1d23716e", "live": [], "live_total": 1, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:31:49Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:32:35Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:33:21Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:34:06Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:34:52Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:35:38Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:36:23Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:37:09Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:37:54Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:38:40Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:39:26Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:40:11Z", "key": "82bd1d23716e", "live": [], "live_total": 0, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 35, "holders": 5}}
+{"at": "14:40:57Z", "key": "82bd1d23716e", "live": [], "live_total": 2, "events": {}, "last_events": [], "stage": {"cap": 157, "free": 33, "holders": 7}}
+done

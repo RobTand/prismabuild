@@ -1,0 +1,7 @@
+top level (GiB, apparent, newest mtime):
+358 GiB  tessera-measurements  newest=2026-10-09 05:27
+228 GiB  models  newest=2026-10-09 05:32
+42 GiB  tessera-runs  newest=2026-10-08 04:58
+0 GiB  prismabuild-fleet  newest=2026-10-08 12:54
+0 GiB  fleet-ceo  newest=2026-10-08 12:54
+0 GiB  astra-pq-2010-evidence-20261002  newest=2026-10-02 09:37

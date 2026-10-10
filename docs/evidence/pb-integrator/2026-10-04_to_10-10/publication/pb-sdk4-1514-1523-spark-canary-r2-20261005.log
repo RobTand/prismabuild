@@ -1,0 +1,10 @@
+HEAD is now at f57722b6 PrismaBuild pbrun checkout snapshot v2
+pbcanary: leg-1: verified: leg-1 verified: artifact e48d00546085 bound to CAS result
+pbcanary: leg-2: verified: leg-2 verified: image prismaquant-glm-derivati..., devices 1, kernel 1240, CAS-bound
+pbcanary: leg-3: verified: leg3: 3 chunks, 25165824 bytes verified (receipt[stdout])
+pbcanary: leg-4: verified: leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93… verified (sparky+sparklina)
+pbcanary: leg-1: ok: leg-1 verified: artifact e48d00546085 bound to CAS result
+pbcanary: leg-2: ok: leg-2 verified: image prismaquant-glm-derivati..., devices 1, kernel 1240, CAS-bound
+pbcanary: leg-3: ok: leg3: 3 chunks, 25165824 bytes verified (receipt[stdout])
+pbcanary: leg-4: ok: leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93… verified
+pbcanary: verified (/mnt/shared/prismabuild-fleet/pb-canary/20261005T042632Z): pbcanary: verified -- legs 1-4 executed, receipts ok, leg-4 envelopes equal

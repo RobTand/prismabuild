@@ -1,0 +1,81 @@
+{
+  "results": [
+    {
+      "leg": "leg-1",
+      "ok": false,
+      "reason": "precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+      "receipt_ref": null
+    },
+    {
+      "leg": "leg-2",
+      "ok": false,
+      "reason": "precondition refused (leg-2): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+      "receipt_ref": null
+    },
+    {
+      "leg": "leg-3",
+      "ok": false,
+      "reason": "precondition refused (leg-3): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+      "receipt_ref": null
+    },
+    {
+      "action_keys": {
+        "sparklina": "383b8c8fd34cf5ad36ccee426a4ccedbf9a562ccf0bf6d21372a06c170efd131",
+        "sparky": "7ab4c3f306bcf6954f608e257acddda0b8c4c8906090240eb31455e515b43fc7"
+      },
+      "digest_a": "b8161a085bbfc3d56ff434ec85963939326859cd41f96eb6c49cfc661cc6ec77",
+      "digest_b": "b8161a085bbfc3d56ff434ec85963939326859cd41f96eb6c49cfc661cc6ec77",
+      "leg": "leg-4",
+      "ok": true,
+      "reason": "leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93\u2026 verified",
+      "receipt_ref": "cas/actions/v3/7a/7ab4c3f306bcf6954f608e257acddda0b8c4c8906090240eb31455e515b43fc7.json"
+    }
+  ],
+  "run_id": "20261005T042033Z",
+  "verdict": {
+    "detail": "precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+    "exit_code": 2,
+    "failed_check": "precondition",
+    "failed_leg": "leg-1",
+    "legs": {
+      "leg-1": {
+        "action_key": null,
+        "action_keys": null,
+        "not_verified": null,
+        "ok": false,
+        "reason": "precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+        "receipt_ref": null
+      },
+      "leg-2": {
+        "action_key": null,
+        "action_keys": null,
+        "not_verified": null,
+        "ok": false,
+        "reason": "precondition refused (leg-2): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+        "receipt_ref": null
+      },
+      "leg-3": {
+        "action_key": null,
+        "action_keys": null,
+        "not_verified": null,
+        "ok": false,
+        "reason": "precondition refused (leg-3): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+        "receipt_ref": null
+      },
+      "leg-4": {
+        "action_key": null,
+        "action_keys": {
+          "sparklina": "383b8c8fd34cf5ad36ccee426a4ccedbf9a562ccf0bf6d21372a06c170efd131",
+          "sparky": "7ab4c3f306bcf6954f608e257acddda0b8c4c8906090240eb31455e515b43fc7"
+        },
+        "not_verified": null,
+        "ok": true,
+        "reason": "leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93\u2026 verified",
+        "receipt_ref": "cas/actions/v3/7a/7ab4c3f306bcf6954f608e257acddda0b8c4c8906090240eb31455e515b43fc7.json"
+      }
+    },
+    "sealed": true,
+    "stderr_message": "pbcanary: precondition refused (leg leg-1): precondition refused (leg-1): pbrun submission refused (exit 1): Fix the listed capacity demand or required tags, or wait for an offer that can fit them.: did not test",
+    "verified": false
+  }
+}

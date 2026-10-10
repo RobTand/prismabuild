@@ -1,0 +1,39 @@
+[
+ {
+  "shard": 0,
+  "files": [
+   "tests/test_stage_source_only_operator.py"
+  ],
+  "returncode": 1,
+  "action_key": "156b8d143891c502e96b44ef4aa23613552e40b197fa76e99cb2a11513ae6ea0",
+  "receipt_path": null,
+  "summary": "1 failed, 3 passed, 7 deselected in 0.57s",
+  "predicted_s": null,
+  "pytest_s": 0.57,
+  "ran": true,
+  "skipped": [],
+  "attempts": 1,
+  "output": "pbrun: queued 156b8d143891c502e96b44ef4aa23613552e40b197fa76e99cb2a11513ae6ea0 tags=['x86'] demand={'mem_gb': 2, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791231860.9552238\npbrun: attempt 1/1 failed (failed)\n.F..                                                                     [100%]\n=================================== FAILURES ===================================\n____________ test_current_owner_pin_or_plan_aborts_without_deleting ____________\n\noperator = <module 'stage_source_only_under_test' from '/home/rob/tmp/prismabuild-checkouts/156b8d143891.3zk9735w/checkout/tests/stage_source_only_mutant.py'>\nworld = (<prismabuild.pool.PoolQueue object at 0x74c604b67110>, PosixPath('/home/rob/tmp/pytest-of-rob/pytest-23492/test_curre...ent_owner_pin_or_plan0/origin'), PosixPath('/home/rob/tmp/pytest-of-rob/pytest-23492/test_current_owner_pin_or_plan0'))\n\n    def test_current_owner_pin_or_plan_aborts_without_deleting(operator, world):\n        row = candidate(world)\n        result = run(operator, world, [row], holder_check=lambda row: [\"reader pin or live plan\"])\n>       assert Path(row[\"path\"]).exists(), \"a pinned or planned file must never be deleted\"\nE       AssertionError: a pinned or planned file must never be deleted\nE       assert False\nE        +  where False = exists()\nE        +    where exists = PosixPath('/home/rob/tmp/pytest-of-rob/pytest-23492/test_current_owner_pin_or_plan0/stage/measurements/a.bin.pbrange/0-60').exists\nE        +      where PosixPath('/home/rob/tmp/pytest-of-rob/pytest-23492/test_current_owner_pin_or_plan0/stage/measurements/a.bin.pbrange/0-60') = Path('/home/rob/tmp/pytest-of-rob/pytest-23492/test_current_owner_pin_or_plan0/stage/measurements/a.bin.pbrange/0-60')\n\ntests/test_stage_source_only_operator.py:82: AssertionError\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/test_stage_source_only_operator.py::test_source_identity_change_aborts_without_deleting\",\"tests/test_stage_source_only_operator.py::test_current_owner_pin_or_plan_aborts_without_deleting\",\"tests/test_stage_source_only_operator.py::test_first_anomaly_aborts_all_remaining_files\",\"tests/test_stage_source_only_operator.py::test_models_subtree_is_excluded_without_deleting\"],\"deselected\":[\"tests/test_stage_source_only_operator.py::test_dry_run_names_exact_bytes_and_keeps_files\",\"tests/test_stage_source_only_operator.py::test_local_or_network_open_handle_aborts\",\"tests/test_stage_source_only_operator.py::test_real_fragment_census_keeps_owned_file\",\"tests/test_stage_source_only_operator.py::test_file_replacement_aborts\",\"tests/test_stage_source_only_operator.py::test_success_logs_deletion_and_never_changes_held_tokens\",\"tests/test_stage_source_only_operator.py::test_open_watch_observes_a_new_local_open\",\"tests/test_stage_source_only_operator.py::test_network_state_matches_device_and_inode\"],\"collect_seen\":[],\"reports\":[[\"tests/test_stage_source_only_operator.py::test_source_identity_change_aborts_without_deleting\",\"call\",\"passed\",null,null],[\"tests/test_stage_source_only_operator.py::test_current_owner_pin_or_plan_aborts_without_deleting\",\"call\",\"failed\",null,null],[\"tests/test_stage_source_only_operator.py::test_first_anomaly_aborts_all_remaining_files\",\"call\",\"passed\",null,null],[\"tests/test_stage_source_only_operator.py::test_models_subtree_is_excluded_without_deleting\",\"call\",\"passed\",null,null]],\"uncounted\":[],\"file_durations\":{\"tests/test_stage_source_only_operator.py\":0.146},\"file_selection\":{\"files\":[\"tests/test_stage_source_only_operator.py\"],\"ignored\":[]},\"file_selection_error\":null}\n============================= slowest 10 durations =============================\n0.04s call     tests/test_stage_source_only_operator.py::test_first_anomaly_aborts_all_remaining_files\n0.03s call     tests/test_stage_source_only_operator.py::test_models_subtree_is_excluded_without_deleting\n0.03s call     tests/test_stage_source_only_operator.py::test_current_owner_pin_or_plan_aborts_without_deleting\n0.02s setup    tests/test_stage_source_only_operator.py::test_source_identity_change_aborts_without_deleting\n0.01s call     tests/test_stage_source_only_operator.py::test_source_identity_change_aborts_without_deleting\n\n(5 durations < 0.005s hidden.  Use -vv to show these durations.)\n=========================== short test summary info ============================\nFAILED tests/test_stage_source_only_operator.py::test_current_owner_pin_or_plan_aborts_without_deleting\n1 failed, 3 passed, 7 deselected in 0.57s\npbrun: log capture executable=/usr/bin/gnutee\nTraceback (most recent call last):\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/1ac00386448d-1791214181-df90af876832/tools/prismabuild_worker.py\", line 72, in <module>\n    raise SystemExit(main(worker_launcher_identity=_WORKER_LAUNCHER_IDENTITY))\n                     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/1ac00386448d-1791214181-df90af876832/src/prismabuild/core.py\", line 8890, in main\n    result = run_local_action(\n        action,\n    ...<5 lines>...\n        initial_miss_rendezvous=args.initial_miss_rendezvous,\n    )\n  File \"/mnt/shared/prismabuild-fleet/runtime-generations/1ac00386448d-1791214181-df90af876832/src/prismabuild/core.py\", line 8147, in run_local_action\n    raise LocalActionError(\n    ...<14 lines>...\n    )\nprismabuild.core.LocalActionError: action argv exited with status 1\npbrun: failed on dl380g10 in 14s; rss=114.0M io w=6.5M r=4.8M\n",
+  "reconciliation": {
+   "collect_only": false,
+   "collected": 4,
+   "ran": 4,
+   "outcomes": 4,
+   "at_collection": [],
+   "extra_phases": {},
+   "never_ran": [],
+   "not_collected": [],
+   "collected_twice": [],
+   "summary_counts": {
+    "failed": 1,
+    "passed": 3
+   },
+   "record_counts": {
+    "passed": 3,
+    "failed": 1
+   },
+   "problems": [],
+   "missing_files": []
+  }
+ }
+]

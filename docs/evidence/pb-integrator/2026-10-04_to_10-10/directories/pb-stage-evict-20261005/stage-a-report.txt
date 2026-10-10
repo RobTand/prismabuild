@@ -1,0 +1,187 @@
+Stage A report: stage source marks and tier accounting
+
+Stage A is complete. I have not started Stage B. Nothing on the live stage, in the live queue records or ledger, or in ZFS properties was changed. I created read-only analysis scripts and evidence under dl380g10:/home/rob/tmp only. No deletion code, tests, commit, pull request or merge was produced.
+
+Main findings
+
+The original 50,294-file, 269,917,392,062-byte census is reproduced exactly. It is not a list of 50,294 files safe to delete. Of these, 5,423 files, totaling 104,135,729,292 bytes, have unchanged sources and no fragment, pin, open handle, live plan or held-key attribution. The other 44,871 files still have published fragment ownership and are retained by this proposal. No source was missing or changed.
+
+The 628 versus 309.789 gibibyte comparison mixes integer reservations with unrounded, ownership-weighted receipt bytes. The exact difference is 316.211104159 gibibytes of per-mover rounding plus a separate 2-token stranded output-funding intent. In addition, the receipt total itself counts shared physical copies more than once: 83 held keys overlap on 1,812 paths, adding 86,110,044,669 bytes, or 80.196228501 gibibytes, to the receipt sum. This is genuine shared-copy duplicate charging, distinct from the rounding gap. Neither amount is a charge assigned to the 50,294 source-only files.
+
+Inventory and classification
+
+The stage scan ran from 2026-10-05 19:47:12 to 19:50:24 UTC, using ionice class 3 and niceness 19. It found 50,303 source-mark-only files in total. Nine files, totaling 32,228,813,747 bytes, are named by held movers' fragments and are excluded from the original unowned population. The remaining population matches the supplied event exactly. The sweep passes live wanted keys and still-held keys into reconcile at tools/fleet/stage_release.py:5179-5182; its source-mark-only category does not mean that no historical fragment names the file.
+
+Class | Files | Bytes | Gibibytes
+CONFIRMED_GARBAGE | 5,423 | 104,135,729,292 | 96.983956
+RETAIN | 44,871 | 165,781,662,770 | 154.396205
+UNKNOWN | 0 | 0 | 0
+Total | 50,294 | 269,917,392,062 | 251.380161
+
+RETAIN means an existing published ownership record remains, not that I observed an active reader. Among retained files, 42,981 files totaling 115,330,323,935 bytes have only fragment owners whose terminal state the existing owner census accepts. Another 1,890 files totaling 50,451,338,835 bytes involve unresolved owner outcomes. These require owner-aware retirement rather than deleting a file from under a surviving fragment. There are 38 distinct fragment-owner namespaces: 21 accepted terminal owners, 16 without an outcome record at the queue address, and one with both done and failed records. These unknown historical dispositions are recorded as reasons to retain known published ownership; the file inventory and source identities themselves are not unknown.
+
+Directory totals, relative to /stage/prewarm
+
+Directory | Files | Bytes
+models/GLM-5.3-Flash-BF16 | 38 | 80,623,033,512
+tessera-measurements/glm-campaign-takeover-20260913 | 5,053 | 56,537,360,133
+tessera-measurements/glm-canonical-census-20260908 | 45,203 | 132,756,998,417
+Total | 50,294 | 269,917,392,062
+
+The top-level models total is 38 files / 80,623,033,512 bytes; tessera-measurements is 50,256 files / 189,294,358,550 bytes. Complete immediate-parent totals for all 48,933 containing directories are in directory-totals.json. Most are one-file .pbrange wrapper directories.
+
+Confirmed garbage by subtree
+models/GLM-5.3-Flash-BF16: 5 files / 14,800,247,264 bytes.
+tessera-measurements/glm-campaign-takeover-20260913: 512 files / 8,591,036,928 bytes.
+tessera-measurements/glm-canonical-census-20260908: 4,906 files / 80,744,445,100 bytes.
+
+Size bands, lower bound inclusive and upper bound exclusive
+
+Band | Files | Bytes
+Under 4 kibibytes | 30,219 | 12,117,752
+4 to 64 kibibytes | 9,694 | 100,009,570
+64 kibibytes to 1 mebibyte | 0 | 0
+1 to 16 mebibytes | 9 | 38,531,272
+16 to 256 mebibytes | 10,343 | 174,042,705,036
+256 mebibytes to 1 gibibyte | 5 | 3,459,536,890
+At least 1 gibibyte | 24 | 92,264,491,542
+
+Age is measured from the stage file's modification time to the scan finish, not from the original source's modification time.
+7 to 14 days: 48,928 files / 246,156,275,904 bytes.
+14 to 30 days: 1,366 files / 23,761,116,158 bytes.
+All other age bands: zero.
+Stage modification times range from 2026-09-20 18:52:51.841833 UTC to 2026-09-25 10:07:33.215071 UTC.
+
+Source identity and current holders
+
+The source mark does not contain a source pathname. It contains source size, modification time in nanoseconds, and inode: st_size:st_mtime_ns:st_ino. This is defined by tools/fleet/prewarm_loop.py:333-335 and written at lines 1202-1205. I derived source paths by reversing the existing range naming: relative-source.pbrange/offset-length, with the prewarm and bare spellings also recognized. A range copy is compared with its corresponding source extent, not incorrectly required to equal the entire source file's length.
+
+I checked both /storage_pool/shared and /mnt/shared aliases. Both are mounts of storage_pool/shared on this host. All 50,294 target files have a regular source whose size, modification time and inode exactly match the source mark and whose extent covers the stage copy. Missing sources: 0 files / 0 bytes. Changed sources: 0 files / 0 bytes. Unparseable or unreadable source marks: 0.
+
+The existing read-only fragment census examined 961 fragments, with no tainted records. The reader-lease census named 873 pinned paths; none was a target source-only file. Claimed destination and RAM-promotion source censuses named no target path, with no census errors. All target files have zero positive stage-token holders through fragment attribution. This contrasts with the nine excluded source-only files, which have ten held mover keys between them.
+
+The queue survey found six live rows: four ready and two claimed. One ready consumer had a frozen stage plan, naming three source paths for the routed-profile pack. None intersects the target population. The survey checked row parameters and derived manifest ranges, not merely literal stage-path strings. No target file was named by a live plan or queued movement range in that survey.
+
+A root /proc scan included both file descriptors and memory-mapped file handles on dl380g10. No handle held the stage dataset, and the scan reported no permission or other errors. Server-side network file-system state was read for all three clients. The stage device is major 0, minor hexadecimal 38. None of the 5,643 sparky states, 10,932 sparklina states, or 20 celestia states named that device. Their states named the hard-drive source dataset or the queue dataset instead. These are point-in-time observations, not a promise that no later opener can appear.
+
+Small hash samples
+
+A uniform thirty-file sample without replacement was selected from all 50,294 lexicographically sorted target paths using random.Random(20261005). Each stage file was compared by SHA-256 with exactly its source extent. Sample payload: 117,504,187 bytes. Both sides together: 235,008,374 bytes read. Result: 30 equal, 0 mismatches, 0 read errors. Source identity was checked before reading and metadata stability was checked during each hash.
+
+An earlier independently selected thirty-file sample from the 5,423 confirmed-garbage paths also had 30 equal / 0 mismatches / 0 errors; it read 1,006,783,742 bytes across both sides. Total content reads for both samples were 1,241,792,116 bytes, far below the forty-gigabyte limit. These samples do not prove byte identity for untested files. No model-wide or other large hard-drive hashing was performed.
+
+Tier accounting: exact explanation and affected keys
+
+Both ledger snapshots read 647 capacity tokens, 628 held tokens, and 19 available tokens. Their holder-to-token maps are identical and both capacity censuses reported no unreadable holders. The earlier supplied one-shot read capacity 652 and available 24; capacity was already 647 at this worker's first observation. I did not mutate it or establish the cause of that earlier five-token capacity change.
+
+361 held keys have complete movement receipts. Their ranges sum to 332,633,294,075 bytes = 309.788895841 gibibytes. Every such key holds exactly ceil(its receipt range / one gibibyte); there is no per-key excess over that existing demand rule. storage_tiers.stage_tokens_for_bytes at lines 2474-2484 is the owner of the rounding rule.
+
+Group | Keys | Held tokens | Receipt bytes
+Ranges smaller than one gibibyte | 294 | 294 | 27,525,083,104
+Ranges at least one gibibyte | 67 | 332 | 305,108,210,971
+Receipt-less output funding | 1 | 2 | No movement receipt
+
+Thus 626 = 309.788895841 + 316.211104159, and 628 adds the separate two-token funding hold. The small-range group contributes 268.365268737 gibibytes of rounding; the larger-range group contributes 47.845835422. Returning those 316 rounded tokens as though they were leaked capacity would violate the existing reservation arithmetic.
+
+There is also real physical overlap. The 361 charged movers' fragments name 6,965 distinct existing stage paths with 246,523,249,406 bytes = 229.592667339 gibibytes. Counting each path once for every held key naming it reproduces the receipt sum exactly; there were no per-key receipt-versus-current-file-size mismatches and no missing charged paths. The duplicate contribution is 86,110,044,669 bytes = 80.196228501 gibibytes across 1,812 paths, 83 keys and 63 overlap groups. Consequently, relative to unique charged physical payload, 628 = 229.592667339 + 80.196228501 of duplicate ownership + 316.211104159 of range rounding + 2 of stranded funding. This is a payload accounting decomposition, not the dataset's ZFS-used figure.
+
+The largest duplicate group is keys 77dab15998bfe611fe05cab73e67c3922d5a7ee6e58073179a583e4319fcaee1 and e609adc19738f8f7b3b0b10ca6315311d8a8d8ca062ec6a7854fd4838938aeff: eight common paths hold 21,542,841,751 bytes counted twice. Another group has 872 common paths / 3,677,315,501 physical bytes claimed by five keys: 23d9e436089d95038edd7a371ea553649047b255e94ec1da239521e804e0cc69, 40e46411110e6824a5bcb18f99f887f9e962abab927310e1dbab83247953d9a7, 781500ba60466ff457557bf11c543493ffa2498885f6374d163ac31fdb6c326d, 8b3baf46262fae118b42afce88da3a79342f8249e96c6b5f22d19eac16acdbec, and a2487331addb928c27cd55724d5cf22eb3c5d4865dcc738deaf832ece231cefc. Its additional ownership-weighted bytes are 14,709,262,004. All affected paths and full key groups are recorded in held-physical-overlap.json and held-overlap-groups.json; all 362 key balances are in ledger-compact.json. The remaining 361 receipt-backed holdings are landed reservations, not extra funding for currently ready or planned rows. One four-token mover is wanted by the ready routed-profile consumer; the other receipt-backed keys are not in the live wanted set at the survey time.
+
+The receipt-less key is 22773bc1bf42f641a44c37d3f7229d8c02240a45ecfc038b709f0c921ce0f811. It holds stage_gib-0138 and stage_gib-0139. Its output funding is still transferring, generation 14b4df24268547d6b71a6fde556c27f5, for batch stagea-cotangent-b22p2-g0-c0e60535b4cb4f42-e3b0e8f9d349, range 0..1,073,879,616 bytes. Producer 5e7fe29ed70283fbbc1838ecb22ab31a255cb1e2440c93990847c4e5fda2f003 is failed; the mover was withdrawn from ready with attempts zero. The producer holds no stage tokens. Its commitments contain no batch; all 128 prewrite paths are absent. The corresponding manifest blob is absent from the current content-addressed store. This is stranded precommit funding, not attribution for the 269.9-billion-byte target population. The existing sweep explicitly retains it because transferring is not a settled funding state. A safe repair should use the pool's release_output_funding nonexecution rollback and ordinary token settlement, then abort the empty prewrite; it must not just remove the holder directory. I have not invoked that repair or established that every check in that mutation path will accept the current record.
+
+Proposed removal and accounting design
+
+Extend the existing stage_release reconcile path with an explicit bounded source-mark-only operator pass, and tests. A thin operator entry point using the same ownership census and locks is preferable to a separate deletion implementation. The current reconcile categorically leaves source-mark-only files, so it cannot remove these files unchanged. Its source-mark classification, stage containment, ownership locking, fresh census and identity-since-walk structure are appropriate reuse points. The history-bound recover_orphaned_range is not needed for unused-file proof; do not add head/egress receipt or sealing prerequisites for this operation.
+
+For the current CONFIRMED_GARBAGE set only: take the stage ownership lock in bounded batches; immediately before each unlink, recheck the source's recorded size/time/inode and extent, the stage file's captured identity and marks, fragment ownership, current pins, claimed destinations, promotion sources, live plans and queued rows, local handles, and server-side open state. Abort the whole run on the first unexpected holder, changed source or file, unreadable census, or unlink error. Log each successful deletion's full path, size and time. Only after confirmed deletion may any associated token settlement occur, with the tier mint lock taken as the leaf in the existing lock order.
+
+For this particular 5,423-file set, the associated token release is zero: no key holds those bytes. Deleting them grows actual writable space; the ordinary guarded stage supply mint can recognize that space afterwards. Do not release rounded receipt slack, borrow tokens from another mover, or release the receipt-less funding key to compensate for deleting uncharged files.
+
+The 44,871 retained files should not be included in that simple pass. Existing fragment owners must be retired through the ordinary owner-aware machinery so their published vouches and material do not survive deleted data. Similarly, true shared-copy duplicate charges should use stage_release's existing shared-decharge settlement at lines 3115-3175: remove a retiring owner's vouch and destroy redundant occupancy tokens while the surviving owner still accounts for the unchanged file; do not return occupied capacity to the free ledger. Last-owner deletion precedes release of its final charge. This is separate from deleting the confirmed-garbage list and from repairing the two-token precommit hold.
+
+The prose assertion that held tokens literally equal bytes on stage is not the implemented arithmetic: tokens round each range upward and may include funding in flight and overlapping ownership. The comparison should distinguish physical unique payload, ownership-weighted receipt payload, rounded reservations, and unsettled funding. Report and test those quantities separately rather than treating raw equality with an unrounded receipt total as an invariant.
+
+Before any live operation, the lead's Stage B assignment requires private-queue and fixture-stage tests through PrismaBuild, pbtest.py with the x86 tag, with collected equal to ran. Test source-only reclaim, source absence/change, a newly published holder or reader lease, stage replacement, open-handle retention, abort-on-anomaly behavior, and delete-before-settlement ordering. No such implementation or test run was attempted in Stage A.
+
+Space evidence and risks
+
+Direct reads of prismabuild-stage/prewarm, before analysis and after the content samples, both reported used and referenced space of 677,146,120,192 bytes = 630.641468 gibibytes. Available space changed from 22,685,343,744 to 22,685,933,568 bytes between these reads; I did not attribute the change to this worker. Quota and reference quota stayed zero, and access-time updates were off. Compression is off, compression ratio is 1.00, and used-by-snapshots is zero.
+
+The confirmed-garbage files currently have 109,733,096,960 bytes = 102.196910 gibibytes of allocated blocks, with no stat errors. Subtracting that allocation from current dataset use gives an estimate of 528.444558 gibibytes remaining, below the proposed 582G cap. This is an estimate, not observed reclamation: Stage B must measure the actual ZFS before/after and allow deferred freeing and concurrent writes. The lead, not this worker, sets the quota afterwards. No hindsight dataset was touched.
+
+The stage ownership lock orders PrismaBuild publication and leases, not arbitrary unleased network-file-system opens. The proposed immediate handle/state rechecks follow the requested removal procedure, but they do not atomically prevent an unrelated opener after the check. This is a risk to state, not a new quiescence or authority gate. Source metadata and holder states can change after Stage A and must be rechecked in Stage B.
+
+What remains unverified
+
+Untested files were not content hashed. Seventeen historical fragment-owner dispositions remain unresolved by the existing terminal-outcome census, as detailed above; I did not change or reconcile their records. I did not run the shared-decharge or funding rollback mutation paths, trace the reason every overlapping key remains charged after the one-shot, or establish a resulting post-repair ledger. I did not measure actual deletion yield or exercise removing files while clients change state. The supplied one-shot's available-before/after fields name storage_pool, not prismabuild-stage/prewarm; use the direct dataset reads in this report for stage space. No future campaign plan absent from the surveyed queue was claimed to be covered by the current-holder census.
+
+Evidence
+
+Authoritative final evidence is under dl380g10:/home/rob/tmp/stage-a-census-20261005/:
+report-summary.json; classified-files-final.jsonl; directory-totals.json; sample-twenty-final.json; hash-sample-target-results.json; hash-sample-results.json; ownership-census.json; live-plan-protection.json; local-handles.json; nfs-state.json; ledger-before.json; ledger-after.json; ledger-compact.json; ledger-rounding-groups.json; held-physical-overlap.json; held-overlap-groups.json; fragment-owner-outcomes.json; receiptless-pool-funding.json; receiptless-detail.json; garbage-allocation.json.
+
+Twenty-file illustration
+
+This is a directory-stratified illustration followed by seeded random selection, not the uniform thirty-file hash sample. Full source paths and source offsets are also in sample-twenty-final.json. The source-mark strings below are the actual extended attribute contents.
+
+1. /stage/prewarm/models/GLM-5.3-Flash-BF16/model-00082-of-00120.safetensors.pbrange/0-5368754184
+   Size: 5368754184 bytes. Modification time: 2026-09-25T05:51:28.265136+00:00. Source mark: 5368754184:1788064809450077675:5763. Class: RETAIN.
+
+2. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0051/cache/model_language_model_layers_16_mlp_experts_162_gate_proj__TESSERA_E4M3_K1_R1088.pt.render_origin.json.pbrange/0-420
+   Size: 420 bytes. Modification time: 2026-09-23T13:55:55.146940+00:00. Source mark: 420:1789283339273629766:4234194. Class: RETAIN.
+
+3. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0046/cache/model_language_model_layers_11_mlp_experts_173_down_proj__TESSERA_E4M3_K1_R1088.pt.render_origin.json.pbrange/0-420
+   Size: 420 bytes. Modification time: 2026-09-23T13:53:12.946256+00:00. Source mark: 420:1789277116628691731:4057909. Class: RETAIN.
+
+4. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0048/cache/model_language_model_layers_13_mlp_experts_65_up_proj__TESSERA_E4M3_K1_R832.pt.render_origin.json.pbrange/0-412
+   Size: 412 bytes. Modification time: 2026-09-23T13:54:10.762569+00:00. Source mark: 412:1789279714814171149:4220128. Class: RETAIN.
+
+5. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/merged/cost.anchors.json.parts/units/6637a9bfb7d1f5f107bd120e04fd6e21bc0c3cb3aa12eb913a0bf24f9071c32a.pkl.pbrange/0-9717
+   Size: 9717 bytes. Modification time: 2026-09-23T13:57:55.266723+00:00. Source mark: 9717:1789275376164644476:4069748. Class: RETAIN.
+
+6. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-e2m1-01/workspace/rows/row-0081/cache/model_language_model_layers_44_mlp_experts_40_down_proj__TESSERA_E2M1_K2_R896.pt.pbrange/0-16779752
+   Size: 16779752 bytes. Modification time: 2026-09-24T10:24:03.325821+00:00. Source mark: 16779752:1789505569636103100:5544007. Class: RETAIN.
+
+7. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0051/cache/model_language_model_layers_16_mlp_experts_209_gate_proj__TESSERA_E4M3_K1_R960.pt.render_origin.json.pbrange/0-418
+   Size: 418 bytes. Modification time: 2026-09-23T13:55:56.295966+00:00. Source mark: 418:1789283501277887847:4247136. Class: RETAIN.
+
+8. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0050/cache/model_language_model_layers_15_mlp_experts_54_down_proj__TESSERA_E4M3_K1_R896.pt.render_origin.json.pbrange/0-416
+   Size: 416 bytes. Modification time: 2026-09-23T13:55:19.564132+00:00. Source mark: 416:1789282784377664166:4290922. Class: RETAIN.
+
+9. /stage/prewarm/tessera-measurements/glm-campaign-takeover-20260913/allocation/joint-panel/complete-512-seed237.executed-group.r607.a2v4.encoder-reuse-02/layer-quanta/adjoint/checkpoints/boundary-045/entries/cotangent-2-434.pt.pbrange/0-16779369
+   Size: 16779369 bytes. Modification time: 2026-09-23T14:04:31.015961+00:00. Source mark: 16779369:1790113217619208521:8331387. Class: RETAIN.
+
+10. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-e2m1-01/workspace/rows/row-0058/cache/model_language_model_layers_23_mlp_experts_78_up_proj__TESSERA_E2M1_K2_R896.pt.pbrange/0-16779738
+   Size: 16779738 bytes. Modification time: 2026-09-25T05:59:10.527993+00:00. Source mark: 16779738:1789497832463113472:5481639. Class: CONFIRMED_GARBAGE.
+
+11. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/merged/cost.anchors.json.parts/units/1b1b6dcb2b8a0caa82c24985b4f9e778b13e1efecadbec7d4a6bbbebc309e4e0.pkl.pbrange/0-9638
+   Size: 9638 bytes. Modification time: 2026-09-23T13:58:56.209157+00:00. Source mark: 9638:1789275376550640219:4070313. Class: RETAIN.
+
+12. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0058/cache/model_language_model_layers_23_mlp_experts_21_up_proj__TESSERA_E4M3_K1_R832.pt.pbrange/0-16779738
+   Size: 16779738 bytes. Modification time: 2026-09-25T05:42:06.505700+00:00. Source mark: 16779738:1789292255520203027:4690062. Class: CONFIRMED_GARBAGE.
+
+13. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0046/cache/model_language_model_layers_11_mlp_experts_112_gate_proj__TESSERA_E4M3_K1_R832.pt.render_origin.json.pbrange/0-418
+   Size: 418 bytes. Modification time: 2026-09-23T13:53:12.392243+00:00. Source mark: 418:1789276754137645711:4030908. Class: RETAIN.
+
+14. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0050/cache/model_language_model_layers_15_mlp_experts_97_up_proj__TESSERA_E4M3_K1_R928.pt.render_origin.json.pbrange/0-412
+   Size: 412 bytes. Modification time: 2026-09-23T13:55:25.670271+00:00. Source mark: 412:1789283094706292134:4216635. Class: RETAIN.
+
+15. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0045/cache/model_language_model_layers_10_mlp_experts_95_gate_proj__TESSERA_E4M3_K1_R832.pt.render_origin.json.pbrange/0-416
+   Size: 416 bytes. Modification time: 2026-09-23T13:53:12.207239+00:00. Source mark: 416:1789276634055945626:4186058. Class: RETAIN.
+
+16. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0058/cache/model_language_model_layers_23_mlp_experts_41_down_proj__TESSERA_BF16_K1_R1024.pt.pbrange/0-16779759
+   Size: 16779759 bytes. Modification time: 2026-09-25T05:42:05.611677+00:00. Source mark: 16779759:1789232957963183689:3595839. Class: CONFIRMED_GARBAGE.
+
+17. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0049/cache/model_language_model_layers_14_mlp_experts_75_gate_proj__TESSERA_E4M3_K1_R960.pt.render_origin.json.pbrange/0-416
+   Size: 416 bytes. Modification time: 2026-09-23T13:54:40.780251+00:00. Source mark: 416:1789280632990114938:4289039. Class: RETAIN.
+
+18. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0053/cache/model_language_model_layers_18_mlp_experts_264_down_proj__TESSERA_E4M3_K1_R1088.pt.render_origin.json.pbrange/0-420
+   Size: 420 bytes. Modification time: 2026-09-23T13:57:20.268897+00:00. Source mark: 420:1789285538475878405:4241778. Class: RETAIN.
+
+19. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0049/cache/model_language_model_layers_14_mlp_experts_145_gate_proj__TESSERA_E4M3_K1_R1088.pt.render_origin.json.pbrange/0-420
+   Size: 420 bytes. Modification time: 2026-09-23T13:54:12.792615+00:00. Source mark: 420:1789279994659106133:4244436. Class: RETAIN.
+
+20. /stage/prewarm/tessera-measurements/glm-canonical-census-20260908/activation-runtime-allocation-20260911/extension-r1024-02/workspace/rows/row-0052/cache/model_language_model_layers_17_mlp_experts_168_up_proj__TESSERA_E4M3_K1_R960.pt.render_origin.json.pbrange/0-414
+   Size: 414 bytes. Modification time: 2026-09-23T13:56:34.355831+00:00. Source mark: 414:1789284269715634709:4306642. Class: RETAIN.
+
+Stopped at Stage A. Awaiting the lead's exact STAGE B GO message before any deletion, token settlement, live record change or ZFS change.

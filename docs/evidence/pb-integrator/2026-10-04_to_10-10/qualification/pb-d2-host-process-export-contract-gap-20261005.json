@@ -1,0 +1,27 @@
+{
+  "schema": "fleet.pb_host_process_export_gap.v1",
+  "owner": "pb-integrator",
+  "consumer_record": "testcost-d2-cleanup-proof-20261005",
+  "commission": "/home/rob/fleet/inventory/testcost-d2-cleanup-r1-capture-commission-20261005.json",
+  "CEO_mitigation": {"decision":"dec-1005-041250-488b MITIGATE Option B","deferred_issue":"https://github.com/RobTand/prismabuild/issues/1524","priority":"P2","current_authority":"Keep every candidate held; delete nothing; do not build or deploy privileged reader tonight","revisit":"Only T-8 ship-window D1 Spark space shortfall; CEO will authorize narrower route, possibly maintenance window","critical_path":"1514/1523 publication, admission proof, Sonnet switch"},
+  "status": "No supported complete host-process reference export identified in the installed PB authority or published tools inspected. No census delivered; absence is not established.",
+  "evidence": [
+    {"surface": "Installed brokers on sparky and sparklina", "path": "/opt/prismabuild-resource-broker/resource_broker.py", "lines": "591-604,670-713,792-831", "finding": "Authenticated per-attempt create/recover_create/run/stop/release/status/settle/export_stopped/container operations; root maintenance gate operations. No host process cwd/maps/fd reference export operation."},
+    {"surface": "Live sparky broker RPC", "operation": "host_process_export", "reply": {"ok": false, "error": "unknown operation"}, "mutation": "None; unsupported operation rejected before attempt mutation"},
+    {"surface":"Live sparklina broker RPC","operation":"host_process_export","reply":{"ok":false,"error":"unknown operation"},"mutation":"None; unsupported operation rejected before attempt mutation"},
+    {"surface": "Published runtime process census", "path": "/mnt/shared/prismabuild-fleet/repo/tools/runtime_process_census.py", "lines": "39-50,75-83", "finding": "Only PrismaBuild worker loops, start times and argv; exited/raced loop stat reads silently continue. Not all processes, not cwd/maps/fd paths, not a cleanup-negative witness."},
+    {"surface": "Privileged GPU reader", "path": "/mnt/shared/prismabuild-fleet/repo/src/prismabuild/gpu_memory.py", "lines": "178-240,277-422", "finding": "GPU process/handle ownership and memory attribution only; no complete ordinary cwd/mmap/fd backing-path export."},
+    {"surface": "Privileged installation", "path": "/mnt/shared/prismabuild-fleet/repo/tools/install_resource_broker.sh", "lines": "33-39,52-71", "finding": "Root-owned broker/resource payload/GPU monitor pair, NoNewPrivileges=yes; adding a privileged operation requires reviewed deployment, not runtime publication alone."}
+  ],
+  "missing_contract": {
+    "reader": "Installed, sanctioned PB-owned root reader for all relevant host PID namespace processes; no arbitrary privileged argv or admitted sudo escape",
+    "identity": "Host, boot_id, PID namespace dev/inode, per-process PID/start_ticks checked before/after; capture start/end wall and monotonic timestamps",
+    "reference_surface": "cwd links plus mapped backing paths/dev/inode and open fd target paths/dev/inode; mark deleted backing and namespace/path resolution ambiguity",
+    "completeness": "Every unreadable, denied, vanished, reused, raced or timed-out process/entry explicit; never silently skip; no partial or stale negative inference; no claim of an atomic ongoing snapshot",
+    "provenance": "Immutable retained output and digest bound to reader code, installed authority, exact capture request/action and host/boot/PID namespace/time interval",
+    "privacy": "No process memory, environments, credentials or target file contents; no GPU queries or host/network operations inside the reader",
+    "deployment_authority": "Reviewed installation/upgrade of the narrow privileged reader on both Sparks, preserving NoNewPrivileges and existing scope ownership. Not authorized by the current read-only commission."
+  },
+  "recommendation": "Commission a separate narrow reviewed root-reader/export contract and sanctioned deployment; do not mix unreviewed privilege changes into the urgent1514/1523 runtime rollout. Meanwhile builder completes all other reference surfaces and all deletion candidates remain held.",
+  "not_performed": "No sudo retry, CAP_SYS_PTRACE, host-PID container, Docker shim bypass, broker/service change, token release or deletion."
+}

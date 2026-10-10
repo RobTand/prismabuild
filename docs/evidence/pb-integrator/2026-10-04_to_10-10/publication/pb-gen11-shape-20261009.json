@@ -1,0 +1,63 @@
+[
+ {
+  "shard": 0,
+  "files": [
+   "tests/gate_campaign_shape.py"
+  ],
+  "returncode": 0,
+  "action_key": "d8d0d8bde51078ec0a967b1e01d2205f75e44e3cdc71d1dbd03b054c30016828",
+  "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d8/d8d0d8bde51078ec0a967b1e01d2205f75e44e3cdc71d1dbd03b054c30016828.json",
+  "summary": "2 passed in 832.81s (0:13:52)",
+  "capabilities": null,
+  "predicted_s": null,
+  "pytest_s": 832.81,
+  "test_completion": {
+   "schema": "prismabuild.pbtest_completion.v1",
+   "collection_complete": true,
+   "collect_only": false,
+   "collection_errors": false,
+   "collected": [
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]",
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]"
+   ],
+   "teardown_finished": [
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]",
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]"
+   ],
+   "duplicate_teardown": false,
+   "outcome_nodeids": [
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]",
+    "tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]"
+   ],
+   "status": "complete",
+   "missing_teardown": [],
+   "missing_outcomes": [],
+   "unexpected_nodeids": [],
+   "problems": []
+  },
+  "timed_out": false,
+  "ran": true,
+  "skipped": [],
+  "attempts": 1,
+  "output": "pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.\npbrun: queued d8d0d8bde51078ec0a967b1e01d2205f75e44e3cdc71d1dbd03b054c30016828 tags=['x86'] demand={'mem_gb': 8, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791577832.3237474\npbrun: attempt 1/1 executed (done)\n{\"result\": {\"adaptations\": [\"each node's key arrives through ACTION_KEY_ENV, as the launcher sets it\", \"stage movers run --unpaced: the gate's pool is a directory\", \"the stage's fill is priced from the gate's own receipts, as a tier with no fill history prices it\"], \"bytes_read_strictly\": 184249367, \"chunk_units\": 40, \"chunks\": {\"ram\": 8, \"stage\": 8}, \"coverage\": {\"byte_cuts_inside_entries\": 2, \"chunk_bytes\": 41943040, \"chunk_edge_inside_entry\": true, \"phases_over_chunk\": [\"chain-044\", \"chain-040\"], \"read_bytes\": 184249367}, \"cycles\": 10, \"digest_less_entries\": 34, \"entries\": 9255, \"entries_read_strictly\": 9255, \"entry_reads\": 9255, \"manifest_bytes\": 184249367, \"multi_range_files\": 6, \"overlapping_files\": 4, \"phases\": 6, \"pool_opens\": {\"egress\": 0, \"promote\": 0, \"read\": 0}, \"ram_bytes_moved\": 184249367, \"ram_egresses\": 6, \"ram_peak_bytes\": 166936763, \"ram_promotions\": 8, \"ram_slide\": true, \"ram_window_bytes\": 167772160, \"ram_window_units\": 160, \"read_bytes\": 184249367, \"scale\": 1024, \"schema\": \"prismabuild.shape_gate.result.v1\", \"stage_bytes_moved\": 184249367, \"stage_egresses\": 6, \"stage_movers\": 8, \"table\": {\"entry_count\": 9255, \"file_count\": 9245, \"manifest_schema\": \"prismaquant.prismabuild.data_manifest.v2\", \"manifest_sha256\": \"682e7b0a859ff81824329cab3d5f5239d54c492e4221c7f3c98d2a4a25068cc3\", \"phase_count\": 6, \"total_bytes\": 188669721544}, \"timings_s\": {\"seal_s\": 0.451, \"sources_s\": 1.675, \"total_s\": 382.009, \"window_s\": 379.858}, \"unique_entries_read\": 9255, \"unit_bytes\": 1048576}, \"shape_gate\": \"682e7b0a859f\"}\n.{\"result\": {\"adaptations\": [\"each node's key arrives through ACTION_KEY_ENV, as the launcher sets it\", \"stage movers run --unpaced: the gate's pool is a directory\", \"the stage's fill is priced from the gate's own receipts, as a tier with no fill history prices it\"], \"bytes_read_strictly\": 169957807, \"chunk_units\": 40, \"chunks\": {\"ram\": 22, \"stage\": 22}, \"coverage\": {\"byte_cuts_inside_entries\": 0, \"chunk_bytes\": 41943040, \"chunk_edge_inside_entry\": false, \"phases_over_chunk\": [], \"read_bytes\": 169957807}, \"cycles\": 25, \"digest_less_entries\": 6, \"entries\": 10344, \"entries_read_strictly\": 11880, \"entry_reads\": 11880, \"manifest_bytes\": 144788911, \"multi_range_files\": 1, \"overlapping_files\": 0, \"phases\": 22, \"pool_opens\": {\"egress\": 0, \"promote\": 0, \"read\": 0}, \"ram_bytes_moved\": 169957807, \"ram_egresses\": 21, \"ram_peak_bytes\": 126041384, \"ram_promotions\": 22, \"ram_slide\": true, \"ram_window_bytes\": 167772160, \"ram_window_units\": 160, \"read_bytes\": 169957807, \"scale\": 1024, \"schema\": \"prismabuild.shape_gate.result.v1\", \"stage_bytes_moved\": 169957807, \"stage_egresses\": 21, \"stage_movers\": 22, \"table\": {\"entry_count\": 10344, \"file_count\": 10343, \"manifest_schema\": \"prismaquant.prismabuild.data_manifest.v2\", \"manifest_sha256\": \"bc2a3bc8ad116ca44e7cc5627d430c4f7886048f63bd5ca1cd713786ba432027\", \"phase_count\": 22, \"total_bytes\": 148264339117}, \"timings_s\": {\"seal_s\": 0.583, \"sources_s\": 1.346, \"total_s\": 449.631, \"window_s\": 447.674}, \"unique_entries_read\": 10344, \"unit_bytes\": 1048576}, \"shape_gate\": \"bc2a3bc8ad11\"}\n.\npbtest-completion: {\"schema\":\"prismabuild.pbtest_completion.v1\",\"collection_complete\":true,\"collect_only\":false,\"collection_errors\":false,\"collected\":[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]\",\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]\"],\"teardown_finished\":[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]\",\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]\"],\"duplicate_teardown\":false,\"outcome_nodeids\":[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]\",\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]\"]}\n                                                                         [100%]\npbtest-outcomes: {\"schema\":\"prismabuild.pbtest_outcomes.v1\",\"rootdir_relative\":\".\",\"collect_only\":false,\"collected\":[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]\",\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]\"],\"deselected\":[],\"collect_seen\":[],\"reports\":[[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[682e7b0a859f]\",\"call\",\"passed\",null,null],[\"tests/gate_campaign_shape.py::test_the_reference_campaign_shape_stages_and_reads_back[bc2a3bc8ad11]\",\"call\",\"passed\",null,null]],\"uncounted\":[],\"file_durations\":{\"tests/gate_campaign_shape.py\":832.609},\"file_selection\":{\"files\":[\"tests/gate_campaign_shape.py\"],\"ignored\":[]},\"file_selection_error\":null}\n2 passed in 832.81s (0:13:52)\n{\"local_result_claim_sha256\": \"ec264928c010b55dbd7aad3c30414a6077a57b82342085b227913069b0eee73e\", \"payload_path\": \"/mnt/shared/prismabuild-fleet/cas/blobs/00/00d923f01548c27cd39b8750275dd1fe4dce16193e9e8b5ffd5db7f443b0b598\", \"reaped_staging_files\": 0, \"receipt\": {\"action_key\": \"d8d0d8bde51078ec0a967b1e01d2205f75e44e3cdc71d1dbd03b054c30016828\", \"action_manifest_sha256\": \"b15121a85a1dc7e248b12fb54d854beaa08eeb1b878b54608591d5b551599e81\", \"producer\": {\"action_key\": \"d8d0d8bde51078ec0a967b1e01d2205f75e44e3cdc71d1dbd03b054c30016828\", \"attestation_sha256\": \"c2ff0c1a8d2cf19f563690eef99982314af1e92a8213efc3c903c7eb170f542a\", \"evidence\": {\"accelerators\": [], \"hostname\": \"dl380g10\", \"libc\": \"glibc-2.43\", \"machine\": \"x86_64\", \"slurm\": null, \"source\": \"local\", \"system\": \"linux\"}, \"executable\": {\"bytes\": 1540520, \"path\": \"/bin/bash\", \"resolved_path\": \"/usr/bin/bash\", \"sha256\": \"3efccc187bafa75ff1e37d246270ab3e7aa559f242c7a52bf3ec2a1b5450bdbd\"}, \"host_class\": null, \"inputs\": [{\"bytes\": 13974236, \"id\": \"pbrun.checkout-snapshot\", \"sha256\": \"10bae0558e73db2ef35cadc3927be35c019ce94a8b9d593ce084330f459a9948\"}], \"platform_key\": \"linux-x86_64\", \"runtime\": {\"core\": {\"bytes\": 383602, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/src/prismabuild/core.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/src/prismabuild/core.py\", \"sha256\": \"1b5a8fe3f575d94814330ee26d85deda5c39db7382a2ef89763a53db20f056a2\"}, \"digest_primitives\": {\"bytes\": 3153, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/src/prismabuild/digest_primitives.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/src/prismabuild/digest_primitives.py\", \"sha256\": \"fb7680d2ff3fd99172f6caa316cfee490ab65d1d089cae3273924d6786b11e79\"}, \"launch_kind\": \"script\", \"launcher\": {\"bytes\": 2285, \"path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/tools/prismabuild_worker.py\", \"resolved_path\": \"/mnt/shared/prismabuild-fleet/runtime-generations/cfe060ca7205-1791554831-7b15cf417d57/tools/prismabuild_worker.py\", \"sha256\": \"9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418\"}, \"runtime_sha256\": \"81f65ad995a33feeddd326abf094b7a7540ab1de124c86736d9cbe90a5371150\", \"schema\": \"prismaquant.prismabuild.worker_runtime.v1\"}, \"schema\": \"prismaquant.prismabuild.worker_attestation.v2\", \"toolchain\": {\"declared\": {}, \"verified\": {}}, \"worker_id\": \"dl380g10\"}, \"receipt_sha256\": \"17c4e10a60d00cfcf71765765964bc29073a5ef975fb6ab42400525a2872f800\", \"result\": {\"bytes\": 4824, \"sha256\": \"00d923f01548c27cd39b8750275dd1fe4dce16193e9e8b5ffd5db7f443b0b598\"}, \"schema\": \"prismaquant.prismabuild.cas_receipt.v3\"}, \"recovered_declared_result\": false, \"status\": \"published\"}\npbrun: log capture executable=/usr/bin/gnutee\npbrun: executed on dl380g10 in 835s; rss=963.5M io w=7.0M r=120.0K\n",
+  "reconciliation": {
+   "collect_only": false,
+   "collected": 2,
+   "ran": 2,
+   "outcomes": 2,
+   "at_collection": [],
+   "extra_phases": {},
+   "never_ran": [],
+   "not_collected": [],
+   "collected_twice": [],
+   "summary_counts": {
+    "passed": 2
+   },
+   "record_counts": {
+    "passed": 2
+   },
+   "problems": [],
+   "missing_files": []
+  }
+ }
+]
