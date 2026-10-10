@@ -314,6 +314,9 @@ def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
                                          skipped=skipped)
     assert pressure.get(STAGE, 0) > 0, (pressure, skipped)
     assert pressure.get(RAM, 0) > 0, (pressure, skipped)
+    silent = [row for row in skipped
+              if row.get("consumer") in (DECLARED, WINDOW)]
+    assert silent == [], (pressure, skipped)
 
 
 def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
