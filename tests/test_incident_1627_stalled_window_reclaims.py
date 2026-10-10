@@ -125,6 +125,8 @@ def _window_plan(queue, consumer: str) -> dict:
                     "manifest_sha256": _hexkey("1627-window-man"),
                     "manifest_bytes": total,
                     "range_start_bytes": start, "range_end_bytes": end}},
+            "egress_row": _row(_hexkey(f"1627-we{ordinal}"),
+                               {"mem_gb": 1}, queue),
 
             "ram_mover_row": {
                 **ram_row, "residency": {
