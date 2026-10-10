@@ -295,7 +295,10 @@ def _jammed(tmp_path: Path):
         PG, STAGE, residency_plan.prelaunch_phase_names(group_plan))
     d_holder = prelaunch_group.holder_name(
         DECLARED, STAGE, residency_plan.prelaunch_phase_names(declared_plan))
-    return queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder, d_holder
+    d_prefix = [d_holder] + [str(lead) for lead in
+                             residency_plan.leads_for(declared_plan)]
+    return (queue, stage, ram, stage_orphans, ram_orphans, live_head,
+            pg_holder, d_prefix)
 
 
 def _held(queue, tier_id: str, key: str) -> bool:
@@ -316,7 +319,7 @@ def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
 def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
     """A few real cycles give back the orphans and the withdrawn prefix."""
     (queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder,
-     d_holder) = _jammed(tmp_path)
+     d_prefix) = _jammed(tmp_path)
     for _ in range(4):
         _cycle(queue, stage, ram)
     assert [mover for mover in stage_orphans
@@ -325,7 +328,10 @@ def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
             if _held(queue, RAM, mover)] == []
     assert not _held(queue, STAGE, pg_holder), "a withdrawn group lets go"
     assert _held(queue, STAGE, live_head), "a live claim stays"
-    assert _held(queue, STAGE, d_holder), "the declared waiter reserves"
+    ledger = queue.tier_ledger(STAGE)
+    held_prefix = sum(
+        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in d_prefix)
+    assert held_prefix == 2, "the declared waiter reserves its prefix"
 
 
 def test_a_futile_waiter_names_its_refusal_once(tmp_path: Path) -> None:
