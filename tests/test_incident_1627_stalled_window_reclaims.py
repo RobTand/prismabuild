@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prelaunch_tier as pt  # noqa: E402
+import residency_publication as rp  # noqa: E402
 import stage_release  # noqa: E402
 from prismabuild import pool, prelaunch_group, residency_plan, storage_tiers  # noqa: E402
 import tier_loop  # noqa: E402
