@@ -1,0 +1,774 @@
+diff --git a/docs/contributing.md b/docs/contributing.md
+index 1368ae765c..70cb19273b 100644
+--- a/docs/contributing.md
++++ b/docs/contributing.md
+@@ -87,6 +87,7 @@ loss (#1506).
+ 
+ Unrelated subprocesses retain native Popen behavior when env=None.
+ 
++<<<<<<< HEAD
+ The live-store test guard checks `os.open(name, dir_fd=fd)` against the
+ descriptor path from local `/proc/self/fd` (#1610). Its wrapper retains the
+ descriptor because CPython omits it from the `open` audit event.
+@@ -95,6 +96,8 @@ The guarded roots and the `live_store` marker remain unchanged.
+ 
+ Restore scratch guard roots before pytest removes the scratch tree.
+ Restore the cwd before each regression ends.
++=======
++>>>>>>> 8908861ada2571fdf8e0ec52921849d96eb51ace
+ 
+ Install the local direct-push guard with:
+ 
+@@ -112,3 +115,22 @@ for branch protection and rulesets: private repository protection requires an
+ eligible paid plan. Keep this repository private. Until that account limitation
+ is resolved, neither the workflow nor the local hook is server-enforced branch
+ protection, and direct API writes remain technically possible.
++
++## Scratch for small CPU suites
++
++Use `pbtest --tag x86 --tmpdir /tmp` for small suites on dl380g10 that do not require disk semantics.
++For detached pytest actions, seal `pbrun --env TMPDIR=/tmp` instead.
++The host mounts `/tmp` as RAM-backed tmpfs. The #1530 probe observed
++158120488960 bytes of capacity and 121960222720 bytes available.
++These values are observations, not reservations or permanent capacity guarantees.
++
++Declare memory for the processes and their peak tmpfs files together.
++Check free bytes and inodes before a run. Limit concurrent scratch demand.
++
++Do not use tmpfs for spool tests or tests that require a supported local disk.
++Keep disk durability, disk capacity, filesystem-specific, and ZFS/NFS tests on their required filesystem.
++Do not use the HDD pool as the normal scratch parent for small CPU suites.
++The [#1530 evidence record](results/pbtest_exit_completion_1530.md) shows pytest's
++exit hook inside pool cleanup after the test progress reached `[100%]`.
++An exit timeout remains non-green, even when the selected tests have verified completion evidence.
++
+diff --git a/docs/design.md b/docs/design.md
+index 4cea4eaac9..ec88c144c4 100644
+--- a/docs/design.md
++++ b/docs/design.md
+@@ -2050,6 +2050,35 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
+ was skipped. The recorder changes every shard's command, so receipts from
+ before it are not cache hits for shards after it.
+ 
++Each shard also emits `pbtest-completion: {json}` before exit hooks can block
++the final outcomes (#1530). Its schema is `prismabuild.pbtest_completion.v1`.
++The recorder flushes this separate record after the last selected test reports
++teardown. For an incomplete session, it emits the available evidence at entry
++to `pytest_sessionfinish`. An xdist controller checks every worker's collection
++before it can report complete tests.
++
++The JSON report field `test_completion.status` is `complete`, `incomplete`,
++or `unknown`. Complete tests require a nonempty, unique selected population,
++an observed outcome for each test, and a teardown report for each test.
++Collection errors, inconsistent worker collections, duplicate teardown reports,
++and reports outside the selected population prevent complete status.
++Missing or invalid records give unknown status. Collection-only runs do not
++establish complete test execution.
++
++A timeout without a summary states `TESTS COMPLETE; PROCESS DID NOT EXIT`
++only when this completion record verifies the selected population.
++Otherwise, it states `TEST COMPLETION UNVERIFIED` and retains unknown coverage.
++
++The JSON field `timed_out` identifies an observed pbrun timeout with a nonzero
++return code. If a final summary exists, the console keeps its counts and
++adds the same completion notice beside it.
++
++Completion does not prove final outcomes, assigned-file reconciliation, or a
++successful process exit. Progress dots, `[100%]`, and trace events establish
++none of these facts. The green gate still requires exit zero, a final pytest
++summary, and reconciled final outcomes.
++
++
+ `pbtest` reconciles every shard by node ID (#941). Each shard's receipt entry
+ carries `reconciliation`: its collected tests matched against the outcomes its
+ recorder saw, and its record's counts matched against its summary line. A
+@@ -2080,6 +2109,8 @@ outcomes equal tests, plus outcomes at collection, plus extra phases.
+ For a failed shard, the human report prints its full output, including the
+ pytest failure section; the pool also retains the action's immutable attempt
+ stdout log. The `--json` entry contains that output without truncation.
++For a pool-scratch exit stack and bounded tmpfs guidance, see
++[the #1530 evidence record](results/pbtest_exit_completion_1530.md).
+ 
+ `pbtest` names every shard's full action key (#1012). `pbrun`'s pool
+ submission line (`queued` or `attached to`) carries the full key, and every
+diff --git a/docs/results/pbtest_exit_completion_1530.md b/docs/results/pbtest_exit_completion_1530.md
+new file mode 100644
+index 0000000000..f852512f5e
+--- /dev/null
++++ b/docs/results/pbtest_exit_completion_1530.md
+@@ -0,0 +1,135 @@
++# pbtest exit completion evidence (#1530)
++
++## Scope
++
++The change separates selected-test completion from final pytest outcomes and process exit.
++The green gate still requires exit zero, a terminal summary, and reconciled final outcomes.
++This record covers source tests and a pool-scratch reproduction. It does not claim runtime deployment.
++
++## Regression evidence
++
++The actions used the published PrismaBuild client, the `x86` class, two CPUs, and 4 GiB of memory.
++Each native thread limit was one. The regression suite used `/tmp`.
++
++- Before the fix: `fb1e94005d5bda3cfd7ee3306d2288c37b0c80cadee9cd712ec0a9d5afa505ac`.
++  All five regression cases failed because the report lacked test completion evidence.
++  The action returned one. No CAS receipt exists for this failed action.
++  The retained stdout digest is `9ca28b1730057931e9011ff4a872eb18fa977d8be912704bb73c1d5dbc5e6d8d`.
++- After the fix: `1fd86733546d5cc92fcc0a7a03f19c96c7fbd8571118dfb0d16e86c8ce5372a5`.
++  The affected suite passed 98 tests, with no skips, in 27.51 seconds.
++  Its cases cover blocked controller hooks, blocked xdist worker hooks, early stop, and invalid completion records.
++  They check console text, JSON fields, and the non-green verdict.
++  They also check that progress dots and trace events cannot prove completion.
++
++  The receipt digest is `de5d784725185fc07148052454b5dbc1b4e70ac8d47e1102fb6da13737dcd133`.
++  The payload digest is `7dd52977c5fe5bc36a8944d61f58e75c776c0ab46fde2fb39b4208da05bec3b5`.
++  A direct SHA-256 check matched the payload address.
++- Extended fixture run: `31fbec2d8c3089653090a82a9fdf3b3f1496c3f29865c50fb0a6027e089b5c7c`.
++  It returned one, with 99 passes and two fixture failures.
++  The final-summary fixtures signaled their block before Python flushed the summary.
++  The correction selects unbuffered output for the child fixture. It preserves all assertions.
++- Final source run: `423103a1559a0363fa28a80bddeae3034869554272ed989ef8b591831259246b`.
++  All 101 affected tests passed, with no skips, in 24.73 seconds.
++  This run also covers timeouts after a final summary, in single-process and xdist shards.
++  It proves that complete tests without final outcomes remain non-green, even with exit zero.
++
++  The receipt digest is `1bdff29cba16fccf72c99e1ccb4c43d8e24085fdbed9dfadfd9e08c9d8605670`.
++  The payload digest is `6e14a577d56af71a7f601deedca4d8b52879d59a8ecf105493c7ba84c91f75aa`.
++  A direct SHA-256 check matched the payload address.
++
++## Pool-scratch reproduction
++
++Action: `1e32cf94bccacf4b54ff2e852f4e567eeb12a58775e0fe7ffc6dcbe2e2c40ab0`.
++Host: `dl380g10`, with 80 logical CPUs.
++Scratch: `/storage_pool/shared/pb-scratch`, on the ZFS dataset `storage_pool/shared`.
++The mount options were `rw,noatime,xattr,noacl,casesensitive`.
++The initial load averages were 22.54, 24.42, and 24.75.
++
++The probe ran `tests/test_publish_runtime.py` and `tests/test_fleet_tool_flags_have_help.py` in one shard.
++It tested one pytest process and then two xdist workers.
++Both children reached `[100%]`, then failed to exit within the probe's 100-second child deadline.
++Neither child printed a terminal summary or a final outcome record.
++The probe captured Python stacks every 20 seconds. It then killed each child process group and collected its output.
++
++Both controller stacks showed this exit path:
++
++```text
++shutil.py:778 or :791 in _rmtree_safe_fd_step
++shutil.py:721 in _rmtree_safe_fd
++shutil.py:852 in rmtree
++_pytest/pathlib.py:167 in rm_rf
++_pytest/pathlib.py:290 in maybe_delete_a_numbered_dir
++_pytest/pathlib.py:338 in try_cleanup
++_pytest/pathlib.py:367 in cleanup_numbered_dir
++contextlib.py:627 in close
++_pytest/tmpdir.py:340 in pytest_sessionfinish
++_pytest/main.py:365 in wrap_session
++```
++
++The observed exit blocker was pytest's numbered temporary-directory cleanup, before the terminal summary hook.
++The single-process load averages at termination were 21.07, 23.67, and 24.47.
++The xdist load averages at termination were 23.35, 23.43, and 24.28.
++The stacks identify the cleanup path. They do not prove a stuck kernel syscall, an NFS fault, or the October 5 cause.
++The probe did not add synthetic filesystem delays or artificial pool load.
++
++The diagnostic parent returned zero because it completed the probe and retained both child timeouts.
++That parent receipt does not certify either child suite as green.
++The receipt digest is `4bfec59f9f9dfeb61ba9df8b5a23709fc49025e69edada795669a19364ab78e5`.
++The payload digest is `8aed90d0572fb288d6a0e795c32f18d4156115aada47b7facca790c673fe10db`.
++A direct SHA-256 check matched the payload address.
++The payload retains the mount data, host load, progress output, and all stack samples.
++Its CAS path is `/mnt/shared/prismabuild-fleet/cas/blobs/8a/8aed90d0572fb288d6a0e795c32f18d4156115aada47b7facca790c673fe10db`.
++
++## Integrated completion and scratch proof
++
++Action: `995d3e88dbf1acd0113a7a27c03f24f860912401e5da6954568bee650a7e12cd`.
++The probe used the fixed recorder on dl380g10, with the same two source files.
++It alternated pool scratch and `/tmp` for each worker count.
++The initial load averages were 19.45, 21.25, and 23.12.
++
++| Scratch | Pytest workers | Child ending | Completed selected tests | Final outcomes |
++| --- | ---: | --- | ---: | --- |
++| ZFS pool | 1 | Timeout at the 100-second child deadline | 120 | Absent |
++| `/tmp` tmpfs | 1 | Exit zero | 120 | 120 passed |
++| ZFS pool | 2 | Exit zero | 120 | 120 passed |
++| `/tmp` tmpfs | 2 | Exit zero | 120 | 120 passed |
++
++The timed-out pool child flushed its completion record before the cleanup hook stalled.
++It still had no terminal summary or final outcome record.
++The other children produced reconciled final outcomes.
++The probe asserted these distinctions and returned zero.
++Load changed between arms. These diagnostic runs do not establish a controlled performance comparison.
++
++The target interpreter also supplied the source at the sampled stack positions:
++
++```python
++# /usr/lib/python3.14/shutil.py
++# line 778
++entries = list(scandir_it)
++# line 791
++os.unlink(entry.name, dir_fd=topfd)
++```
++
++The receipt digest is `f33c12087178574b8eadc656bb8f50ac86a267c6c2f0fe9e0ffb2ec14f93ce74`.
++The payload digest is `d12a54e02464339c4ec9f90b17b6e5e0477a44aaed6d8881cf48c1db8d417173`.
++A direct SHA-256 check matched the payload address.
++The payload retains all four child outputs and their structured completion checks.
++The temporary probe source remains in the sealed snapshot, not in the final branch.
++
++## Scratch choice and limits
++
++Use `/tmp` for small CPU suites on dl380g10 that do not require disk semantics.
++Select it with `pbtest --tag x86 --tmpdir /tmp` or `pbrun --tag x86 --env TMPDIR=/tmp`.
++The October 5 observations in #1530 show the named small suites exit on `/tmp`.
++The new affected suite also exits on `/tmp`.
++These observations support a scratch choice, not a controlled estimate of filesystem performance.
++
++The probe observed a RAM-backed tmpfs with 158120488960 bytes of capacity and 121960222720 bytes available.
++Capacity and free space can change. TMPDIR does not reserve bytes or inodes.
++Declare memory for all test processes and their peak tmpfs files together.
++Check byte and inode headroom before a run. Keep total scratch demand below available capacity.
++
++Do not use tmpfs for spool tests, disk durability tests, or tests that require a supported local disk.
++Keep disk capacity, filesystem-specific, and ZFS/NFS tests on their required filesystem.
++Do not change scratch semantics to obtain a green result for those tests.
++A timeout remains non-green, even when the selected test population has verified completion evidence.
+diff --git a/tests/test_pbtest_exit_completion_1530.py b/tests/test_pbtest_exit_completion_1530.py
+new file mode 100644
+index 0000000000..84bb9a02f6
+--- /dev/null
++++ b/tests/test_pbtest_exit_completion_1530.py
+@@ -0,0 +1,236 @@
++"""Test completion evidence must survive a blocked pytest exit hook (#1530)."""
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import select
++import signal
++import subprocess
++import sys
++
++import pytest
++
++from test_pbtest_reports_whether_pytest_ran import _one_shard, pbtest
++
++
++BLOCKER = '''\
++import faulthandler
++import os
++import threading
++import pytest
++
++
++def block():
++    faulthandler.dump_traceback()
++    os.write(int(os.environ["PBTEST_BLOCK_FD"]), b"blocked\\n")
++    threading.Event().wait()
++
++
++@pytest.hookimpl(tryfirst=True)
++def pytest_runtestloop(session):
++    if os.environ["PBTEST_INCOMPLETE"] == "1":
++        block()
++
++
++@pytest.hookimpl(tryfirst=True)
++def pytest_sessionfinish(session, exitstatus):
++    if os.environ["PBTEST_EXIT_HOOK"] != "sessionfinish":
++        return
++    if os.environ["PBTEST_WORKER_EXIT"] == "1":
++        if hasattr(session.config, "workerinput"):
++            with open(os.environ["PBTEST_STACK_ROOT"] + str(os.getpid()), "w") as stream:
++                faulthandler.dump_traceback(file=stream)
++            threading.Event().wait()
++    elif not hasattr(session.config, "workerinput"):
++        block()
++
++
++@pytest.hookimpl(tryfirst=True)
++def pytest_unconfigure(config):
++    if (os.environ["PBTEST_EXIT_HOOK"] == "unconfigure"
++            and not hasattr(config, "workerinput")):
++        block()
++'''
++
++
++def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
++                  worker_exit: bool = False, stop_early: bool = False,
++                  exit_hook: str = "sessionfinish") -> str:
++    checkout = tmp_path / "suite"
++    checkout.mkdir()
++    (checkout / "pytest.ini").write_text("[pytest]\n")
++    (checkout / "conftest.py").write_text(BLOCKER)
++    (checkout / "test_one.py").write_text(
++        "def test_one():\n    assert " + ("False" if stop_early else "True") +
++        "\n\ndef test_two():\n    assert True\n")
++    read_fd, write_fd = os.pipe()
++    environment = dict(os.environ, PBTEST_BLOCK_FD=str(write_fd),
++                       PBTEST_INCOMPLETE=str(int(incomplete)),
++                       PBTEST_WORKER_EXIT=str(int(worker_exit)),
++                       PBTEST_STACK_ROOT=str(checkout / "worker-stack-"),
++                       PBTEST_EXIT_HOOK=exit_hook,
++                       PYTHONUNBUFFERED="1", PYTEST_ADDOPTS="")
++    arguments = ["-q", "-p", "no:cacheprovider"]
++    if workers > 1:
++        arguments += ["-n", str(workers)]
++    if stop_early:
++        arguments += ["-x"]
++    process = subprocess.Popen(
++        [*pbtest.shard_entry(sys.executable, checkout), *arguments, "test_one.py"],
++        cwd=checkout, env=environment, stdout=subprocess.PIPE,
++        stderr=subprocess.STDOUT, text=True, start_new_session=True,
++        pass_fds=(write_fd,))
++    os.close(write_fd)
++    try:
++        if worker_exit:
++            with pytest.raises(subprocess.TimeoutExpired):
++                process.communicate(timeout=10)
++        else:
++            ready, _, _ = select.select([read_fd], [], [], 30)
++            assert ready, "The shard did not reach the controlled blocker."
++            assert os.read(read_fd, 64) == b"blocked\n"
++    finally:
++        os.close(read_fd)
++        os.killpg(process.pid, signal.SIGKILL)
++        output, _ = process.communicate(timeout=10)
++    if worker_exit:
++        stacks = [path.read_text() for path in checkout.glob("worker-stack-*")]
++        assert len(stacks) == workers
++        assert all(" in pytest_sessionfinish" in stack for stack in stacks)
++    else:
++        assert " in block" in output, output
++    return output
++
++
++@pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
++@pytest.mark.parametrize("incomplete", [False, True], ids=["after-tests", "during-test"])
++def test_timeout_reports_the_verified_test_population(
++        tmp_path, monkeypatch, capsys, workers, incomplete):
++    if workers > 1:
++        import xdist  # Required for this acceptance case.
++    output = blocked_shard(tmp_path, workers=workers, incomplete=incomplete)
++    code, record = _one_shard(tmp_path, monkeypatch,
++                             output + "\npbrun: timeout on dl380g10\n", 1,
++                             with_exit=True)
++    console = capsys.readouterr().out
++    assert code == 1
++    assert record["ran"] is False
++    assert record["timed_out"] is True
++    assert record["reconciliation"] is None
++    assert "0/1 shards green" in console
++    completion = record.get("test_completion")
++    assert completion is not None, record
++    if incomplete:
++        assert completion["status"] == "unknown"
++        assert "TEST COMPLETION UNVERIFIED" in record["summary"]
++    else:
++        assert completion["status"] == "complete"
++        assert completion["collected"] == ["test_one.py::test_one", "test_one.py::test_two"]
++        assert completion["teardown_finished"] == completion["collected"]
++        assert "TESTS COMPLETE; PROCESS DID NOT EXIT" in record["summary"]
++        assert "execution/coverage unknown" not in record["summary"]
++    assert record["summary"] in console
++
++
++def test_progress_and_trace_events_do_not_prove_completion(tmp_path, monkeypatch):
++    output = ".. [100%]\n" + "pbtest-trace: " + json.dumps({
++        "schema": "prismabuild.pbtest_trace.v1", "event": "phase",
++        "nodeid": "test_one.py::test_one", "when": "teardown", "outcome": "passed"})
++    code, record = _one_shard(tmp_path, monkeypatch, output, 1, with_exit=True)
++    assert code == 1
++    assert record["test_completion"]["status"] == "unknown"
++    assert record["ran"] is False
++
++
++def test_xdist_completion_precedes_worker_exit_hooks(tmp_path, monkeypatch, capsys):
++    import xdist
++    output = blocked_shard(tmp_path, workers=2, incomplete=False, worker_exit=True)
++    assert pbtest.pbtest_outcomes.parse(output) is None
++    code, record = _one_shard(
++        tmp_path, monkeypatch, output + "\npbrun: abcdef012345 timeout on dl380g10 in 10s\n",
++        1, with_exit=True)
++    assert code == 1
++    assert record["test_completion"]["status"] == "complete"
++    assert record["ran"] is False
++    assert "TESTS COMPLETE; PROCESS DID NOT EXIT" in record["summary"]
++    assert "0/1 shards green" in capsys.readouterr().out
++
++
++def test_early_stop_records_an_incomplete_population(tmp_path, monkeypatch, capsys):
++    output = blocked_shard(tmp_path, workers=1, incomplete=False, stop_early=True)
++    code, record = _one_shard(
++        tmp_path, monkeypatch, output + "\npbrun: timeout on dl380g10\n", 1,
++        with_exit=True)
++    assert code == 1
++    completion = record["test_completion"]
++    assert completion["status"] == "incomplete"
++    assert completion["missing_teardown"] == ["test_one.py::test_two"]
++    assert completion["missing_outcomes"] == ["test_one.py::test_two"]
++    assert "TEST COMPLETION UNVERIFIED" in record["summary"]
++    assert "0/1 shards green" in capsys.readouterr().out
++
++
++@pytest.mark.parametrize("change", [
++    {"collection_complete": False}, {"collection_errors": True},
++    {"collect_only": True}, {"duplicate_teardown": True},
++    {"collected": ["test_one.py::test_one", "test_one.py::test_one"]},
++    {"teardown_finished": []}, {"outcome_nodeids": []},
++    {"teardown_finished": ["test_one.py::test_other"]},
++])
++def test_inconsistent_completion_cannot_prove_the_population(change):
++    record = {
++        "schema": "prismabuild.pbtest_completion.v1",
++        "collection_complete": True, "collect_only": False,
++        "collection_errors": False, "duplicate_teardown": False,
++        "collected": ["test_one.py::test_one"],
++        "teardown_finished": ["test_one.py::test_one"],
++        "outcome_nodeids": ["test_one.py::test_one"], **change,
++    }
++    completion = pbtest.pbtest_outcomes.completion(
++        "pbtest-completion: " + json.dumps(record))
++    assert completion["status"] == "incomplete"
++    assert completion["problems"]
++
++
++@pytest.mark.parametrize("record", [
++    "{", "[]", '{"schema":"foreign"}',
++    '{"schema":"prismabuild.pbtest_completion.v1","collected":"test_one"}',
++])
++def test_invalid_completion_remains_unknown(record):
++    assert pbtest.pbtest_outcomes.completion(
++        "pbtest-completion: " + record)["status"] == "unknown"
++
++
++@pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
++def test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang(
++        tmp_path, monkeypatch, capsys, workers):
++    if workers > 1:
++        import xdist
++    output = blocked_shard(
++        tmp_path, workers=workers, incomplete=False, exit_hook="unconfigure")
++    summary = pbtest.pytest_summary(output.splitlines())
++    assert summary.startswith("2 passed"), output
++    assert pbtest.pbtest_outcomes.parse(output) is not None
++    code, record = _one_shard(
++        tmp_path, monkeypatch, output + "\npbrun: timeout on dl380g10\n", 1,
++        with_exit=True)
++    console = capsys.readouterr().out
++    assert code == 1
++    assert record["ran"] is True
++    assert record["summary"] == summary
++    assert record["timed_out"] is True
++    assert record["test_completion"]["status"] == "complete"
++    assert "TESTS COMPLETE; PROCESS DID NOT EXIT" in console
++    assert "0/1 shards green" in console
++
++
++def test_complete_tests_without_final_outcomes_cannot_make_an_exit_zero_green(
++        tmp_path, monkeypatch, capsys):
++    output = blocked_shard(tmp_path, workers=1, incomplete=False)
++    code, record = _one_shard(tmp_path, monkeypatch, output, 0, with_exit=True)
++    assert record["test_completion"]["status"] == "complete"
++    assert record["timed_out"] is False
++    assert record["ran"] is False
++    assert code == 1
++    assert "0/1 shards green" in capsys.readouterr().out
+diff --git a/tools/fleet/pbtest.py b/tools/fleet/pbtest.py
+index c23e6a8047..a8711f9fe3 100644
+--- a/tools/fleet/pbtest.py
++++ b/tools/fleet/pbtest.py
+@@ -1297,7 +1297,8 @@ def displayed(output: str) -> list[str]:
+     """A shard's output lines for a human, without its outcome record."""
+ 
+     return [line for line in (output or "").strip().splitlines()
+-            if not line.startswith(pbtest_outcomes.PREFIX)]
++            if not line.startswith((pbtest_outcomes.PREFIX,
++                                    pbtest_outcomes.COMPLETION_PREFIX))]
+ 
+ 
+ # A closed vocabulary prevents resource controls, config indirection, and
+@@ -2069,6 +2070,10 @@ def main() -> int:
+         out = replayed_output(out or "") or (out or "")
+         tail = [line for line in out.strip().splitlines() if line.strip()]
+         summary = pytest_summary(tail)
++        test_completion = pbtest_outcomes.completion(out)
++        timed_out = returncode != 0 and any(re.match(
++            r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
++            ANSI.sub("", line)) for line in tail)
+         # Missing terminal output must stay visible: an empty summary once
+         # hid 74 tests behind a killed submission (#208). But absence of the
+         # summary cannot establish absence of execution (#1365): a deadline
+@@ -2099,10 +2104,18 @@ def main() -> int:
+                 summary = (f"STORAGE EXHAUSTED (ENOSPC: No space left on device) -- "
+                            f"{len(bucket)} file(s) have no verified final result "
+                            f"(the shard ended {how}; execution/coverage unknown)")
++            elif test_completion["status"] == "complete":
++                label = ("TESTS COMPLETE; PROCESS DID NOT EXIT" if timed_out else
++                         "TESTS COMPLETE; FINAL OUTCOME UNVERIFIED")
++                summary = (f"{label} -- {len(test_completion['collected'])} "
++                           f"collected test(s) finished teardown (the shard ended "
++                           f"{how}; final outcomes unverified)")
+             else:
+                 summary = (f"NO PYTEST SUMMARY -- {len(bucket)} file(s) have no "
+                            f"verified final result (the shard ended {how}; "
+                            "execution/coverage unknown)")
++                if timed_out:
++                    summary += "; TEST COMPLETION UNVERIFIED"
+         # Each skip by node ID, with its reason (#942).  ``None`` is "this
+         # shard printed no record", which is not "it skipped nothing".
+         skipped = recorded_skips(pbtest_outcomes.parse(out))
+@@ -2123,6 +2136,8 @@ def main() -> int:
+                         # whether the packing bought what it promised (#1246).
+                         "predicted_s": predicted_s,
+                         "pytest_s": actual_s,
++                        "test_completion": test_completion,
++                        "timed_out": timed_out,
+                         "ran": ran, "skipped": skipped, "attempts": attempts,
+                         "output": out})
+         state = "ok" if returncode == 0 else f"rc={returncode}"
+@@ -2137,7 +2152,14 @@ def main() -> int:
+         if predicted:
+             have = f"{actual_s:.1f}s" if actual_s is not None else "unknown"
+             timed = f" [predicted {predicted_s:.1f}s, pytest {have}]"
+-        _say(f"shard {index:>3} {state:<8} {summary}{timed}{retried}{keyed}")
++        completion_note = ""
++        if ran and timed_out:
++            label = ("TESTS COMPLETE; PROCESS DID NOT EXIT"
++                     if test_completion["status"] == "complete"
++                     else "TEST COMPLETION UNVERIFIED")
++            completion_note = f" [{label}]"
++        _say(f"shard {index:>3} {state:<8} {summary}{completion_note}"
++             f"{timed}{retried}{keyed}")
+         counted = summary_count(summary, "skipped") if ran else 0
+         if skipped is None and counted:
+             print(f"shard {index:>3} {counted} skip(s) with NO RECORDED REASON: "
+diff --git a/tools/fleet/pbtest_outcomes.py b/tools/fleet/pbtest_outcomes.py
+index ca103474a8..4573491ec0 100644
+--- a/tools/fleet/pbtest_outcomes.py
++++ b/tools/fleet/pbtest_outcomes.py
+@@ -48,6 +48,8 @@ TRACE_OPTION = "--pbtest-trace"
+ TRACE_PREFIX = "pbtest-trace: "
+ TRACE_SCHEMA = "prismabuild.pbtest_trace.v1"
+ TRACE_NODEID_MAX_BYTES = 4096
++COMPLETION_PREFIX = "pbtest-completion: "
++COMPLETION_SCHEMA = "prismabuild.pbtest_completion.v1"
+ 
+ # xdist forwards selected IDs but neither successful collection reports nor
+ # pytest_deselected to its controller. This tiny worker plugin returns only
+@@ -224,25 +226,70 @@ REPORT_FIELDS = ("nodeid", "when", "category", "reason", "location")
+ def parse(output: str) -> dict | None:
+     """The last outcome record in a shard's output, or ``None``.
+ 
+-    ``None`` means the shard printed none: pytest never reached the end of
+-    its session, or the shard did not run through this module.  A record
+-    with another schema is not this reader's to interpret, and is ``None``
+-    too, so a reader never mistakes a foreign shape for an empty one.
++    ``None`` means the shard printed no final outcomes. Exit hooks can block
++    this record after the selected tests finish. Completion evidence uses a
++    separate record and cannot replace final outcomes.
+     """
+ 
++    return _parse_record(output, PREFIX, SCHEMA)
++
++
++def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
+     for line in reversed((output or "").splitlines()):
+-        if not line.startswith(PREFIX):
++        if not line.startswith(prefix):
+             continue
+         try:
+-            record = json.loads(line[len(PREFIX):])
++            record = json.loads(line[len(prefix):])
+         except ValueError:
+             return None
+-        if isinstance(record, dict) and record.get("schema") == SCHEMA:
++        if isinstance(record, dict) and record.get("schema") == schema:
+             return record
+         return None
+     return None
+ 
+ 
++def completion(output: str) -> dict:
++    """Verify selected-test completion, not final outcomes or process exit."""
++    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA)
++    if record is None:
++        return {"status": "unknown", "problems": ["no valid test completion record"]}
++    lists = ("collected", "teardown_finished", "outcome_nodeids")
++    flags = ("collection_complete", "collect_only", "collection_errors",
++             "duplicate_teardown")
++    if (any(not isinstance(record.get(key), list)
++            or any(not isinstance(nodeid, str) or not nodeid
++                   for nodeid in record[key]) for key in lists)
++            or any(type(record.get(key)) is not bool for key in flags)):
++        return {"status": "unknown", "problems": ["invalid test completion record"]}
++    collected = record["collected"]
++    selected = set(collected)
++    finished = set(record["teardown_finished"])
++    outcomes = set(record["outcome_nodeids"])
++    missing = sorted(selected - finished)
++    missing_outcomes = sorted(selected - outcomes)
++    unexpected = sorted((finished | outcomes) - selected)
++    problems = []
++    if not record["collection_complete"]:
++        problems.append("collection is incomplete or inconsistent")
++    if record["collect_only"] or not collected:
++        problems.append("no selected test execution")
++    if record["collection_errors"]:
++        problems.append("collection errors leave the population incomplete")
++    if len(selected) != len(collected):
++        problems.append("duplicate collected node IDs")
++    if record["duplicate_teardown"]:
++        problems.append("duplicate teardown reports")
++    if missing:
++        problems.append("selected tests have no completed teardown")
++    if missing_outcomes:
++        problems.append("selected tests have no observed outcome")
++    if unexpected:
++        problems.append("reports name tests outside the selected population")
++    return {**record, "status": "incomplete" if problems else "complete",
++            "missing_teardown": missing, "missing_outcomes": missing_outcomes,
++            "unexpected_nodeids": unexpected, "problems": problems}
++
++
+ def reconcile(record: dict, counts: dict[str, int] | None,
+               collected_count: int | None = None) -> dict:
+     """Match one shard's outcomes against its own collection, by node ID (#941).
+@@ -360,6 +407,11 @@ def main(argv: list[str] | None = None, *, preflight=None,
+             self.written = False
+             self.selection_views = []
+             self.last_record = None
++            self.teardown_finished: set[str] = set()
++            self.duplicate_teardown = False
++            self.worker_collections: dict[str, list[str]] = {}
++            self.expected_workers = 0
++            self.completion_written = False
+ 
+         def pytest_configure(self, config) -> None:
+             self.config = config
+@@ -377,9 +429,12 @@ def main(argv: list[str] | None = None, *, preflight=None,
+                 "reported_unix": time.time(),
+                 **fields,
+             }, separators=(",", ":"))
++            self.emit(line)
++
++        def emit(self, line: str) -> None:
+             # The terminal writer owns the stream outside pytest's capture.
+             # Direct stdout writes can be captured with the dying test and
+-            # never reach the pool log. Flush each bounded event explicitly.
++            # never reach the pool log. Flush each record explicitly.
+             terminal = self.config.pluginmanager.getplugin("terminalreporter")
+             if terminal is not None:
+                 # Another hook may just have printed a progress dot. Start
+@@ -392,6 +447,43 @@ def main(argv: list[str] | None = None, *, preflight=None,
+                     sys.stdout.write(line + "\n")
+                     sys.stdout.flush()
+ 
++        def emit_completion(self, *, session_finished: bool = False) -> None:
++            if self.completion_written:
++                return
++            collected = self.collected
++            if not session_finished and (
++                    collected is None or not collected
++                    or len(self.teardown_finished) < len(collected)):
++                return
++            collection_complete = collected is not None
++            if self.expected_workers:
++                collection_complete = (
++                    len(self.worker_collections) == self.expected_workers
++                    and all(ids == collected
++                            for ids in self.worker_collections.values()))
++            record = {
++                "schema": COMPLETION_SCHEMA,
++                "collection_complete": collection_complete,
++                "collect_only": bool(self.config.getoption("collectonly", False)),
++                "collection_errors": any(row[1:3] == ["collect", "error"]
++                                         for row in self.reports),
++                "collected": collected or [],
++                "teardown_finished": sorted(self.teardown_finished),
++                "duplicate_teardown": self.duplicate_teardown,
++                "outcome_nodeids": sorted(
++                    {row[0] for row in self.reports if row[1] != "collect"}
++                    | {row[0] for row in self.uncounted}),
++            }
++            line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
++            if session_finished or completion(line)["status"] == "complete":
++                self.emit(line)
++                self.completion_written = True
++
++        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
++        def pytest_sessionfinish(self, session, exitstatus):
++            self.emit_completion(session_finished=True)
++            yield
++
+         def pytest_runtest_logstart(self, nodeid, location) -> None:
+             self.trace("start", nodeid)
+ 
+@@ -424,6 +516,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
+         def pytest_collection_finish(self, session) -> None:
+             self.collected = [item.nodeid for item in session.items]
+ 
++        @pytest.hookimpl(optionalhook=True)
++        def pytest_xdist_setupnodes(self, config, specs) -> None:
++            self.expected_workers = len(specs)
++
+         def pytest_deselected(self, items) -> None:
+             self.deselected.extend(item.nodeid for item in items)
+ 
+@@ -433,6 +529,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
+             # collects the whole population and reports its IDs here.
+             if self.collected is None:
+                 self.collected = list(ids)
++            self.worker_collections[node.gateway.id] = list(ids)
+ 
+         @pytest.hookimpl(optionalhook=True)
+         def pytest_testnodedown(self, node, error) -> None:
+@@ -450,7 +547,9 @@ def main(argv: list[str] | None = None, *, preflight=None,
+                 self.reports.append([report.nodeid, "collect", "skipped",
+                                      skip_reason(report), self.location(report)])
+ 
++        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+         def pytest_runtest_logreport(self, report) -> None:
++            yield
+             self.trace("phase", report.nodeid, when=report.when,
+                        outcome=report.outcome,
+                        worker=getattr(report, "worker_id", None),
+@@ -479,20 +578,24 @@ def main(argv: list[str] | None = None, *, preflight=None,
+             status = self.config.hook.pytest_report_teststatus(
+                 report=report, config=self.config)
+             category = status[0] if status else ""
+-            if not category:
+-                return  # a passing setup or teardown: the summary counts nothing
+-            if not getattr(report, "count_towards_summary", True):
+-                # The terminal leaves it out of the summary line, so the
+-                # record's counts do too; it still shows the test ran.
+-                self.uncounted.append([report.nodeid, report.when, category])
+-                return
+-            reason = location = None
+-            if category == "skipped":
+-                reason, location = skip_reason(report), self.location(report)
+-            elif hasattr(report, "wasxfail"):
+-                reason = str(report.wasxfail or "") or None
+-            self.reports.append([report.nodeid, report.when, category,
+-                                 reason, location])
++            if category:
++                if not getattr(report, "count_towards_summary", True):
++                    # Uncounted reports still establish that the test ran.
++                    self.uncounted.append([report.nodeid, report.when, category])
++                else:
++                    reason = location = None
++                    if category == "skipped":
++                        reason, location = skip_reason(report), self.location(report)
++                    elif hasattr(report, "wasxfail"):
++                        reason = str(report.wasxfail or "") or None
++                    self.reports.append([report.nodeid, report.when, category,
++                                         reason, location])
++            if report.when == "teardown":
++                if report.nodeid in self.teardown_finished:
++                    self.duplicate_teardown = True
++                self.teardown_finished.add(report.nodeid)
++                # xdist can wait for a worker's exit before sessionfinish.
++                self.emit_completion()
+ 
+         def record(self) -> str:
+             config = self.config

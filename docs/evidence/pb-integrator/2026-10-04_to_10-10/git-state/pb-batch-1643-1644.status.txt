@@ -1,0 +1,6 @@
+UU docs/contributing.md
+M  docs/design.md
+A  docs/results/pbtest_exit_completion_1530.md
+A  tests/test_pbtest_exit_completion_1530.py
+M  tools/fleet/pbtest.py
+M  tools/fleet/pbtest_outcomes.py
