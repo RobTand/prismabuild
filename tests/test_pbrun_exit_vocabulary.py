@@ -208,7 +208,7 @@ def _done_record(
 
 
 def _fake_probe_run(monkeypatch: pytest.MonkeyPatch, *, count: str | None = None,
-                    returncode: int = 0, stderr: str = "",
+                    returncode: int = 0, stderr_text: str = "",
                     error: BaseException | None = None) -> list[dict]:
     """A CUDA driver child that answers ``count``, fails, or never answers."""
 
@@ -220,7 +220,7 @@ def _fake_probe_run(monkeypatch: pytest.MonkeyPatch, *, count: str | None = None
             raise error
         return types.SimpleNamespace(returncode=returncode,
                                      stdout=f"{count}\n" if count is not None else "",
-                                     stderr=stderr)
+                                     stderr=stderr_text)
 
     monkeypatch.setattr(pb.subprocess, "run", fake_run)
     return seen
@@ -248,7 +248,7 @@ def test_probe_gap_is_not_a_zero(
 
     if failure == "missing-library":
         _fake_probe_run(monkeypatch, count=None, returncode=1,
-                        stderr="OSError: libcuda.so.1: cannot open shared object file")
+                        stderr_text="OSError: libcuda.so.1: cannot open shared object file")
     elif failure == "failed-call":
         _fake_probe_run(monkeypatch, count=None, returncode=10)
     else:
@@ -445,6 +445,7 @@ def test_device_free_module_routes_to_cpu_and_reuses_the_open_run(
     publication = {
         "action_key": KEY,
         "cas_root": str(tmp_path / "cas"),
+        "checkout_root": str(tmp_path),
         "worker_script": str(tmp_path / "worker.py"),
         "tags": tags,
         "needs_gpu": False,
