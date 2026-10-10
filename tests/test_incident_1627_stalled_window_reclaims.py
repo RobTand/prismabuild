@@ -105,7 +105,7 @@ def _ram_orphan(queue, ram: Path, consumer: str, seed: str, ordinal: int) -> str
     return mover
 
 
-def _window_plan(queue, consumer: str) -> dict:
+def _window_plan(queue, consumer: str, stage_root: str) -> dict:
     """A two-phase window with a stage leg and a RAM leg per phase."""
     total = 4 * GIB
     phases = []
@@ -140,7 +140,7 @@ def _window_plan(queue, consumer: str) -> dict:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=consumer, tier_id=STAGE,
-        stage_root="/stage/prewarm",
+        stage_root=stage_root,
         manifest_sha256=_hexkey("1627-window-man"),
         manifest_bytes=total, phases=phases, ram_tier_id=RAM)
 
@@ -264,7 +264,7 @@ def _jammed(tmp_path: Path):
     for index in range(12):
         _queued_demand(queue, f"1627-queued-ram-{index}", RAM, RAM_KIND, 1)
 
-    window_plan = _window_plan(queue, WINDOW)
+    window_plan = _window_plan(queue, WINDOW, str(stage))
     residency_plan.freeze(queue, window_plan)
     queue.publish(
         action_key=WINDOW, cas_root=str(queue.root / "cas"),
@@ -280,7 +280,7 @@ def _jammed(tmp_path: Path):
                  ordinal=0, manifest=_hexkey("1627-window-man"))
 
     declared_plan = _declared_plan(
-        queue, DECLARED, [("q0", 4, True, 1), ("q1", 1, False, 1)], tag="dc")
+        queue, DECLARED, [("q0", 2, True, 1), ("q1", 1, False, 1)], tag="dc")
     _live(queue, declared_plan, DECLARED)
 
     live_plan = _live_plan(queue, LIVE)
