@@ -1,0 +1,88 @@
+{
+  "generation": "34c2228cb25e-1791602912-8161ce96d404",
+  "results": [
+    {
+      "action_key": "93d51545095863285ed747bcb5a9296da4081e64c827c59702624e449e759ca2",
+      "artifact_digest": "c7b7a75cf21209576e1e9f367e8561e4aa16fe852f4fc38e91f8ffffadbf5738",
+      "leg": "leg-1",
+      "ok": true,
+      "reason": "leg-1 verified: artifact e48d00546085 bound to CAS result",
+      "receipt_ref": "cas/actions/v3/93/93d51545095863285ed747bcb5a9296da4081e64c827c59702624e449e759ca2.json"
+    },
+    {
+      "action_key": "a804595cdd23e2d04a36741d76db3e8c94d8a4fc3339dff1b31c8d4231fe81f4",
+      "artifact_digest": "cba18ffa393efe5cf6343f26482e07de806fff290da61dacb63ab4f13656bd92",
+      "leg": "leg-2",
+      "ok": true,
+      "reason": "leg-2 verified: image prismaquant-glm-derivati..., devices 1, kernel 1240, CAS-bound",
+      "receipt_ref": "cas/actions/v3/a8/a804595cdd23e2d04a36741d76db3e8c94d8a4fc3339dff1b31c8d4231fe81f4.json"
+    },
+    {
+      "action_key": "da49a4c9c428326a4d1b0d8dad68175f71cc3ef8152edf94843ca79c2c95e7d4",
+      "artifact_digest": "7c60323916cbc7d326b63d842061e42d0a354d2066666342b015d8ae51c0911f",
+      "leg": "leg-3",
+      "ok": true,
+      "reason": "leg3: 3 chunks, 25165824 bytes verified (receipt[stdout])",
+      "receipt_ref": "cas/actions/v3/da/da49a4c9c428326a4d1b0d8dad68175f71cc3ef8152edf94843ca79c2c95e7d4.json"
+    },
+    {
+      "action_keys": {
+        "sparklina": "8a41bc131ef0279419f5fac789aa25587e85d42b6144278225e7072c2ac762d0",
+        "sparky": "c15c2884e8c43b6112c7f73d95f54d9269f303c5d20a4d204f8ab909dacf0efc"
+      },
+      "digest_a": "b8161a085bbfc3d56ff434ec85963939326859cd41f96eb6c49cfc661cc6ec77",
+      "digest_b": "b8161a085bbfc3d56ff434ec85963939326859cd41f96eb6c49cfc661cc6ec77",
+      "leg": "leg-4",
+      "ok": true,
+      "reason": "leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93\u2026 verified",
+      "receipt_ref": "cas/actions/v3/c1/c15c2884e8c43b6112c7f73d95f54d9269f303c5d20a4d204f8ab909dacf0efc.json"
+    }
+  ],
+  "run_id": "20261010T032844Zg12",
+  "verdict": {
+    "detail": null,
+    "exit_code": 0,
+    "failed_check": null,
+    "failed_leg": null,
+    "legs": {
+      "leg-1": {
+        "action_key": "93d51545095863285ed747bcb5a9296da4081e64c827c59702624e449e759ca2",
+        "action_keys": null,
+        "not_verified": null,
+        "ok": true,
+        "reason": "leg-1 verified: artifact e48d00546085 bound to CAS result",
+        "receipt_ref": "cas/actions/v3/93/93d51545095863285ed747bcb5a9296da4081e64c827c59702624e449e759ca2.json"
+      },
+      "leg-2": {
+        "action_key": "a804595cdd23e2d04a36741d76db3e8c94d8a4fc3339dff1b31c8d4231fe81f4",
+        "action_keys": null,
+        "not_verified": null,
+        "ok": true,
+        "reason": "leg-2 verified: image prismaquant-glm-derivati..., devices 1, kernel 1240, CAS-bound",
+        "receipt_ref": "cas/actions/v3/a8/a804595cdd23e2d04a36741d76db3e8c94d8a4fc3339dff1b31c8d4231fe81f4.json"
+      },
+      "leg-3": {
+        "action_key": "da49a4c9c428326a4d1b0d8dad68175f71cc3ef8152edf94843ca79c2c95e7d4",
+        "action_keys": null,
+        "not_verified": null,
+        "ok": true,
+        "reason": "leg3: 3 chunks, 25165824 bytes verified (receipt[stdout])",
+        "receipt_ref": "cas/actions/v3/da/da49a4c9c428326a4d1b0d8dad68175f71cc3ef8152edf94843ca79c2c95e7d4.json"
+      },
+      "leg-4": {
+        "action_key": null,
+        "action_keys": {
+          "sparklina": "8a41bc131ef0279419f5fac789aa25587e85d42b6144278225e7072c2ac762d0",
+          "sparky": "c15c2884e8c43b6112c7f73d95f54d9269f303c5d20a4d204f8ab909dacf0efc"
+        },
+        "not_verified": null,
+        "ok": true,
+        "reason": "leg4: sparky+sparklina envelopes bitwise-equal, input_digest 884c2b9e2c93\u2026 verified",
+        "receipt_ref": "cas/actions/v3/c1/c15c2884e8c43b6112c7f73d95f54d9269f303c5d20a4d204f8ab909dacf0efc.json"
+      }
+    },
+    "sealed": true,
+    "stderr_message": "pbcanary: verified -- legs 1-4 executed, receipts ok, leg-4 envelopes equal",
+    "verified": true
+  }
+}

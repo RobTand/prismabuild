@@ -1,0 +1,19 @@
+{
+  "checkout": "/mnt/shared/fleet-ceo/pb-publish-20261010/carry-clone-gen12",
+  "gc": {
+    "owner": "tools/fleet/pb_gc.py --canary-root",
+    "rule": "pb_gc removes this namespace only during an acknowledged quiescent-store sweep, and only when its run record is valid, every member is recognizable, and it is sealed (canary-result.json) or older than the age backstop; its CAS receipts are records and stay"
+  },
+  "generation": "34c2228cb25e-1791602912-8161ce96d404",
+  "legs_requested": [
+    "leg-1",
+    "leg-2",
+    "leg-3",
+    "leg-4"
+  ],
+  "priority": 0,
+  "published_root": "/mnt/shared/prismabuild-fleet/runtime-generations/34c2228cb25e-1791602912-8161ce96d404",
+  "run_id": "20261010T032844Zg12",
+  "schema": "prismabuild.pbcanary.run.v1",
+  "started_unix": "2026-10-10T03:28:45.185241+00:00"
+}

@@ -1,0 +1,390 @@
+pbtest: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the shards publish, the claim-time check guards every box, and the fleet's next poll places them where the path lives.
+pbtest: each shard seals execution_timeout_s=1800 (--timeout-s unset; ceilings announced: dl380g10 3600s); admission reads it as the shard's declared end (#939)
+pbtest: per-test bound 1770s (PRISMABUILD_TEST_TIMEOUT_S); a test that outlives it fails as itself instead of holding the shard to its ceiling
+pbtest: each shard also seals its remaining budget (PRISMABUILD_SHARD_BUDGET_S=1800); a test starting with less time left than its bound is failed at what is left
+1 files -> 1 shards (min 1, max 1 files per shard), tags=['x86'], transport=pool
+shard   0 pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.
+shard   0 pbrun: queued 28ef1b7984ee99184873dd19a46352e8ca2e5453ceb6579469b2f02c50670464 tags=['x86'] demand={'mem_gb': 3, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791602790.75619
+shard   0 action 28ef1b7984ee99184873dd19a46352e8ca2e5453ceb6579469b2f02c50670464 (queued): tests/test_filesystem_floor_1483.py
+shard   0 pbrun: attempt 1/1 failed (failed)
+shard   0 pbrun: log capture executable=/usr/bin/gnutee
+shard   0 pbrun: failed on dl380g10 in 9s; rss=154.1M io w=21.9M r=132.5K
+shard   0 rc=1     10 failed, 19 passed, 10 skipped in 6.33s [action 28ef1b7984ee99184873dd19a46352e8ca2e5453ceb6579469b2f02c50670464]
+
+10 skipped, each with its reason:
+  shard   0 tests/test_filesystem_floor_1483.py::test_tier_advance_reports_the_floor_as_tier_short - the real filesystem has -0.9 GiB above its floor; this test needs 1 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh - the real filesystem has -0.9 GiB above its floor; this test needs 1 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_produced_output_refill_is_refused_by_the_floor_not_raised - the real filesystem has -1.9 GiB above its floor; this test needs 0 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_nfs_is_attributed_by_server_address_and_charged_conservatively - no readable NFS mount on this worker (tests/test_filesystem_floor_1483.py:497)
+  shard   0 tests/test_filesystem_floor_1483.py::test_operation_holds_growth_for_the_body_and_releases_on_any_exit - the real filesystem has -0.9 GiB above its floor; this test needs 4 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_a_killed_owner_is_reaped_and_a_lease_expiry_is_too - the real filesystem has -0.9 GiB above its floor; this test needs 4 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_host_admission_skips_the_poll_only_under_enforce - no readable NFS mount on this worker (tests/test_filesystem_floor_1483.py:712)
+  shard   0 tests/test_filesystem_floor_1483.py::test_pbrun_holds_growth_while_publishing_and_releases_before_waiting - the real filesystem has -0.8 GiB above its floor; this test needs 3 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_pbrun_below_the_floor_submits_nothing_and_says_why - the real filesystem has -0.8 GiB above its floor; this test needs 3 (tests/test_filesystem_floor_1483.py:74)
+  shard   0 tests/test_filesystem_floor_1483.py::test_a_malformed_owner_record_does_not_stop_the_reaper - the real filesystem has -0.8 GiB above its floor; this test needs 4 (tests/test_filesystem_floor_1483.py:74)
+
+reconciliation: 39 collected, 39 ran; the summaries count 39 outcome(s) = 39 test(s) + 0 at collection + 0 extra phase(s)
+
+0/1 shards green
+
+--- shard 0 (tests/test_filesystem_floor_1483.py)
+pbrun: no worker has answered for the interpreter /home/rob/venvs/pb-cpu/bin/python yet; the action publishes, the claim-time check guards every box, and the fleet's next poll places it where the path lives.
+pbrun: queued 28ef1b7984ee99184873dd19a46352e8ca2e5453ceb6579469b2f02c50670464 tags=['x86'] demand={'mem_gb': 3, 'cpu': 2}  [no GPU: CUDA_VISIBLE_DEVICES=''] published_unix=1791602790.75619
+pbrun: attempt 1/1 failed (failed)
+..........FF.FF.F..sssF.sssFFF.sFss...s
+                                                                         [100%]
+=================================== FAILURES ===================================
+____________________ test_register_refresh_admit_and_refuse ____________________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_register_refresh_admit_an0')
+enforce = None
+
+    def test_register_refresh_admit_and_refuse(tmp_path, enforce):
+        found = _stable(tmp_path)
+        queue = _queue(tmp_path)
+        member = ("reservations", HOST, "spool_gb")
+        result = _register(queue, tmp_path / "spool", member)
+        key = result["binding"]["key"]
+>       assert key == found["key"] and result["refresh"]["allowed"] is True
+E       AssertionError: assert ('uuid:4447763...-1b037c8942ea' == 'uuid:4447763...-1b037c8942ea'
+E         
+E           uuid:44477634-83fe-4d08-bf42-1b037c8942ea and False is True)
+
+tests/test_filesystem_floor_1483.py:219: AssertionError
+_________ test_release_needs_no_floor_and_refresh_returns_the_headroom _________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_release_needs_no_floor_an0')
+enforce = None
+
+    def test_release_needs_no_floor_and_refresh_returns_the_headroom(tmp_path, enforce):
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
+        ledger = queue.ledger(HOST)
+>       assert ledger.acquire("a" * 64, {"spool_gb": 2})
+E       AssertionError: assert False
+E        +  where False = acquire(('a' * 64), {'spool_gb': 2})
+E        +    where acquire = <prismabuild.pool.ResourceLedger object at 0x7e53423b30b0>.acquire
+
+tests/test_filesystem_floor_1483.py:248: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 5902934016 < floor 6871947674 + charge 0 + demand 2147483648
+_________ test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated __________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_a_stale_sample_refuses_an0')
+enforce = None
+
+    def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforce):
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
+        now = time.time()
+        assert ff.published_verdict(queue.root, binding, now=now + ff.SAMPLE_MAX_AGE_S + 5)[
+            "reason"] == "sample_stale"
+>       assert ff.published_verdict(queue.root, binding, now=now - 10)["allowed"] is True
+E       assert False is True
+
+tests/test_filesystem_floor_1483.py:275: AssertionError
+__________ test_a_root_on_another_filesystem_marks_the_binding_moved ___________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_a_root_on_another_filesys0')
+enforce = None
+
+    def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce):
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
+        elsewhere = next((p for p in ("/dev/shm", "/run", "/proc") if os.path.isdir(p)
+                          and ff.identify(p)["key"] != binding["key"]), None)
+        if elsewhere is None:
+            pytest.skip("no second filesystem to move the root onto")
+        moved = ff.refresh_binding(queue.root, {**binding, "root": elsewhere})
+        assert moved["reason"] == "binding_moved"
+        ledger = queue.ledger(HOST)
+        assert not ledger.acquire("a" * 64, {"spool_gb": 1})
+        assert ledger.last_token_shortage["reason"] == "binding_moved"
+        # Registering again at the real root reactivates the same stable key.
+        _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))
+>       assert ledger.acquire("a" * 64, {"spool_gb": 1})
+E       AssertionError: assert False
+E        +  where False = acquire(('a' * 64), {'spool_gb': 1})
+E        +    where acquire = <prismabuild.pool.ResourceLedger object at 0x7e53423cf2f0>.acquire
+
+tests/test_filesystem_floor_1483.py:299: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: binding_moved (/dev/shm is now volatile:8d749c5d5a9c45b6bb84769a2f1aeb2f:6e58786c-bae9-4f65-b7f1-123a5f666690:tmpfs:32)
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 5902934016 < floor 6871947674 + charge 0 + demand 1073741824
+__________ test_aggregate_charge_spans_every_ledger_on_the_filesystem __________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_aggregate_charge_spans_ev0')
+enforce = None
+
+    def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce):
+        """Two ledgers, one disk: one ledger's holdings reduce the other's room."""
+    
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        tier = "prismabuild-stage:" + HOST
+        queue.mint_tier_capacity(tier, {"stage_gib": 4})
+        binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
+                            ("tier-reservations", tier, "stage_gib"))["binding"]
+        host, stage = queue.ledger(HOST), queue.tier_ledger(tier)
+>       assert host.acquire("a" * 64, {"spool_gb": 3})
+E       AssertionError: assert False
+E        +  where False = acquire(('a' * 64), {'spool_gb': 3})
+E        +    where acquire = <prismabuild.pool.ResourceLedger object at 0x7e5341abb790>.acquire
+
+tests/test_filesystem_floor_1483.py:328: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 5902934016 < floor 6871947674 + charge 0 + demand 3221225472
+____ test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published _____
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_used_paths_unbound_local_0')
+
+    def test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published(tmp_path):
+        found = _stable(tmp_path)
+        queue = _queue(tmp_path)
+        fresh = ff.check_paths(queue.root, [tmp_path, tmp_path / "x"])
+        assert len(fresh) == 1 and fresh[0]["sample"] == "fresh-unbound"
+>       assert fresh[0]["allowed"] is True
+E       assert False is True
+
+tests/test_filesystem_floor_1483.py:466: AssertionError
+_______ test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage ________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_a_busy_floor_lock_is_wait0')
+enforce = None
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7e5341de1550>
+
+    def test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage(
+            tmp_path, enforce, monkeypatch):
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
+        directory = ff.fs_dir(queue.root, binding["key"])
+        script = (f"import sys,time; sys.path.insert(0,{str(Path(ff.__file__).parents[1])!r});"
+                  "from prismabuild import filesystem_floor as ff;"
+                  "from pathlib import Path;"
+                  f"cm=ff.floor_locked(Path({str(directory)!r}));"
+                  "assert cm.__enter__(); print('held', flush=True); time.sleep(float(sys.argv[1]))")
+        monkeypatch.setattr(ff, "LOCK_WAIT_S", 0.5)
+        holder = subprocess.Popen([sys.executable, "-c", script, "30"], stdout=subprocess.PIPE,
+                                  text=True)
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            ledger = queue.ledger(HOST)
+            started = time.monotonic()
+            assert not ledger.acquire("a" * 64, {"spool_gb": 1})
+            assert time.monotonic() - started >= 0.5
+            assert ledger.last_token_shortage["reason"] == "floor_lock_busy"
+        finally:
+            holder.kill()
+            holder.wait()
+        # A holder that lets go within the wait is waited for, not refused.
+        monkeypatch.setattr(ff, "LOCK_WAIT_S", 30.0)
+        holder = subprocess.Popen([sys.executable, "-c", script, "1"], stdout=subprocess.PIPE,
+                                  text=True)
+        try:
+            assert holder.stdout.readline().strip() == "held"
+>           assert queue.ledger(HOST).acquire("a" * 64, {"spool_gb": 1})
+E           AssertionError: assert False
+E            +  where False = acquire(('a' * 64), {'spool_gb': 1})
+E            +    where acquire = <prismabuild.pool.ResourceLedger object at 0x7e53412059d0>.acquire
+E            +      where <prismabuild.pool.ResourceLedger object at 0x7e53412059d0> = ledger('dl380g10')
+E            +        where ledger = <prismabuild.pool.PoolQueue object at 0x7e5341950ad0>.ledger
+
+tests/test_filesystem_floor_1483.py:616: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: floor_lock_busy
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 5902934016 < floor 6871947674 + charge 0 + demand 1073741824
+__ test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks __
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_concurrent_acquire_releas0')
+enforce = None
+
+    def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
+            tmp_path, enforce):
+        """Ledger lock then floor lock everywhere; refresh holds only the floor."""
+    
+        _stable(tmp_path)
+        queue = _queue(tmp_path, spool_gb=8)
+        tier = "prismabuild-stage:" + HOST
+        queue.mint_tier_capacity(tier, {"stage_gib": 8})
+        _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
+                  ("tier-reservations", tier, "stage_gib"))
+        context = multiprocessing.get_context("fork")
+        errors = context.Queue()
+        wins = context.Value("i", 0)
+        workers = [context.Process(target=_contend,
+                                   args=(str(queue.root), tier, HOST, 25, errors, wins))
+                   for _ in range(4)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(120)
+        assert all(w.exitcode == 0 for w in workers), [w.exitcode for w in workers]
+        assert errors.empty(), errors.get()
+        # Contention may refuse some takes (a busy lock is a shortage), but the
+        # floor never wedges: most of the hundred succeed.
+>       assert wins.value >= 50, wins.value
+E       AssertionError: 0
+E       assert 0 >= 50
+E        +  where 0 = <Synchronized wrapper for c_int(0)>.value
+
+tests/test_filesystem_floor_1483.py:663: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+______ test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock ______
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_floor_section_runs_inside0')
+enforce = None
+
+    def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce):
+        """A caller holding the ledger lock nests begin_acquire (main's contract)."""
+    
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))
+        ledger = queue.ledger(HOST)
+        done = []
+    
+        def run():
+            with ledger._mutation_locked():
+                done.append(ledger.acquire("a" * 64, {"spool_gb": 1}))
+    
+        thread = threading.Thread(target=run)
+        thread.start()
+        thread.join(30)
+>       assert done == [True]
+E       assert [False] == [True]
+E         
+E         At index 0 diff: False != True
+E         Use -v to get more diff
+
+tests/test_filesystem_floor_1483.py:684: AssertionError
+----------------------------- Captured stderr call -----------------------------
+[filesystem-floor] refused uuid:44477634-83fe-4d08-bf42-1b037c8942ea: below_floor free 6012334080 < floor 6871947674 + charge 0 + demand 1073741824
+____________________ test_cli_register_status_check_refresh ____________________
+
+tmp_path = PosixPath('/home/rob/tmp/pb-f1mq483r/pytest/test_cli_register_status_check0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7e53425b5bd0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7e53418ebaf0>
+
+    def test_cli_register_status_check_refresh(tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv(ff.MODE_ENV, raising=False)
+        _stable(tmp_path)
+        queue = _queue(tmp_path)
+        (tmp_path / "spool").mkdir()
+        assert ff.main(["--queue", str(queue.root), "register", str(tmp_path / "spool"),
+                        "--member", f"reservations/{HOST}:spool_gb"]) == 0
+        registered = json.loads(capsys.readouterr().out)
+>       assert registered["refresh"]["allowed"] is True
+E       assert False is True
+
+tests/test_filesystem_floor_1483.py:730: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_filesystem_floor_1483.py::test_register_refresh_admit_and_refuse
+FAILED tests/test_filesystem_floor_1483.py::test_release_needs_no_floor_and_refresh_returns_the_headroom
+FAILED tests/test_filesystem_floor_1483.py::test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated
+FAILED tests/test_filesystem_floor_1483.py::test_a_root_on_another_filesystem_marks_the_binding_moved
+FAILED tests/test_filesystem_floor_1483.py::test_aggregate_charge_spans_every_ledger_on_the_filesystem
+FAILED tests/test_filesystem_floor_1483.py::test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published
+FAILED tests/test_filesystem_floor_1483.py::test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage
+FAILED tests/test_filesystem_floor_1483.py::test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks
+FAILED tests/test_filesystem_floor_1483.py::test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock
+FAILED tests/test_filesystem_floor_1483.py::test_cli_register_status_check_refresh
+10 failed, 19 passed, 10 skipped in 6.33s
+pbrun: log capture executable=/usr/bin/gnutee
+Traceback (most recent call last):
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/281006ef6374-1791578707-9515e3d96a7e/tools/prismabuild_worker.py", line 72, in <module>
+    raise SystemExit(main(worker_launcher_identity=_WORKER_LAUNCHER_IDENTITY))
+                     ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/281006ef6374-1791578707-9515e3d96a7e/src/prismabuild/core.py", line 8975, in main
+    result = run_local_action(
+        action,
+    ...<5 lines>...
+        initial_miss_rendezvous=args.initial_miss_rendezvous,
+    )
+  File "/mnt/shared/prismabuild-fleet/runtime-generations/281006ef6374-1791578707-9515e3d96a7e/src/prismabuild/core.py", line 8190, in run_local_action
+    raise LocalActionError(
+    ...<14 lines>...
+    )
+prismabuild.core.LocalActionError: action argv exited with status 1
+pbrun: failed on dl380g10 in 9s; rss=154.1M io w=21.9M r=132.5K

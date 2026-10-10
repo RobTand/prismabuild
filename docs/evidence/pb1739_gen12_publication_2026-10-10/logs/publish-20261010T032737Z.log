@@ -1,0 +1,86 @@
+== 20261010T032737Z publish stack; head 34c2228cb25e47e48d26781efc9fd6f1e378dd53; gate 6dfecfffd2de9a12b7a6cfabb48e2350ae9eb30c9e866f2c2dd4c6d2dfebdfbf; authorized by: dry run only; CEO order gen12
+== preflight
+live 281006ef6374e4c058b84d0c306c2460a21771dd ok; head ok; clean; head = main 561e3177be3c8e6f3e21e2f7ffa5abddf0c91663 + one commit; PR 1640's patch on the head gives main's tree exactly
+== emitter gate (CEO dec-1005-222738-0a37): refuse an emitter generation while any pbmcp reader predates the reader-first generation
+emitter gate: 34c2228cb25e CONTAINS the digest_primitives emitter; checking pbmcp readers older than 2026-10-05T21:28:44Z
+emitter gate: inspected pbmcp readers: 10, older than the cut-off: 0, hosts not inspectable: 0
+emitter gate: OK: no pbmcp reader older than the reader-first generation on any inspected host
+== what is running (read it; this publication does not touch running work)
+host storage: /mnt/shared read_ahead_kb=128 on bdi 0:64 (192.168.1.107:/storage_pool/shared) is below the 16384 KiB proposed in issue #523.  Reported only -- nothing is refused and no admission changes.  See docs/fleet_storage.md to install the host unit
+== nodes
+NODE             STATE    OFFER AGE  LOOPS  KILL AT  CAPACITY                                                                   OBSERVED                                                                   ADMISSION                        NOTE
+DESKTOP-P5UOGNJ  retired  2149098.2  3      3600s    {'cpu': 16, 'gpu': 1, 'mem_gb': 16}                                        {'cpu': 16, 'gpu': 1, 'mem_gb': 16}                                        cpu: stale, gpu: stale           offer unrefreshed for 24.9 days; box treated as retired (record kept)
+dl380g10         live     0.5        16     3600s    {'cpu': 80, 'disk_metadata': 0, 'gpu': 0, 'mem_gb': 96}                    {'cpu': 80, 'disk_metadata': 0, 'gpu': 0, 'mem_gb': 211}                   cpu: fresh, gpu: not applicable  ?
+sparklina        live     1.0        5      86400s   {'cpu': 20, 'disk_metadata': 0, 'gpu': 1, 'mem_gb': 104, 'spool_gb': 65}   {'cpu': 20, 'disk_metadata': 0, 'gpu': 1, 'mem_gb': 104, 'spool_gb': 62}   cpu: stale, gpu: stale           ?
+sparky           live     0.1        5      86400s   {'cpu': 20, 'disk_metadata': 0, 'gpu': 1, 'mem_gb': 104, 'spool_gb': 468}  {'cpu': 20, 'disk_metadata': 0, 'gpu': 1, 'mem_gb': 104, 'spool_gb': 468}  cpu: stale, gpu: stale           ?
+
+== jobs
+KEY           STATE    NODE       RESOURCES                                             PRIORITY  PRIORITY REASON  AGE      LEASE  OUTPUT  PROGRESS                              PASSES  DENIAL                                                                                                                                           RELEASES  MATCHING  NOTE
+065422b48b78  READY    ?          {'cpu': 8, 'mem_gb': 2}                               0         ?                4064.2   ?      ?       ?                                     3020    dl380g10: adaptive_cpu_refused_starved/measurement_holder (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)  ?         dl380g10  awaiting admission; matching worker capacity is not a grant
+0a13e678c943  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.7  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+1e1f54085ae7  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.8  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+215ec3f93a5f  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.7  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+4548ce80d987  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.7  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+76a2ef8baf86  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.7  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+8f86cf233c47  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.8  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+bf70b28794a5  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.7  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+dae5beea7263  READY    ?          {'cpu': 2, 'mem_gb': 3}                               0         ?                13871.8  ?      ?       ?                                     0       dl380g10: interpreter_not_present (1s ago); sparklina: placement_mismatch (1s ago); sparky: placement_mismatch (1s ago)                          ?         -         no matching live worker
+02c90919e807  CLAIMED  dl380g10   {'cpu': 4, 'mem_gb': 4}                               0         ?                52.4     20.0   26.0    ?                                     ?       sparklina: placement_mismatch (53s ago); sparky: placement_mismatch (51s ago)                                                                    ?         ?         launcher running; output 26s ago; child running (6 pids), cpu 17s, silent 6s
+3304b061a7a0  CLAIMED  dl380g10   {'cpu': 4, 'mem_gb': 4}                               0         ?                23.8     21.9   ?       ?                                     ?       dl380g10: already_claimed (22s ago); sparklina: placement_mismatch (23s ago); sparky: placement_mismatch (23s ago)                               ?         ?         launcher running; no output observed; child gone (0 pids), cpu 0s
+4927d3f90e41  CLAIMED  dl380g10   {'cpu': 2, 'mem_gb': 23, 'ram_gib@ram:dl380g10': 22}  0         ?                18.9     12.5   ?       ?                                     ?       dl380g10: already_claimed (17s ago); sparklina: placement_mismatch (14s ago); sparky: placement_mismatch (17s ago)                               ?         ?         launcher running; no output observed; child gone (0 pids), cpu 0s
+7519519e304b  CLAIMED  dl380g10   {'cpu': 1, 'mem_gb': 2}                               0         ?                1909.4   5.4    53.7    capture quiet 30/3600s (48 accepted)  ?       dl380g10: transition_busy (1911s ago); sparklina: placement_mismatch (1909s ago); sparky: placement_mismatch (1908s ago)                         ?         ?         launcher running; output 54s ago; child running (5 pids), cpu 2s, silent 48s
+9495dbbeb6ba  CLAIMED  dl380g10   {'cpu': 1, 'mem_gb': 4}                               -10       ?                176.3    17.3   99.9    ?                                     ?       dl380g10: already_claimed (176s ago); sparklina: placement_mismatch (176s ago); sparky: placement_mismatch (177s ago)                            ?         ?         launcher running; output 100s ago; child running (6 pids), cpu 149s, silent 83s
+983a57cf7ca5  CLAIMED  sparklina  {'cpu': 1, 'gpu': 1, 'mem_gb': 16}                    0         ?                131.1    9.5    13.6    ?                                     ?       dl380g10: placement_mismatch (132s ago); sparklina: transition_busy (131s ago); sparky: transition_busy (131s ago)                               ?         ?         launcher running; output 14s ago; child running (11 pids), cpu 120s, silent 4s
+df84ef964b1d  CLAIMED  dl380g10   {'cpu': 4, 'mem_gb': 4}                               0         ?                213.7    29.8   47.9    ?                                     ?       dl380g10: deferred_behind_withheld_row (214s ago); sparklina: placement_mismatch (212s ago); sparky: placement_mismatch (212s ago)               ?         ?         launcher running; output 48s ago; child running (4 pids), cpu 159s, silent 18s
+eb44f226f426  CLAIMED  dl380g10   {'cpu': 4, 'mem_gb': 4}                               0         ?                20.3     18.1   ?       ?                                     ?       dl380g10: already_claimed (18s ago); sparklina: placement_mismatch (14s ago); sparky: placement_mismatch (18s ago)                               ?         ?         launcher running; no output observed; child gone (0 pids), cpu 0s
+pool worker DESKTOP-P5UOGNJ: stale or invalid offer timestamp
+
+== endings (newest 20)
+KEY           STATUS     VIA   HOST      ELAPSED  RC  ACTION RC  RECEIPT  SLURM  RESOURCE                                                             NOTE
+e0a43c611353  failed     pool  dl380g10  10.1s    1   -          -        -      rss=766.2M io w=636.5K r=104.0K                                      -
+589cf1517b31  failed     pool  dl380g10  10.1s    1   -          -        -      rss=391.2M io w=1.2M r=120.0K                                        -
+645950f65e10  executed   pool  sparky    0.6s     0   -          -        -      rss=42.2M io w=0B r=0B gpu=4.9W/100.0W(5%,declared_fallback)         -
+cff308ff55aa  failed     pool  dl380g10  167.0s   1   -          -        -      rss=443.1M io w=1.1G r=48.0K                                         -
+44213282a567  executed   pool  dl380g10  131.0s   0   -          -        -      rss=566.1M io w=99.8M r=6.9M                                         -
+d0ed0119a872  executed   pool  dl380g10  144.6s   0   -          -        -      rss=242.0M io w=673.9M r=176.0K                                      -
+28ef1b7984ee  failed     pool  dl380g10  8.8s     1   -          -        -      rss=154.1M io w=21.9M r=132.5K                                       -
+d73cbd4fde18  executed   pool  dl380g10  17.3s    0   -          -        -      rss=737.2M io w=2.7M r=296.0K                                        -
+5dd336cd89aa  executed   pool  dl380g10  10.9s    0   -          -        -      rss=397.6M io w=1.8M r=112.0K                                        -
+== dry run
+rollout rolling: Publish main 561e3177be with the revert of PR 1640 (D38 gate), one commit 34c2228cb2. CEO order under D64 (dec-1010-024316-b5c4), record prismabuild#1739. It adds PR 1584 (#1659/#1579 gang demand fence and the movement publ
+shape gate: passed by 6dfecfffd2de on dl380g10 (tables 682e7b0a859f, bc2a3bc8ad11)
+  docs/evidence/issue1374_ram_epoch_claim_refusal_acceptance_2026-09-30.json
+  docs/evidence/issue1374_ram_epoch_claim_refusal_cpu_2026-09-30.md
+  docs/measurements/diag811-timestamp-refusal-2026-09-30.md
+  docs/pq_cpu312_pin_refusal_2026-09-19.md
+  tests/test_a_gpu_refused_row_is_not_overtaken_by_gpu_rows.py
+  tests/test_a_mover_refusal_is_visible_to_the_owner.py
+  tests/test_a_refused_gpu_row_keeps_the_drain_boundary.py
+  tests/test_a_refused_skip_checkpoint_says_why.py
+  tests/test_a_released_consumers_row_is_refused_at_claim.py
+  tests/test_a_row_refused_on_held_cpus_withholds_its_box.py
+  tests/test_a_second_role_refuses_the_host_role_lock.py
+  tests/test_a_shared_mount_row_without_a_data_manifest_is_warned_or_refused.py
+  tests/test_an_identity_refusal_names_the_entry_and_both_identities.py
+  tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py
+  tests/test_an_unreachable_origin_is_refused_by_name.py
+  tests/test_census_refusal_is_once_per_pass_1571.py
+  tests/test_decomposition_refuses_before_it_publishes_anything.py
+  tests/test_generation_drift_refusals.py
+  tests/test_local_scratch_decorated_refusals.py
+  tests/test_nsys_docker_refusal.py
+  tests/test_offer_refusal_retry.py
+  tests/test_pool_entomb_refusal.py
+  tests/test_pool_reset_refusal.py
+  tests/test_publication_refusal_stops_the_range.py
+  tests/test_publication_refuses_a_dropped_roster_option_1664.py
+  tests/test_publish_refuses_a_live_key.py
+  tests/test_ready_gpu_refusal_releases_cpu_admission.py
+  tests/test_snapshot_git_refusal_1430.py
+  tests/test_snapshot_refuses_a_sparse_checkout.py
+  tests/test_supervisor_backs_off_a_refused_role.py
+  tests/test_the_prewarm_loop_refuses_a_row_that_does_not_fit.py
+  tests/test_the_ram_tier_refuses_a_mount_that_overcommits_the_box.py
+  tests/test_the_ram_tier_refuses_a_noninterleaved_tmpfs.py
+  tests/test_the_ram_tier_refuses_a_swappable_tmpfs.py
+dry run only; stopping
