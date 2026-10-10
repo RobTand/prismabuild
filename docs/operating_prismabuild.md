@@ -1705,10 +1705,48 @@ The standard eight-character suffix leaves an 86-byte socket path under
 and a 12-character file name (#1709).
 The worker removes only that attempt's directory after pytest exits 0.
 It keeps the directory on a non-zero exit, as the failed-only retention policy does.
-Expiry of kept directories is out of scope. With `--basetemp root` pytest does not
-remove the directory at the end of the session: it deletes and recreates
-the root at the start of the next session that uses that path, so a leftover
-root has to be cleaned by whoever sealed it.
+When removal meets a filesystem or mount refusal, a passing shard also keeps its directory with a completion time, and still reports exit 0.
+Default retained scratch expires after 24 hours (#1710).
+The worker supervisor runs a pass at startup and once per hour while it remains active.
+It sweeps registered sealed `TMPDIR` roots even when all worker loops execute actions.
+With complete ownership evidence and an ended scope, removal takes at most 25 hours plus a supervisor tick and the sweep duration.
+The registry uses `<account-home>/.local/state/prismabuild/pbtest-scratch`, independent of the action's `HOME`.
+The shard source records each root before pytest starts.
+The supervisor records each pass in its log as `pbtest-scratch-expiry`.
+
+The retention clock starts when the attempt keeps scratch and stamps its completion time.
+A root lock protects startup, completion, and deletion.
+An attempt lock protects the shard until its interpreter exits.
+Expiry also checks the exact broker scope for absence or `populated 0`.
+Live controllers, live descendants, and uncertain scope evidence preserve scratch.
+Directory descriptors and device/inode checks confine deletion to the sealed root.
+Expiry refuses nested mounts and does not follow symlinks.
+
+Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories remain intact.
+Interrupted attempts without completion metadata also remain intact.
+An operator must prove ownership and termination before any separate removal of those directories.
+Age and a quiet process name do not prove termination.
+Attempts without an exact broker scope, including uncontained transport runs, remain outside automatic expiry.
+Explicit `--basetemp` also remains outside this policy.
+
+Run a host-specific operator pass through PrismaBuild:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /path/to/prismabuild --tag x86 --cpus 1 --demand mem_gb=2 \
+  --env TMPDIR=/tmp --env PYTHONPATH=src \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+  /home/rob/venvs/pb-cpu/bin/python -m prismabuild.pbtest_scratch \
+  --root /home/rob/tmp --root /tmp
+```
+
+The JSON report names roots, removed directories, skipped directories, and removed allocated bytes.
+The byte count sums inode blocks before deletion; it does not measure filesystem free-space changes.
+The first dl380g10 pass removed **0 bytes** from `/home/rob/tmp` and `/tmp`.
+Action `d98c5e0bbfa5acb85b32d09f0a37519646eda77add0a907d8f2580b3f2569548` retains the complete pass report.
+It preserved legacy scratch because that scratch had no lifecycle metadata.
+The separate runtime smoke removed 8192 allocated bytes from one ended attempt under a private root.
+That smoke used a simulated 90000-second age; it does not count as production space relief.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
