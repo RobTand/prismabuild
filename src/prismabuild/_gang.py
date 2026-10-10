@@ -258,6 +258,36 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     return {"complete": not waiting, "waiting": waiting}
 
 
+def resident_hold(queue, record: Mapping[str, object], entry: Mapping[str, object],
+                  item: Mapping[str, object], host: str, now: float, *,
+                  live: list, prefer_s: float) -> dict | None:
+    """Why ``host`` must let a resident host elect this member first (#1733).
+
+    ``None`` elects here now: the row names no set, this host already holds
+    the copy, no other fit host holds it, or the preference bound has
+    passed.  Past the bound the member claims on any fit host and Phase 1
+    serves the canonical path, so a lost copy costs speed, never admission.
+    """
+    set_id = item.get("resident_set")
+    if not isinstance(set_id, str) or not set_id:
+        return None
+    residents = queue.resident_copy_hosts(set_id)
+    if host in residents:
+        return None
+    fit = {str(offer.get("host") or "?")
+           for offer in queue._matching_offers(item, live=live)}
+    preferred = sorted(residents & fit - {host})
+    if not preferred:
+        return None
+    published = item.get("published_unix")
+    if (type(published) not in (int, float) or not math.isfinite(published)
+            or not now - float(published) < prefer_s):
+        return None
+    return {"group": str(record["group"]), "index": int(entry["index"]),
+            "set_id": set_id, "resident_hosts": preferred,
+            "wait_remaining_s": prefer_s - (now - float(published))}
+
+
 def tear_down(queue, group: str, *, reason: str, by: str, now: float) -> bool:
     """File the gang's one teardown; ``False`` when another already did.
 
