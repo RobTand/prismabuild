@@ -80,6 +80,14 @@ and each one is exactly one ``pbrun`` flag:
                      ``--residency-read-mb-s``: positive whole MB/s
 ``cpus``             ``--cpus``: cores, at least 1; ``demand.cpu`` wins when
                      both are given, as it does for ``pbrun``
+``d38_receipt``      ``--d38-receipt``: the CPU preflight action key that
+                     proves this GPU row (D38, #1639); never with
+                     ``d38_exception``
+``d38_exception``    ``--d38-exception``: the CEO decision id that grants
+                     D38 for exactly this row; never with ``d38_receipt``
+``d38_namespace``    ``--d38-namespace``: the namespace descriptor sealed
+                     into the row's key, so a changed namespace is a
+                     changed job
 ===================  ====================================================
 
 Every field except ``argv`` is optional, and an omitted one is not passed to
@@ -246,6 +254,7 @@ from prismabuild import (  # noqa: E402
 import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
 import pbwait  # noqa: E402
+import d38_gate  # noqa: E402
 
 #: Row field to ``pbrun`` flag, and how the value is spelled.  A table rather
 #: than a chain of ifs, because the property that matters is that the mapping
@@ -271,6 +280,13 @@ _VALUE_FIELDS = (
     ("residency_prefetch_depth_gib", "--residency-prefetch-depth-gib"),
     ("residency_read_mb_s", "--residency-read-mb-s"),
     ("cpus", "--cpus"),
+    # D38 evidence (#1639): a GPU row names the preflight receipt or the CEO
+    # grant that authorizes it, and the namespace descriptor sealed into its
+    # key. Without them a GPU row is refused at submission, as pbrun refuses
+    # it at the terminal.
+    ("d38_receipt", "--d38-receipt"),
+    ("d38_exception", "--d38-exception"),
+    ("d38_namespace", "--d38-namespace"),
 )
 _SWITCH_FIELDS = (
     ("deterministic", "--deterministic"),
@@ -322,7 +338,8 @@ _CHOICE_FIELDS = (
 
 #: Fields whose value reaches ``pbrun`` as text.
 _TEXT_FIELDS = ("cwd", "host_class", "profile", "data_manifest",
-                "produced_output_template", "as_sealed_by", "priority_reason")
+                "produced_output_template", "as_sealed_by", "priority_reason",
+                "d38_receipt", "d38_exception", "d38_namespace")
 
 #: An absolute path mention inside a command word or an environment value.  A
 #: mention starts where a path can start -- the beginning of the string, or a
@@ -1214,6 +1231,13 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
             queue_root=queue.root, published_unix=live["generation"],
             submission=live["submission"],
         ))
+    # D38: a decomposed child is a new publication (#1639). A cache hit or a
+    # live attachment above published nothing and needed no receipt; this
+    # child publishes, so the gate judges it before the row goes in.
+    # Decomposition runs on the pull queue only, and a logical parent cannot
+    # carry per-child evidence, so a GPU child is refused here.
+    d38_gate.require(args, child, cas=cas, queue_root=queue.root,
+                     transport="pool")
     # The attachment read above answers before the publication, which is what
     # ``--detach`` needs, but the queue can take the key between the two.  The
     # publication's own refusal is the exact answer, so a child that lost that

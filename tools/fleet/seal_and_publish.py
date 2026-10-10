@@ -157,7 +157,10 @@ def main(argv=None) -> int:
             # item, the lane seals it as the snapshot the node materializes.
             checkout_root=str(checkout),
             worker_script=str(RUNTIME_ROOT / "tools" / "prismabuild_worker.py"),
-            tags=["gb10"],
+            # No placement pin: this is a CPU-only smoke action, and a gb10
+            # tag is GPU intent under D38, which needs a preflight receipt
+            # no smoke run can carry (#1639).
+            tags=[],
         )
     except fleet_submit.SubmitRefused as refusal:
         # A refusal is a verdict, so report it as one.  The advertised output

@@ -1077,3 +1077,143 @@ def test_the_shipped_registry_is_empty() -> None:
          "import d38_gate; print(len(d38_gate.INVOCATIONS))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.stdout.strip() == "0", shipped.stderr
+
+# --------------------------------------------------------------------------
+# The remaining publication paths (#1639, second slice)
+# --------------------------------------------------------------------------
+
+
+def test_a_decomposed_gpu_child_without_evidence_publishes_nothing(
+        tmp_path, monkeypatch) -> None:
+    """A campaign child is a new publication, so the gate judges it."""
+
+    import pbcampaign
+
+    work, _ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    args = pbrun.parse_args(
+        ["--detach", "--transport", "pool", "--cwd", str(work),
+         "--wait-s", "0.01", "--", "true"])
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    with pytest.raises(SystemExit) as refused:
+        pbcampaign.child_record(target, args=args, queue=queue, cas=cas)
+    assert refused.value.code == 2
+    assert _ready(tmp_path) == []
+
+
+def test_campaign_rows_carry_d38_evidence_fields(tmp_path) -> None:
+    """A GPU campaign row must be able to name its receipt, grant and
+    namespace, or every GPU campaign is refused without recourse."""
+
+    import pbcampaign
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{
+        "argv": ["true"], "demand": {"cpu": 1, "mem_gb": 1},
+        "d38_receipt": "ab" * 32, "d38_exception": "dec-0000",
+        "d38_namespace": str(tmp_path / "namespace.json")}]),
+        encoding="utf-8")
+    (rows,) = pbcampaign.load_manifest(manifest, transport="pool")
+    flags = pbcampaign.pbrun_argv(rows)
+    assert ["--d38-receipt", "ab" * 32] == flags[
+        flags.index("--d38-receipt"):flags.index("--d38-receipt") + 2]
+    assert ["--d38-exception", "dec-0000"] == flags[
+        flags.index("--d38-exception"):flags.index("--d38-exception") + 2]
+    assert flags[flags.index("--d38-namespace") + 1] == str(
+        tmp_path / "namespace.json")
+
+
+def test_fleet_submit_refuses_gpu_work_without_evidence(
+        tmp_path, monkeypatch) -> None:
+    """The shared publish path judges what pbrun judges: a GPU action with
+    no receipt or grant publishes nothing runnable."""
+
+    import fleet_submit
+
+    _work, _ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    request = cas.publish_action_request(target)
+    with pytest.raises(fleet_submit.SubmitRefused, match="D38"):
+        fleet_submit.submit(
+            target, cas=cas, request_path=request, transport="pool",
+            queue_root=tmp_path / "pb-queue", tags=[],
+            resources={"cpu": 1, "mem_gb": 1, "gpu": 1},
+            checkout_root=str(tmp_path / "work"))
+    assert _ready(tmp_path) == []
+
+
+def test_fleet_submit_still_publishes_cpu_work_without_evidence(
+        tmp_path, monkeypatch) -> None:
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, "--tag", "x86")
+
+    import fleet_submit
+
+    request = cas.publish_action_request(target)
+    submission = fleet_submit.submit(
+        target, cas=cas, request_path=request, transport="pool",
+        queue_root=tmp_path / "pb-queue", tags=["x86"],
+        resources={"cpu": 1, "mem_gb": 1}, checkout_root=str(work))
+    assert submission.transport == "pool"
+    assert len(_ready(tmp_path)) == 1
+
+
+def test_decomposed_common_carries_the_namespace_but_no_evidence() -> None:
+    """The namespace is key material every child shares; a receipt or a
+    grant names one job, so neither is a shared policy."""
+
+    import pbcampaign
+    from prismabuild import decomposition as dc
+
+    common = dc.validate_common_spec({
+        "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+        "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+        "gpu_memory_gb": None, "data_manifest": None, "env": {},
+        "d38_namespace": "/work/namespace.json"})
+    assert common["d38_namespace"] == "/work/namespace.json"
+    flags = pbcampaign.pbrun_argv(common)
+    assert flags[flags.index("--d38-namespace") + 1] == "/work/namespace.json"
+
+
+@pytest.mark.parametrize("field", ["d38_receipt", "d38_exception"])
+def test_decomposed_common_refuses_per_child_evidence(field: str) -> None:
+    from prismabuild import decomposition as dc
+
+    with pytest.raises(dc.ActionContractError, match="extra"):
+        dc.validate_common_spec({
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {},
+            field: "x"})
+
+
+def test_a_campaign_gpu_row_with_a_grant_publishes(
+        tmp_path, monkeypatch, capsys, _isolated) -> None:
+    """Manifest evidence authorizes end to end: refused without it, then
+    published with it, with an audit event under the row's job hash."""
+
+    import pbcampaign
+    import re
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    _prepare(tmp_path, monkeypatch)
+    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    row = {"argv": ["true"], "cwd": str(work),
+           "demand": {"cpu": 1, "mem_gb": 1, "gpu": 1},
+           "d38_namespace": str(ns)}
+    refused = pbcampaign.submit_row(row, transport="pool")
+    assert refused["status"] == "refused"
+    assert _ready(tmp_path) == []
+    match = re.search(r"job=([0-9a-f]{64})", capsys.readouterr().err)
+    assert match is not None
+    key = match.group(1)
+    _grant(_isolated, "dec-1008-000000-row1", {"action_key": key})
+    published = pbcampaign.submit_row(
+        {**row, "d38_exception": "dec-1008-000000-row1"}, transport="pool")
+    assert published["status"] == "submitted", published
+    assert published["action_key"] == key
+    assert len(_ready(tmp_path)) == 1
+    events = _audit(tmp_path, key)
+    assert len(events) == 1
+    assert events[0]["authorization"] == "exception"
