@@ -5758,6 +5758,15 @@ def window_pressure(
             "consumer": str(unit.key),
             "extra_held_gib": max(
                 int(_totals.get(tier_of_unit, 0)) - own_due, 0)})
+    # What the joint gate holds against a streaming newcomer that the walk
+    # below does not owe: the admitted declared peaks, net of holdings
+    # (#1594, #1627).  A declared row carries its own share above; a
+    # streaming row owns none of it, so the probe asks with the same held
+    # term the gate refuses on, or the window stalls beside reclaimable
+    # room while the probe reports no shortfall.
+    obligated: dict[str, int] = {
+        tier: int(totals.get(tier, 0) or 0)
+        for tier, (_held, _kind, totals, _detail) in _tier_state.items()}
     for _key, consumer, plan, tier_id in consumers:
         if residency_plan.superseded(queue, plan) is not None:
             # A superseded window publishes nothing (#708), so it is not
@@ -5849,7 +5858,8 @@ def window_pressure(
                            decision=_decision_facts(refusal))
                 continue
             newcomers.setdefault(str(tier_id), []).append(
-                {**stage_needs, "consumer": str(_key)})
+                {**stage_needs, "consumer": str(_key),
+                 "extra_held_gib": obligated.get(str(tier_id), 0)})
         if waiting:
             # A mover already in ``ready/`` or ``claimed/`` that holds no
             # tokens is the plainest form of "the tier needs the tokens": it
@@ -5967,7 +5977,8 @@ def window_pressure(
                 horizon_end_bytes=state["horizon_end_bytes"])    # type: ignore[arg-type]
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
                 newcomers.setdefault(ram_tier_id, []).append(
-                    {**ram_needs, "consumer": str(_key)})
+                    {**ram_needs, "consumer": str(_key),
+                     "extra_held_gib": obligated.get(ram_tier_id, 0)})
             elif str(ram_wanted[0]["phase"]) != reading:
                 # The stage leg's rule: an unpublished current is no next.
                 ram_next = int(ram_wanted[0]["stage_gib"])
