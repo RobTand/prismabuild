@@ -212,6 +212,14 @@ def _tiers(stage: Path, ram: Path) -> dict:
     }
 
 
+def _cycle(queue, stage: Path, ram: Path) -> None:
+    """One whole tier cycle over both tiers, as the storage box runs it."""
+    tiers = _tiers(stage, ram)
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kwargs: dict(tiers))
+
+
 def _jammed(tmp_path: Path):
     """The incident shape: orphans, a withdrawn group, waiters, no room."""
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
