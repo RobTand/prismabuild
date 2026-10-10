@@ -167,10 +167,8 @@ def test_gang_vote_waits_for_the_resident_host_then_starts_canonical(resident_ga
                                                                      monkeypatch):
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("resident-vote")
-    assert gclaim("sparky") is None
-    assert denial(first, "sparky")["reason"] == "gang_waiting_for_peers"
     assert gclaim("sparklina") is None
-    assert denial(second, "sparklina")["reason"] == "deferred_for_resident_copy"
+    assert denial(first, "sparklina")["reason"] == "deferred_for_resident_copy"
     tick(pool.RESIDENT_COPY_PREFER_S + 1)
     assert gclaim("sparky") is None
     assert gclaim("sparklina") == second
@@ -178,6 +176,50 @@ def test_gang_vote_waits_for_the_resident_host_then_starts_canonical(resident_ga
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     terminal = json.loads(queue.finish(second, status="executed").read_text())
     assert queue.attempt_outcomes(terminal)[0]["served_from"] == "canonical"
+
+
+def test_gang_skips_a_resident_host_that_holds_a_sibling(resident_gang):
+    """A non-resident host elects at once when the resident host is busy."""
+    queue, clock, tick, gclaim, denial, members = resident_gang
+    group, (first, second) = members("resident-busy")
+    assert gclaim("sparky") is None
+    assert denial(first, "sparky")["reason"] == "gang_waiting_for_peers"
+    assert _gang.elections(queue, group, 2)[0]["host"] == "sparky"
+    assert gclaim("sparklina") == second
+    assert gclaim("sparky") == first
+
+
+def test_gang_waits_while_the_resident_host_is_free(resident_gang):
+    """The reverse poll order still waits for the free resident host."""
+    queue, clock, tick, gclaim, denial, members = resident_gang
+    group, (first, second) = members("resident-free")
+    assert gclaim("sparklina") is None
+    assert denial(first, "sparklina")["reason"] == "deferred_for_resident_copy"
+    assert _gang.elections(queue, group, 2) == {}
+    assert gclaim("sparky") is None
+    assert denial(first, "sparky")["reason"] == "gang_waiting_for_peers"
+    assert gclaim("sparklina") == second
+    assert gclaim("sparky") == first
+
+
+def test_resident_hold_ignores_a_future_publish_stamp(tmp_path):
+    """A publisher clock ahead of this host buys no extra wait (#1733)."""
+    import time
+    queue, store, set_id = _resident_world(tmp_path, lease_now=100)
+    for host in HOSTS:
+        _announce(queue, host)
+    _publish(queue, "e" * 64, resident_set=set_id)
+    item = json.loads(queue.item_path(pool.READY, "e" * 64).read_text())
+    record = {"group": "f" * 32, "size": 2}
+    entry = {"index": 0, "action_key": "e" * 64}
+    live = queue.offers()
+    now = time.time()
+    assert _gang.resident_hold(
+        queue, record, entry, {**item, "published_unix": now - 1},
+        "ahost", now, live=live, prefer_s=pool.RESIDENT_COPY_PREFER_S) is not None
+    assert _gang.resident_hold(
+        queue, record, entry, {**item, "published_unix": now + 3600},
+        "ahost", now, live=live, prefer_s=pool.RESIDENT_COPY_PREFER_S) is None
 
 
 def test_pbgang_forwards_the_resident_set_to_pbrun(tmp_path):
