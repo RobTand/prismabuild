@@ -93,9 +93,10 @@ def _end(queue, key, *, how) -> None:
 
 
 def _ram_orphan(queue, ram: Path, consumer: str, seed: str, ordinal: int) -> str:
-    """One ended promotion's tokens, fragment and receipt on the RAM tier."""
     mover = _hexkey(f"1627-ram-{seed}-{ordinal}")
     assert queue.tier_ledger(RAM).acquire(mover, {"ram_gib": 2})
+    assert queue.ledger("dl380g10").acquire(
+        f"ram-host:{mover}", {"mem_gb": 2})
     rp.vouch_landed(
         queue, consumer_action_key=consumer, mover_action_key=mover,
         tier_id=RAM, stage_root=ram, manifest_sha256=_hexkey(f"man-{seed}"),
@@ -222,6 +223,7 @@ def _jammed(tmp_path: Path):
     """The incident shape: orphans, a withdrawn group, waiters, no room."""
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
     queue.mint_tier_capacity(RAM, {"ram_gib": RAM_CAP})
+    queue.ledger("dl380g10").ensure_capacity({"cpu": 80, "mem_gb": 64})
     stage = tmp_path / "stage"
     stage.mkdir()
     ram = tmp_path / "ram"
