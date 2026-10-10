@@ -90,7 +90,6 @@ from prismabuild import (  # noqa: E402
     decomposition as dc, dependency_digest, filesystem_floor, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
-import d38_gate  # noqa: E402
 import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
 import fleet_roster  # noqa: E402
@@ -5535,7 +5534,6 @@ def freeze_action_template(
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
-    d38_namespace: str | None = None,
     wrapper_dir: Path | None = None,
     dependency_queries: Mapping[str, str] | None = None,
     gang: Mapping[str, object] | None = None,
@@ -5880,12 +5878,6 @@ def freeze_action_template(
         # projection of this one, never the other way around (#714).  Absent,
         # the key is byte-identical to what it was before this flag existed.
         params["container_images"] = list(container_image_refs)
-    if d38_namespace is not None:
-        # Sealed before the key is computed (D38): the namespace the preflight
-        # proved is part of the job's identity, so a changed namespace is a
-        # changed job and the old receipt no longer binds it.  Absent, the key
-        # is byte-identical to what it was before this flag existed.
-        params[d38_gate.NAMESPACE_PARAM] = d38_namespace
     template = {
         "cas": cas,
         "marker_root": marker_root,
@@ -7233,20 +7225,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "attempt, and a missing or drifted digest is a named denial, "
              "never a run (#1495)")
     ap.add_argument(
-        "--d38-receipt", default=None, metavar="KEY",
-        help="the full 64-character action key of the CPU preflight that "
-             "proves this GPU job (D38). Its CAS receipt must bind this job's "
-             "identity, images and namespace")
-    ap.add_argument(
-        "--d38-exception", default=None, metavar="DECISION_ID",
-        help="an explicit CEO decision that grants D38 for exactly this job; "
-             "never together with --d38-receipt")
-    ap.add_argument(
-        "--d38-namespace", default=None, metavar="PATH",
-        help="a JSON namespace descriptor (execution mode, cwd, interpreter, "
-             "mounts, prerequisite identities). Its digest is sealed into the "
-             "job, so a changed namespace is a changed job")
-    ap.add_argument(
         "--container-image", action="append", default=[], metavar="REF",
         help="require the claiming box's local Docker to positively hold this "
              "image before the action is claimed (repeatable). Accepts "
@@ -8028,8 +8006,6 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
         container_image_refs=images,
-        d38_namespace=(d38_gate.load_namespace(args.d38_namespace)[1]
-                       if getattr(args, "d38_namespace", None) else None),
         wrapper_dir=wrapper_dir,
         dependency_queries=dependency_queries,
         gang=gang,
@@ -8492,8 +8468,6 @@ _DEFERRED_PUBLICATION_ARGS = (
     # The reader's declaration (#909), which a deferred consumer's plan must
     # carry exactly as a direct submission's does.
     "residency_prefetch_depth_gib", "residency_read_mb_s",
-    # D38 evidence the release checks again against the sealed key.
-    "d38_receipt", "d38_exception",
 )
 
 
@@ -8602,7 +8576,6 @@ def submit_deferred(prepared: Mapping[str, object],
     """
 
     template = prepared["template"]
-    d38_gate.refuse_deferred(args, template["params"])
     cas = template["cas"]
     q = pool.PoolQueue(SH / "pb-queue")
     edges = resolve_after_edges(q, Path(cas.root), args.after)
@@ -8893,12 +8866,8 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                 produced_mod.load_origin_batches(q.root, all_refs)
             except produced_mod.ProducedOutputError as exc:
                 raise action_edges.ActionEdgeError(str(exc)) from None
-        options = argparse.Namespace(**dict(record["publication"]))
-        # D38 again, now that the key exists: a record an older client filed
-        # carries no evidence for it, and nothing is published without it.
-        d38_gate.require(options, action, cas=cas, queue_root=q.root,
-                         transport="pool")
         cas.publish_action_request(action)
+        options = argparse.Namespace(**dict(record["publication"]))
         sealed = {**template,
                   "params": {**template["params"], "data_manifest": summary},
                   "inputs": [*template["inputs"], manifest_input]}
@@ -9226,31 +9195,6 @@ def submit_and_publish(args, *, publication_canary_intent=None,
                 submission=record,
             ), flush=True)
             return 0
-
-    # D38: new GPU work needs preflight evidence before anything runnable is
-    # published, on every transport.  There is no liveness or cache exemption
-    # here: a read taken now is stale by the time the queue decides whether the
-    # key is new.  Without evidence this process publishes and submits nothing;
-    # it may only wait on a pool run it can see, or refuse.  (The detached
-    # branches above already answered a cache hit and a live attachment without
-    # publishing.)
-    verdict = d38_gate.judge_publication(
-        args, action, cas=cas, queue_root=SH / "pb-queue",
-        transport=args.transport)
-    if verdict is not None:
-        if not args.detach:
-            try:
-                live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
-            except (OutcomeReadUnavailable, OSError):
-                live = None
-            if live is not None and live["transport"] == "pool":
-                print(f"pbrun: {key[:12]} is already running on the pool; "
-                      f"waiting on that run, and publishing nothing, because "
-                      f"D38 evidence is missing", file=sys.stderr, flush=True)
-                return functools.partial(
-                    await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
-                    wait_s=args.wait_s, generation=live["generation"])
-        raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm":
         # Everything below this point reads the pull queue -- worker offers,
