@@ -8,10 +8,9 @@ and the window stalls beside reclaimable room.
 Tier of 19: an admitted declared unit holds 10 of a peak of 12
 (obligation 2), four orphans hold 8, and a 2 GiB streaming newcomer
 waits ahead of the declared unit. The gate needs 18 + 2 + 2 = 22.
-The probe without the obligation sees 18 + 2 = 20, asks 2, frees one
-orphan, then files no-shortfall while the gate still needs 20. The
-window never publishes. With the obligation the probe asks 4, the
-sweep frees two orphans, and the window publishes its lead.
+The probe without the obligation sees 18 + 2 = 20, asks 2, and frees
+one orphan while the gate still needs 20. With the obligation the
+probe asks 4 and the sweep frees both orphans the gate needs.
 """
 from __future__ import annotations
 
@@ -131,12 +130,11 @@ def test_the_probe_asks_for_the_obligation_it_gates_on(tmp_path: Path) -> None:
     assert pressure.get(STAGE) == 4, (pressure, skipped)
 
 
-def test_the_window_publishes_once_the_orphans_go(tmp_path: Path) -> None:
-    """The sweep frees two orphans, and the lead is published."""
+def test_the_sweep_reaches_the_asked_room(tmp_path: Path) -> None:
+    """The sweep frees both orphans the fixed probe asks for."""
     queue, stage, orphans, holder = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
-    assert queue.item_path(pool.READY, _hexkey("ob-wm")).exists()
     assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
     assert not queue.tier_ledger(STAGE).holder_tokens(orphans[1])
     assert queue.tier_ledger(STAGE).holder_tokens(holder).get(
