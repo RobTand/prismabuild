@@ -1,0 +1,139 @@
+"""The streaming probe counts admitted declared obligations (#1627).
+
+The joint-fit gate refuses a streaming newcomer beside an admitted
+declared unit's whole peak obligation, but the orphan-pressure probe
+asked without it. A window that only freed orphans can admit then
+stalls beside the room while the sweep keeps it as cache.
+
+Tier of 20: an admitted declared unit holds 10 of a peak of 18
+(obligation 8), three orphans hold 6, and a 2 GiB streaming newcomer
+waits. The gate needs 16 + 8 + 2 = 26. The probe without the
+obligation sees 16 + 2 = 18, files no-shortfall, and asks for the
+next phase's 2 only. The sweep frees nothing, and the window never
+publishes. With the obligation the probe asks 10, the sweep frees
+the 6, and the window publishes its lead.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+import prelaunch_tier as pt  # noqa: E402
+import stage_release  # noqa: E402
+import tier_loop  # noqa: E402
+from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
+    _stage_range, _tier_record)
+from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
+    _hexkey, _queue, _row)
+from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
+from test_prelaunch_tier_module_1594 import (  # noqa: E402
+    _consumer, _declared_plan)
+
+STAGE = "prismabuild-stage:dl380g10"
+STAGE_KIND = f"stage_gib@{STAGE}"
+GIB = storage_tiers.GIB
+CAPACITY = 20
+
+DONE = _hexkey("ob-done-consumer")
+DECLARED = _hexkey("ob-declared")
+WINDOW = _hexkey("ob-window")
+MANIFEST = _hexkey("ob-manifest")
+
+
+def _window_plan(queue, consumer: str) -> dict:
+    """One 2 GiB streaming phase, nothing staged."""
+    row = _row(_hexkey("ob-wm"), {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2},
+               queue)
+    phases = [{
+        "name": "phase-0", "start_bytes": 0, "end_bytes": 2 * GIB,
+        "stage_gib": 2,
+        "mover_row": {
+            **row, "residency": {
+                "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE,
+                "manifest_sha256": MANIFEST, "manifest_bytes": 2 * GIB,
+                "range_start_bytes": 0, "range_end_bytes": 2 * GIB}},
+        "egress_row": _row(_hexkey("ob-we"), {"mem_gb": 1}, queue),
+    }]
+    return residency_plan.build_plan(
+        consumer_action_key=consumer, tier_id=STAGE,
+        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        manifest_bytes=2 * GIB, phases=phases)
+
+
+def _fixture(tmp_path: Path):
+    """An admitted prefix, three orphans, and a streaming waiter."""
+    queue = _queue(tmp_path, stage_gib=CAPACITY)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    queue.publish(action_key=DONE, cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  resources={"cpu": 1, "mem_gb": 1})
+    queue.finish(DONE, status="executed")
+    orphans = []
+    for ordinal in range(3):
+        mover = _hexkey(f"ob-orphan-{ordinal}")
+        _stage_range(queue, mover=mover, consumer=DONE, stage=stage,
+                     ordinal=ordinal, manifest="e" * 64)
+        orphans.append(mover)
+    plan = _declared_plan(queue, DECLARED,
+                          [("a0", 10, True, 1), ("a1", 8, False, 1)],
+                          tag="ob")
+    _live(queue, plan, DECLARED)
+    units = pt.declared_units(queue, {STAGE: {"tier": "stage"}},
+                              [_consumer(DECLARED)])
+    assert len(units) == 1
+    pt.reserve_pass(queue, STAGE, units, admitted=lambda unit: True)
+    ledger = queue.tier_ledger(STAGE)
+    assert int(ledger.holder_tokens(units[0].holder).get("stage_gib", 0)) == 10
+    window_plan = _window_plan(queue, WINDOW)
+    residency_plan.freeze(queue, window_plan)
+    queue.publish(
+        action_key=WINDOW, cas_root=str(queue.root / "cas"),
+        checkout_root=str(queue.root / "co"),
+        worker_script=str(queue.root / "worker.py"),
+        resources={"cpu": 1, "mem_gb": 1},
+        residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE,
+                   "manifest_sha256": MANIFEST, "manifest_bytes": 2 * GIB,
+                   "leads": residency_plan.leads_for(window_plan)})
+    return queue, stage, orphans, units[0].holder
+
+
+def _tiers(stage: Path) -> dict:
+    """The announced stage tier."""
+    return {STAGE: _tier_record(stage, gib=CAPACITY)}
+
+
+def _cycle(queue, stage: Path) -> None:
+    """One whole tier cycle, as the storage box runs it."""
+    tiers = _tiers(stage)
+    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
+                    receipts=tier_loop.ReceiptCache(),
+                    discover=lambda **_kwargs: dict(tiers))
+
+
+def test_the_probe_asks_for_the_obligation_it_gates_on(tmp_path: Path) -> None:
+    """Pressure covers held plus the admitted obligation plus the lead."""
+    queue, stage, _, _ = _fixture(tmp_path)
+    skipped: list[dict] = []
+    pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage),
+                                         skipped=skipped)
+    assert pressure.get(STAGE) == 10, (pressure, skipped)
+
+
+def test_the_window_publishes_once_the_orphans_go(tmp_path: Path) -> None:
+    """The sweep frees the 6 the gate needs, and the lead is published."""
+    queue, stage, orphans, holder = _fixture(tmp_path)
+    for _ in range(3):
+        _cycle(queue, stage)
+    assert queue.item_path(pool.READY, _hexkey("ob-wm")).exists()
+    assert all(not queue.tier_ledger(STAGE).holder_tokens(mover)
+               for mover in orphans)
+    assert queue.tier_ledger(STAGE).holder_tokens(holder).get(
+        "stage_gib") == 10
