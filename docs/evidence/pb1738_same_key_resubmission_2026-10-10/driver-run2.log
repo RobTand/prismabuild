@@ -1,0 +1,12 @@
+02:43:26.083Z baseline {"stage": {"held_gib": 134, "landed_gib": 134, "in_flight_gib": 0, "free_gib": 70.6}, "ready": 10, "claimed": 4}
+02:43:27.077Z submitted-1 {"key": "7b06f3ad97c1933757afea77383629d89dc9ab95bc05bb85ba31921d8b2cf2c3", "state": "ready"}
+02:44:00.152Z commit-poll-ended {"committed_seen": "02:44:00.150Z", "state": "ready", "group": {"b8534b0af1e6": {"committed.json": 1791600240, "intent.json": 1791600214}}, "stage": {"held_gib": 142, "landed_gib": 134, "in_flight_gib": 8, "free_gib": 70.6}}
+02:44:00.601Z withdraw-called {"rc": 0, "out": "pbrun: withdrew 7b06f3ad97c1 from ready; released 0 token(s); marked its residency plan superseded; a resubmission seals a fresh one at the current price once the old work has ended\n"}
+02:44:00.603Z withdrawn {"state": "withdrawn", "group": {"b8534b0af1e6": {"committed.json": 1791600240, "intent.json": 1791600214}}, "stage": {"held_gib": 142, "landed_gib": 134, "in_flight_gib": 8, "free_gib": 70.6}}
+02:44:16.620Z after-token-return-wait {"group": {"b8534b0af1e6": {"committed.json": 1791600240, "intent.json": 1791600214}}, "stage": {"held_gib": 134, "landed_gib": 134, "in_flight_gib": 0, "free_gib": 70.0}, "events": [{"at": 1791600213.6653175, "event": "ram-window-stalled", "tier": "ram:dl380g10", "detail": "{'accepted_phase': None,
+02:44:17.372Z resubmitted {"key2": "7b06f3ad97c1933757afea77383629d89dc9ab95bc05bb85ba31921d8b2cf2c3", "same_key": true, "state": "ready"}
+02:51:17.452Z claim-poll-ended {"claimed_at": null, "seconds": 420.1, "state": "ready", "group": {"b8534b0af1e6": {"committed.json": 1791600240, "intent.json": 1791600214}}, "stage": {"held_gib": 142, "landed_gib": 134, "in_flight_gib": 8, "free_gib": 70.6}}
+02:55:17.481Z ended {"state": "ready", "record": {}}
+02:58:17.608Z final {"state": "done", "group": {"b8534b0af1e6": {"committed.json": 1791600240, "intent.json": 1791600214}}, "stage": {"held_gib": 142, "landed_gib": 142, "in_flight_gib": 0, "free_gib": 62.7}, "events": []}
+RECEIPTS /mnt/shared/fleet-ceo/pb-1738-testband/receipts-20261010T024326Z.json
+renewed row did NOT claim
