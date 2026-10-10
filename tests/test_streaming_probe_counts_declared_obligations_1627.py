@@ -2,16 +2,16 @@
 
 The joint-fit gate refuses a streaming newcomer beside an admitted
 declared unit's whole peak obligation, but the orphan-pressure probe
-asked without it. A window that only freed orphans can admit then
-stalls beside the room while the sweep keeps it as cache.
+asked without it. The probe then frees too little, files no-shortfall,
+and the window stalls beside reclaimable room.
 
-Tier of 20: an admitted declared unit holds 10 of a peak of 12
+Tier of 19: an admitted declared unit holds 10 of a peak of 12
 (obligation 2), four orphans hold 8, and a 2 GiB streaming newcomer
-waits. The gate needs 18 + 2 + 2 = 22. The probe without the
-obligation sees 18 + 2 = 20, files no-shortfall, and asks for the
-next phase's 2 only. The sweep frees nothing, and the window never
-publishes. With the obligation the probe asks 4, the sweep frees
-the oldest orphan, and the window publishes its lead.
+waits ahead of the declared unit. The gate needs 18 + 2 + 2 = 22.
+The probe without the obligation sees 18 + 2 = 20, asks 2, frees one
+orphan, then files no-shortfall while the gate still needs 20. The
+window never publishes. With the obligation the probe asks 4, the
+sweep frees two orphans, and the window publishes its lead.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from test_prelaunch_tier_module_1594 import (  # noqa: E402
 STAGE = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE}"
 GIB = storage_tiers.GIB
-CAPACITY = 20
+CAPACITY = 19
 
 DONE = _hexkey("ob-done-consumer")
 DECLARED = _hexkey("ob-declared")
@@ -66,7 +66,7 @@ def _window_plan(queue, consumer: str) -> dict:
 
 
 def _fixture(tmp_path: Path):
-    """An admitted prefix, three orphans, and a streaming waiter."""
+    """An admitted prefix, four orphans, and a streaming waiter."""
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -102,7 +102,7 @@ def _fixture(tmp_path: Path):
         action_key=WINDOW, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
         worker_script=str(queue.root / "worker.py"),
-        resources={"cpu": 1, "mem_gb": 1},
+        resources={"cpu": 1, "mem_gb": 1}, priority=1,
         residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE,
                    "manifest_sha256": MANIFEST, "manifest_bytes": 2 * GIB,
                    "leads": residency_plan.leads_for(window_plan)})
@@ -132,11 +132,12 @@ def test_the_probe_asks_for_the_obligation_it_gates_on(tmp_path: Path) -> None:
 
 
 def test_the_window_publishes_once_the_orphans_go(tmp_path: Path) -> None:
-    """The sweep frees the oldest orphan, and the lead is published."""
+    """The sweep frees two orphans, and the lead is published."""
     queue, stage, orphans, holder = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
     assert queue.item_path(pool.READY, _hexkey("ob-wm")).exists()
     assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
+    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[1])
     assert queue.tier_ledger(STAGE).holder_tokens(holder).get(
         "stage_gib") == 10
