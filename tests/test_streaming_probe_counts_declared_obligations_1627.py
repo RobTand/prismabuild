@@ -5,13 +5,13 @@ declared unit's whole peak obligation, but the orphan-pressure probe
 asked without it. A window that only freed orphans can admit then
 stalls beside the room while the sweep keeps it as cache.
 
-Tier of 20: an admitted declared unit holds 10 of a peak of 18
-(obligation 8), three orphans hold 6, and a 2 GiB streaming newcomer
-waits. The gate needs 16 + 8 + 2 = 26. The probe without the
-obligation sees 16 + 2 = 18, files no-shortfall, and asks for the
+Tier of 20: an admitted declared unit holds 10 of a peak of 12
+(obligation 2), four orphans hold 8, and a 2 GiB streaming newcomer
+waits. The gate needs 18 + 2 + 2 = 22. The probe without the
+obligation sees 18 + 2 = 20, files no-shortfall, and asks for the
 next phase's 2 only. The sweep frees nothing, and the window never
-publishes. With the obligation the probe asks 10, the sweep frees
-the 6, and the window publishes its lead.
+publishes. With the obligation the probe asks 4, the sweep frees
+the oldest orphan, and the window publishes its lead.
 """
 from __future__ import annotations
 
@@ -77,13 +77,13 @@ def _fixture(tmp_path: Path):
                   resources={"cpu": 1, "mem_gb": 1})
     queue.finish(DONE, status="executed")
     orphans = []
-    for ordinal in range(3):
+    for ordinal in range(4):
         mover = _hexkey(f"ob-orphan-{ordinal}")
         _stage_range(queue, mover=mover, consumer=DONE, stage=stage,
                      ordinal=ordinal, manifest="e" * 64)
         orphans.append(mover)
     plan = _declared_plan(queue, DECLARED,
-                          [("a0", 10, True, 1), ("a1", 8, False, 1)],
+                          [("a0", 10, True, 1), ("a1", 2, False, 1)],
                           tag="ob")
     _live(queue, plan, DECLARED)
     units = pt.declared_units(queue, {STAGE: {"tier": "stage"}},
@@ -128,16 +128,15 @@ def test_the_probe_asks_for_the_obligation_it_gates_on(tmp_path: Path) -> None:
     skipped: list[dict] = []
     pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage),
                                          skipped=skipped)
-    assert pressure.get(STAGE) == 10, (pressure, skipped)
+    assert pressure.get(STAGE) == 4, (pressure, skipped)
 
 
 def test_the_window_publishes_once_the_orphans_go(tmp_path: Path) -> None:
-    """The sweep frees the 6 the gate needs, and the lead is published."""
+    """The sweep frees the oldest orphan, and the lead is published."""
     queue, stage, orphans, holder = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
     assert queue.item_path(pool.READY, _hexkey("ob-wm")).exists()
-    assert all(not queue.tier_ledger(STAGE).holder_tokens(mover)
-               for mover in orphans)
+    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
     assert queue.tier_ledger(STAGE).holder_tokens(holder).get(
         "stage_gib") == 10
