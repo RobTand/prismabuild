@@ -5769,8 +5769,14 @@ entry of that host in the row's reason ring. The GPU host records
 no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
 host is full or refuses, but portable rows must also pass the eligible-READY-GPU
 rule above. A host without a GPU never yields, so no two hosts wait on each
-other. Tags excluding every host without a GPU bypass only this CPU-host
-deferral, not the READY-GPU rule. Remote reads are made once per host per claim
+other. Tags excluding every host without a GPU bypass this CPU-host deferral.
+They can also bypass the READY-GPU rule, but only beside the eligible GPU
+row's own room: the row must be no gang member with plain bounded demand, the
+GPU row must be no measurement, no gang member, with explicit CPU and memory
+and a readable contract, and after the row takes its tokens that room must
+still fit them, with adaptive headroom for the GPU row beside every holder
+plus the new row at declared demand, through the one shared projected-cost
+calculation (#1721). Remote reads are made once per host per claim
 pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
 
