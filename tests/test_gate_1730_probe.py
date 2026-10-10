@@ -1,10 +1,12 @@
 """Tests for the prismabuild#1730 gate probe helpers.
 
 The probe itself runs on a Spark under PrismaBuild; these tests pin its
-pure math (D1 floor, subset choice, rate division) on any CPU box.
+pure logic (D1 floor, fixed arm shape, prefix cap, sparse check) on any
+CPU box.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -40,17 +42,66 @@ def test_floor_alone_can_refuse():
     assert verdict["reason"] == "5% floor fails"
 
 
-def test_subset_stops_at_budget():
-    files = [("/f%d" % i, 3 * 1024 ** 3) for i in range(5)]
-    picked = probe.pick_subset(files, 8 * 1024 ** 3)
-    assert len(picked) == 3
-    assert sum(size for _, size in picked) == 9 * 1024 ** 3
+def test_arm_selects_sixteen_largest_files():
+    files = [("/f%02d" % i, (i + 1) * 1024 ** 3) for i in range(20)]
+    sel = probe.select_arm_files(files)
+    assert sel["count"] == 16
+    assert sel["full"] is True
+    # Largest 16 of 1..20 GiB are 5..20 GiB; smallest pick is 5 GiB.
+    assert sel["prefix"] == probe.PREFIX_BYTES
+    assert sel["total"] == 16 * probe.PREFIX_BYTES
 
 
-def test_subset_keeps_small_files_whole():
-    files = [("/tiny", 100), ("/big", 10 * 1024 ** 3)]
-    picked = probe.pick_subset(files, 8 * 1024 ** 3)
-    assert [name for name, _ in picked] == ["/tiny", "/big"]
+def test_arm_clips_prefix_to_smallest_pick():
+    small = probe.PREFIX_BYTES // 2
+    files = [("/big%02d" % i, 2 * probe.PREFIX_BYTES) for i in range(15)]
+    files.append(("/small", small))
+    sel = probe.select_arm_files(files)
+    assert sel["count"] == 16
+    assert sel["prefix"] == small
+    assert sel["total"] == 16 * small
+
+
+def test_arm_marks_short_sets_not_full():
+    files = [("/f%d" % i, 2 * probe.PREFIX_BYTES) for i in range(9)]
+    sel = probe.select_arm_files(files)
+    assert sel["count"] == 9
+    assert sel["full"] is False
+
+
+def test_stream_counts_read_equal_bytes_with_no_idle_thread(tmp_path):
+    per_file = 1024 * 1024
+    paths = []
+    for i in range(16):
+        path = tmp_path / ("arm-%02d.bin" % i)
+        path.write_bytes(b"\x5a" * per_file)
+        paths.append(str(path))
+    totals = []
+    for streams in (1, 4, 16):
+        arm = probe.run_arm(paths, streams, False, per_file)
+        totals.append(arm["bytes_gib"])
+        assert arm["idle_threads"] == 0
+        assert len(arm["per_thread_s"]) == streams
+    assert totals[0] == totals[1] == totals[2]
+
+
+def test_prefix_read_caps_at_limit(tmp_path):
+    path = tmp_path / "capped.bin"
+    path.write_bytes(b"\x5a" * (2 * 1024 * 1024))
+    assert probe.read_prefix_bytes(str(path), 1024 * 1024) == 1024 * 1024
+
+
+def test_sparse_check_flags_a_hole():
+    assert probe.is_sparse(4096, 0) is True
+    assert probe.is_sparse(4096, 8192) is False
+    assert probe.is_sparse(4096, -1) is None
+
+
+def test_written_file_reports_backing(tmp_path):
+    path = str(tmp_path / "backed.bin")
+    probe.write_test_file(path, 2 * 1024 * 1024)
+    assert os.path.getsize(path) == 2 * 1024 * 1024
+    assert probe.is_sparse(2 * 1024 * 1024, probe.allocated_bytes(path)) is False
 
 
 def test_a8s_constant_matches_canonical_bytes():
