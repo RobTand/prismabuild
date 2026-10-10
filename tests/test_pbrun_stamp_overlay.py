@@ -111,8 +111,7 @@ def test_full_concurrent_submissions_leave_no_transient_stamp_names(tmp_path):
     code = """
 import socket, sys
 from pathlib import Path
-import pbrun, d38_gate
-d38_gate.ENFORCE = False  # this test is about stamp names, not D38
+import pbrun
 socket.gethostname = lambda: 'sparky'
 pbrun.SH = Path(sys.argv[1])
 sys.argv = ['pbrun', '--cwd', sys.argv[2], '--detach', '--transport', 'pool',

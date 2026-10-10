@@ -29,8 +29,7 @@ def test_detached_fifo_attachment_read_refuses_before_publication(tmp_path: Path
 import contextlib, io, json, os, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / 'tests')!r}, {str(ROOT / 'tools' / 'fleet')!r}, {str(ROOT / 'src')!r}]
-import pytest, pbrun, d38_gate
-d38_gate.ENFORCE = False  # this test is about the attachment read, not D38
+import pytest, pbrun
 from test_pbrun_detach import _checkout, _queue, _run_pbrun
 root = Path({str(tmp_path)!r})
 patch = pytest.MonkeyPatch()
