@@ -60,9 +60,9 @@ def _refuse_with(monkeypatch, reasons: list[str]) -> None:
     queue_of_reasons = list(reasons)
 
     def decision(self, item, demand, *, identity=None, owner=None, allowance=None,
-                 foreign_load_exempt=False):
-        # foreign_load_exempt (#1239 canary exemption) is accepted and ignored:
-        # a stub that refuses everything needs no canary branch.
+                 foreign_load_exempt=False, unified_memory_budget=None,
+                 observed_external_gib=0):
+        # The stub refuses every row, independent of admission inputs.
         reason = queue_of_reasons.pop(0) if len(queue_of_reasons) > 1 else queue_of_reasons[0]
         self.last_decision = {"reason": reason, "stub": True}
         return None

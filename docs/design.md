@@ -6602,17 +6602,50 @@ cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
 Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
 option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
-bounded conversion. Without it the GPU budget conservatively
-defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
+bounded conversion. An omitted cap defaults to `mem_gb`. RAM-heavy, GPU-light
+jobs should declare their separate
 VRAM budget. On shared-memory devices this explicit GPU cap is an additional
-subset cap, not a second reservation of the same physical DRAM. The exact
-GPU budget follows scope creation, durable recovery and release. SLURM refuses
-this option until its execution contract supports separate VRAM budgets.
+subset cap, not a second reservation of the same physical DRAM.
+
+On `shared_system` hosts, each claimed or starting action charges its
+`mem_gb` once against the node offer (#1661). The GPU cap stays a subset of
+that charge, never a second one. A declared cap above `mem_gb` refuses at
+submission for unified-memory placements, and admission refuses it per device
+with `unified_gpu_cap_exceeds_mem`; an absent cap defaults to `mem_gb`. The
+node offer also subtracts unified GPU bytes the broker attributes to no pool
+holder. The kernel memory reading does not reliably show driver-held allocations.
+Attributed bytes never subtract twice: their host share sits inside the
+holder's `mem_gb` charge. The claim gate charges only fresh growth beyond the
+foreign GiB the offer already subtracted, so observation and admission never
+charge the same bytes twice.
+
+CPU-only candidates face the same gate on a GPU host, with the held caps
+identified from ledger metadata when GPU telemetry is absent or stale. A
+missing or stale sample only withholds the external term. New GPU claims
+still require fresh trusted telemetry. The refusal
+`unified_gpu_memory_budget` names each held cap, the cap total, the external
+bytes, the baseline the offer already subtracted, the candidate charge, and
+the offer.
+
+Sharing arbitration precedes the memory fit check. A candidate that cannot
+share the device refuses quietly there, as before this gate. Only a settled
+sharer reaches the memory check. Gang backfill reclamation keeps its election.
+
+Memory refusals retain the existing background preemption and age rules.
+The release must cover the candidate and fresh external growth before preemption can select a holder.
+Withdrawal does not release memory tokens. The holder's finish path returns them.
+`rejoin` clears both observation histories and resets the external baseline.
+The first new offer respects the current memory reading and the ledger cap.
+
+The exact GPU budget follows scope creation, durable recovery, and release.
+This admission change does not alter scope containment or the GPU memory guard.
+SLURM refuses this option until its execution contract supports separate VRAM budgets.
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
-submission. Manifest preflight validates the bounded numeric conversion and
-refuses a budget without GPU demand (explicit or implied by `exclusive`) or
-under SLURM before any row is submitted.
+submission. Manifest preflight validates the bounded numeric conversion, refuses
+a budget without GPU demand (explicit or implied by `exclusive`) or under SLURM,
+and refuses a cap above the row's `mem_gb` on unified-memory placements before
+any row is submitted.
 
 ## Storage prewarm pacing
 

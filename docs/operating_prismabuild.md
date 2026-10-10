@@ -1497,8 +1497,11 @@ submit:
     `--transport slurm`. The budget accepts a JSON number or numeric string
     converting to between 1 and `2**63 - 1` bytes, just like `pbrun`.
     Booleans, non-finite values and out-of-range budgets refuse before any row
-    is submitted. For example, `"demand": {"gpu": 1, "mem_gb": 80},
-    "gpu_memory_gb": 32` retains the 80 GiB aggregate budget and 32 GiB GPU cap.
+    is submitted. A cap above the row's `mem_gb` refuses too on unified-memory
+    placements: the GPU cap is a subset of `mem_gb` on unified memory.
+    For example, `"demand": {"gpu": 1,
+    "mem_gb": 80}, "gpu_memory_gb": 32` retains the 80 GiB aggregate budget
+    and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
     measurement is keyed on the scheduler-attested class that produced it.
     Under `--transport pool`, omitting `host_class` is the default form: the
@@ -1872,10 +1875,10 @@ CUDA visibility. With the published runtime, GPU's default tag is `gb10`;
 override `--tag` for another real hardware dependency with the named interpreter.
 `--mem-gb` still reserves the aggregate host memory for one shard (default
 3 GiB), including all pytest workers. Pool `--gpu-memory-gb N` sets its GPU
-subset/VRAM budget, defaulting to the host budget when omitted. It requires
-`--gpu`, must represent a positive finite byte budget, and is refused with
-SLURM, which cannot enforce this separate budget. PB owns GPU placement and
-sharing; shard count supplies work and does not prescribe GPU concurrency.
+cap, which defaults to the host budget. On GB10 the cap is a subset of that
+budget, never a second charge. Discrete admission reserves VRAM separately.
+The option requires pool transport; SLURM cannot enforce this budget. PB owns
+GPU placement and sharing; shard count supplies work and does not prescribe GPU concurrency.
 
 `--disk-metadata` requests `disk_metadata=1` for **every shard** of the
 invocation (#1008 item 4). A worker must opt in with
@@ -4224,14 +4227,25 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 
 | Memory domain | Budget contract |
 |---|---|
-| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission for unified-memory placements, and admission refuses it per device. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
 | `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
+Unified admission charges each claimed and starting action's `mem_gb` once
+against the node offer, RAM fills and export allowances included (#1661).
+The node offer also subtracts unified GPU bytes the broker attributes to no
+pool holder. CPU-only candidates face the same gate on a GPU host; held caps
+are identified from ledger metadata when GPU telemetry is absent or stale.
+New GPU claims still require fresh trusted telemetry. The refusal
+`unified_gpu_memory_budget` names each held cap, the cap total, the external
+bytes, the candidate charge, and the offer. The 104 GiB roof, the 8 GiB margin,
+and the memory observation window remain unchanged.
+
 For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
-RAM and 8 GiB VRAM on a discrete device; on GB10 it permits 32 GiB aggregate
-DRAM with an 8 GiB GPU subset cap. Missing VRAM counters refuse discrete GPU
-admission. Unknown memory domains grant no capacity. `--gpu-memory-gb` is
-refused with `--transport slurm`, whose separate VRAM enforcement is unsupported.
+RAM and 8 GiB VRAM on a discrete device; on GB10 it charges 32 GiB once
+against the unified offer, with 8 GiB as the GPU subset cap. Missing VRAM
+counters refuse discrete GPU admission. Unknown memory domains grant no
+capacity. `--gpu-memory-gb` is refused with `--transport slurm`, whose
+separate VRAM enforcement is unsupported.
 
 On GB10 the broker identifies its 140 W reference as SoC TDP, not a programmable
 GPU-only power limit. That envelope stays on the device sample as
