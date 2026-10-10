@@ -130,6 +130,12 @@ def _scan_publications(queue: PoolQueue) -> dict:
     selected: dict[str, dict] = {}
     opportunities: dict[str, dict] = {}
     count = 0
+    #: Publication generations the census saw READY or CLAIMED (#1721). The
+    #: gang fence reads them to tell a waiting member (reserves) from a
+    #: running one (already holds its demand in the ledger) or an ended one
+    #: (holds nothing).
+    ready_versions: set[tuple[str, float]] = set()
+    claimed_versions: set[tuple[str, float]] = set()
     for state in (pool.READY, pool.CLAIMED, "passes"):
         directory = queue.root / state
         try:
@@ -183,9 +189,22 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             # CLAIMED one stays strict too: a running
                             # incumbent the census cannot read is unknown.
                             unorderable.setdefault(key, []).append(record)
+                            try:
+                                ready_versions.add((key, float(record.get("published_unix", math.nan))))
+                            except (TypeError, ValueError):
+                                pass
                             continue
                         raise CensusUnavailable("unreadable publication priority")
                     rows.setdefault(key, []).append(record)
+                    try:
+                        version = (key, float(record.get("published_unix", math.nan)))
+                    except (TypeError, ValueError):
+                        version = None
+                    if version is not None:
+                        if state == pool.CLAIMED and not is_mark:
+                            claimed_versions.add(version)
+                        elif state == pool.READY:
+                            ready_versions.add(version)
                     if state == pool.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
@@ -239,10 +258,54 @@ def _scan_publications(queue: PoolQueue) -> dict:
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
             "gang_elections": _gang_elections(
                 queue, {key: rows.get(key, []) + unorderable.get(key, [])
-                        for key in rows.keys() | unorderable.keys()}, count)}
+                        for key in rows.keys() | unorderable.keys()}, count,
+                ready_versions=ready_versions, claimed_versions=claimed_versions)}
 
 
-def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -> dict:
+def _member_demand(rows: dict[str, list[dict]], record: dict, key: str) -> dict | None:
+    """The elected member's own declared demand, or ``None`` when it does not read (#1721).
+
+    Read off the member's census row (``resources``, already read strictly), at
+    the publication generation the gang record names. ``None`` is not "no
+    demand": the reservation then covers the whole host (fail safe).
+    """
+    for member in record["members"]:
+        if member["action_key"] != key:
+            continue
+        for row in rows.get(key, []):
+            if float(row.get("published_unix", math.nan)) != member["published_unix"]:
+                continue
+            resources = row.get("resources")
+            if (isinstance(resources, dict)
+                    and all(isinstance(kind, str) and type(count) is int and count >= 0
+                            for kind, count in resources.items())):
+                return dict(resources)
+    return None
+
+
+def _elected_member_state(record: dict, key: str, *, ready_versions: set,
+                          claimed_versions: set) -> str:
+    """Whether the elected member is pending, running, or terminal (#1721)."""
+    published = None
+    for member in record.get("members", []):
+        if isinstance(member, dict) and member.get("action_key") == key:
+            try:
+                published = float(member.get("published_unix", math.nan))
+            except (TypeError, ValueError):
+                published = None
+            break
+    if published is None or not math.isfinite(published):
+        return "terminal"
+    if (key, published) in claimed_versions:
+        return "claimed"
+    if (key, published) in ready_versions:
+        return "ready"
+    return "terminal"
+
+
+def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *,
+                    ready_versions: set | None = None,
+                    claimed_versions: set | None = None) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
@@ -251,6 +314,10 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
     Elections are written only by the elected host's own pass under its host
     admission, which also serializes this host's readers, so no member key
     joins the M lock set.
+
+    ``member_state`` distinguishes READY, CLAIMED, and terminal publications.
+    Only READY members reserve. CLAIMED members already hold ledger tokens.
+    The lower-priority fence lasts until the gang ends.
     """
     from . import _gang
     directory = _gang.root(queue)
@@ -259,6 +326,8 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
     except FileNotFoundError:
         return {}  # gang admission was never used on this pool
     found: dict[str, dict] = {}
+    ready = ready_versions if ready_versions is not None else set()
+    claimed = claimed_versions if claimed_versions is not None else set()
     try:
         with entries:
             for entry in entries:
@@ -280,7 +349,11 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int) -
                 for index, election in _gang.elections(queue, group, record["size"]).items():
                     found[election["action_key"]] = {
                         "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank}
+                        "host": election["host"], "priority": election["priority"], "rank": rank,
+                        "demand": _member_demand(rows, record, election["action_key"]),
+                        "member_state": _elected_member_state(
+                            record, election["action_key"], ready_versions=ready,
+                            claimed_versions=claimed)}
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -338,6 +411,8 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
             raise CensusUnavailable("refresh selection sidecar key mismatch")
         selections[chosen["action_key"]] = chosen
     members: dict[str, list] = {}
+    ready_versions: set[tuple[str, float]] = set()
+    claimed_versions: set[tuple[str, float]] = set()
     for group, record in groups.items():
         for member in record["members"]:
             key = member["action_key"]
@@ -352,7 +427,9 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
                 if row is None:
                     continue
                 queue.attempt_generation(row)
-                rows.append({"published_unix": float(row["published_unix"])})
+                version = (key, float(row["published_unix"]))
+                (ready_versions if state == pool_mod.READY else claimed_versions).add(version)
+                rows.append({"published_unix": version[1], "resources": row.get("resources")})
             members[key] = rows
     gangs: dict[str, dict] = {}
     for group, record in groups.items():
@@ -372,7 +449,11 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         for index, election in found.items():
             gangs[election["action_key"]] = {
                 "group": group, "index": index, "action_key": election["action_key"],
-                "host": election["host"], "priority": election["priority"], "rank": rank}
+                "host": election["host"], "priority": election["priority"], "rank": rank,
+                "demand": _member_demand(members, record, election["action_key"]),
+                "member_state": _elected_member_state(
+                    record, election["action_key"], ready_versions=ready_versions,
+                    claimed_versions=claimed_versions)}
     return {"selections": selections, "gang_elections": gangs}
 
 
@@ -816,16 +897,156 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     return None
 
 
-def gang_blocking(census: dict, item: dict, *, host: str, group: str | None) -> dict | None:
-    """A live gang election fences its host against strictly lower priority (#1517).
+#: How long an elected gang waits before it reserves its member's demand on each
+#: elected host (#1721). See ``docs/design.md``, "Priority rule".
+GANG_RESERVE_AFTER_S = 600.0
 
-    The same rule as :func:`blocking_selection`; the gang's own members are
-    never fenced by their siblings' elections.
+#: The dimensions a row that omits them is unknown in, so it is taken to demand
+#: the whole host: ``adaptive_cpu`` reads a missing or zero ``cpu`` as unbounded
+#: CPU use and refuses it on a held box. Any other dimension a row omits it
+#: demands none of, as the ledger itself counts it (``gpu`` too, unless the row
+#: sets ``needs_gpu``).
+_UNKNOWN_WHEN_ABSENT = ("cpu", "mem_gb")
+
+
+def reserves_after(first_published: object, now: float, *, authority: bool) -> bool:
+    """Whether a gang first published at ``first_published`` reserves its hosts at ``now``.
+
+    Two things hold: the gang has waited past :data:`GANG_RESERVE_AFTER_S`,
+    and the executing host holds live authority (``authority``): its own
+    worker announcement is fresh, so the mover-path terms the reservation is
+    computed from describe this host now, not a stale picture of it. Without
+    that copy nothing a gang waits on can be told from other work. The host
+    then keeps what it had before the reservation: the fence against strictly
+    lower priority, and nothing more.
     """
+    return (authority is True
+            and isinstance(first_published, (int, float)) and not isinstance(first_published, bool)
+            and now - first_published > GANG_RESERVE_AFTER_S)
+
+
+def _gang_reserves(chosen: dict, now: float, authority: bool) -> bool:
+    """Whether the gang behind election ``chosen`` reserves its host (:func:`reserves_after`)."""
+    state = chosen.get("member_state")
+    if state != "ready":
+        return False
+    rank = chosen.get("rank")
+    return reserves_after(rank[1] if isinstance(rank, list) and len(rank) == 3 else None, now,
+                          authority=authority)
+
+
+def reservation_priority_on(census: dict, *, host: str, now: float, authority: bool,
+                            exclude_group: str | None = None) -> int | None:
+    """The highest priority among gangs that reserve ``host`` now, else ``None``.
+
+    A gang reserves a host once its wait passed the bound, on a host that holds
+    live authority (``authority``, :func:`reserves_after`). The reservation
+    wins over an equal-priority single there; a strictly higher-priority row
+    keeps its place ahead of the gang. That is the priority order, not a
+    reservation exception (#1721).
+    """
+    reserving = [chosen["priority"] for chosen in census.get("gang_elections", {}).values()
+                 if chosen["host"] == host and chosen["group"] != exclude_group
+                 and _gang_reserves(chosen, now, authority)]
+    return max(reserving) if reserving else None
+
+
+def _reserved(member_demand: object, capacity: Mapping) -> dict[str, int]:
+    """What the elected member holds back on this host, per ledger dimension.
+
+    An unknown demand reserves the whole host. Dimensions the host ledger does
+    not carry (tier tokens, which live on a tier ledger) are not host capacity
+    and are not reserved.
+    """
+    whole = {kind: int(count) for kind, count in capacity.items()
+             if type(count) is int and count > 0}
+    if not (isinstance(member_demand, dict)
+            and all(isinstance(kind, str) and type(count) is int and count >= 0
+                    for kind, count in member_demand.items())):
+        return whole
+    reserved = {kind: min(count, whole[kind]) for kind, count in member_demand.items()
+                if count > 0 and kind in whole}
+    if reserved:
+        # A member that takes anything on this host and leaves its CPU or memory
+        # out, or declares zero CPU, is unknown in it: admission reads that as an
+        # unbounded consumer that needs the box empty (``adaptive_cpu``). Unknown
+        # is consuming, so it reserves all of that dimension. A member that
+        # declares no host dimension at all has nothing to reserve here.
+        for kind in _UNKNOWN_WHEN_ABSENT:
+            if kind in whole and (kind not in member_demand or (kind == "cpu" and not member_demand[kind])):
+                reserved[kind] = whole[kind]
+    return reserved
+
+
+def reservation_shortfall(item: dict, member_demand: object, *, held: object,
+                          capacity: object, demand: object = None) -> dict | None:
+    """``None`` when ``item`` fits beside the member's reservation; else why not.
+
+    For every dimension the member reserves::
+
+        held[d] + row[d] + reserved[d] <= capacity[d]
+
+    A row dimension that is unknown counts as the whole host's capacity, never
+    as zero: unknown is consuming, not exempt. Unknown is a missing or zero
+    ``cpu``, a missing ``mem_gb`` or ``gpu`` of a GPU row, and any value that
+    does not read. Any other omitted dimension demands none of it. A host
+    ledger that did not read is the same, fail safe.
+    """
+    if not (isinstance(held, dict) and isinstance(capacity, dict)):
+        return {"unknown": "host ledger unreadable"}
+    resources = demand if demand is not None else item.get("resources")
+    short: dict[str, int] = {}
+    for kind, reserved in _reserved(member_demand, capacity).items():
+        total = int(capacity[kind])
+        asked = resources.get(kind) if isinstance(resources, dict) else None
+        if asked is None and isinstance(resources, dict) and (
+                kind not in _UNKNOWN_WHEN_ABSENT
+                and not (kind == "gpu" and item.get("needs_gpu") is True)):
+            asked = 0
+        if type(asked) is not int or asked < 0 or (kind == "cpu" and asked == 0):
+            asked = total
+        used = held.get(kind, 0)
+        if type(used) is not int or used < 0:
+            used = total
+        over = used + asked + reserved - total
+        if over > 0:
+            short[kind] = over
+    return short or None
+
+
+def gang_blocking(census: dict, item: dict, *, host: str, group: str | None,
+                  now: float | None = None, held: object = None,
+                  capacity: object = None, authority: bool = False,
+                  demand: object = None) -> dict | None:
+    """What a live gang election does to ``item`` on its host (#1517, #1721).
+
+    Strictly lower priority is fenced from election, as before, with no wait
+    and no authority needed. Equal priority is not touched while the gang is
+    young, or on a host without live authority that lets a reservation tell
+    the gang's demand from other work (``authority``, :func:`reserves_after`;
+    absent means without). Past :data:`GANG_RESERVE_AFTER_S`, on a host with
+    live authority, the gang RESERVES its elected member's declared demand on
+    the host, and a row is admitted only if the reservation survives it
+    (:func:`reservation_shortfall`). Never held: the gang's own members and
+    any gang's (two gangs of one priority are ordered by ``rank``), and a
+    verified publication canary slot (its own contract). Higher priority is
+    never held. The returned election carries ``reservation`` (the shortfall)
+    when it is this rule that holds.
+    """
+    now = time.time() if now is None else now
     for key, chosen in sorted(census.get("gang_elections", {}).items()):
-        if (chosen["host"] == host and key != item["action_key"] and chosen["group"] != group
-                and int(item.get("priority", 0)) < chosen["priority"]):
+        if chosen["host"] != host or key == item["action_key"] or chosen["group"] == group:
+            continue
+        if int(item.get("priority", 0)) < chosen["priority"]:
             return chosen
+        if (item.get("gang") is not None or int(item.get("priority", 0)) != chosen["priority"]
+                or isinstance(item.get("publication_canary"), dict)
+                or not _gang_reserves(chosen, now, authority)):
+            continue
+        short = reservation_shortfall(item, chosen.get("demand"), held=held, capacity=capacity,
+                                      demand=demand)
+        if short is not None:
+            return {**chosen, "reservation": short}
     return None
 
 
