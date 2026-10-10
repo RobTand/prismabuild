@@ -159,6 +159,14 @@ WITHDRAWN_EXIT = 143
 #: Neither a timeout nor a withdrawal verdict: recovery requires reading the
 #: reported path, reason and known job id.
 RECORD_WRITE_FAILED_EXIT = 74
+#: What ``pbrun`` exits with when a GPU-demanded run exits zero with zero
+#: devices visible in the sealed launch environment. Beside the canary
+#: payload's own 11: 11 is the payload refusing itself, 12 is the closure
+#: refusing the close. Non-zero because the run did not do the work it was
+#: admitted for; distinct from a real failure because the argv itself
+#: succeeded, and the remedy is placement (a GPU host) or scope (route the
+#: module to CPU), not a retry of the same row.
+ZERO_DEVICES_EXIT = 12
 #: The exit codes ``pbrun`` decides for itself, and therefore the codes a run's
 #: own status must never be allowed to impersonate.  A terminal record carries
 #: the far side's launcher status as a plain integer, and both report paths
@@ -172,7 +180,8 @@ RECORD_WRITE_FAILED_EXIT = 74
 #: files it under a status that is not one, and the SLURM site below already
 #: excludes it by truthiness.
 RESERVED_EXITS = frozenset(
-    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, WITHDRAWN_EXIT}
+    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, WITHDRAWN_EXIT,
+     ZERO_DEVICES_EXIT}
 )
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
@@ -3789,8 +3798,98 @@ def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
     return value
 
 
+def _gpu_demanded(outcome: Mapping[str, object] | None, needs_gpu: bool | None) -> bool:
+    """Whether this run asked for a GPU, from the submitter or the record.
+
+    The submit path holds the sealed demand, so it passes it. A waiter that
+    only knows the key reads the terminal record instead: the queue row
+    seals ``needs_gpu`` beside ``resources``, and ``finish`` carries both
+    onto the ending. Anything else -- an unsealed record, an unreadable
+    one -- is not GPU-demanded, so the refusal cannot fire on it.
+    """
+    if needs_gpu is not None:
+        return bool(needs_gpu)
+    if not isinstance(outcome, Mapping):
+        return False
+    if outcome.get("needs_gpu") is True:
+        return True
+    resources = outcome.get("resources")
+    if isinstance(resources, Mapping):
+        try:
+            return int(resources.get("gpu", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def zero_device_refusal(
+    summary: Mapping[str, object],
+    outcome: Mapping[str, object] | None,
+    key: str,
+    *,
+    needs_gpu: bool | None = None,
+) -> str | None:
+    """Why an exit-zero GPU run with zero visible devices must not close.
+
+    A GPU closure refuses an exit-zero run that executed on zero devices:
+    the argv succeeded, but the run did not do GPU work, so closing it 0
+    would certify a measurement the devices never touched. Returns the
+    reason, or ``None`` when the run closes as before: not GPU-demanded,
+    not exit-zero, or no integer zero count on the record. A missing
+    ``devices`` field is a recorded gap, never a refusal, so pre-field
+    records close exactly as they did before the field existed.
+    """
+    if not _gpu_demanded(outcome, needs_gpu):
+        return None
+    if not isinstance(summary, Mapping):
+        return None
+    if summary.get("status") not in ("executed", "cache_hit"):
+        return None
+    detail = summary.get("detail")
+    if not isinstance(detail, Mapping):
+        return None
+    for field in ("returncode", "action_returncode"):
+        value = detail.get(field)
+        if value is not None and value != 0:
+            return None
+    if type(detail.get("devices")) is not int or detail["devices"] != 0:
+        return None
+    return (
+        f"pbrun: {key[:12]} demanded a GPU and exited zero with zero "
+        f"devices visible in the sealed launch environment (devices=0); "
+        f"refusing the close. Run it on a GPU host, or route the module "
+        f"to CPU with explicit --tag x86 and no GPU demand."
+    )
+
+
+def _landed_zero_device_refusal(q, key: str) -> str | None:
+    """The refusal when the key's newest landed ending is zero-device exit-zero.
+
+    A non-blocking probe for the detached resubmit path, which answers a
+    CAS hit without waiting: without it a detached re-run of a refused
+    record would close 0 past the closure. No ending, an unreadable one,
+    or one that disagrees with its attempt is a gap, not a refusal, so
+    this never breaks a submission it cannot read.
+    """
+    try:
+        landed = landed_outcome(q, key, wait_s=0.0)
+    except Exception:  # noqa: BLE001
+        return None
+    if landed is None:
+        return None
+    outcome_path, outcome = landed
+    try:
+        summary = outcome_summary(q, outcome_path, outcome)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(outcome, Mapping):
+        return None
+    return zero_device_refusal(summary, outcome, key)
+
+
 def await_outcome(
-    q, key: str, *, wait_s: float, generation: float | None = None
+    q, key: str, *, wait_s: float, generation: float | None = None,
+    needs_gpu: bool | None = None,
 ) -> int:
     """Block until this pool action reaches a terminal directory, then report it.
 
@@ -4040,6 +4139,13 @@ def await_outcome(
               f"{' -- ' + why if why else ''}", file=sys.stderr)
         return WITHDRAWN_EXIT
     print(f"pbrun: {outcome_headline(summary)}", file=sys.stderr)
+    # Before the cache-hit early return: a resubmit of a zero-device run
+    # lands as ``cache_hit`` on an adopted attempt that still carries
+    # ``devices: 0``, and returning 0 here would bypass the refusal.
+    refusal = zero_device_refusal(summary, outcome, key, needs_gpu=needs_gpu)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return ZERO_DEVICES_EXIT
     if status == "cache_hit":
         return 0
     rc = detail.get("returncode")
@@ -9189,6 +9295,15 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         # a job scheduled, a checkout materialized and a node occupied to learn
         # what this process already knows.  A campaign re-run is the case: every
         # row a hit, no new job ids.
+        if demand.get("gpu"):
+            # The CAS hit answers without waiting, so the closure never sees
+            # this re-run. Consult the landed ending here: a detached re-run
+            # of a refused record must not close 0 past it.
+            refusal = _landed_zero_device_refusal(
+                pool.PoolQueue(SH / "pb-queue"), key)
+            if refusal is not None:
+                print(refusal, file=sys.stderr, flush=True)
+                return ZERO_DEVICES_EXIT
         print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
               file=sys.stderr, flush=True)
         print(detach_line(
@@ -9249,7 +9364,8 @@ def submit_and_publish(args, *, publication_canary_intent=None,
                       f"D38 evidence is missing", file=sys.stderr, flush=True)
                 return functools.partial(
                     await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
-                    wait_s=args.wait_s, generation=live["generation"])
+                    wait_s=args.wait_s, generation=live["generation"],
+                    needs_gpu=bool(demand.get("gpu")))
         raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm":
@@ -9388,7 +9504,8 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         return 0
 
     return functools.partial(await_outcome, q, key, wait_s=args.wait_s,
-                             generation=generation)
+                             generation=generation,
+                             needs_gpu=bool(demand.get("gpu")))
 
 
 if __name__ == "__main__":

@@ -5981,6 +5981,14 @@ class PoolQueue:
             # refreshes it with the final profile. Prefer stdout when parsed,
             # and otherwise retain the evidence from the sidecar.
             outcome["profile"] = profile
+        if "devices" not in outcome and "devices" in body:
+            devices = body["devices"]
+            if devices is None or (isinstance(devices, int)
+                                   and not isinstance(devices, bool)):
+                outcome["devices"] = devices
+        if ("devices_probe_error" not in outcome
+                and isinstance(body.get("devices_probe_error"), str)):
+            outcome["devices_probe_error"] = body["devices_probe_error"]
         return outcome
 
     def _entomb_claim(
@@ -29573,6 +29581,9 @@ class PoolQueue:
         profile = profile_from_launcher_stdout(out)
         if profile is not None:
             outcome["profile"] = profile
+        # The executed-on device count rides the same last line, so the
+        # ending carries it for every run the launcher concluded.
+        outcome.update(devices_from_launcher_stdout(out))
         return ending(outcome)
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:
@@ -29700,6 +29711,26 @@ class PoolQueue:
         return outcome
 
 
+def _launcher_result_object(stdout: str) -> dict[str, object] | None:
+    """The launcher's last-line result object, or ``None``.
+
+    ``core.main`` prints one result object as its last line; the payload's
+    own stdout precedes it. Only that last line is read: a payload line
+    that happens to be JSON is the payload's business, not the launcher's.
+    """
+
+    for line in reversed(str(stdout or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+    return None
+
+
 def profile_from_launcher_stdout(stdout: str) -> dict[str, object] | None:
     """The launcher's ``profile`` record, out of the JSON it prints when it ends.
 
@@ -29714,19 +29745,38 @@ def profile_from_launcher_stdout(stdout: str) -> dict[str, object] | None:
     failing one may print nothing at all.
     """
 
-    for line in reversed(str(stdout or "").splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            value = json.loads(line)
-        except ValueError:
-            return None
-        if not isinstance(value, dict):
-            return None
-        profile = value.get("profile")
-        return profile if isinstance(profile, dict) else None
-    return None
+    value = _launcher_result_object(stdout)
+    if value is None:
+        return None
+    profile = value.get("profile")
+    return profile if isinstance(profile, dict) else None
+
+
+def devices_from_launcher_stdout(stdout: str) -> dict[str, object]:
+    """The launcher's ``devices`` fragment, out of the JSON it prints when it ends.
+
+    The launcher counts the CUDA devices visible in the sealed launch
+    environment and reports the count under ``devices``, with a short
+    ``devices_probe_error`` when the probe itself could not answer. This
+    lifts both keys into the outcome beside ``profile``, so ``finish``
+    files them in the ending and the closure reads a field rather than
+    parsing a launcher's stdout. A stdout with no such keys lifts nothing;
+    an absent count is a recorded gap, never a zero.
+    """
+
+    value = _launcher_result_object(stdout)
+    if value is None:
+        return {}
+    fragment: dict[str, object] = {}
+    if "devices" in value:
+        devices = value["devices"]
+        if devices is None or (isinstance(devices, int)
+                               and not isinstance(devices, bool)):
+            fragment["devices"] = devices
+    error = value.get("devices_probe_error")
+    if isinstance(error, str):
+        fragment["devices_probe_error"] = error
+    return fragment
 
 
 def describe_placement_census(census: Mapping[str, object]) -> str:
