@@ -6452,7 +6452,10 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and the following `wedged` sample each carry that
+child's kernel state and wchan, so the record itself separates a mount stall
+from a producer fault (#1398). Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
