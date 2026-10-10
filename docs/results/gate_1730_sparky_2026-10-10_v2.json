@@ -1,0 +1,622 @@
+{
+ "schema": "prismabuild.gate_1730_probe.v2",
+ "host": "sparky",
+ "started_unix": 1791599612.4502661,
+ "mounts": {
+  "/mnt/shared": "51 36 0:40 / /mnt/shared rw,relatime shared:30 - autofs systemd-1 rw,fd=64,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=15129",
+  "/stage/prewarm": "55 36 0:42 / /stage/prewarm rw,relatime shared:48 - autofs systemd-1 rw,fd=66,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=15134"
+ },
+ "root_vfs": {
+  "path": "/",
+  "avail_gib": 559.95,
+  "free_gib": 653.1,
+  "total_gib": 1833.18,
+  "use_pct": 69.5
+ },
+ "d1_a8s": {
+  "need_gib": 163.47,
+  "avail_gib": 559.95,
+  "floor_gib": 91.66,
+  "tmp_need_gib": 265.21,
+  "fits": true,
+  "reason": "fits"
+ },
+ "docker_root": "/var/lib/docker",
+ "docker_root_vfs": {
+  "path": "/var/lib/docker",
+  "avail_gib": 559.95,
+  "free_gib": 653.1,
+  "total_gib": 1833.18,
+  "use_pct": 69.5
+ },
+ "stage_source": {
+  "label": "stage",
+  "root": "/stage/prewarm/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": true,
+  "arcstats_before": null,
+  "file_count": 38,
+  "total_gib": 42.761,
+  "arm_files": 16,
+  "arm_full": true,
+  "arm_prefix_mib": 512.0,
+  "arm_total_gib": 8.0,
+  "arm_names": [
+   "0-1643568890",
+   "0-1594888104",
+   "0-1594888072",
+   "0-1594887992",
+   "0-1594887968",
+   "0-1594887800",
+   "0-1594887728",
+   "0-1594887640",
+   "0-1577130604",
+   "0-1573451620",
+   "0-1522696644",
+   "0-1375095480",
+   "0-1354708868",
+   "0-1354708866",
+   "0-1349464716",
+   "0-1349464714"
+  ],
+  "arms": [
+   {
+    "streams": 16,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 3.574,
+    "mib_s": 2291.9,
+    "per_thread_s": [
+     3.543,
+     3.56,
+     3.572,
+     3.544,
+     3.552,
+     3.554,
+     3.563,
+     3.569,
+     3.563,
+     3.568,
+     3.564,
+     3.564,
+     3.562,
+     3.56,
+     3.566,
+     3.552
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.48876953125,
+     4.59033203125,
+     4.2333984375
+    ]
+   },
+   {
+    "streams": 16,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.042,
+    "mib_s": 7859.6,
+    "per_thread_s": [
+     1.014,
+     1.035,
+     1.039,
+     1.021,
+     1.011,
+     1.02,
+     0.943,
+     1.033,
+     1.015,
+     1.023,
+     1.041,
+     1.004,
+     1.013,
+     0.993,
+     0.991,
+     0.994
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.48876953125,
+     4.59033203125,
+     4.2333984375
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 1.369,
+    "mib_s": 5984.8,
+    "per_thread_s": [
+     1.368,
+     1.347,
+     1.365,
+     1.36
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.48876953125,
+     4.59033203125,
+     4.2333984375
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.372,
+    "mib_s": 5969.7,
+    "per_thread_s": [
+     1.371,
+     1.372,
+     1.368,
+     1.368
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.48876953125,
+     4.59033203125,
+     4.2333984375
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 4.391,
+    "mib_s": 1865.8,
+    "per_thread_s": [
+     4.39
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.68994140625,
+     4.64697265625,
+     4.25390625
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 5.688,
+    "mib_s": 1440.3,
+    "per_thread_s": [
+     5.688
+    ],
+    "idle_threads": 0,
+    "load": [
+     5.55419921875,
+     4.63623046875,
+     4.25244140625
+    ]
+   }
+  ],
+  "arcstats_after": null
+ },
+ "hdd_source": {
+  "label": "hdd-pool",
+  "root": "/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": true,
+  "arcstats_before": null,
+  "file_count": 128,
+  "total_gib": 163.473,
+  "arm_files": 16,
+  "arm_full": true,
+  "arm_prefix_mib": 512.0,
+  "arm_total_gib": 8.0,
+  "arm_names": [
+   "model-00001-of-00120.safetensors",
+   "model-00120-of-00120.safetensors",
+   "model-00029-of-00120.safetensors",
+   "model-00103-of-00120.safetensors",
+   "model-00032-of-00120.safetensors",
+   "model-00043-of-00120.safetensors",
+   "model-00090-of-00120.safetensors",
+   "model-00004-of-00120.safetensors",
+   "model-00098-of-00120.safetensors",
+   "model-00015-of-00120.safetensors",
+   "model-00026-of-00120.safetensors",
+   "model-00037-of-00120.safetensors",
+   "model-00095-of-00120.safetensors",
+   "model-00012-of-00120.safetensors",
+   "model-00048-of-00120.safetensors",
+   "model-00009-of-00120.safetensors"
+  ],
+  "arms": [
+   {
+    "streams": 16,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 1.34,
+    "mib_s": 6114.1,
+    "per_thread_s": [
+     1.245,
+     1.216,
+     1.249,
+     1.228,
+     1.339,
+     1.21,
+     1.248,
+     1.249,
+     1.211,
+     1.27,
+     1.245,
+     1.242,
+     1.244,
+     1.247,
+     1.247,
+     1.252
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.79150390625,
+     4.908203125,
+     4.3427734375
+    ]
+   },
+   {
+    "streams": 16,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.318,
+    "mib_s": 6215.6,
+    "per_thread_s": [
+     1.148,
+     1.017,
+     1.135,
+     1.079,
+     1.317,
+     1.029,
+     1.102,
+     1.13,
+     1.023,
+     1.173,
+     1.123,
+     1.134,
+     1.132,
+     1.126,
+     1.149,
+     1.145
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.79150390625,
+     4.908203125,
+     4.3427734375
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 1.855,
+    "mib_s": 4417.0,
+    "per_thread_s": [
+     1.806,
+     1.798,
+     1.841,
+     1.854
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.79150390625,
+     4.908203125,
+     4.3427734375
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.819,
+    "mib_s": 4502.6,
+    "per_thread_s": [
+     1.745,
+     1.736,
+     1.815,
+     1.819
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.888671875,
+     4.9599609375,
+     4.36279296875
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 5.318,
+    "mib_s": 1540.5,
+    "per_thread_s": [
+     5.318
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.7373046875,
+     4.9609375,
+     4.36669921875
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 5.348,
+    "mib_s": 1531.8,
+    "per_thread_s": [
+     5.348
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.51806640625,
+     4.94482421875,
+     4.3642578125
+    ]
+   }
+  ],
+  "arcstats_after": null
+ },
+ "local_nvme": {
+  "path": "/var/tmp",
+  "avail_gib": 559.89,
+  "device": 66306,
+  "arm_files": 16,
+  "arm_prefix_mib": 512.0,
+  "arm_total_gib": 8.0,
+  "write_mib_s": 1274.9,
+  "sparse_flags": [
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "arms": [
+   {
+    "streams": 16,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 1.065,
+    "mib_s": 7689.8,
+    "per_thread_s": [
+     1.053,
+     1.045,
+     1.063,
+     1.048,
+     1.052,
+     1.064,
+     1.051,
+     1.056,
+     1.063,
+     1.054,
+     1.05,
+     1.061,
+     1.046,
+     1.052,
+     1.06,
+     1.062
+    ],
+    "idle_threads": 0,
+    "load": [
+     6.95751953125,
+     5.06201171875,
+     4.4052734375
+    ]
+   },
+   {
+    "streams": 16,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.05,
+    "mib_s": 7805.2,
+    "per_thread_s": [
+     1.019,
+     1.027,
+     1.048,
+     1.033,
+     1.047,
+     1.047,
+     1.038,
+     1.024,
+     1.048,
+     1.03,
+     1.036,
+     1.047,
+     1.019,
+     1.036,
+     1.025,
+     1.043
+    ],
+    "idle_threads": 0,
+    "load": [
+     7.76171875,
+     5.26025390625,
+     4.47314453125
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 1.163,
+    "mib_s": 7042.0,
+    "per_thread_s": [
+     1.148,
+     1.159,
+     1.162,
+     1.142
+    ],
+    "idle_threads": 0,
+    "load": [
+     7.76171875,
+     5.26025390625,
+     4.47314453125
+    ]
+   },
+   {
+    "streams": 4,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 1.222,
+    "mib_s": 6701.2,
+    "per_thread_s": [
+     1.208,
+     1.222,
+     1.217,
+     1.221
+    ],
+    "idle_threads": 0,
+    "load": [
+     7.76171875,
+     5.26025390625,
+     4.47314453125
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": true,
+    "cache_dropped": 16,
+    "bytes_gib": 8.0,
+    "wall_s": 2.729,
+    "mib_s": 3001.7,
+    "per_thread_s": [
+     2.729
+    ],
+    "idle_threads": 0,
+    "load": [
+     7.54052734375,
+     5.255859375,
+     4.47607421875
+    ]
+   },
+   {
+    "streams": 1,
+    "cold": false,
+    "cache_dropped": 0,
+    "bytes_gib": 8.0,
+    "wall_s": 2.738,
+    "mib_s": 2992.4,
+    "per_thread_s": [
+     2.737
+    ],
+    "idle_threads": 0,
+    "load": [
+     7.54052734375,
+     5.255859375,
+     4.47607421875
+    ]
+   }
+  ]
+ },
+ "bind": {
+  "docker": {
+   "argv": [
+    "docker",
+    "version",
+    "--format",
+    "{{.Server.Version}}"
+   ],
+   "returncode": 0,
+   "stdout": "29.6.2\n",
+   "stderr": ""
+  },
+  "images": {
+   "argv": [
+    "docker",
+    "images",
+    "--format",
+    "{{.Repository}}:{{.Tag}} {{.Size}}"
+   ],
+   "returncode": 0,
+   "stdout": "eugr/spark-vllm:<none> 36.5GB\n192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929 36.9GB\nlocalhost/prismaquant/spark-vllm-nccl230:nightly-20260929 36.9GB\neugr/spark-vllm:<none> 36.4GB\n192.168.1.107/prismaquant/spark-vllm-nccl230:f8dbe1a0-kpooltail1 39.5GB\nlocalhost/prismaquant/spark-vllm-nccl230:f8dbe1a0-kpooltail1 39.5GB\n192.168.1.107/prismaquant/spark-vllm-nccl230:a5424378-mtpmap1 39.5GB\nlocalhost/prismaquant/spark-vllm-nccl230:a5424378-mtpmap1 39.5GB\nglm-tp2-diag:nccl230 39.4GB\nprismaquant/spark-vllm-nccl230:0afec8d4 39.4GB\nlocalhost/prismaquant/spark-vllm-nccl230:0afec8d4 39.4GB\nghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3 31GB\nprismabuild-slurm-smoke:24.04 363MB\nprismabuild-slurm-smoke:25.11 484MB\ntessera/lfm25-teacher:base-61fc8a-cconv-245e314e 31.1GB\neugr/spark-vllm:pinned-0afec8d4 38.9GB\nprismaquant/glm53-mia-sm121:487ecf187 31GB\nprismaquant-glm-producer:content-qualified-20260908 30.8GB\nprismaquant-qwen38-producer:20260827-tf516-hf128 30.8GB\nprismaquant-glm-derivative:causal-exp-v1-20260908 30.8GB\nprismaquant-qwen38-producer:20260827-128d0a06 30.6GB\nqwen38-flash-dgx:tp-21862916841a 30.6GB\nvllm/vllm-openai:qwen38-flash-next 30.6GB\nvllm/vllm-openai:<none> 30.7GB\nvllm/vllm-openai:latest 30.6GB\nubuntu:24.04 141MB\ngrafana/grafana:12.4.1 950MB\nkoalaman/shellcheck-alpine:stable 80.2MB\nprom/prometheus:v3.5.0 423MB\n",
+   "stderr": ""
+  },
+  "image": "192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929",
+  "calls": [
+   {
+    "step": "baseline ls",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929",
+     "ls",
+     "/mnt/shared/gate-1730-sparky"
+    ],
+    "returncode": 0,
+    "stdout": "\n==========\n== CUDA ==\n==========\n\nCUDA Version 13.0.2\n\nContainer image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n\nThis container image and its contents are governed by the NVIDIA Deep Learning Container License.\nBy pulling and using the container, you accept the terms and conditions of this license:\nhttps://developer.nvidia.com/ngc/nvidia-deep-learning-container-license\n\nA copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.\n\nWARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.\n   Use the NVIDIA Container Toolkit to start this container with GPU support; see\n   https://docs.nvidia.com/datacenter/cloud-native/ .\n\ncanonical.txt\n",
+    "stderr": ""
+   },
+   {
+    "step": "nested bind ls+cat",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-w0_8_r7r,dst=/mnt/shared/gate-1730-sparky,readonly",
+     "192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929",
+     "sh",
+     "-c",
+     "ls /mnt/shared/gate-1730-sparky; cat /mnt/shared/gate-1730-sparky/marker.txt"
+    ],
+    "returncode": 0,
+    "stdout": "\n==========\n== CUDA ==\n==========\n\nCUDA Version 13.0.2\n\nContainer image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n\nThis container image and its contents are governed by the NVIDIA Deep Learning Container License.\nBy pulling and using the container, you accept the terms and conditions of this license:\nhttps://developer.nvidia.com/ngc/nvidia-deep-learning-container-license\n\nA copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.\n\nWARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.\n   Use the NVIDIA Container Toolkit to start this container with GPU support; see\n   https://docs.nvidia.com/datacenter/cloud-native/ .\n\nmarker.txt\nsecond.txt\nlocal-wins\n",
+    "stderr": ""
+   },
+   {
+    "step": "mount with missing src",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-w0_8_r7r/missing,dst=/mnt/shared/gate-1730-sparky,readonly",
+     "192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929",
+     "true"
+    ],
+    "returncode": 125,
+    "stdout": "",
+    "stderr": "docker: Error response from daemon: invalid mount config for type \"bind\": bind source path does not exist: /var/tmp/gate-1730-src-w0_8_r7r/missing\n\nRun 'docker run --help' for more information\n"
+   }
+  ],
+  "nested_shows_local_only": true
+ },
+ "finished_unix": 1791599665.314918
+}
