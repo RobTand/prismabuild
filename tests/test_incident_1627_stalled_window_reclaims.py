@@ -207,16 +207,9 @@ def _tiers(stage: Path, ram: Path) -> dict:
         RAM: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
               "tier_id": RAM, "host": "dl380g10", "tier": "ram",
               "mountpoint": str(ram), "epoch": EPOCH,
-              "capacity_bytes": RAM_CAP * GIB, "window_gib": RAM_CAP},
+              "capacity_bytes": RAM_CAP * GIB, "window_gib": RAM_CAP,
+              "ram_admission": {"admissible": True}},
     }
-
-
-def _cycle(queue, stage: Path, ram: Path) -> None:
-    """One whole tier cycle over both tiers, as the storage box runs it."""
-    tiers = _tiers(stage, ram)
-    tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
-                    receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: dict(tiers))
 
 
 def _jammed(tmp_path: Path):
