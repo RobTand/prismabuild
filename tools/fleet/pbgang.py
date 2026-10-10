@@ -25,7 +25,9 @@ A member may declare the bytes it reads and ask for them staged first::
 
 ``tag`` is the host (or host class) a member is placed on; members land on
 distinct hosts. ``timeout_s`` and ``priority`` apply to every member unless a
-member overrides them. Prints one JSON line: the group and its member keys.
+member overrides them. ``wait_s`` is the opt-in queue-wait deadline (#1521):
+past it the sweep tears down only this gang. Prints one JSON line: the group
+and its member keys.
 
 The manifest may also be a bare list of members. A member names its host with
 ``tag`` or with ``tags`` (a list), may give ``demand`` as ``gpu=1,mem_gb=100`` or
@@ -74,10 +76,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve(strict=True).parent
@@ -193,9 +197,15 @@ def _pbgang_load_manifest(path: Path) -> dict:
     members = manifest.get("members") if isinstance(manifest, dict) else None
     if not isinstance(members, list) or not 2 <= len(members) <= _gang.MAX_MEMBERS:
         raise SystemExit(f"pbgang: manifest needs 2..{_gang.MAX_MEMBERS} members")
-    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s"}
+    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s",
+                               "wait_s"}
     if "priority_reason" in manifest and not isinstance(manifest["priority_reason"], str):
         raise SystemExit("pbgang: manifest priority_reason must be a string")
+    wait_s = manifest.get("wait_s")
+    if wait_s is not None and (
+            not isinstance(wait_s, (int, float)) or isinstance(wait_s, bool)
+            or not math.isfinite(wait_s) or not wait_s > 0):
+        raise SystemExit("pbgang: manifest wait_s must be a positive finite number of seconds")
     if unknown:
         raise SystemExit(f"pbgang: unknown manifest fields {sorted(unknown)}")
     for index, member in enumerate(members):
@@ -381,8 +391,11 @@ def main(argv: list[str] | None = None) -> int:
         withdraw(keys, refusal)
         print(f"{refusal}; withdrew {len(keys)} published member(s)", file=sys.stderr)
         return 1
+    wait_s = manifest.get("wait_s")
+    wait_deadline_unix = None if wait_s is None else time.time() + float(wait_s)
     try:
-        record = _gang.publish_group(queue, group, rows, skew_s=skew_s)  # type: ignore[arg-type]
+        record = _gang.publish_group(  # type: ignore[arg-type]
+            queue, group, rows, skew_s=skew_s, wait_deadline_unix=wait_deadline_unix)
     except _gang.GangContractError as exc:
         withdraw(keys, f"pbgang: group record refused: {exc}")
         print(f"pbgang: {exc}", file=sys.stderr)

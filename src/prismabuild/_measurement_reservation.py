@@ -311,11 +311,12 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *
     """Live gang host elections (#1517), read in the same bounded child.
 
     A gang election fences its host while any member row of a gang without a
-    teardown is still READY or CLAIMED. An unreadable or malformed gang
-    record fails the census closed, exactly as a malformed publication does.
-    Elections are written only by the elected host's own pass under its host
-    admission, which also serializes this host's readers, so no member key
-    joins the M lock set.
+    teardown is still READY or CLAIMED. A malformed gang record refuses only
+    its own gang (#1521): its elections fence nothing, its members are denied
+    ``gang_contract_invalid`` on the claim path, and the census stays
+    available for every other gang. Elections are written only by the elected
+    host's own pass under its host admission, which also serializes this
+    host's readers, so no member key joins the M lock set.
 
     ``member_state`` distinguishes READY, CLAIMED, and terminal publications.
     Only READY members reserve. CLAIMED members already hold ledger tokens.
@@ -330,33 +331,42 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *
     found: dict[str, dict] = {}
     ready = ready_versions if ready_versions is not None else set()
     claimed = claimed_versions if claimed_versions is not None else set()
-    try:
-        with entries:
-            for entry in entries:
-                count += 1
-                if count > MAX_RECORDS:
-                    raise CensusUnavailable("measurement census record cap exceeded")
-                if not entry.name.endswith(".json") or entry.name.startswith("."):
-                    continue
-                group = entry.name[:-5]
+    with entries:
+        for entry in entries:
+            count += 1
+            if count > MAX_RECORDS:
+                raise CensusUnavailable("measurement census record cap exceeded")
+            if not entry.name.endswith(".json") or entry.name.startswith("."):
+                continue
+            group = entry.name[:-5]
+            try:
                 record = _gang.read_group(queue, group)
-                if record is None or _gang.teardown(queue, group) is not None:
+            except _gang.GangContractError:
+                continue  # malformed group refuses only its gang (#1521)
+            if record is None:
+                continue
+            try:
+                if _gang.teardown(queue, group) is not None:
                     continue
-                live = [member for member in record["members"]
-                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
-                               for row in rows.get(member["action_key"], []))]
-                if not live:
-                    continue
+            except _gang.GangContractError:
+                continue  # malformed teardown refuses only its gang (#1521)
+            live = [member for member in record["members"]
+                    if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                           for row in rows.get(member["action_key"], []))]
+            if not live:
+                continue
+            try:
                 rank = list(_gang.rank(record))
-                for index, election in _gang.elections(queue, group, record["size"]).items():
-                    found[election["action_key"]] = {
-                        "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank,
-                        "demand": _member_demand(rows, record, election["action_key"]),
-                        "member_state": _elected_member_state(
-                            record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
-    except _gang.GangContractError as exc:
-        raise CensusUnavailable(str(exc)) from exc
+                votes = _gang.elections(queue, group, record["size"])
+            except _gang.GangContractError:
+                continue  # malformed election refuses only its gang (#1521)
+            for index, election in votes.items():
+                found[election["action_key"]] = {
+                    "group": group, "index": index, "action_key": election["action_key"],
+                    "host": election["host"], "priority": election["priority"], "rank": rank,
+                    "demand": _member_demand(rows, record, election["action_key"]),
+                    "member_state": _elected_member_state(
+                        record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
     return found
 
 def _scan_election_refresh(queue: PoolQueue) -> dict:
@@ -383,9 +393,17 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         if not name.endswith(".json") or name.startswith("."):
             continue
         group = name[:-5]
-        record = _gang.read_group(queue, group)
-        if record is None or _gang.teardown(queue, group) is not None:
+        try:
+            record = _gang.read_group(queue, group)
+        except _gang.GangContractError:
+            continue  # malformed group refuses only its gang (#1521)
+        if record is None:
             continue
+        try:
+            if _gang.teardown(queue, group) is not None:
+                continue
+        except _gang.GangContractError:
+            continue  # malformed teardown refuses only its gang (#1521)
         groups[group] = record
     try:
         pass_names = sorted(
@@ -437,8 +455,8 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         try:
             rank = list(_gang.rank(record))
             found = _gang.elections(queue, group, record["size"])
-        except _gang.GangContractError as exc:
-            raise CensusUnavailable(str(exc)) from exc
+        except _gang.GangContractError:
+            continue  # malformed election refuses only its gang (#1521)
         count += len(found)
         if count > MAX_RECORDS:
             raise CensusUnavailable("measurement refresh record cap exceeded")
