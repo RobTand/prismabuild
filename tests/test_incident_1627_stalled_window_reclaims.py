@@ -293,7 +293,9 @@ def _jammed(tmp_path: Path):
     _claim_with_progress(queue, LIVE, phase="phase-0")
     pg_holder = prelaunch_group.holder_name(
         PG, STAGE, residency_plan.prelaunch_phase_names(group_plan))
-    return queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder
+    d_holder = prelaunch_group.holder_name(
+        DECLARED, STAGE, residency_plan.prelaunch_phase_names(declared_plan))
+    return queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder, d_holder
 
 
 def _held(queue, tier_id: str, key: str) -> bool:
@@ -303,7 +305,7 @@ def _held(queue, tier_id: str, key: str) -> bool:
 
 def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
     """The declared unit and the window ask the sweep for room, both tiers."""
-    queue, stage, ram, _, _, _, _ = _jammed(tmp_path)
+    queue, stage, ram, _, _, _, _, _ = _jammed(tmp_path)
     skipped: list[dict] = []
     pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage, ram),
                                          skipped=skipped)
@@ -313,8 +315,8 @@ def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
 
 def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
     """A few real cycles give back the orphans and the withdrawn prefix."""
-    queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder = (
-        _jammed(tmp_path))
+    (queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder,
+     d_holder) = _jammed(tmp_path)
     for _ in range(4):
         _cycle(queue, stage, ram)
     assert [mover for mover in stage_orphans
@@ -323,6 +325,7 @@ def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
             if _held(queue, RAM, mover)] == []
     assert not _held(queue, STAGE, pg_holder), "a withdrawn group lets go"
     assert _held(queue, STAGE, live_head), "a live claim stays"
+    assert _held(queue, STAGE, d_holder), "the declared waiter reserves"
 
 
 def test_a_futile_waiter_names_its_refusal_once(tmp_path: Path) -> None:
