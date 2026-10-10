@@ -506,11 +506,13 @@ constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
 `execution_timeout_s` ends inside it, is transient; a bounded holder past that
 line is long; a holder past its own sealed end is overdue, which outranks age,
 since a holder that outlived what it declared is no evidence of a drain (#939);
-a progress-governed holder with no total timeout is unbounded;
+a progress- or stall-governed holder with no total timeout is unbounded;
+a legacy holder with no sealed request keeps the historical age-based
+transient/long answer;
 a raw ledger holder with no readable claim is judged by the waiting item's own
 first-denial clock, as every holder was before #924. The age half of
-"transient" is a presumption, not a declaration: a young deadline-governed
-holder with no requested timeout may yet run for hours, and it becomes long by
+"transient" is a presumption, not a declaration: a young legacy holder with
+no requested timeout may yet run for hours, and it becomes long by
 itself once it passes the line, so a veto resting on it ends on its own. A
 token shortage withholds when transient holders cover every short kind. An
 adaptive refusal that draining resolves withholds too: an exclusive need (a
@@ -641,8 +643,8 @@ This source change retains PB admission authority (SC-01), movement authority
 deployment or campaign completion.
 
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
-or a progress-governed action) does not void the election: requiring one left
-most live hosts unelected, so once the bounded attention above lapsed a
+a progress- or stall-governed action) does not void the election: requiring
+one left most live hosts unelected, so once the bounded attention above
 continuous lower-priority stream refilled the host indefinitely (#1419 residual,
 2026-10-04). With the election in place the measurement's wait is bounded by
 the actual remaining lifetime of the incumbents present at election, whatever
@@ -3657,8 +3659,14 @@ keep streaming regardless.
 An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
 positive finite number of seconds. Its value participates in the action key.
 The pool reads and validates this value from the CAS request, not the mutable
-queue record, and applies the shorter of it and the worker's timeout ceiling.
-Without the field, existing actions retain the worker ceiling. The pool starts
+queue record, and applies the shorter of it and the worker's timeout ceiling
+for an action without progress phases. Without the field there is no
+wall-clock deadline at all (#1707): the run ends on a progress stall, the D30
+memory guard, or withdrawal. An action without progress phases runs under the
+default stall watch instead -- output or payload CPU activity restarts its
+quiet, and silence past its allowance ends it as a stall. The allowance
+defaults to 1800 s and `pbrun --stall-s` seals another value; the worker
+ceiling clamps it like a phase grace. The pool starts
 its monotonic budget immediately before launcher spawn, after checkout
 materialization, withdrawal checks, scope preparation and status-file cleanup.
 Those prelaunch operations and queue waiting do not consume it. After launch,
@@ -4163,8 +4171,9 @@ variable set is an `ActionContractError`, not a silent unbounded run.
 The versioned fleet configuration sets both GB10 worker ceilings to 86400
 seconds for dependent full-model calibration capture (issue #385). The CPU
 host retains its 3600-second ceiling. A GB10 action without an explicit budget
-inherits the one-day ceiling; capture requests that budget explicitly. This
-changes only the permitted duration: reservations, physical memory guards,
+has no wall-clock deadline (#1707); the ceiling clamps its stall allowance
+instead, and capture requests that budget explicitly. This changes only the
+permitted duration: reservations, physical memory guards,
 containment, priority and admission are unchanged. Supervisors adopt the
 published configuration through the existing idle-worker transition; a live
 attempt retains the ceiling under which it started.

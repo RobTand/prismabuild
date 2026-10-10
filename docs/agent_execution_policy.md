@@ -54,16 +54,19 @@ host without a GPU that fits it now, until that host claims it or passes on it.
 Do not tag CPU-only work to a GPU host to get it placed.
 
 Every worker loop applies its own payload execution safety ceiling, **7200 s
-by default**, as a ``min`` against ``--timeout-s``. Each box announces its
-ceiling (``pbstatus`` shows it as ``KILL AT``); ``pbrun`` names eligible
-workers that grant a smaller payload budget and the lowest announced budget.
-This is not a shared wall-clock stop or admission-to-resource-release fence:
-checkout precedes payload execution, credited waits can extend its deadline,
-and uncertain settlement retains resources (#1429). The receipt records
-``execution_timeout_s``, ``execution_timeout_requested_s``,
-``execution_timeout_ceiling_s`` and ``execution_timeout_clamped``. A job that
-needs a larger payload allowance needs an eligible loop with a larger ceiling,
-not just a larger submission ``--timeout-s`` (RobTand/prismabuild#293).
+by default**. With an explicit `--timeout-s` it acts as a ``min`` against
+that budget. With no sealed budget there is no wall-clock deadline at all:
+the run ends on a progress stall, the D30 memory guard, or withdrawal.
+Each box announces its ceiling (``pbstatus`` shows it as ``KILL AT``);
+``pbrun`` names eligible workers that grant a smaller payload budget and the
+lowest announced budget. This is not a shared wall-clock stop or
+admission-to-resource-release fence: checkout precedes payload execution,
+credited waits can extend its deadline, and uncertain settlement retains
+resources (#1429). The receipt records ``execution_timeout_s``,
+``execution_timeout_requested_s``, ``execution_timeout_ceiling_s`` and
+``execution_timeout_clamped``. A job that needs a larger payload allowance
+needs an eligible loop with a larger ceiling, not just a larger submission
+``--timeout-s`` (RobTand/prismabuild#293).
 
 An action that can say when it commits work need not be bounded by elapsed
 time at all. Declare the phases it walks and the quiet each one is allowed --
@@ -105,7 +108,15 @@ What then bounds it:
   reports (`progress_no_progress_bound_s`) rather than a constant somebody
   chose.
 * **`--timeout-s` still ends it**, progress or no progress. Precedence is
-  containment, withdrawal, the requested deadline, then the stall allowance.
+  containment, withdrawal, resource limits, the requested deadline, then
+  the stall allowance.
+
+An action that declares no phases runs under the same supervision with a
+default watch: output or payload CPU activity restarts its quiet, and
+silence past its allowance ends it as a stall. The allowance defaults to
+1800 s and `pbrun --stall-s` seals another value; the worker ceiling clamps
+it like a phase grace. `pbstatus` shows each running action's age, last
+phase, counters and silence in its AGE, OUTPUT and PROGRESS columns.
 
 Advancement is a strictly increasing cumulative `units_completed` across the
 whole action, or entering a later declared phase. The count starts at zero;
