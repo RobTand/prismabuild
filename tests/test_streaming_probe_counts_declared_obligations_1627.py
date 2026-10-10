@@ -89,8 +89,11 @@ def _fixture(tmp_path: Path):
     units = pt.declared_units(queue, {STAGE: {"tier": "stage"}},
                               [_consumer(DECLARED)])
     assert len(units) == 1
-    events, _authority = pt.reserve_pass(queue, STAGE, units,
-                                         admitted=lambda unit: True)
+    events: list[dict] = []
+    for _ in range(3):
+        step, _authority = pt.reserve_pass(queue, STAGE, units,
+                                           admitted=lambda unit: True)
+        events.extend(step)
     ledger = queue.tier_ledger(STAGE)
     assert int(ledger.holder_tokens(units[0].holder).get("stage_gib", 0)) == 10, events
     window_plan = _window_plan(queue, WINDOW)
