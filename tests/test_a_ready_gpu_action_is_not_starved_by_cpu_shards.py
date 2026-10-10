@@ -407,7 +407,7 @@ def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longe
     (SHARD_DEADLINE_S, SHARD_DEADLINE_S, True, "transient"),
     (SHARD_DEADLINE_S, SHARD_DEADLINE_S + 1, False, "overdue"),
     (SHARD_DEADLINE_S, pool.WITHHOLD_CEILING_S + 100, False, "long"),
-    (None, SHARD_DEADLINE_S - 1, False, "long"),
+    (None, SHARD_DEADLINE_S - 1, False, "unbounded"),
     (600.0, 700.0, False, "overdue"),
 ], ids=["end-inside-the-ceiling", "at-its-end", "past-its-end",
         "end-beyond-the-ceiling", "unsealed-pre-939-shard", "past-a-short-end-while-young"])
@@ -418,13 +418,15 @@ def test_a_sealed_shard_is_read_by_its_declared_end(
     """Where a shard's declared end puts it, one moment at a time.
 
     ``unsealed-pre-939-shard`` is the same shard as it was submitted before
-    #939: no declared end, so past ``WITHHOLD_CEILING_S`` of age it reads
-    ``long`` however close it is to the deadline it actually runs under.
-    ``end-beyond-the-ceiling`` is #924's own line, unchanged: a bounded holder
-    whose end is further off than ``WITHHOLD_CEILING_S`` does not drain soon.
-    ``past-a-short-end-while-young`` is why ``overdue`` outranks age: a young
-    holder is presumed to drain soon, and a holder past its own declared end
-    has already broken that presumption.
+    #939: no declared end, so it reads ``unbounded`` -- like a
+    progress-governed holder with no total timeout, the stall watch bounds
+    its quiet but supplies no declared end to drain by (#1707). Either way
+    it withholds nothing. ``end-beyond-the-ceiling`` is #924's own line,
+    unchanged: a bounded holder whose end is further off than
+    ``WITHHOLD_CEILING_S`` does not drain soon. ``past-a-short-end-while-young``
+    is why ``overdue`` outranks age: a young holder is presumed to drain
+    soon, and a holder past its own declared end has already broken that
+    presumption.
     """
 
     claim, shard, gpu_action, behind = _gpu_action_behind_a_shard(

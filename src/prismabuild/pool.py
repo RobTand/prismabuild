@@ -325,6 +325,16 @@ ATTEMPTS = "attempts"
 HEARTBEAT_S = 30.0
 LEASE_TIMEOUT_S = 300.0
 
+#: How long an action without a progress policy may go without observable
+#: activity before the worker ends it as a stall (#1707). The default is
+#: 1800 s: one ceod LONG-JOB insight interval (prisma-exec 9988e35), half the
+#: old 3600 s pytest ceiling and a quarter of the 7200 s worker ceiling, so
+#: a hung payload stops sooner than before while steady work runs unbounded.
+#: The submitter sets it with ``pbrun --stall-s`` (sealed
+#: ``stall_allowance_s``); the worker ceiling clamps it like a phase grace,
+#: never in silence, and the receipt reports both numbers.
+DEFAULT_STALL_ALLOWANCE_S = 1800.0
+
 # How long the timeout path gives the launcher's process group to go down.
 # The launcher does not just exit when signalled: it relays the signal into the
 # action's own session -- ``run_local_action`` gives the action
@@ -1527,7 +1537,11 @@ def execution_budget(
 
     requested = _requested_execution_timeout(item)
     if requested is None:
-        return ExecutionBudget(ceiling, None, ceiling)
+        # No wall-clock budget by default (#1707): a payload stops on a
+        # progress stall, the D30 memory guard, or an explicit budget the
+        # submitter sealed. The ceiling still clamps an explicit budget and
+        # the stall allowance, never the whole run in silence.
+        return ExecutionBudget(None, None, ceiling)
     effective = requested if ceiling is None else min(requested, ceiling)
     return ExecutionBudget(effective, requested, ceiling)
 
@@ -2116,6 +2130,153 @@ class ProgressWatch:
         }
 
 
+class DefaultStall(NamedTuple):
+    """The stall allowance for an action without a progress policy (#1707)."""
+
+    requested: float | None
+    ceiling: float | None
+    effective: float
+
+    @property
+    def clamped(self) -> bool:
+        """Did the worker's ceiling, and not the submitter, decide?"""
+
+        return (self.requested is not None and self.ceiling is not None
+                and self.ceiling < self.requested)
+
+    def as_record(self) -> dict[str, object]:
+        """The fields an outcome carries so a receipt can be read years later."""
+
+        return {
+            "stall_allowance_s": self.effective,
+            "stall_allowance_requested_s": self.requested,
+            "stall_allowance_ceiling_s": self.ceiling,
+            "stall_allowance_clamped": self.clamped,
+        }
+
+
+def default_stall(item: Mapping[str, object], ceiling: float | None) -> DefaultStall:
+    """The stall allowance for an action without a progress policy."""
+
+    requested = _sealed_stall_allowance(item)
+    basis = DEFAULT_STALL_ALLOWANCE_S if requested is None else requested
+    effective = basis if ceiling is None else min(basis, ceiling)
+    return DefaultStall(requested, ceiling, effective)
+
+
+def _sealed_stall_allowance(item: Mapping[str, object]) -> float | None:
+    """What the submitter sealed as the default stall watch, if anything."""
+
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+    except FileNotFoundError:
+        return None
+    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    try:
+        return pb.action_stall_allowance(action)
+    except pb.ActionContractError as exc:
+        raise PoolContractError(str(exc)) from exc
+
+
+class ActivityWatch:
+    """End a no-policy action on output and CPU silence, never on age (#1707).
+
+    The worker's fallback when the action declared no progress policy: any
+    observable activity -- new launcher pipe bytes or a larger payload CPU
+    total -- restarts the quiet. Only a silence longer than the allowance
+    ends the run, with the same ``timeout``/``no_progress`` verdict a
+    progress stall carries. A wall-clock budget the submitter sealed still
+    ends the run at its limit, and the D30 memory guard still ends it first.
+
+    ``now`` is a ``time.monotonic()`` reading throughout, like
+    :class:`ProgressWatch`: a wall-clock jump must not decide either way.
+    """
+
+    def __init__(self, allowance_s: float, *, started: float) -> None:
+        self.allowance_s = float(allowance_s)
+        self.last_activity_monotonic = started
+        self.last_advance_monotonic = started
+        self.last_advance_unix: float | None = None
+        self.stdout_bytes = 0
+        self.stderr_bytes = 0
+        self.cpu_seconds: float | None = None
+        self.observations = 0
+        self.advances = 0
+        self.sampled_unix: float | None = None
+
+    @property
+    def grace_s(self) -> float:
+        """The silence this watch allows, so ``pbstatus`` reads it like a phase."""
+
+        return self.allowance_s
+
+    def stall_deadline(self) -> float:
+        return self.last_activity_monotonic + self.allowance_s
+
+    def shift(self, seconds: float) -> None:
+        """Retain quiet spent on shared I/O this loop, not the action, did."""
+
+        self.last_activity_monotonic += seconds
+        self.last_advance_monotonic += seconds
+
+    def observe(self, *, now: float, stdout_bytes: int = 0,
+                stderr_bytes: int = 0,
+                cpu_seconds: float | None = None) -> bool:
+        """Fold one execution sample in; return whether it showed activity."""
+
+        self.sampled_unix = _now()
+        self.observations += 1
+        advanced = False
+        if stdout_bytes > self.stdout_bytes or stderr_bytes > self.stderr_bytes:
+            advanced = True
+        if (cpu_seconds is not None and self.cpu_seconds is not None
+                and cpu_seconds > self.cpu_seconds):
+            advanced = True
+        if self.cpu_seconds is None and cpu_seconds is not None:
+            self.cpu_seconds = cpu_seconds
+        else:
+            if cpu_seconds is not None:
+                self.cpu_seconds = max(self.cpu_seconds or 0.0, cpu_seconds)
+        self.stdout_bytes = max(self.stdout_bytes, stdout_bytes)
+        self.stderr_bytes = max(self.stderr_bytes, stderr_bytes)
+        if advanced:
+            self.advances += 1
+            self.last_activity_monotonic = now
+            self.last_advance_monotonic = now
+            self.last_advance_unix = self.sampled_unix
+        return advanced
+
+    def as_record(self, *, now: float) -> dict[str, object]:
+        """What a receipt carries so a reader can see what activity looked like."""
+
+        quiet = max(0.0, now - self.last_activity_monotonic)
+        return {
+            "source": "activity",
+            "sampled_unix": self.sampled_unix,
+            "accepted_count": self.advances,
+            "rejected_count": 0,
+            "last_rejection": None,
+            "last_accepted": {
+                "phase": "activity",
+                "units_completed": self.advances,
+                "unit": None,
+                "reported_unix": self.last_advance_unix,
+            } if self.advances else None,
+            "quiet_s": quiet,
+            "grace_s": self.allowance_s,
+            "phase": "activity",
+            "phases_entered": 1,
+            "stdout_bytes": self.stdout_bytes,
+            "stderr_bytes": self.stderr_bytes,
+            "cpu_seconds": self.cpu_seconds,
+            "observations": self.observations,
+        }
+
+
 #: How the worker reads one pool member's ``/sys/block/<dev>/stat`` row
 #: (#1010).  A module attribute so a test can supply the disks; production
 #: reads the kernel's.
@@ -2523,13 +2684,14 @@ def _sealed_execution_policy(
 ) -> tuple[float | None, bool]:
     """The sealed deadline and profile declaration from one request read.
 
-    The effective timeout is exactly what :func:`_execution_timeout` always
-    returned: the sealed ``execution_timeout_s`` bounded by ``ceiling``, with
-    the same validation, key binding and legacy missing-request handling.  The
-    second element says whether the same validated request declares a
-    nonempty ``params.profile``.  Reading both here, before launch, is what
-    lets the deadline's flush opportunity use the declaration as immutable
-    local authority instead of rereading shared CAS at the deadline.
+    The effective timeout is the sealed ``execution_timeout_s`` bounded by
+    ``ceiling``, with the same validation, key binding and legacy
+    missing-request handling. No sealed budget means no deadline (#1707):
+    the stall watch, not elapsed time, ends the run. The second element
+    says whether the same validated request declares a nonempty
+    ``params.profile``. Reading both here, before launch, is what lets the
+    deadline's flush opportunity use the declaration as immutable local
+    authority instead of rereading shared CAS at the deadline.
     """
 
     key = str(item["action_key"])
@@ -2539,7 +2701,8 @@ def _sealed_execution_policy(
     except FileNotFoundError:
         # Legacy/custom launchers can have no request. The canonical worker
         # independently refuses a missing request before executing any action.
-        return ceiling, False
+        # No request means no sealed budget, so no deadline either.
+        return None, False
     action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
@@ -2547,7 +2710,7 @@ def _sealed_execution_policy(
     profiled = isinstance(mode, str) and bool(mode)
     requested = action["params"].get("execution_timeout_s")
     if requested is None:
-        return ceiling, profiled
+        return None, profiled
     if (type(requested) not in (int, float) or not math.isfinite(requested)
             or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
@@ -2577,12 +2740,17 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
 
     Returns ``(governed_by, requested_timeout_s)``, read once from the same
     sealed request ``_execution_timeout`` and ``_sealed_progress_policy``
-    read.  ``governed_by`` is ``"progress"`` when the request seals a progress
-    policy and ``"deadline"`` otherwise -- including a legacy item with no
-    request, which the worker runs under its own ceiling.  A progress-governed
-    action with no requested timeout has no total bound at all: the worker
-    re-aims its ceiling at each phase's quiet instead (#480).  Anything the
-    request refuses raises ``PoolContractError`` exactly as it does there.
+    read. ``governed_by`` is ``"progress"`` when the request seals a progress
+    policy, ``"deadline"`` when it seals an explicit ``execution_timeout_s``,
+    and ``"stall"`` for a sealed request with neither -- the worker ends it
+    on output and CPU silence past its allowance, with no total bound at all
+    (#1707). A legacy item with no request keeps the historical
+    ``("deadline", None)`` advisory answer, so a young holder still reads
+    transient for withhold purposes; execution still supervises it by the
+    default stall watch. A progress-governed action with no requested timeout
+    has no total bound either: the worker re-aims its ceiling at each phase's
+    quiet instead (#480). Anything the request refuses raises
+    ``PoolContractError`` exactly as it does there.
     """
 
     key = str(item["action_key"])
@@ -2602,8 +2770,11 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
     if requested is not None and (type(requested) not in (int, float)
                                   or not math.isfinite(requested) or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
-    return ("progress" if policy is not None else "deadline",
-            None if requested is None else float(requested))
+    if policy is not None:
+        return "progress", (None if requested is None else float(requested))
+    if requested is not None:
+        return "deadline", float(requested)
+    return "stall", None
 
 
 @contextmanager
@@ -3287,6 +3458,17 @@ def _observe_execution(
             "last_output_unix": last_output,
             "child": _observe_child(scope, sampled=sampled,
                                     last_output_unix=last_output)}
+
+
+def _observed_cpu_s(observation: Mapping[str, object]) -> float | None:
+    """The payload CPU total inside one execution observation, if readable."""
+
+    child = observation.get("child")
+    if isinstance(child, Mapping):
+        cpu = child.get("cpu_seconds")
+        if type(cpu) in (int, float) and math.isfinite(cpu):
+            return float(cpu)
+    return None
 
 
 def action_process_groups(launcher_pid: int) -> list[int]:
@@ -12563,14 +12745,15 @@ class PoolQueue:
         This is not an admission-to-resource-release fence (#1429). The
         answer is read from the holder's declaration, never observed settlement:
 
-        * ``unbounded`` -- its sealed request is progress-governed and asks for
-          no total payload timeout. Semantic stall allowances still apply,
-          but this supplies no declared finite incumbent opportunity.
+        * ``unbounded`` -- its sealed request is progress- or stall-governed
+          and asks for no total payload timeout. Semantic stall allowances
+          still apply, but this supplies no declared finite incumbent
+          opportunity.
         * ``transient`` -- it is still inside ``WITHHOLD_CEILING_S`` of its
           claim, or a finite declared ``claimed_unix + requested_timeout_s``
           lies inside that ceiling from now. Age alone also classifies a
-          deadline-governed holder whose requested timeout is absent; this
-          is not proof of an explicit budget or guaranteed resource return.
+          legacy holder with no sealed request; this is not proof of an
+          explicit budget or guaranteed resource return.
         * ``long`` -- its age exceeds that line and no finite declared
           advisory opportunity lies inside it.
         * ``overdue`` -- the advisory opportunity has already passed. This
@@ -12608,7 +12791,7 @@ class PoolQueue:
         age = max(0.0, moment - float(claimed_unix))
         answer.update(age_s=age, claimed_unix=float(claimed_unix), governed_by=governed_by,
                       requested_timeout_s=requested)
-        if governed_by == "progress" and requested is None:
+        if requested is None and governed_by in ("progress", "stall"):
             answer["bound"] = "unbounded"
             return answer
         left = None if requested is None else float(claimed_unix) + requested - moment
@@ -28495,34 +28678,45 @@ class PoolQueue:
         # the same number from the same sealed request, which is idempotent
         # under the clamp; passing the effective value keeps the two in step
         # without giving either one a second source of truth.
-        # An action admitted under the progress contract is not bounded in
-        # total duration by this box's ceiling -- that ceiling is what killed
-        # two demonstrably advancing GLM rows (#480), and a limit nobody
-        # submitted and no receipt explained is exactly what the contract
-        # replaces.  The ceiling is not waived, it is *re-aimed*: it clamps
-        # every declared phase's quiet instead, so a stuck action still ends on
-        # this box's terms.  A deadline the submitter asked for explicitly
-        # still governs, progress or no progress.
+        # No wall-clock budget by default (#1707): neither a progress action
+        # nor a default action is bounded in total duration by this box's
+        # ceiling -- that ceiling is what killed two demonstrably advancing
+        # GLM rows (#480), and a limit nobody submitted and no receipt
+        # explained is exactly what the contract replaces. The ceiling is not
+        # waived, it is *re-aimed*: it clamps every declared phase's quiet,
+        # or the default stall allowance, instead, so a stuck action still
+        # ends on this box's terms. A deadline the submitter asked for
+        # explicitly still governs, progress or no progress.
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
+        stall = None if policy is not None else default_stall(item, timeout_s)
         with _execution_checkout(item) as checkout_root:
             outcome = self._execute_in_checkout(
                 item, checkout_root=checkout_root, python=python,
                 timeout_s=budget.effective, heartbeat_s=heartbeat_s,
                 timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy,
+                progress=policy, stall=stall,
             )
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
-        # under the progress contract nothing did.  This says what the box's
+        # without an explicit budget nothing did. This says what the box's
         # ceiling actually is regardless of what it governs, so a reader is
         # never left inferring "unbounded" from a null (#293's lesson, one
         # field over): with a policy in force it is the stall ceiling, and
-        # ``progress_no_progress_bound_s`` is the total quiet it permits.
+        # ``progress_no_progress_bound_s`` is the total quiet it permits;
+        # without one it clamps ``stall_allowance_s`` instead.
         outcome["worker_timeout_ceiling_s"] = timeout_s
-        outcome["execution_governed_by"] = "progress" if policy is not None else "deadline"
         if policy is not None:
+            outcome["execution_governed_by"] = "progress"
             outcome.update(policy.as_record())
+        elif budget.effective is not None:
+            outcome["execution_governed_by"] = "deadline"
+            assert stall is not None
+            outcome.update(stall.as_record())
+        else:
+            outcome["execution_governed_by"] = "stall"
+            assert stall is not None
+            outcome.update(stall.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self._scope_from_record(item))
             outcome["resource_telemetry"] = telemetry
@@ -28680,6 +28874,7 @@ class PoolQueue:
         timeout_grace_s: float = TIMEOUT_GRACE_S,
         containment: bool = False,
         progress: ProgressPolicy | None = None,
+        stall: DefaultStall | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -28855,6 +29050,18 @@ class PoolQueue:
             watch = (None if progress is None else ProgressWatch(
                 progress_path, progress_token, progress,
                 started=checkpoint_started))
+            if progress is None and stall is None:
+                # A direct caller that predates the stall watch: bound the
+                # run by the default allowance rather than not at all.
+                stall = DefaultStall(None, None, DEFAULT_STALL_ALLOWANCE_S)
+            activity = (None if progress is not None or stall is None
+                        else ActivityWatch(stall.effective,
+                                           started=checkpoint_started))
+            if activity is not None:
+                activity.observe(now=checkpoint_started,
+                                 stdout_bytes=int(observation.get("stdout_bytes") or 0),
+                                 stderr_bytes=int(observation.get("stderr_bytes") or 0),
+                                 cpu_seconds=_observed_cpu_s(observation))
             # A stage mover's pool, judged by this worker (#1010).
             contention = (
                 None if watch is None or progress is None
@@ -29007,6 +29214,24 @@ class PoolQueue:
                             "start_gate_holder": (
                                 contention.gate_holder if contention is not None
                                 else None)}
+                elif activity is not None:
+                    ended = time.monotonic()
+                    outcome["progress_observation"] = activity.as_record(now=ended)
+                    if outcome.get("termination_reason") == "no_progress":
+                        # What the default stall watch measured (#1707): the
+                        # allowance, the silence past it, and the output and
+                        # CPU totals that did not move inside it.
+                        stall = {
+                            "allowance_s": activity.allowance_s,
+                            "phase": "activity",
+                            "last_landing": None,
+                            "quiet_s": max(0.0, ended - activity.last_activity_monotonic),
+                            "stdout_bytes": activity.stdout_bytes,
+                            "stderr_bytes": activity.stderr_bytes,
+                            "cpu_seconds": activity.cpu_seconds,
+                            "observations": activity.observations,
+                            "advances": activity.advances,
+                        }
                 if stall is not None:
                     # Outside the diagnosis read below, so a failure there
                     # never loses what the kill was measured against.
@@ -29053,6 +29278,8 @@ class PoolQueue:
                 deadline += time.monotonic() - checkpoint_started
             if watch is not None:
                 watch.shift(time.monotonic() - checkpoint_started)
+            if activity is not None:
+                activity.shift(time.monotonic() - checkpoint_started)
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             next_heartbeat = time.monotonic() + heartbeat_s
@@ -29066,6 +29293,10 @@ class PoolQueue:
                         interval = min(
                             interval,
                             max(0.0, watch.stall_deadline() - time.monotonic()))
+                    if activity is not None:
+                        interval = min(
+                            interval,
+                            max(0.0, activity.stall_deadline() - time.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired as exc:
@@ -29073,6 +29304,12 @@ class PoolQueue:
                     observation = _observe_execution(
                         process, observation, stdout=exc.output,
                         stderr=exc.stderr, scope=scope)
+                    if activity is not None:
+                        activity.observe(
+                            now=checkpoint_started,
+                            stdout_bytes=int(observation.get("stdout_bytes") or 0),
+                            stderr_bytes=int(observation.get("stderr_bytes") or 0),
+                            cpu_seconds=_observed_cpu_s(observation))
                     if scope is not None:
                         telemetry = self._sample_resource_scope(scope)
                         resource_failure = self._resource_failure(telemetry)
@@ -29148,8 +29385,10 @@ class PoolQueue:
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
                             execution_observation=observation,
                             progress_observation=(
-                                None if watch is None
-                                else watch.as_record(now=time.monotonic())),
+                                watch.as_record(now=time.monotonic())
+                                if watch is not None else
+                                (activity.as_record(now=time.monotonic())
+                                 if activity is not None else None)),
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )
@@ -29158,6 +29397,8 @@ class PoolQueue:
                         deadline += time.monotonic() - checkpoint_started
                     if watch is not None:
                         watch.shift(time.monotonic() - checkpoint_started)
+                    if activity is not None:
+                        activity.shift(time.monotonic() - checkpoint_started)
                     if deadline is not None and time.monotonic() >= deadline:
                         # The branch's worst case stays the old three grace
                         # budgets.  The profiled flush opportunity, discovery
@@ -29228,6 +29469,42 @@ class PoolQueue:
                             # worker and whether the worker exited within it.
                             outcome["profile_settle"] = settled
                         return ending(outcome)
+                    if (activity is not None
+                            and time.monotonic() >= activity.stall_deadline()):
+                        # The default stall watch (#1707): the observation
+                        # above is already fresh from this checkpoint, so no
+                        # second read can show activity this poll missed.
+                        # Reached only when containment, withdrawal and an
+                        # explicit deadline all had nothing to say.
+                        if scope is not None:
+                            scope.terminate_owned("timeout")
+                        pb._terminate_process_group(
+                            process, grace_s=timeout_grace_s
+                        )
+                        out, err, survived = _drain(
+                            process, timeout_s=timeout_grace_s
+                        )
+                        return ending({
+                            # A stall IS an execution timeout: every reader
+                            # of this lane already knows the word, and
+                            # inventing a sixth status would make a policy
+                            # change look like a schema change. Which
+                            # policy ended it is in the reason.
+                            "status": "timeout",
+                            "termination_reason": "no_progress",
+                            "execution_observation": observation,
+                            "returncode": None,
+                            "launcher_returncode": process.returncode,
+                            "stdout": out,
+                            "stderr": err,
+                            "action_survived_kill": survived,
+                            "elapsed_s": _now() - started,
+                            "child_rusage": _reaped_children(
+                                rusage_before,
+                                resource.getrusage(resource.RUSAGE_CHILDREN)),
+                            "argv": argv,
+                            "cpu_allocation": allocation,
+                        })
                     if (watch is not None
                             and time.monotonic() >= watch.stall_deadline()):
                         # One more read before ending it.  The boundary is
@@ -29401,6 +29678,19 @@ class PoolQueue:
             # that evidence before ending() removes the channel. This read is
             # observational: it cannot change the completed action's verdict.
             watch.sample(now=time.monotonic())
+        if activity is not None:
+            # The final pipes hold output the last checkpoint had not seen.
+            # Observational like the progress re-read above: it only keeps
+            # the terminal record honest, never the verdict.
+            activity.observe(
+                now=time.monotonic(),
+                stdout_bytes=max(
+                    activity.stdout_bytes,
+                    len((out or "").encode("utf-8", "replace"))),
+                stderr_bytes=max(
+                    activity.stderr_bytes,
+                    len((err or "").encode("utf-8", "replace"))),
+                cpu_seconds=_observed_cpu_s(observation))
         # Checkpoint three: on the way out.  When the operator's own signal
         # reached the action group first, the launcher reports the SIGTERM that
         # stopped it and this worker would otherwise log a defect for a

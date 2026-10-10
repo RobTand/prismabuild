@@ -198,6 +198,11 @@ PROGRESS_TAG = "progress-v1"
 PROGRESS_HELPER_TAG = "progress-helper-v1"
 # Optional cyclic phase semantics; older v1 policy readers reject the field.
 PROGRESS_CYCLE_TAG = "progress-cycle-v1"
+#: The sealed request key that sets the default stall watch for an action
+#: without a progress policy (#1707). A positive finite number of seconds.
+#: Sealed into the action key like ``execution_timeout_s``: an action with a
+#: shorter watch is a different action from one with a longer watch.
+STALL_ALLOWANCE_PARAM = "stall_allowance_s"
 #: The sealed request key a stage mover declares beside its progress policy
 #: (#1010): the storage pool's member devices, the disk pacer's caps, the
 #: stage root its start gate locks and the rate its grace was priced at.  The
@@ -2983,6 +2988,10 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         if awaited != normalized_params[AWAITED_BATCH_PARAM]:
             _fail("action.params.progress_awaited_batch is valid but not in "
                   "normalized form")
+    if STALL_ALLOWANCE_PARAM in normalized_params:
+        # Refused here rather than at the worker, like the progress policy:
+        # an unreadable allowance would seal a key no worker can honestly run.
+        validate_stall_allowance(normalized_params[STALL_ALLOWANCE_PARAM])
     normalized_inputs = _normalize_inputs(body["inputs"])
     if PRODUCED_OUTPUT_TEMPLATE_PARAM in normalized_params:
         # A tampered binding (declaration without its input row, or with a
@@ -8600,6 +8609,25 @@ def action_progress_policy(action: Mapping[str, object]) -> dict[str, object] | 
     return validate_progress_policy(declared)
 
 
+def validate_stall_allowance(value: object, *, where: str = "action.params.stall_allowance_s") -> float:
+    """The sealed default stall allowance of a validated action (#1707)."""
+
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        _fail(f"{where} must be a positive finite number")
+    return float(value)
+
+
+def action_stall_allowance(action: Mapping[str, object]) -> float | None:
+    """The sealed stall allowance of a validated action, if it declared one."""
+
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    declared = params.get(STALL_ALLOWANCE_PARAM)
+    if declared is None:
+        return None
+    return validate_stall_allowance(declared)
+
+
 def _progress_environment(
     action: Mapping[str, object], sealed: Mapping[str, str]
 ) -> dict[str, str]:
@@ -9011,6 +9039,9 @@ __all__ = [
     "QUEUED_CHILD_TAG",
     "action_awaited_batch",
     "validate_awaited_batch",
+    "STALL_ALLOWANCE_PARAM",
+    "action_stall_allowance",
+    "validate_stall_allowance",
     "EGRESS_PROGRESS_TAG",
     "action_pool_contention",
     "validate_pool_contention",
