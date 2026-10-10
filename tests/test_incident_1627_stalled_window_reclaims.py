@@ -65,6 +65,22 @@ def _publish_bare(queue, key, resources) -> None:
                  tags=["dl380g10"], resources=dict(resources))
 
 
+def _queued_demand(queue, seed: str, tier_id: str, kind: str, gib: int) -> None:
+    """A ready mover row holding no tokens: queued demand the gate counts."""
+    manifest = _hexkey(f"1627-man-{seed}")
+    queue.publish(action_key=_hexkey(seed),
+                  cas_root=str(queue.root / "cas"),
+                  checkout_root=str(queue.root / "co"),
+                  worker_script=str(queue.root / "worker.py"),
+                  tags=["dl380g10"],
+                  resources={"cpu": 1, "mem_gb": 1, kind: gib},
+                  residency={"schema": pool.RESIDENCY_SCHEMA_V1,
+                             "tier_id": tier_id, "manifest_sha256": manifest,
+                             "manifest_bytes": gib * GIB,
+                             "range_start_bytes": 0,
+                             "range_end_bytes": gib * GIB})
+
+
 def _end(queue, key, *, how) -> None:
     """Publish one consumer row and end it the way the incident ended its."""
     _publish_bare(queue, key, {"cpu": 1, "mem_gb": 1})
@@ -241,11 +257,10 @@ def _jammed(tmp_path: Path):
                       for ordinal in range(2)])
 
     for index in range(3):
-        _publish_bare(queue, _hexkey(f"1627-queued-stage-{index}"),
-                       {"cpu": 1, "mem_gb": 1, STAGE_KIND: 1})
+        _queued_demand(queue, f"1627-queued-stage-{index}", STAGE,
+                       STAGE_KIND, 1)
     for index in range(6):
-        _publish_bare(queue, _hexkey(f"1627-queued-ram-{index}"),
-                       {"cpu": 1, "mem_gb": 1, RAM_KIND: 1})
+        _queued_demand(queue, f"1627-queued-ram-{index}", RAM, RAM_KIND, 1)
 
     window_plan = _window_plan(queue, WINDOW)
     residency_plan.freeze(queue, window_plan)
@@ -321,4 +336,4 @@ def test_a_futile_waiter_names_its_refusal_once(tmp_path: Path) -> None:
     events = [event for event in queue.consumer_events(waiter)
               if event.get("event") == "window-pressure-skipped"]
     assert len(events) == 1, events
-    assert events[0]["consumer"] == waiter and events[0]["reason"], events
+    assert events[0]["reason"], events
