@@ -232,14 +232,14 @@ def _jammed(tmp_path: Path):
     _end(queue, DONE, how="done")
     _end(queue, GONE, how="withdrawn")
     stage_orphans = []
-    for ordinal in range(3):
+    for ordinal in range(2):
         stage_orphans.append(_hexkey(f"1627-sorphan-{ordinal}"))
         _stage_range(queue, mover=stage_orphans[-1], consumer=DONE,
                      stage=stage, ordinal=ordinal, manifest="e" * 64)
     for ordinal in range(2):
         stage_orphans.append(_hexkey(f"1627-sgone-{ordinal}"))
         _stage_range(queue, mover=stage_orphans[-1], consumer=GONE,
-                     stage=stage, ordinal=3 + ordinal, manifest="e" * 64)
+                     stage=stage, ordinal=2 + ordinal, manifest="e" * 64)
 
     group_plan = _declared_plan(
         queue, PG, [("p0", 2, True, 1), ("p1", 2, True, 1),
@@ -261,7 +261,7 @@ def _jammed(tmp_path: Path):
     for index in range(3):
         _queued_demand(queue, f"1627-queued-stage-{index}", STAGE,
                        STAGE_KIND, 1)
-    for index in range(6):
+    for index in range(12):
         _queued_demand(queue, f"1627-queued-ram-{index}", RAM, RAM_KIND, 1)
 
     window_plan = _window_plan(queue, WINDOW)
@@ -301,9 +301,11 @@ def _held(queue, tier_id: str, key: str) -> bool:
 def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
     """The declared unit and the window ask the sweep for room, both tiers."""
     queue, stage, ram, _, _, _, _ = _jammed(tmp_path)
-    pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage, ram))
-    assert pressure.get(STAGE, 0) > 0, pressure
-    assert pressure.get(RAM, 0) > 0, pressure
+    skipped: list[dict] = []
+    pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage, ram),
+                                         skipped=skipped)
+    assert pressure.get(STAGE, 0) > 0, (pressure, skipped)
+    assert pressure.get(RAM, 0) > 0, (pressure, skipped)
 
 
 def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
