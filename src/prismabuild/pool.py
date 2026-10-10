@@ -6690,9 +6690,9 @@ class PoolQueue:
                 return set()
             store = resident_sets.ResidentSets(self.root)
             record = store.read(set_id)
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
             return set()
-        hosts = record.get("hosts")
+        hosts = record.get("hosts") if isinstance(record, Mapping) else None
         if not isinstance(hosts, list):
             return set()
         found = set()
@@ -6701,9 +6701,9 @@ class PoolQueue:
                 continue
             try:
                 copy = store.read_copy(set_id, host)
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError, KeyError, TypeError):
                 continue
-            if copy.get("state") == "resident":
+            if isinstance(copy, Mapping) and copy.get("state") == "resident":
                 found.add(host)
         return found
 
@@ -23029,14 +23029,18 @@ class PoolQueue:
                                     # then elects here anyway (#1733).  Offer
                                     # reads only ever buy a bounded wait for a
                                     # better placement, never a refusal.
-                                    try:
-                                        hold = _gang.resident_hold(
-                                            self, gang_record, gang_entry, item, here,
-                                            _now(), live=offer_snapshot(),
-                                            prefer_s=RESIDENT_COPY_PREFER_S)
-                                    except (OSError, ValueError, PoolContractError,
-                                            pb.PrismaBuildError, KeyError, TypeError):
-                                        hold = None
+                                    hold = None
+                                    set_id = item.get("resident_set")
+                                    if isinstance(set_id, str) and set_id:
+                                        try:
+                                            hold = _gang.resident_hold(
+                                                self, gang_record, gang_entry, item, here,
+                                                _now(), live=offer_snapshot(),
+                                                prefer_s=RESIDENT_COPY_PREFER_S)
+                                        except (OSError, ValueError, PoolContractError,
+                                                pb.PrismaBuildError, KeyError, TypeError,
+                                                AttributeError):
+                                            hold = None
                                     if hold is not None:
                                         self.record_denial(item, "deferred_for_resident_copy",
                                                            hold)

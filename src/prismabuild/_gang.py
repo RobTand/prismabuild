@@ -280,12 +280,23 @@ def resident_hold(queue, record: Mapping[str, object], entry: Mapping[str, objec
     if not preferred:
         return None
     published = item.get("published_unix")
-    if (type(published) not in (int, float) or not math.isfinite(published)
-            or not now - float(published) < prefer_s):
+    if type(published) not in (int, float) or not math.isfinite(float(published)):
+        return None
+    age = now - float(published)
+    if not 0 <= age < prefer_s:
+        return None
+    try:
+        standing = elections(queue, str(record["group"]), int(record["size"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        standing = {}
+    busy = {str(found.get("host") or "?") for found in standing.values()
+            if isinstance(found, Mapping)}
+    preferred = [name for name in preferred if name not in busy]
+    if not preferred:
         return None
     return {"group": str(record["group"]), "index": int(entry["index"]),
             "set_id": set_id, "resident_hosts": preferred,
-            "wait_remaining_s": prefer_s - (now - float(published))}
+            "wait_remaining_s": prefer_s - age}
 
 
 def tear_down(queue, group: str, *, reason: str, by: str, now: float) -> bool:
