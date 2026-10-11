@@ -376,6 +376,8 @@ LIVE_DEFAULTS = (
     ("pbrun", "SH", "fleet"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("pbsweep", "SH", "fleet"),
+    ("gate_1730_probe", "CANONICAL_DIR", "gate-1730-canonical"),
+    ("gate_1730_probe", "STAGE_DIR", "gate-1730-stage"),
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("fleet_membership", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),

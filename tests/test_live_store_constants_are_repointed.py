@@ -115,6 +115,9 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "loops running on this box, and the suite was minting a permanent lock "
         "file into it per temp queue root (#265)"
     ),
+    ("gate_1730_probe", "STAGE_DIR"): (
+        "host-local stage path; repointed so the gate probe cannot read the live local copy during tests"
+    ),
     ("mount_latency", "ADMISSION_LOCK_DIR"): (
         "the same directory, named separately by the latency probe"
     ),
