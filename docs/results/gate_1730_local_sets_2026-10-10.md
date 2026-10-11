@@ -14,7 +14,7 @@ The review of the first measure found four faults. This run fixes each one:
 
 1. The NVMe arm now matches the NFS arms: 16 distinct files, same 8 GiB total, same 1/4/16 streams.
 2. Every arm reads 16 files with one file per thread at 16 streams. No thread idles (`idle_threads: 0` on all 36 arms).
-3. Cold now means client-cold: the client drops its page cache before each cold arm, and the 16-stream cold arm touches the bytes first. The server ARC/L2ARC stays outside client reach. The probe tries `/proc/spl/kstat/zfs/arcstats` and records `null` on the Sparks. So NFS cold rates are upper bounds, not disk rates.
+3. Before each first-pass arm, the client requests page-cache eviction. The 16-stream arm reads the bytes first. Server ARC/L2ARC remains outside client control. The probe records `null` for server ARC on the Sparks. These rates are storage-served observations, not proven cold-disk or client-warm-cache rates.
 4. The decision below rests on space alone. It makes no repay claim from speed.
 
 A `--measurement` action was not used. It pins the submitter host class, so it cannot target one Spark from the coordinator. All arms run back to back on one host. Each arm records its load average.
@@ -23,7 +23,7 @@ A `--measurement` action was not used. It pins the submitter host class, so it c
 
 sparky, stage tier (`/stage/prewarm`, NFS ro):
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 1865.8 | 1440.3 |
 | 4 | 5984.8 | 5969.7 |
@@ -31,7 +31,7 @@ sparky, stage tier (`/stage/prewarm`, NFS ro):
 
 sparky, HDD pool (`/mnt/shared`):
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 1540.5 | 1531.8 |
 | 4 | 4417.0 | 4502.6 |
@@ -39,7 +39,7 @@ sparky, HDD pool (`/mnt/shared`):
 
 sparky, host-local NVMe (16 written files, varied pattern, fsync, backing verified non-sparse, write 1274.9 MiB/s):
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 3001.7 | 2992.4 |
 | 4 | 7042.0 | 6701.2 |
@@ -47,7 +47,7 @@ sparky, host-local NVMe (16 written files, varied pattern, fsync, backing verifi
 
 sparklina, stage tier:
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 1673.3 | 1704.3 |
 | 4 | 6132.0 | 6071.5 |
@@ -55,7 +55,7 @@ sparklina, stage tier:
 
 sparklina, HDD pool:
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 4081.7 | 5520.1 |
 | 4 | 6476.5 | 5762.0 |
@@ -63,7 +63,7 @@ sparklina, HDD pool:
 
 sparklina, host-local NVMe (backing verified non-sparse, write 2609.7 MiB/s):
 
-| streams | cold | warm |
+| streams | first pass | repeated pass |
 |---|---|---|
 | 1 | 1940.6 | 2063.1 |
 | 4 | 4237.8 | 4302.8 |
@@ -71,9 +71,13 @@ sparklina, host-local NVMe (backing verified non-sparse, write 2609.7 MiB/s):
 
 Read these numbers with care:
 
-- The 16-stream cold arm ran first on each source, so it is the closest to a true cold read. Later cold arms re-touch server-warmed bytes.
-- Sparklina HDD 16-stream cold (1079.1) against warm (6695.0) shows the gap between a server miss and a server hit. The v1 "cold" arms hid this gap by re-reading one 8 GiB set twelve times.
-- Load stayed low on both hosts during all arms (about 5.5 on sparky, 5.5 to 7.5 on sparklina; per-arm values are in the raw JSON). The fleet was near idle, so NFS warm rates are best cases.
+- The 16-stream first-pass arm ran before the one- and four-stream arms on each source. Later first-pass arms re-read the same server-side bytes.
+- Sparklina HDD rates of 1079.1 MiB/s on first pass and 6695.0 MiB/s on repeat show different service conditions, not proven cache states.
+- Both actions had a 4 GiB memory cap. The 8 GiB arm could not stay in the client cache.
+- The reports record `read_bytes == rchar`: all 144 GiB came from storage. The repeated NVMe rates remain close to the first-pass rates.
+- Client-warm cache performance is unmeasured. The old JSON labels `cold` and `warm` remain unchanged as recorded labels.
+- Load stayed low: about 5.5 on sparky and 5.5 to 7.5 on sparklina. Per-arm values are in the raw JSON.
+- These NFS results reflect a near-idle fleet, not rates under campaign load.
 - No full-set extrapolation follows. A rate over an 8 GiB prefix does not predict a 163 GiB load.
 
 ## Space (D1 verdict for the 163.47 GiB set)
@@ -97,7 +101,13 @@ This leg passes on both hosts.
 ## Decision: NO-GO for the A8S local copy, on space alone
 
 Sparklina fails space, so a two-host resident set is impossible now. That alone stops k1 shim work per the issue.
-The speed arms are evidence, not a verdict: local NVMe at 16 streams reads cold at 7689.8 MiB/s (sparky) and 6622.2 MiB/s (sparklina), against first-touch NFS reads of 2291.9 to 6114.1 MiB/s. Warmed NFS matches or beats local NVMe. No repay claim follows, because the loader concurrency of A8S is not measured here and server-cache state dominates NFS rates.
+The speed arms compare storage-served reads, not client-warm cache reads.
+At 16 streams, first-pass local NVMe rates are 7689.8 MiB/s on sparky and 6622.2 MiB/s on sparklina.
+The corresponding first-pass NFS rates range from 1079.1 to 6114.1 MiB/s, including sparklina's HDD result.
+Repeated NFS reads do not always match local NVMe.
+On sparky, both NFS sources are slower at one and four streams; its HDD pool is also slower at 16 streams.
+On sparklina, both repeated NFS sources exceed local NVMe at each stream count.
+No repay claim follows because this probe does not measure A8S loader concurrency or control server-cache state.
 The bind-mount technique stays valid for any later set that passes this gate.
 Revisit only with new evidence: more free space on sparklina, the real vLLM loader concurrency for A8S, or NFS rates under campaign load.
 No queue, shim, or policy code changed in this task.
