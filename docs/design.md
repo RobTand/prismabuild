@@ -16604,7 +16604,7 @@ beside `boxes`, is the fleet's disk-headroom floor, 5% of a filesystem's size.
 
 The dl380g10 roster names `/tmp/pbscratch` as `local_disk` and caps
 `--spool-gb` at 8 GiB (#1689). The mount is a root-NVMe Btrfs subvolume,
-bound beneath `/tmp` by `tmp-pbscratch.mount`. It is not the parent tmpfs.
+mounted at `/tmp/pbscratch` by `tmp-pbscratch.mount`. It is not the parent tmpfs.
 The supervisor still measures the offer and preserves active reservations.
 The cap does not establish an action's D1 headroom.
 
