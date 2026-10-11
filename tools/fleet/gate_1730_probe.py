@@ -3,7 +3,7 @@
 
 Runs as a PB-admitted action child on one Spark (host pinned at submit:
 disk and NFS paths are host-local facts). It measures nothing on the
-coordinator. Standard library only; the sealed checkout carries it.
+coordinator. Standard library only; the submitted checkout carries it.
 
 Three legs:
   space: statvfs of / and the Docker root, D1 verdict for the A8S set.
@@ -177,8 +177,8 @@ def run_arm(paths: list[str], streams: int, cold: bool, prefix: int) -> dict:
     """One stream-count pass over disjoint shards. Aggregate rate.
 
     Every shard holds at least one file when len(paths) >= streams.
-    Cold drops the client page cache first; the file server cache is
-    outside client reach (see read_arcstats), so cold means client-cold.
+    The first pass requests client cache eviction. Server cache state is
+    outside client control; see _gate_arc_snapshot. Client-warm is unmeasured.
     """
     if cold:
         dropped = sum(1 for p in paths if drop_cache(p))

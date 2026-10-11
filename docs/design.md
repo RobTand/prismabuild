@@ -6720,11 +6720,6 @@ During gang election, a non-resident host reports `deferred_for_resident_copy` w
 The preferred host must not already hold a sibling election. The hold ends 30 seconds after this member row was published.
 A missing set, invalid publication time, future timestamp, absent matching copy, or record error does not prevent fallback election.
 This preference changes neither eligibility nor the gang start barrier. Phase 1 still serves the canonical path.
-
-The #1730 fixed-arm probe runs from a sealed checkout through `pbrun`; runtime publication deliberately excludes this measurement tool.
-Its ARC snapshot retains six counters or `None`, unlike the generic storage parser. Tests repoint its canonical and local stage roots to private directories.
-First and repeated passes do not establish client-warm performance. The retained space NO-GO does not establish a cleanup operation.
-
 `resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
 under the queue root. The body is immutable: the normalized data manifest,
 canonical directory, hosts, initial lease and creator. Every manifest entry
@@ -6855,6 +6850,12 @@ current lease verdict and measured per-host capacity/held tokens through its
 existing bounded reader. Corrupt or unreadable records produce a partial view,
 never a complete empty census. No identity or provenance seal is added;
 whole-directory shape, byte digests, safe deletion and capacity remain refusals.
+
+## Fixed-arm storage probe (#1730)
+
+The #1730 probe runs from a submitted checkout through `pbrun`; runtime publication deliberately excludes this measurement tool.
+Its ARC snapshot retains up to six counters or `None`, unlike the generic storage parser. Tests repoint its canonical and stage-tier NFS roots to private directories.
+First and repeated passes do not establish client-warm performance. The retained space NO-GO does not establish a cleanup operation.
 
 ## Cluster-scoped storage tiers (#583)
 

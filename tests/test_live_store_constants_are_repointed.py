@@ -116,7 +116,7 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "file into it per temp queue root (#265)"
     ),
     ("gate_1730_probe", "STAGE_DIR"): (
-        "host-local stage path; repointed so the gate probe cannot read the live local copy during tests"
+        "stage-tier NFS mount; repointed so the gate probe cannot read the live prewarm data during tests"
     ),
     ("mount_latency", "ADMISSION_LOCK_DIR"): (
         "the same directory, named separately by the latency probe"

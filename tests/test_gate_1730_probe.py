@@ -10,6 +10,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import gate_1730_probe as probe
@@ -106,3 +108,28 @@ def test_written_file_reports_backing(tmp_path):
 
 def test_a8s_constant_matches_canonical_bytes():
     assert abs(probe.A8S_BYTES / 1024 ** 3 - 163.47) < 0.01
+
+
+@pytest.mark.parametrize("rows, expected", [
+    ("hits 4 11\nmisses 4 invalid\nsize 4 22\nother 4 99\n", {"hits": 11, "size": 22}),
+    ("hits 4 invalid\nother 4 99\n", None),
+])
+def test_arc_snapshot_keeps_available_valid_counters(tmp_path, monkeypatch, rows, expected):
+    stats = tmp_path / "arcstats"
+    stats.write_text("header one\nheader two\n" + rows)
+    monkeypatch.setattr(probe, "open", lambda *_args, **_kwargs: stats.open(), raising=False)
+    assert probe._gate_arc_snapshot() == expected
+
+
+def test_stage_default_reads_only_private_fixture_files(tmp_path):
+    stage = Path(probe.STAGE_DIR)
+    assert stage.is_relative_to(tmp_path), "the probe must not read the live stage mount"
+    stage.mkdir()
+    for index in range(16):
+        (stage / f"private-{index:02d}.bin").write_bytes(bytes([index]) * (1024 * 1024))
+    observed = probe.measure_source("private-stage", str(stage))
+    assert observed["arm_files"] == 16
+    assert observed["arm_total_gib"] == round(16 / 1024, 3)
+    assert [(arm["streams"], arm["cold"]) for arm in observed["arms"]] == probe.ARM_ORDER
+    assert all(arm["bytes_gib"] == round(16 / 1024, 3) and arm["idle_threads"] == 0
+               for arm in observed["arms"])

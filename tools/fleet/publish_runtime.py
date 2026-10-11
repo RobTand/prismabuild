@@ -218,7 +218,7 @@ FLEET_SCRIPTS = (
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
     ("gate_1730_probe.py",
-     "the #1730 fixed-arm storage probe runs from a sealed checkout through "
+     "the #1730 fixed-arm storage probe runs from a submitted checkout through "
      "pbrun; it records one measurement and is not an operator command"),
     ("filesystem_floor_proof.py",
      "the #1483 two-host floor proof, run from a checkout through pbrun "
