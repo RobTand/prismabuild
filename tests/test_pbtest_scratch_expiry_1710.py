@@ -99,6 +99,8 @@ def test_attempt_lock_preserves_live_controller_after_pytest_returns(custody):
     report = scratch_owner.sweep_root(custody, now=time.time() + 90000)
     assert not directory.exists()
     assert report["removed"][0]["name"] == directory.name
+
+
 @pytest.mark.parametrize("refusal", [PermissionError, ValueError])
 def test_success_cleanup_refusal_keeps_custody_until_the_attempt_expires(
         custody, monkeypatch, refusal):
