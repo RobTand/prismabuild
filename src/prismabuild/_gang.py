@@ -43,6 +43,19 @@ TERMINAL_CONFIRM_S = 120.0
 TERMINAL_SCHEMA = "prismabuild.gang_terminal_mark.v1"
 #: How often a claimed member re-reads its siblings before launch.
 BARRIER_POLL_S = 0.25
+#: A gang-tagged READY row with no group record is withdrawn by the sweep
+#: past this age (#1521). ``pbgang`` files the group seconds after it
+#: publishes the members; ten minutes is generous, matches the reservation
+#: bound below, and adds no new tuning.
+ORPHAN_ROW_AFTER_S = 600.0
+#: A fenced host lends bounded work only after the partner's absence has
+#: stood this long without a break (#1521, dec-1005-212936-9249). One missed
+#: offer never releases the fence.
+DEAD_PARTNER_AFTER_S = 600.0
+#: The longest declared run a dead-partner loan may admit (#1521,
+#: dec-1005-212936-9249). A gang whose partner returns waits at most one
+#: bounded job, never hours of unbounded work.
+DEAD_PARTNER_LOAN_MAX_S = 1800.0
 MAX_MEMBERS = 16
 MAX_RECORD_BYTES = 64 * 1024
 
@@ -124,18 +137,26 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
 
 
 def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
-                  skew_s: float = DEFAULT_SKEW_S) -> dict:
+                  skew_s: float = DEFAULT_SKEW_S,
+                  wait_deadline_unix: float | None = None) -> dict:
     """File the immutable group record once every member row is published.
 
     ``members`` are the published rows (``action_key``, ``published_unix``,
     ``priority``, ``gang``). Each row's declaration must name this group, the
-    same size and its own distinct index.
+    same size and its own distinct index. ``wait_deadline_unix`` is the
+    submitter's opt-in queue-wait deadline (#1521): past it the sweep tears
+    down only this gang. ``None`` sets no deadline.
     """
     if not _is_hex(group, 32):
         raise GangContractError("gang group must be 32 lowercase hex")
     if not (isinstance(skew_s, (int, float)) and not isinstance(skew_s, bool)
             and math.isfinite(skew_s) and 0 < skew_s <= 3600):
         raise GangContractError("gang skew_s must be finite in (0, 3600]")
+    if wait_deadline_unix is not None and (
+            not isinstance(wait_deadline_unix, (int, float))
+            or isinstance(wait_deadline_unix, bool)
+            or not math.isfinite(wait_deadline_unix)):
+        raise GangContractError("gang wait_deadline_unix must be a finite unix time or None")
     entries = []
     for row in members:
         gang = declaration(row.get("gang"))
@@ -150,6 +171,8 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
+    if wait_deadline_unix is not None:
+        record["wait_deadline_unix"] = float(wait_deadline_unix)
     if not _link_new(group_path(queue, group), record):
         if read_group(queue, group) != record:
             raise GangContractError("a different record already names this gang group")
@@ -161,13 +184,17 @@ def read_group(queue, group: str) -> dict | None:
     if record is None:
         return None
     members = record.get("members")
+    deadline = record.get("wait_deadline_unix")
     if (record.get("schema") != GROUP_SCHEMA or record.get("group") != group
             or not isinstance(members, list) or record.get("size") != len(members)
             or not 2 <= len(members) <= MAX_MEMBERS
             or [m.get("index") if isinstance(m, Mapping) else None for m in members]
             != list(range(len(members)))
             or any(not _is_hex(m.get("action_key"), 64) for m in members)
-            or type(record.get("priority")) is not int):
+            or type(record.get("priority")) is not int
+            or (deadline is not None and (
+                not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
+                or not math.isfinite(deadline)))):
         raise GangContractError(f"malformed gang group record {group}")
     return record
 
@@ -492,4 +519,118 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
                 and release.get("tokens_returned_unix") is not None):
             complete = note_backfill_preemption(queue, election, release) and complete
     return complete
+
+def _sibling_row(queue, record: Mapping[str, object], index: int) -> dict | None:
+    """The sibling's exact-generation READY or CLAIMED row, else ``None``."""
+    from . import pool
+    entry = record["members"][index]  # type: ignore[index]
+    for state in (pool.READY, pool.CLAIMED):
+        row = _gang_read(queue.item_path(state, str(entry["action_key"])))
+        if (row is not None and row.get("action_key") == entry["action_key"]
+                and float(row.get("published_unix", math.nan)) == float(entry["published_unix"])):
+            return row
+    return None
+
+
+def _expected_host(queue, record: Mapping[str, object], index: int) -> str | None:
+    """The host the sibling is pinned to, else ``None`` when unknown."""
+    votes = elections(queue, str(record["group"]), int(record["size"]))  # type: ignore[call-overload]
+    vote = votes.get(index)
+    if isinstance(vote, Mapping) and isinstance(vote.get("host"), str):
+        return str(vote["host"])
+    row = _sibling_row(queue, record, index)
+    tags = row.get("tags") if isinstance(row, Mapping) else None
+    if not isinstance(tags, list):
+        return None
+    known = {str(offer.get("host")) for offer in queue._offer_records()
+             if isinstance(offer.get("host"), str)}
+    pinned = [str(tag) for tag in tags if str(tag) in known]
+    return pinned[0] if len(pinned) == 1 else None
+
+
+def _partner_absent_now(queue, record: Mapping[str, object], index: int) -> tuple[bool, str | None]:
+    """Whether sibling ``index`` reads absent on both signals now (#1521).
+
+    Both CEO signals must hold at once: no live worker offer matches the
+    sibling's exact-generation row tags, and no live worker offer at all
+    names its expected host. One reading never releases the fence; the
+    tracker below requires it to stand continuously.
+    """
+    host = _expected_host(queue, record, index)
+    if host is None:
+        return False, None
+    row = _sibling_row(queue, record, index)
+    if row is None:
+        return False, host
+    live = queue.offers()
+    if any(str(offer.get("host")) == host for offer in live):
+        return False, host
+    hosts = queue.placeable_hosts(row)
+    if hosts is None or list(hosts) != []:
+        return False, host
+    return True, host
+
+
+def dead_partner_stood(queue, election: Mapping[str, object], *, now: float) -> bool:
+    """Whether a partner's absence has stood unbroken past the bound (#1521).
+
+    The tracker lives on the fenced member's election file, under the
+    member's nonblocking transition exclusion: a transient offer blip
+    clears it, so only a continuous absence of ``DEAD_PARTNER_AFTER_S``
+    releases bounded work. A busy writer defers and keeps the old state.
+    """
+    from . import pool
+    group = str(election["group"])
+    fenced = int(election["index"])  # type: ignore[call-overload]
+    record = read_group(queue, group)
+    if record is None or teardown(queue, group) is not None:
+        return False
+    size = int(record["size"])  # type: ignore[call-overload]
+    stood = False
+    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+        if not acquired:
+            return False
+        path = state_dir(queue, group) / f"elect-{fenced}.json"
+        standing = _gang_read(path)
+        if standing is None or any(standing.get(k) != election.get(k)
+                                   for k in ("group", "index", "action_key", "host")):
+            return False
+        tracker = standing.get("dead_partner_absence")
+        if not isinstance(tracker, Mapping):
+            tracker = {}
+        kept: dict = {}
+        for sibling in range(size):
+            if sibling == fenced:
+                continue
+            absent, host = _partner_absent_now(queue, record, sibling)
+            if not absent:
+                continue
+            prior = tracker.get(str(sibling))
+            first = prior.get("first_absent_unix") if isinstance(prior, Mapping) else None
+            if (not isinstance(first, (int, float)) or isinstance(first, bool)
+                    or not math.isfinite(first) or float(first) > now
+                    or (isinstance(prior, Mapping) and prior.get("host") != host)):
+                first = now
+            kept[str(sibling)] = {"host": host, "first_absent_unix": float(first),
+                                  "last_checked_unix": float(now)}
+            if now - float(first) >= DEAD_PARTNER_AFTER_S:
+                stood = True
+        standing["dead_partner_absence"] = kept
+        pool._write_json_atomic(path, standing)
+    return stood
+
+
+def dead_partner_loan_allowed(queue, election: Mapping[str, object], candidate: Mapping[str, object], *,
+                              now: float) -> bool:
+    """Whether ``candidate`` may take a dead-partner loan on the fenced host."""
+    from . import pool
+    try:
+        governed, requested = pool._declared_run_bound(candidate)
+    except (pool.PoolContractError, OSError, ValueError, TypeError, KeyError):
+        return False
+    if governed != "deadline" or requested is None or not math.isfinite(requested):
+        return False
+    if not 0 < float(requested) <= DEAD_PARTNER_LOAN_MAX_S:
+        return False
+    return dead_partner_stood(queue, election, now=now)
 
