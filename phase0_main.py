@@ -1,13 +1,9 @@
-"""Phase 0 guard calibration: interleaved probe runs on dl380g10. No source change.
+"""Short hash and memory-copy proxy for Phase 0 observations on dl380g10.
 
-Probe mimics testcost timing workload at short scale. Full testcost capture
-5a4dcf687cb4 runs 876 s wall with 4 workers on CPUs 0-3 (4 CPUs / 9 GB,
-telemetry cpu_user 3444 s vs sys 17 s, mem peak 593 MB). 150 full runs would
-hold the host 35 h, so this probe keeps the same shape (4 parallel workers on
-CPUs 0-3, user-space CPU-bound sha256 plus streaming memory copy, CPU 0
-included) at ~1.4 s per run. Neighbor load is 4 CPU-bound loops on the named
-CPUs. Host samples use the same counters as adaptive_cpu and the same
-_idle_statistics max/window rule from _judge_idle.
+This is not the testcost timing workload or a CPU 0 kernel-load measure.
+Four workers use CPUs 0-3. Neighbor loops hash a 64 KiB buffer; they do not
+provide a memory-stream workload. Host samples use the adaptive_cpu
+counters. The result supports partial proxy evidence, not a GO verdict.
 """
 import glob
 import hashlib

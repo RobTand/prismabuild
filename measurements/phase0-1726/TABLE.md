@@ -133,6 +133,9 @@ Preserve the idle reference and apply an explicit max/window timing rule.
 Publish the receipts, table, tolerance, and final scope verdict in #1726.
 On a supported no-go verdict, stop k2 to k5 and close #1541.
 
-This issuegraph investigation needs a measurement campaign to complete.
-It cannot replace that campaign with this proxy or waive the criterion.
-Keep this PR unmerged until the required evidence and exact-head review exist.
+This file is partial proxy evidence only. PrismaBuild #1726 stays open.
+The required testcost and CPU 0 kernel-load evidence remains unmeasured.
+No source merge releases k2 to k5.
+
+Two distinct same-node runs exceed the idle timing maximum. Seed 1, round 0
+exceeds wall and hash time. Seed 2, round 2 exceeds copy time.
