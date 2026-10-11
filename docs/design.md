@@ -11593,6 +11593,9 @@ The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
 
+The probe also counts the peak obligations of admitted declared units, minus
+their current holdings, against streaming newcomers (#1627).
+
 **A waiter that produces no pressure says why (#1627).** `window_pressure`
 decides in many places that a waiter asks the tier for nothing, and until
 #1627 none of them left a record. On 2026-10-08 the stage tier held
