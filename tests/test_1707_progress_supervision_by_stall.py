@@ -238,6 +238,35 @@ def test_stall_and_progress_phases_cannot_combine():
                           "--", "true"])
 
 
+def test_awaited_batch_cli_parses_the_sealed_declaration(tmp_path):
+    state = str(tmp_path / "controller-state")
+    args = pbrun.parse_args([
+        "--progress-phase", "run=60",
+        "--awaited-batch", f"{'a' * 64}:{'b' * 64}:{state}",
+        "--", "true",
+    ])
+    assert args.awaited_batch == {
+        "schema": pb.AWAITED_BATCH_SCHEMA_V1,
+        "parent_key": "a" * 64,
+        "plan_key": "b" * 64,
+        "controller_state": state,
+    }
+
+
+@pytest.mark.parametrize(("declared", "message"), [
+    ("broken", "--awaited-batch must be PARENT:PLAN:STATE"),
+    (f"invalid:{'b' * 64}:/controller-state", "parent_key"),
+    (f"{'a' * 64}:invalid:/controller-state", "plan_key"),
+    (f"{'a' * 64}:{'b' * 64}:relative-state", "controller_state"),
+])
+def test_awaited_batch_cli_refuses_malformed_declarations(declared, message):
+    with pytest.raises(SystemExit, match=message):
+        pbrun.parse_args([
+            "--progress-phase", "run=60", "--awaited-batch", declared,
+            "--", "true",
+        ])
+
+
 def test_stall_s_is_refused_on_the_slurm_lane():
     with pytest.raises(ValueError, match="--stall-s requires pool transport"):
         pbrun.require_stall_scope(stall_s=60.0, transport="slurm")

@@ -7661,6 +7661,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         args.progress_phase, cycle=args.progress_cycle)
     if args.stall_s is not None and args.progress_policy is not None:
         raise SystemExit("pbrun: --stall-s needs no --progress-phase: phases already set the quiet")
+    args.awaited_batch = parse_awaited_batch(args.awaited_batch)
     # Some things an argument gets wrong can only be judged once the demand
     # is resolved -- a GPU budget on a slot that reserves no GPU is the case
     # -- and they are argument errors all the same.  So the parser that

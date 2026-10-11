@@ -13034,6 +13034,9 @@ worker without it cannot claim the row, so an older loop never ends a
 valid queue wait as `no_progress`. No seal or identity wall is added
 (D32), and the scientific and native limits stay unchanged.
 
+The CLI parses this declaration before it captures the checkout.
+Malformed keys or a relative controller-state path cause a terminal refusal.
+
 **The verdict.** The worker samples the awaited set on the heartbeat
 cadence and judges each interval since the last look. It credits an
 eligible interval through the same mark as every other exemption
