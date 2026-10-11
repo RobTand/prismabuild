@@ -79,9 +79,10 @@ Read these numbers with care:
 - Sparklina HDD rates of 1079.1 MiB/s on first pass and 6695.0 MiB/s on repeat show different service conditions, not proven cache states.
 - Both actions had a 4 GiB memory cap. The 8 GiB arm could not stay in the client cache.
 - PB telemetry on sparklina records 157.14 GB of `read_bytes` and 154.66 GB of `rchar`, not equal counters.
+- Sparky telemetry records 154.73 GB of `read_bytes` and 154.66 GB of `rchar`, also not equal counters.
 - These counters do not establish a client-warm arm. The repeated NVMe rates remain close to the first-pass rates.
 - Client-warm cache performance is unmeasured. The old JSON labels `cold` and `warm` remain unchanged as recorded labels.
-- The load range was 5.49 to 7.76 on sparky and about 5.5 to 7.5 on sparklina. Per-arm values are in the raw JSON.
+- The load range was 5.49 to 7.76 on sparky and 5.39 to 7.46 on sparklina. Per-arm values are in the raw JSON.
 - These NFS results reflect a near-idle fleet, not rates under campaign load.
 - No full-set extrapolation follows. A rate over an 8 GiB prefix does not predict a 163 GiB load.
 
