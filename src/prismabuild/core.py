@@ -7962,6 +7962,97 @@ def _sigterm_unwinds_this_process():
         signal.signal(signal.SIGTERM, previous_term)
 
 
+#: How long the launcher waits for its device-visibility probe. A broken
+#: driver answers fast; a hung one must not stall the action it measures.
+DEVICE_PROBE_TIMEOUT_S = 10.0
+
+#: The probe child. It counts CUDA devices through the driver API, which
+#: honours ``CUDA_VISIBLE_DEVICES`` the same way a torch payload does. It
+#: imports no torch. ``nvidia-smi`` and NVML would count the host inventory
+#: instead, which the design excludes from task visibility.
+_DEVICE_PROBE_SCRIPT = (
+    "import ctypes, sys\n"
+    "lib = ctypes.CDLL('libcuda.so.1')\n"
+    "if lib.cuInit(0) != 0:\n"
+    "    sys.exit(10)\n"
+    "count = ctypes.c_int()\n"
+    "if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:\n"
+    "    sys.exit(11)\n"
+    "print(count.value)\n"
+)
+
+
+def _device_probe_environment(action: Mapping[str, object], *, profile=None) -> dict[str, str]:
+    """The exact environment the payload sees, for the device probe."""
+    variables = action["environment"]["variables"]
+    assert isinstance(variables, Mapping)
+    environment = {str(key): str(value) for key, value in variables.items()}
+    environment.update(_progress_environment(action, environment))
+    environment.update(_residency_environment(action, environment))
+    if profile is not None:
+        environment.update(profile.environment(environment))
+    return environment
+
+
+def probe_visible_devices(environment: Mapping[str, str]) -> tuple[int | None, str | None]:
+    """Count the CUDA devices visible in ``environment``; never raise.
+
+    One short child runs with exactly the payload's environment, so the
+    count is what the payload itself would see. Returns ``(count, None)``
+    on a clean probe, else ``(None, reason)``: a missing library, a failed
+    driver call and a timeout are probe gaps, never a zero. Only an integer
+    ``0`` may refuse an exit-zero GPU run. A probe failure must never fail
+    the action it measures, so every error path returns text instead.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _DEVICE_PROBE_SCRIPT],
+            env={str(key): str(value) for key, value in dict(environment).items()},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=DEVICE_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "device probe timed out"
+    except OSError as exc:
+        return None, f"device probe did not start: {exc.strerror or exc}"[:160]
+    except Exception as exc:  # noqa: BLE001
+        return None, f"device probe failed: {exc!r}"[:160]
+    if completed.returncode != 0:
+        tail = (completed.stderr or "").strip().splitlines()
+        detail = tail[-1].strip() if tail else f"exit {completed.returncode}"
+        return None, f"device probe exited {completed.returncode}: {detail}"[:160]
+    try:
+        return int(completed.stdout.strip()), None
+    except ValueError:
+        return None, "device probe printed no count"
+
+
+def _device_probe_fragment(devices: int | None, error: str | None) -> dict[str, object]:
+    """The ``devices`` record fragment the pool lifts into the ending."""
+    fragment: dict[str, object] = {"devices": devices}
+    if error is not None:
+        fragment["devices_probe_error"] = error
+    return fragment
+
+
+def probe_action_devices(action: Mapping[str, object]) -> tuple[int | None, str | None]:
+    """The device count for one action's sealed environment; never raise.
+
+    The cache-hit path reports the count without running the payload, so
+    it cannot build the strict launch environment: a progress contract
+    the surrounding process did not set up must read as a probe gap, not
+    turn a cheap hit into a refusal to answer.
+    """
+    try:
+        environment = _device_probe_environment(action)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"device probe environment unavailable: {exc!r}"[:160]
+    return probe_visible_devices(environment)
+
+
 def run_local_action(
     action: object,
     *,
@@ -7988,10 +8079,12 @@ def run_local_action(
         cached = cas.lookup(normalized)
         if cached is not None:
             verify_code_closure(normalized["code_closure"], root)
+            devices, devices_error = probe_action_devices(normalized)
             return {
                 "status": "cache_hit",
                 "receipt": cached,
                 "payload_path": str(cas._verified_receipt_result_path(cached)),
+                **_device_probe_fragment(devices, devices_error),
             }
         if initial_miss_rendezvous is not None:
             # This call is deliberately adjacent to the first authoritative
@@ -8013,8 +8106,6 @@ def run_local_action(
     # cannot honour the profile the action asked for refuses here, having done
     # nothing.
     profile = _profile_session(normalized, working_directory=cwd, checkout_root=root)
-    variables = environment["variables"]
-    assert isinstance(variables, Mapping)
     recovered_declared_result = False
     reaped_staging_files = 0
     with _local_output_lock(cas, root, output) as output_lock_descriptor, \
@@ -8025,10 +8116,12 @@ def run_local_action(
             cached = cas.lookup(normalized)
             if cached is not None:
                 verify_code_closure(normalized["code_closure"], root)
+                devices, devices_error = probe_action_devices(normalized)
                 result: dict[str, object] = {
                     "status": "cache_hit",
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
+                    **_device_probe_fragment(devices, devices_error),
                 }
                 if initial_miss_receipt is not None:
                     result["initial_miss_rendezvous"] = initial_miss_receipt
@@ -8064,18 +8157,18 @@ def run_local_action(
         process: subprocess.Popen[bytes] | None = None
         execution_deadline: float | None = None
         launch_argv = list(task["argv"])
-        launch_environment = {
-            str(key): str(value) for key, value in variables.items()
-        }
-        launch_environment.update(_progress_environment(normalized, launch_environment))
-        launch_environment.update(_residency_environment(normalized, launch_environment))
+        launch_environment = _device_probe_environment(normalized, profile=profile)
         if profile is not None:
-            launch_environment.update(profile.environment(launch_environment))
             # The sealed argv is exec'd verbatim underneath what this returns.
             # ``preflight_action`` attests ``task.argv[0]`` off the action, not
             # off this list, so the executable this action names is still the
             # one attested and rechecked after the run.
             launch_argv = profile.launch_argv(task["argv"])
+        # Before the payload runs, so a failure keeps the count too: the
+        # pool lifts the sidecar when the final stdout line is lost, and the
+        # result object below carries it when the run succeeds.
+        devices, devices_error = probe_visible_devices(launch_environment)
+        _write_action_status(_device_probe_fragment(devices, devices_error))
         with _sigterm_unwinds_this_process():
             try:
                 process = subprocess.Popen(
@@ -8256,6 +8349,9 @@ def run_local_action(
         "recovered_declared_result": recovered_declared_result,
         "reaped_staging_files": reaped_staging_files,
         "local_result_claim_sha256": claim["claim_sha256"],
+        # Its own keys, so the pool lifts the executed-on device count into
+        # the ending beside ``profile`` instead of parsing launcher stdout.
+        **_device_probe_fragment(devices, devices_error),
     }
     if profile_record is not None:
         # Its own key, so a reader tests one field rather than parsing prose,
