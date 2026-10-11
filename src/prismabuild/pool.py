@@ -1161,6 +1161,12 @@ MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
 #: look dead, short enough that a box taken down does not keep vouching for
 #: work nobody can run.
 OFFER_TIMEOUT_S = 120.0
+#: How long a gang member with a resident set waits for a host that holds
+#: the copy before it elects here anyway (#1733).  A preference, never a
+#: gate: past this age the member claims on any fit host and Phase 1 serves
+#: the canonical path.  Thirty seconds matches the gang ready-mark freshness,
+#: so a fallback claim still meets siblings whose marks are live.
+RESIDENT_COPY_PREFER_S = 30.0
 #: How fresh the claim pass's latest counted denial of a withheld row must be
 #: for the consumer to read the withhold as live (#1052).  The pool bounds a
 #: withhold episode by ``WITHHOLD_CEILING_S`` only when it has refills; with
@@ -6665,10 +6671,59 @@ class PoolQueue:
         live = self.offers(max_age_s=max_age_s)
         if not live:
             return None
-        return sorted({
+        hosts = sorted({
             str(offer.get("host") or "?")
             for offer in self._matching_offers(item, live=live)
         })
+        return self._resident_first_order(item, hosts)
+
+    def resident_copy_hosts(self, set_id: object) -> set[str]:
+        """Hosts whose copy of ``set_id`` reads ``resident`` (#1733).
+
+        Best effort and never a refusal: a missing set, an unreadable copy
+        record or a malformed host list reads as no preference, so a row
+        whose copy is nowhere still claims on any fit host.
+        """
+        from . import resident_sets
+        try:
+            if not isinstance(set_id, str) or not set_id:
+                return set()
+            store = resident_sets.ResidentSets(self.root)
+            record = store.read(set_id)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            return set()
+        hosts = record.get("hosts") if isinstance(record, Mapping) else None
+        if not isinstance(hosts, list):
+            return set()
+        found = set()
+        for host in hosts:
+            if not isinstance(host, str) or not host:
+                continue
+            try:
+                copy = store.read_copy(set_id, host)
+            except (OSError, ValueError, AttributeError, KeyError, TypeError):
+                continue
+            if isinstance(copy, Mapping) and copy.get("state") == "resident":
+                found.add(host)
+        return found
+
+    def _resident_first_order(self, item: Mapping[str, object],
+                              hosts: list[str]) -> list[str]:
+        """Fit hosts with a resident copy first, else the prior order (#1733).
+
+        Rows without a set keep the alphabetical order every prior caller
+        reads; rows with a set sort resident hosts first, alphabetical
+        within each half.  Admission never consults this: it only orders
+        the advisory answer.
+        """
+        set_id = item.get("resident_set")
+        if not isinstance(set_id, str) or not set_id:
+            return hosts
+        residents = self.resident_copy_hosts(set_id)
+        if not residents:
+            return hosts
+        return [host for host in hosts if host in residents] + [
+            host for host in hosts if host not in residents]
 
     def placement_timeout_ceilings(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -23090,6 +23145,28 @@ class PoolQueue:
                                         "gang_election": ahead[0], "ranked_behind": True})
                                     continue
                                 if mine is None and not sibling_here:
+                                    # A member with a resident set elects first
+                                    # where its copy is: this host waits a
+                                    # bound moment for a fit resident host,
+                                    # then elects here anyway (#1733).  Offer
+                                    # reads only ever buy a bounded wait for a
+                                    # better placement, never a refusal.
+                                    hold = None
+                                    set_id = item.get("resident_set")
+                                    if isinstance(set_id, str) and set_id:
+                                        try:
+                                            hold = _gang.resident_hold(
+                                                self, gang_record, gang_entry, item, here,
+                                                _now(), live=offer_snapshot(),
+                                                prefer_s=RESIDENT_COPY_PREFER_S)
+                                        except (OSError, ValueError, PoolContractError,
+                                                pb.PrismaBuildError, KeyError, TypeError,
+                                                AttributeError):
+                                            hold = None
+                                    if hold is not None:
+                                        self.record_denial(item, "deferred_for_resident_copy",
+                                                           hold)
+                                        continue
                                     # A prelaunch gang elects only whole: defer
                                     # while a sibling's verdict is unresolved
                                     # (#1594 R3).  One call; the merge keeps it.
