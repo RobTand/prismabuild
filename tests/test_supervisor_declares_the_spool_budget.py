@@ -541,6 +541,43 @@ def test_room_is_f_bavail_minus_a_rounded_up_floor():
 
 
 # -- the checked-in roster ---------------------------------------------------
+@pytest.mark.parametrize("host", ["sparky", "gx10-6b77"])
+@pytest.mark.parametrize("free_gib, expected_gib", [(51, 1), (500, 450)])
+def test_checked_in_gb10_budget_uses_the_five_percent_floor_without_a_cap(
+        host, free_gib, expected_gib, tmp_path, monkeypatch):
+    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise, "_queue_root", lambda: tmp_path / "queue")
+    monkeypatch.setattr(ps, "_local_disk", lambda path: None)
+    _stat(monkeypatch, 1000, free_gib)
+    _, args = supervise.declared_shape(host, 0)
+    assert _worker_offer(args)[KIND] == expected_gib
+
+
+def test_checked_in_wsl_worker_offers_no_spool_without_a_disk_read(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
+    _, args = supervise.declared_shape("wsl-gpu", 0)
+    assert KIND not in _worker_offer(args)
+
+
+@pytest.mark.parametrize("free_gib, expected_gib", [(60, 8), (52, 2), (50, 0)])
+def test_checked_in_dl380_budget_uses_its_qualified_root_and_eight_gib_cap(
+        free_gib, expected_gib, tmp_path, monkeypatch):
+    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise, "_queue_root", lambda: tmp_path / "queue")
+
+    def require_qualified_disk(path):
+        if path != Path("/tmp/pbscratch"):
+            raise ps.SpoolError("the operator has not qualified this disk root")
+
+    monkeypatch.setattr(ps, "_local_disk", require_qualified_disk)
+    _stat(monkeypatch, 1000, free_gib)
+    _, args = supervise.declared_shape("dl380g10", 0)
+    assert _worker_offer(args).get(KIND, 0) == expected_gib
 
 
 def test_sparklina_resolves_the_same_spool_budget_as_its_roster_key(
