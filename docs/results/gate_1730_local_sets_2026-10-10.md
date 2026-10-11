@@ -83,7 +83,7 @@ Read these numbers with care:
 - These counters do not establish a client-warm arm. The repeated NVMe rates remain close to the first-pass rates.
 - Client-warm cache performance is unmeasured. The old JSON labels `cold` and `warm` remain unchanged as recorded labels.
 - The 1-minute load averages ranged from 5.49 to 7.76 on sparky and 5.39 to 7.46 on sparklina. Per-arm values are in the raw JSON.
-- These NFS results reflect a near-idle fleet, not rates under campaign load.
+- Fleet load was not controlled. These rates do not establish behavior under campaign load.
 - No full-set extrapolation follows. A rate over an 8 GiB prefix does not predict a 163 GiB load.
 
 ## Space (D1 verdict for the 163.47 GiB set)
@@ -95,7 +95,7 @@ D1 needs 1.5N + 20 GiB free (265.21 GiB here) plus the 5% floor.
 | sparky | 559.95 | 91.66 | fits |
 | sparklina | 109.88 | 45.77 | fails (1.5N+20GiB rule) |
 
-Cleanup landed before this probe. Sparklina still cannot hold the set.
+These free-space observations alone do not establish a cleanup operation. Sparklina cannot hold the set at the recorded free space.
 
 ## Bind mount
 
