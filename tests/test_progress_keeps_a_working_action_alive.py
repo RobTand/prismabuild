@@ -151,14 +151,14 @@ def test_a_progressing_action_outlives_the_ceiling_that_killed_the_glm_rows(tmp_
     assert progress["last_accepted"]["unit"] == "widgets"
 
 
-def test_the_same_action_without_the_contract_is_killed_by_the_ceiling(tmp_path):
-    """The control: nothing about the *work* is what makes the difference."""
+def test_the_same_action_without_the_contract_is_ended_by_its_stall_watch(tmp_path):
+    """The control: silence without a declared policy is still bounded (#1707)."""
 
     outcome = _run(tmp_path, mode="report", seconds=1.5, ceiling=0.4, policy=None)
     assert outcome["status"] == "timeout"
-    assert outcome["termination_reason"] == "execution_deadline"
-    assert outcome["execution_governed_by"] == "deadline"
-    assert "progress_observation" not in outcome
+    assert outcome["termination_reason"] == "no_progress"
+    assert outcome["execution_governed_by"] == "stall"
+    assert outcome["progress_observation"]["source"] == "activity"
 
 
 # -- what must still end ---------------------------------------------------
@@ -725,8 +725,8 @@ def test_an_unreadable_progress_record_reports_nothing_rather_than_a_number(
     tmp_path, observation
 ):
     """A malformed observation has one bounded outcome, and it is silence:
-    ``KILL AT`` remains the number to read, which is true of an action that
-    declared no policy either."""
+    the column stays blank rather than showing a number from another
+    attempt."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
     row = _claim_with(queue, "f" * 64, observation, tmp_path=tmp_path)
