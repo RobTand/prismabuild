@@ -206,6 +206,11 @@ FLEET_SCRIPTS = (
     # materializing a checkout.
     "qualify_needrestart_broker_deferral.py",
     "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
+    # The one-time root enrollment of a host in automatic movement publication
+    # (#1659).  An administrator copies it out of the live generation, as the
+    # client upgrader's installer; a generation without it leaves no host able
+    # to enroll.  ``runtime_publication.py`` it installs is a package module.
+    "install_movement_publisher.sh",
 )
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.
@@ -676,12 +681,14 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_receipt(path: Path, receipt: dict[str, object]) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(receipt, handle, indent=1)
-        handle.write("\n")
+def _write_receipt(path: Path, receipt: dict[str, object]) -> str:
+    from prismabuild.digest_primitives import raw_sha256
+    raw = (json.dumps(receipt, indent=1) + "\n").encode("utf-8")
+    with path.open("wb") as handle:
+        handle.write(raw)
         handle.flush()
         os.fsync(handle.fileno())
+    return raw_sha256(raw)
 
 
 def _probe(root: Path) -> None:
@@ -725,6 +732,42 @@ def _seal_generation(root: Path) -> None:
         else:
             path.chmod(PUBLISHED_FILE_MODE)
     root.chmod(PUBLISHED_DIRECTORY_MODE)
+
+def _sign_movement_approval(generation: Path, *, receipt_sha256: str) -> None:
+    """Write the movement-role publisher approval sibling (#1659).
+
+    Best effort: without the dedicated publisher principal's signing secret
+    there is no approval, enrolled hosts publish no protected copy, and the
+    fleet keeps the behaviour it had before roles existed. The secret must be
+    0600, owned by the publisher account, and under an account that does not
+    own the runtime store: a same-account key is refused, so a store writer
+    cannot approve its own bytes. A person approves that principal once.
+    The digest comes from the receipt bytes constructed by this publisher.
+    Never read approval input from the exposed generation store.
+    """
+    try:
+        import hashlib as _hashlib
+        import hmac as _hmac
+        import os as _os
+        key_path = Path.home() / ".config" / "prismabuild" / "movement-approval.key"
+        info = key_path.stat()
+        if info.st_mode & 0o077 or info.st_uid != _os.geteuid():
+            return
+        try:
+            if info.st_uid == generation.parent.stat().st_uid:
+                return
+        except OSError:
+            return
+        secret = key_path.read_text(encoding="utf-8").strip()
+        if not __import__("re").fullmatch(r"[0-9a-f]{64}", secret):
+            return
+        if not re.fullmatch(r"[0-9a-f]{64}", receipt_sha256):
+            return
+        tag = _hmac.new(bytes.fromhex(secret), receipt_sha256.encode("utf-8"), _hashlib.sha256).hexdigest()
+        sibling = generation.parent / f"{generation.name}.approval"
+        sibling.write_text(tag + "\n", encoding="utf-8")
+    except (OSError, ValueError):
+        return
 
 
 def _unseal_tree(root: Path) -> None:
@@ -2322,12 +2365,13 @@ def _run_publication(args) -> int:
             "published_by": socket.gethostname(),
             "files": published,
         }
-        _write_receipt(stage / "RUNTIME_VERSION.json", receipt)
+        receipt_sha256 = _write_receipt(stage / "RUNTIME_VERSION.json", receipt)
         _probe(stage)
         _seal_generation(stage)
         _fsync_directory(stage)
         os.replace(stage, generation)
         _fsync_directory(store)
+        _sign_movement_approval(generation, receipt_sha256=receipt_sha256)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
                               "path": str(generation), "activated": False,

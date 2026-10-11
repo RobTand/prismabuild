@@ -5,7 +5,7 @@ import pytest
 
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
-from prismabuild import _gang, pool
+from prismabuild import _gang, _measurement_reservation as reservation, pool
 
 
 def waiting(gang_fleet):
@@ -36,6 +36,27 @@ def test_idle_fenced_host_admits_restartable_minus_ten(gang_fleet):
     assert not queue.withdrawal_decisions(key)
     assert claim("sparklina") is None
     assert not queue.withdrawal_decisions(key), "backfill stopped while partner still blocked"
+
+
+def test_an_equal_priority_reservation_shortfall_never_becomes_a_backfill_loan(gang_fleet):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    incumbent = publish("unavailable-peer", tags=["sparky"], timeout_s=None)
+    assert claim("sparky") == incumbent
+    group, keys = members("aged-equal-priority", priority=-10)
+    assert claim("sparklina") is None
+    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    assert claim("sparklina") is None
+    election = _gang.elections(queue, group, 2)[0]
+    assert _gang.backfill_allowed(queue, election, clock[0])
+    key = backfill(publish)
+    assert queue._preemption_eligible(pool._read_json(queue.item_path(pool.READY, key)))
+    assert claim("sparklina") is None, "a loan bypassed the gang's demand reservation"
+    blocked = denial(key, "sparklina")
+    assert blocked["reason"] == "deferred_for_gang_reservation"
+    assert blocked["evidence"]["gang_election"]["reservation"]["gpu"] == 1
+    assert queue.ledger("sparklina").held_keys() == []
+    assert queue.item_path(pool.READY, key).exists()
+    assert queue.item_path(pool.READY, keys[0]).exists()
 
 
 @pytest.mark.parametrize("options", [
