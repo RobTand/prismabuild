@@ -161,20 +161,6 @@ def test_a_box_without_spool_gb_keeps_its_args_byte_for_byte(roster, monkeypatch
     assert _worker_offer(BASE_ARGS) == {"mem_gb": 8, "cpu": 2, "disk_metadata": 0}
 
 
-def test_the_checked_in_boxes_without_spool_gb_read_exactly_their_file_args(
-        tmp_path, monkeypatch):
-    """dl380g10 declares no spool budget: its arguments are the file's."""
-
-    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
-    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
-    monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
-    boxes = json.loads(ROSTER.read_text())["boxes"]
-    assert "--spool-gb" not in boxes["dl380g10"]["args"]
-    loops, args = supervise.declared_shape("dl380g10", 0)
-    assert (loops, args) == (boxes["dl380g10"]["loops"],
-                             [str(a) for a in boxes["dl380g10"]["args"]])
-
-
 # -- on: the roster value reaches the worker and the claim -------------------
 
 
@@ -555,23 +541,44 @@ def test_room_is_f_bavail_minus_a_rounded_up_floor():
 
 
 # -- the checked-in roster ---------------------------------------------------
+@pytest.mark.parametrize("host", ["sparky", "gx10-6b77"])
+@pytest.mark.parametrize("free_gib, expected_gib", [(51, 1), (500, 450)])
+def test_checked_in_gb10_budget_uses_the_five_percent_floor_without_a_cap(
+        host, free_gib, expected_gib, tmp_path, monkeypatch):
+    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise, "_queue_root", lambda: tmp_path / "queue")
+    monkeypatch.setattr(ps, "_local_disk", lambda path: None)
+    _stat(monkeypatch, 1000, free_gib)
+    _, args = supervise.declared_shape(host, 0)
+    assert _worker_offer(args)[KIND] == expected_gib
 
 
-def test_both_gb10s_declare_a_spool_budget_on_a_named_local_disk():
+def test_checked_in_wsl_spool_declaration_offers_no_budget_without_a_disk_read(
+        monkeypatch):
+    monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
     document = json.loads(ROSTER.read_text())
-    assert document["local_disk_free_floor_percent"] == 5
-    boxes = document["boxes"]
-    for host in ("sparky", "gx10-6b77"):
-        entry = boxes[host]
-        args = [str(a) for a in entry["args"]]
-        # Measured, not written down: no number in the file can go stale as
-        # the disk fills or is freed.
-        assert supervise._spool_gb_of(args) is None
-        assert args[args.index("--spool-gb") + 1] == "auto"
-        assert os.path.isabs(entry["local_disk"])
-    for host in ("dl380g10", "wsl-gpu"):
-        assert "--spool-gb" not in boxes[host]["args"]
-        assert "local_disk" not in boxes[host]
+    entry = document["boxes"]["wsl-gpu"]
+    args = supervise.spool_declaration(
+        "wsl-gpu", entry, document, entry["args"], record=False)
+    assert KIND not in _worker_offer(args)
+
+
+@pytest.mark.parametrize("free_gib, expected_gib", [(60, 8), (52, 2), (50, 0)])
+def test_checked_in_dl380_budget_uses_its_qualified_root_and_eight_gib_cap(
+        free_gib, expected_gib, tmp_path, monkeypatch):
+    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
+    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+    monkeypatch.setattr(supervise, "_queue_root", lambda: tmp_path / "queue")
+
+    def require_qualified_disk(path):
+        if path != Path("/tmp/pbscratch"):
+            raise ps.SpoolError("the operator has not qualified this disk root")
+
+    monkeypatch.setattr(ps, "_local_disk", require_qualified_disk)
+    _stat(monkeypatch, 1000, free_gib)
+    _, args = supervise.declared_shape("dl380g10", 0)
+    assert _worker_offer(args).get(KIND, 0) == expected_gib
 
 
 def test_sparklina_resolves_the_same_spool_budget_as_its_roster_key(
