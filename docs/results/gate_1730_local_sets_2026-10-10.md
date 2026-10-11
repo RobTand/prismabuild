@@ -14,7 +14,11 @@ The review of the first measure found four faults. This run fixes each one:
 
 1. The NVMe arm now matches the NFS arms: 16 distinct files, same 8 GiB total, same 1/4/16 streams.
 2. Every arm reads 16 files with one file per thread at 16 streams. No thread idles (`idle_threads: 0` on all 36 arms).
-3. Before each first-pass arm, the client requests page-cache eviction. The 16-stream arm reads the bytes first. Server ARC/L2ARC remains outside client control. The probe records `null` for server ARC on the Sparks. These rates are storage-served observations, not proven cold-disk or client-warm-cache rates.
+3. Before each first-pass arm, the client requests page-cache eviction.
+   The 16-stream arm reads the bytes first.
+   Server ARC/L2ARC remains outside client control.
+   The probe records `null` for server ARC on the Sparks.
+   These rates are storage-served observations, not proven cold-disk or client-warm-cache rates.
 4. The decision below rests on space alone. It makes no repay claim from speed.
 
 A `--measurement` action was not used. It pins the submitter host class, so it cannot target one Spark from the coordinator. All arms run back to back on one host. Each arm records its load average.
@@ -106,7 +110,8 @@ At 16 streams, first-pass local NVMe rates are 7689.8 MiB/s on sparky and 6622.2
 The corresponding first-pass NFS rates range from 1079.1 to 6114.1 MiB/s, including sparklina's HDD result.
 Repeated NFS reads do not always match local NVMe.
 On sparky, both NFS sources are slower at one and four streams; its HDD pool is also slower at 16 streams.
-On sparklina, both repeated NFS sources exceed local NVMe at each stream count.
+On sparklina, repeated HDD reads exceed local NVMe at all stream counts.
+Repeated stage reads exceed local NVMe at four and 16 streams, but not at one stream.
 No repay claim follows because this probe does not measure A8S loader concurrency or control server-cache state.
 The bind-mount technique stays valid for any later set that passes this gate.
 Revisit only with new evidence: more free space on sparklina, the real vLLM loader concurrency for A8S, or NFS rates under campaign load.
