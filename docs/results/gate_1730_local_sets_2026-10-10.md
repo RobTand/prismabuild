@@ -82,7 +82,7 @@ Read these numbers with care:
 - Sparky telemetry records 154.73 GB of `read_bytes` and 154.66 GB of `rchar`, also not equal counters.
 - These counters do not establish a client-warm arm. The repeated NVMe rates remain close to the first-pass rates.
 - Client-warm cache performance is unmeasured. The old JSON labels `cold` and `warm` remain unchanged as recorded labels.
-- The load range was 5.49 to 7.76 on sparky and 5.39 to 7.46 on sparklina. Per-arm values are in the raw JSON.
+- The 1-minute load averages ranged from 5.49 to 7.76 on sparky and 5.39 to 7.46 on sparklina. Per-arm values are in the raw JSON.
 - These NFS results reflect a near-idle fleet, not rates under campaign load.
 - No full-set extrapolation follows. A rate over an 8 GiB prefix does not predict a 163 GiB load.
 
@@ -99,7 +99,7 @@ Cleanup landed before this probe. Sparklina still cannot hold the set.
 
 ## Bind mount
 
-Image `localhost/prismaquant/spark-vllm-nccl230:nightly-20260929` on both hosts.
+Sparky used `192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929`; sparklina used `localhost/prismaquant/spark-vllm-nccl230:nightly-20260929`. The tag matches, but the registry references differ.
 A `--mount type=bind,src=<local>,dst=/mnt/shared/gate-1730-<host>,readonly` inside a container that already has `-v /mnt/shared:/mnt/shared:ro` shows only the local files (`nested_shows_local_only: true`, rc 0).
 `--mount` with a missing source fails (rc 125, clear error), so it has no silent empty-directory trap.
 This leg passes on both hosts.
