@@ -537,6 +537,7 @@ DRAIN_EXCLUSIVE_CPU = frozenset({
 DRAIN_EXCLUSIVE_GPU = frozenset({
     "exclusive_holder", "measurement_device_not_idle", "host_or_device_congested",
     "sharing_probe_not_authorized", "gpu_memory_budget",
+    "unified_gpu_memory_budget",
 })
 #: *GPU*: the refusals ``adaptive_gpu.Controller.decision`` gives an item that
 #: is not a measurement only while the pool's own GPU holders are on the
@@ -555,6 +556,7 @@ DRAIN_EXCLUSIVE_GPU = frozenset({
 DRAIN_GPU_HOLDERS = frozenset({
     "exclusive_holder", "sharing_probe_not_authorized",
     "holder_telemetry_unavailable", "max_actions",
+    "unified_gpu_memory_budget",
 })
 #: *SW-cap idle* (#1125): a ``host_or_device_congested`` refusal with
 #: ``limited`` set, on a GB10 whose only limiter is the idle SW power cap.
@@ -703,6 +705,11 @@ def _adaptive_refusal_drains(
         # evidence, and the rows behind it keep claiming (#1185).
         return None, True
     if reason in DRAIN_EXCLUSIVE_CPU:
+        return "exclusive", False
+    if reason == "unified_gpu_memory_budget":
+        # Unified DRAM (#1661): the holders named in the refusal free
+        # host memory and GPU caps when they drain, so the item waits
+        # on every holder, not only GPU holders.
         return "exclusive", False
     declared = int(demand.get("cpu", 0) or 0)
     if reason == "host_pressure" and (measurement or not declared
@@ -20064,6 +20071,10 @@ class PoolQueue:
                 gpu_kwargs["gpu_memory_max_bytes"] = gpu_admission.memory_budget_bytes(gpu_memory)
             except ValueError as exc:
                 raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
+            # No subset check here: a cap above ``mem_gb`` is legal on
+            # discrete hosts, where VRAM is a separate reservation (#1661).
+            # GPU admission refuses it on shared-system devices, before any
+            # scope exists, with ``unified_gpu_cap_exceeds_mem``.
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
         scope = resource_scope.ResourceScope(
@@ -21372,6 +21383,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -21379,6 +21391,9 @@ class PoolQueue:
         drain): ``_claim`` re-checks it under the per-key transition lock
         immediately before the intent write, so a fence that closed after the
         poll check is still observed. ``None`` preserves current behavior.
+        ``observed_external_gib`` is the foreign unified-GPU GiB the node
+        offer in ``capacity`` already subtracted (#1661): the unified gate
+        charges only the growth beyond it, never the same bytes twice.
         """
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
@@ -21433,7 +21448,8 @@ class PoolQueue:
                                    observed_images=observed_images,
                                    container_class_policy=container_class_policy,
                                    container_inventory=container_inventory,
-                                   admission_open=admission_open)
+                                   admission_open=admission_open,
+                                   observed_external_gib=observed_external_gib)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -21455,7 +21471,8 @@ class PoolQueue:
                                ready=ready, observed_images=observed_images,
                                container_class_policy=container_class_policy,
                                container_inventory=container_inventory,
-                               admission_open=admission_open)
+                               admission_open=admission_open,
+                               observed_external_gib=observed_external_gib)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
             return None
@@ -22121,6 +22138,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -22356,6 +22374,23 @@ class PoolQueue:
         #: this pass", not "no live carry", and the busy-row room must not
         #: read it as an expired episode to bind every row.
         whole_box_held = False
+
+        def preempt_for_shortage(item, need, gang_record, gang) -> None:
+            """Use the existing handoff for one shortage per claim pass."""
+            nonlocal preempted
+            if preempted:
+                return
+            # Selection reacquires admission; withdrawal and retry publication
+            # hold only the handoff lock. Live tokens stay with their holder.
+            exclusion = None
+            if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                exclusion = _gang.elections(
+                    self, gang["group"], gang["size"]).get(gang["index"])
+            preempted = self._preempt_background_holder(
+                ledger, action_key=str(item["action_key"]), demand=need,
+                priority=int(item.get("priority", 0)), controller=controller,
+                **({"exclude_gang_election": exclusion}
+                   if exclusion is not None else {})) is not None
 
         def withhold(key: str, kinds: frozenset[str] | None) -> None:
             nonlocal withheld_for, withheld_kinds
@@ -23382,10 +23417,17 @@ class PoolQueue:
                                     and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
                                 refused = scratch_expired or scratch_changed
                             if controller is not None and not refused:
+                                unified_budget = None
+                                if gpu_controller is not None and not demand.get("gpu"):
+                                    # Held metadata identifies unified GPU caps;
+                                    # a telemetry gap cannot release their charge.
+                                    unified_budget = 0
                                 adaptive = controller.decision(
                                     item, demand, identity=identity, owner=dependent_owner,
                                     allowance=allowance,
-                                    foreign_load_exempt=canary_exempt)
+                                    foreign_load_exempt=canary_exempt,
+                                    unified_memory_budget=unified_budget,
+                                    observed_external_gib=observed_external_gib)
                                 cpu_decision = getattr(controller, "last_decision", None)
                                 refused = adaptive is None
                                 if refused:
@@ -23445,7 +23487,11 @@ class PoolQueue:
                                     refusal_source = "deferred_for_ready_gpu_row"
                                     adaptive = None
                             if not refused and gpu_controller is not None and demand.get("gpu"):
-                                adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
+                                # Charge the full reservation, including exports.
+                                # The pre-read contract keeps the GPU cap sealed.
+                                adaptive_gpu = gpu_controller.decision(
+                                    item, demand, contract=contract,
+                                    observed_external_gib=observed_external_gib)
                                 gpu_decision = getattr(gpu_controller, "last_decision", None)
                                 refused = adaptive_gpu is None
                                 if refused:
@@ -23574,6 +23620,19 @@ class PoolQueue:
                                 self.record_denial(item, reason, evidence)
                                 continue
                             self.record_pass(key)
+                            if (isinstance(decision, Mapping)
+                                    and decision.get("reason") == "unified_gpu_memory_budget"):
+                                # Memory refusal must retain the token path's
+                                # restart and age rules. Include fresh external
+                                # growth so a release must close the whole gap.
+                                need = dict(reservation_demand)
+                                need["mem_gb"] = (int(need.get("mem_gb", 0))
+                                                  + int(decision["external_charged_gib"]))
+                                preempt_for_shortage(item, need, gang_record, gang)
+                                evidence["withhold_age_s"] = (
+                                    self.withhold_age(key)
+                                    if verdict is not None and verdict["eligible"] else None)
+                                evidence["withhold_ceiling_s"] = WITHHOLD_CEILING_S
                             # A refusal a drain of the pool's holders resolves
                             # keeps the refused row's room, whatever its
                             # verdict (#1240, ``keep_refused_room``).
@@ -23628,20 +23687,7 @@ class PoolQueue:
                                     gpu_sample=_gpu_sample_for(gpu_controller, demand),
                                     authority=copy_authority, tags=tagset, has_gpu=has_gpu)
                             denials = self.record_pass(key)
-                            if not preempted:
-                                # Selection reacquires admission, while the separate
-                                # handoff lock spans withdrawal/requeue as well. A
-                                # stalled handoff cannot stop ordinary fitting work.
-                                exclusion = None
-                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
-                                    exclusion = _gang.elections(
-                                        self, gang["group"], gang["size"]).get(gang["index"])
-                                preempted = self._preempt_background_holder(
-                                    ledger, action_key=key, demand=asked,
-                                    priority=int(item.get("priority", 0)),
-                                    controller=controller,
-                                    **({"exclude_gang_election": exclusion}
-                                       if exclusion is not None else {})) is not None
+                            preempt_for_shortage(item, asked, gang_record, gang)
                             withholding = bool(verdict["eligible"])
                             age = self.withhold_age(key) if withholding else None
                             evidence = {
@@ -30006,6 +30052,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        observed_external_gib: int = 0,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -30035,7 +30082,8 @@ class PoolQueue:
                           ready=ready, observed_images=observed_images,
                           container_class_policy=container_class_policy,
                           container_inventory=container_inventory,
-                          admission_open=admission_open)
+                          admission_open=admission_open,
+                          observed_external_gib=observed_external_gib)
         if item is None:
             return None
         key = str(item["action_key"])
