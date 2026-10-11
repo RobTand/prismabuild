@@ -1851,10 +1851,9 @@ class ProgressWatch:
             # allowance is what bounds it.
             return False
         except pb.ReplacedRecordError:
-            # The writer replaced the record under each of the reader's
-            # bounded rereads (#1159): a live writer, not tamper.  This poll
-            # reads nothing and the next poll reads again; the phase's own
-            # allowance bounds it, as it bounds a report not yet written.
+            # Replacement or metadata churn exhausted the bounded reads
+            # (#1159, #1648). No bytes were accepted. This poll neither
+            # rejects the record nor renews grace; the next poll reads again.
             return False
         except OSError as exc:
             self._reject(f"unreadable: {type(exc).__name__}")

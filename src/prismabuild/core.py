@@ -562,14 +562,14 @@ class CASTamperError(PrismaBuildError):
 
 
 class ReplacedRecordError(CASTamperError):
-    """A replace-only record kept moving to newer inodes while it was read.
+    """A replace-only record exhausted its reads without stable bytes.
 
-    Raised only by a reader that opted into ``replaced_leaf`` (#1017), after
-    its bounded rereads: each attempt found the name on a newer regular
-    file.  It stays a :class:`CASTamperError` so no caller treats it more
-    leniently than it chooses to, and its own name says what was seen: a
-    live writer, not tamper.  ``ProgressWatch`` reads it as a poll that
-    observed nothing (#1159); the tier announcement reader retries it.
+    The name can move to another regular inode (#1017). A rename can also
+    change the incoming inode's ctime without a link-count change (#1648).
+    Metadata-only instability returns no bytes. This remains a
+    :class:`CASTamperError` so each caller chooses its response.
+    ``ProgressWatch`` treats it as a poll that observed nothing (#1159);
+    the tier announcement reader retries it.
     """
 
 
@@ -3436,6 +3436,10 @@ def _read_regular_file_nofollow(
     size and substantive-identity checks are unchanged, and a name that moved
     to anything but a regular file is still tamper.  CAS objects, never
     replaced by design, keep the strict check (the default).
+
+    A rename can change the incoming inode's ctime with its link count
+    still one (#1648). Exhausted metadata-only retries also raise
+    :class:`ReplacedRecordError`, without accepting the unstable bytes.
     """
 
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
@@ -3455,8 +3459,8 @@ def _read_regular_file_nofollow(
             if reread + 1 < _REPLACED_RECORD_READ_ATTEMPTS:
                 continue
             raise ReplacedRecordError(
-                f"{where} was replaced during each of "
-                f"{_REPLACED_RECORD_READ_ATTEMPTS} fresh reads: {path}"
+                f"{where} did not stabilize during "
+                f"{_REPLACED_RECORD_READ_ATTEMPTS} read passes: {path}"
             ) from None
     raise AssertionError("replaced-record read loop did not return or raise")
 
@@ -3526,7 +3530,8 @@ def _read_stable_regular_file_nofollow(
                     return b"".join(chunks)
                 if attempt + 1 < _STABLE_FILE_READ_ATTEMPTS:
                     continue
-                raise CASTamperError(
+                error = ReplacedRecordError if replaced else CASTamperError
+                raise error(
                     f"{where} did not stabilize after "
                     f"{_STABLE_FILE_READ_ATTEMPTS} fresh reads: {path}"
                 )
