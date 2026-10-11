@@ -99,6 +99,32 @@ def test_attempt_lock_preserves_live_controller_after_pytest_returns(custody):
     report = scratch_owner.sweep_root(custody, now=time.time() + 90000)
     assert not directory.exists()
     assert report["removed"][0]["name"] == directory.name
+@pytest.mark.parametrize("refusal", [PermissionError, ValueError])
+def test_success_cleanup_refusal_keeps_custody_until_the_attempt_expires(
+        custody, monkeypatch, refusal):
+    attempt = scratch_owner.create(custody, KEY, NONCE)
+    directory = attempt.directory
+    marker = directory / "pytest" / "result"
+    marker.write_text("successful payload")
+
+    def refuse_removal(*args, **kwargs):
+        raise refusal("cleanup refused")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(scratch_owner.shutil, "rmtree", refuse_removal)
+            assert attempt.finish(0) == 0
+        assert marker.read_text() == "successful payload"
+        owner = json.loads((directory / scratch_owner.OWNER).read_text())
+        kept = owner["kept_unix"]
+        assert kept > 0
+        assert scratch_owner.sweep_root(custody, now=kept + 90000)["removed"] == []
+        assert marker.read_text() == "successful payload"
+    finally:
+        attempt.close()
+    report = scratch_owner.sweep_root(custody, now=kept + 90000)
+    assert [row["name"] for row in report["removed"]] == [directory.name]
+    assert not directory.exists()
 
 
 @pytest.mark.parametrize("state", ["expired", "live", "unexpired"])
