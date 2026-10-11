@@ -7,7 +7,7 @@ coordinator. Standard library only; the sealed checkout carries it.
 
 Three legs:
   space: statvfs of / and the Docker root, D1 verdict for the A8S set.
-  speed: 1/4/16-stream client-cold and warm reads of a fixed byte total
+  speed: 1/4/16-stream first and repeated reads of a fixed byte total
     (16 files x 512 MiB prefix = 8 GiB) from the stage tier
     (/stage/prewarm, NFS ro), the HDD pool (/mnt/shared), and a matching
     host-local NVMe file set. Every arm reads the same bytes with one
@@ -47,8 +47,8 @@ ARM_FILES = 16
 PREFIX_MIB = 512
 PREFIX_BYTES = PREFIX_MIB * 1024 * 1024
 
-#: Arm order: the 16-stream cold arm touches the bytes first, so it is
-#: the closest to a true cold read. Warm arms follow their cold pair.
+#: The 16-stream first pass requests client cache eviction before its read.
+#: Each repeated pass follows without eviction; client-warm state is unmeasured.
 ARM_ORDER = [(16, True), (16, False), (4, True), (4, False), (1, True), (1, False)]
 
 
@@ -218,7 +218,7 @@ def run_arm(paths: list[str], streams: int, cold: bool, prefix: int) -> dict:
     }
 
 
-def read_arcstats() -> dict | None:
+def _gate_arc_snapshot() -> dict | None:
     """ZFS ARC counters when this host serves ZFS; else None.
 
     The Sparks are NFS clients, so this is None there. It records the
@@ -242,9 +242,9 @@ def read_arcstats() -> dict | None:
 
 
 def measure_source(label: str, root: str) -> dict:
-    """Cold/warm 1/4/16-stream reads of a fixed 8 GiB arm at root."""
+    """First and repeated 1/4/16-stream reads of a fixed byte total."""
     out: dict = {"label": label, "root": root, "present": os.path.isdir(root)}
-    out["arcstats_before"] = read_arcstats()
+    out["arcstats_before"] = _gate_arc_snapshot()
     if not out["present"]:
         return out
     files = [entry for entry in list_files(root) if entry[1] > 0]
@@ -258,7 +258,7 @@ def measure_source(label: str, root: str) -> dict:
     out["arm_names"] = [os.path.basename(p) for p in sel["paths"][:20]]
     paths = sel["paths"]
     out["arms"] = [run_arm(paths, n, cold, sel["prefix"]) for n, cold in ARM_ORDER]
-    out["arcstats_after"] = read_arcstats()
+    out["arcstats_after"] = _gate_arc_snapshot()
     return out
 
 
