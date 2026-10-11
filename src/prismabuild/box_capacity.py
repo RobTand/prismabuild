@@ -22,10 +22,10 @@ pre-action memory samples and caps the first new reading at the ledger total.
 GPU evidence does not use that window: broker attribution and freshness are
 current safety facts, so GPU capacity changes immediately.
 
-The two memory domains remain separate. ``shared_system`` GPU residency is
-already reflected in host ``MemAvailable``. ``discrete`` VRAM is recorded for
-the GPU admission and budget controllers and is never added to or subtracted
-from the host ``mem_gb`` reservation.
+On ``shared_system`` devices, GPU allocations share host DRAM.
+Each pool reservation charges ``mem_gb`` once. Broker-attributed external
+GPU allocations also reduce the memory offer.
+Discrete VRAM remains independent of the host ``mem_gb`` reservation.
 
 """
 
@@ -296,6 +296,32 @@ def _held_snapshot(
     return {str(kind): int(value) for kind, value in (source or {}).items()}
 
 
+def _shared_external_gib(
+    sample: object,
+    *,
+    devices: list,
+    foreign_processes: list,
+    gpu_parsed: bool,
+    now: float | None,
+) -> int:
+    """Ceiled GiB of foreign GPU bytes on shared-system devices (#1661).
+
+    Reuses the GPU branch parse when it ran; otherwise validates the sample
+    here. Zero without fresh evidence: nothing proven, nothing subtracted.
+    """
+    if not gpu_parsed:
+        if sample is _READ:
+            sample = trusted_gpu_sample()
+        if not isinstance(sample, Mapping):
+            return 0
+        devices, foreign_processes, _jobs, error = _gpu_evidence(sample, now=now)
+        if error is not None:
+            return 0
+    total, _unknown = adaptive_gpu.external_unified_gpu_bytes(
+        devices, foreign_processes)
+    return math.ceil(total / adaptive_gpu.GIB) if total > 0 else 0
+
+
 def observe(
     declared: Mapping[str, int],
     held: Mapping[str, int] | Callable[[], Mapping[str, int]] | None = None,
@@ -348,6 +374,11 @@ def observe(
         foreign[kind] = foreign_units
         capacity[kind] = max(0, wanted[kind] - foreign_units)
 
+    # The GPU parse the memory branch reuses for the unified external term
+    # (#1661). Set only when the GPU branch validates a sample itself.
+    gpu_devices: list = []
+    gpu_foreign: list = []
+    gpu_parsed = False
     if wanted.get("gpu", 0) > 0:
         if gpu_sample is _READ:
             gpu_sample = trusted_gpu_sample()
@@ -358,6 +389,7 @@ def observe(
             detail["gpu_capacity_error"] = error
             capacity["gpu"] = 0
         else:
+            gpu_devices, gpu_foreign, gpu_parsed = devices, foreign_processes, True
             domains = [str(device["memory_domain"]) for device in devices]
             def memory_sum(kind: str) -> int | None:
                 values = [device.get(f"memory_{kind}_bytes") for device in devices]
@@ -482,6 +514,19 @@ def observe(
         if mem_gb is not None:
             available = int(mem_gb)                   # type: ignore[arg-type]
             detail["mem_available_gb"] = available
+            # Unified-memory hosts (#1661): foreign GPU bytes consume host
+            # DRAM, but the kernel reading does not reliably show driver-held
+            # unified allocations. Subtract what the broker attributes to no
+            # pool holder. Attributed bytes stay out: their host share sits
+            # inside the held tokens added back below, and a second
+            # subtraction here would charge the box twice for its own work.
+            external_gib = _shared_external_gib(
+                gpu_sample, devices=gpu_devices, foreign_processes=gpu_foreign,
+                gpu_parsed=gpu_parsed, now=now)
+            if external_gib:
+                detail["external_unified_gpu_gib"] = external_gib
+                available = max(0, available - external_gib)
+                detail["mem_available_less_external_gib"] = available
             # The honest total is what the pool already holds here plus what is
             # physically free, capped by the declaration.  Adding the held part
             # back is not generosity: an action's resident bytes are already
@@ -595,6 +640,16 @@ class CapacityObserver:
         self.ledger_total = ({str(k): int(v) for k, v in ledger_total.items()}
                              if ledger_total else {})
         self._history: deque[dict[str, int]] = deque(maxlen=self.samples)
+        # Foreign unified-GPU GiB behind each window entry, in lockstep with
+        # ``_history`` (#1661). Seeds measured nothing, so they carry zero:
+        # an offer that never subtracted external charges the fresh term in
+        # full at admission, which is exactly once. ``last_offer_external_gib``
+        # is the baseline behind the returned ``mem_gb`` offer: the external
+        # term of the most recent window entry attaining that maximum. The
+        # claim gate charges only fresh growth beyond it, so observation and
+        # admission never charge the same bytes twice.
+        self._external_history: deque[int] = deque(maxlen=self.samples)
+        self.last_offer_external_gib: int = 0
         # The seed pads the window once, on the first reading this observer
         # ever takes.  ``rejoin`` empties the window without setting this
         # back, because a loop coming out of an action must not be padded --
@@ -622,6 +677,8 @@ class CapacityObserver:
         """
 
         self._history.clear()
+        self._external_history.clear()
+        self.last_offer_external_gib = 0
         # An emptied window is not a new one: the pad is what a start gets, and
         # a return must not be given it -- see the module docstring.
         self._seeded = True
@@ -676,6 +733,7 @@ class CapacityObserver:
             }
             while len(self._history) < self.samples - 1:
                 self._history.append(dict(seed))
+                self._external_history.append(0)
             self._seeded = True
         seen = observe(wanted, held, margin_gb=self.margin_gb, **overrides)  # type: ignore[arg-type]
         if "mem_gb" in wanted:
@@ -697,8 +755,11 @@ class CapacityObserver:
         # The window remembers what was offered, not what was read: recording
         # the uncapped reading would let the next poll's maximum undo a cap
         # that has already been spent.
+        external = seen.detail.get("external_unified_gpu_gib", 0)
+        external = int(external) if type(external) is int and external > 0 else 0
         self._history.append(sample)
-        return {
+        self._external_history.append(external)
+        offered = {
             # Root-published GPU attribution is a current admission fact, not
             # a noisy per-process estimate. Apply it immediately in both
             # directions; the adaptive controller independently checks the
@@ -709,3 +770,15 @@ class CapacityObserver:
             else min(value, max(s.get(kind, value) for s in self._history))
             for kind, value in wanted.items()
         }
+        self.last_offer_external_gib = 0
+        if "mem_gb" in offered and self._history:
+            # The baseline behind the returned mem offer: the external term
+            # of the most recent entry attaining the window maximum, so the
+            # claim gate charges fresh bytes exactly once (#1661).
+            target = offered["mem_gb"]
+            for entry, entry_external in zip(
+                    reversed(self._history), reversed(self._external_history)):
+                if entry.get("mem_gb", 0) == target:
+                    self.last_offer_external_gib = entry_external
+                    break
+        return offered

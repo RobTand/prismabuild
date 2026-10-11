@@ -4235,7 +4235,15 @@ def detached_attempts_refusal(max_attempts: int) -> str:
     )
 
 
-def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> None:
+def default_host_mem_gb(*, gpu: bool) -> int:
+    """The ``mem_gb`` a submission seals when ``--demand`` omits it."""
+    return 16 if gpu else 4
+
+
+def require_gpu_memory_scope(
+    *, gpu_memory_gb, gpu: bool, transport: str, mem_gb=None,
+    tags=None, host_class=None,
+) -> None:
     """Share GPU-budget scope refusals with campaign manifest preflight."""
 
     if gpu_memory_gb is not None and not gpu:
@@ -4244,6 +4252,25 @@ def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> Non
         raise ValueError(
             "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
         )
+    if gpu_memory_gb is not None and mem_gb is not None and adaptive_gpu.unified_placement(
+            tags, host_class):
+        # The GPU cap is a subset of ``mem_gb`` on unified memory (#1661).
+        # A larger cap declares memory the reservation does not hold. This
+        # check runs only for unified-memory placements: discrete VRAM is a
+        # separate reservation, and admission refuses the same shape per
+        # device with ``unified_gpu_cap_exceeds_mem``.
+        try:
+            cap_bytes = adaptive_gpu.memory_budget_bytes(float(gpu_memory_gb))
+        except (ValueError, OverflowError, TypeError):
+            cap_bytes = 0
+        if (cap_bytes > 0 and isinstance(mem_gb, int)
+                and not isinstance(mem_gb, bool)
+                and cap_bytes > mem_gb * 1024 ** 3):
+            raise ValueError(
+                f"--gpu-memory-gb {gpu_memory_gb} exceeds mem_gb {mem_gb}. "
+                "The GPU cap is a subset of mem_gb on unified memory. "
+                "Raise --demand mem_gb or lower the cap."
+            )
 
 
 def require_disk_metadata_scope(demand: Mapping[str, object], *, transport: str) -> None:
@@ -7753,8 +7780,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             args.refuse_argument(f"--gpu-memory-gb: {exc}")
     if args.gpu:
         demand.setdefault("gpu", 1)
-        demand.setdefault("mem_gb", 16)
-    demand.setdefault("mem_gb", 4)
+    demand.setdefault("mem_gb", default_host_mem_gb(gpu=bool(args.gpu)))
     # Cores are a demand like any other, and the default of one is what makes
     # this safe to add to a live fleet: every action already in flight keeps
     # the admission it had.  What it buys is a way for an action that will
@@ -7977,7 +8003,8 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
     try:
         require_gpu_memory_scope(
             gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
-            transport=args.transport,
+            transport=args.transport, mem_gb=demand.get("mem_gb"),
+            tags=tags, host_class=args.host_class,
         )
     except ValueError as exc:
         args.refuse_argument(str(exc))

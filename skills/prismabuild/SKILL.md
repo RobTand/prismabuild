@@ -359,7 +359,11 @@ including the first action. Check the broker/worker evidence when work waits.
 Use pool `--gpu-memory-gb N` for the GPU memory budget in GiB. On a discrete
 device, it reserves VRAM independently of host `--demand mem_gb=M`; both must
 fit. On GB10 (`shared_system`), `mem_gb` covers total physical DRAM and the GPU
-budget caps its GPU subset. The GPU cap defaults to `mem_gb` when omitted.
+budget caps its GPU subset. The GPU cap defaults to `mem_gb` when omitted, and
+a cap above `mem_gb` refuses at submission for unified-memory placements
+(admission refuses it per device). The node offer also subtracts
+unified GPU bytes no pool holder owns (#1661). The 104 GiB roof and 8 GiB
+margin remain unchanged.
 The option requires GPU demand and is unsupported with `--transport slurm`.
 
 The live pool contains each attempt's payload, descendants and Docker
