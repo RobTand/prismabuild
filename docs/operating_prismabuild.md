@@ -4344,6 +4344,12 @@ floor, in whole GiB, and measures it twice over:
   the offer on the next tick, and a filling one lowers it, to 0 when there is
   no room above the floor.
 
+On dl380g10, the roster uses `/tmp/pbscratch` and caps `--spool-gb` at 8 GiB
+(#1689). `tmp-pbscratch.mount` binds a root-NVMe Btrfs subvolume at that path.
+Check the actual mount, not its tmpfs parent, before each disk cohort.
+Preserve the action's declared growth and the D1 floor. A measured spool
+offer does not replace that check.
+
 Roster `args` are the supervisor's input: do not copy `--spool-gb auto` onto
 a `worker_loop.py` command line, which takes only integers.
 

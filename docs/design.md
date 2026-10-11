@@ -16602,6 +16602,12 @@ filesystem the budget comes from; the roots themselves are the actions' sealed
 variables, which no box knows in advance. `local_disk_free_floor_percent`,
 beside `boxes`, is the fleet's disk-headroom floor, 5% of a filesystem's size.
 
+The dl380g10 roster names `/tmp/pbscratch` as `local_disk` and caps
+`--spool-gb` at 8 GiB (#1689). The mount is a root-NVMe Btrfs subvolume,
+bound beneath `/tmp` by `tmp-pbscratch.mount`. It is not the parent tmpfs.
+The supervisor still measures the offer and preserves active reservations.
+The cap does not establish an action's D1 headroom.
+
 When `supervise.py` starts, it measures `f_bavail` on `local_disk` minus the
 floor, in whole GiB, and passes that as `--spool-gb`. A number in the roster
 caps the measured value; `auto` does not. No measured value is written in the
