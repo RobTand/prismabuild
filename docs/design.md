@@ -6720,6 +6720,11 @@ During gang election, a non-resident host reports `deferred_for_resident_copy` w
 The preferred host must not already hold a sibling election. The hold ends 30 seconds after this member row was published.
 A missing set, invalid publication time, future timestamp, absent matching copy, or record error does not prevent fallback election.
 This preference changes neither eligibility nor the gang start barrier. Phase 1 still serves the canonical path.
+
+The #1730 fixed-arm probe runs from a sealed checkout through `pbrun`; runtime publication deliberately excludes this measurement tool.
+Its ARC snapshot retains six counters or `None`, unlike the generic storage parser. Tests repoint its canonical and local stage roots to private directories.
+First and repeated passes do not establish client-warm performance. The retained space NO-GO does not establish a cleanup operation.
+
 `resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
 under the queue root. The body is immutable: the normalized data manifest,
 canonical directory, hosts, initial lease and creator. Every manifest entry
