@@ -268,3 +268,56 @@ def test_a_record_replaced_under_every_reread_is_not_a_rejection(
     assert watch.sample(now=1) is False
     assert watch.rejected == 0, watch.last_rejection
     assert watch.last_rejection is None
+
+
+def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
+    """Publish the incoming inode after its first fstat, before its read."""
+    incoming = path.parent / ".incoming.progress"
+    original_open, original_read = pb._open_regular_nofollow, os.read
+    pending = set()
+
+    def opened(candidate, *, where):
+        if Path(candidate) != path:
+            return original_open(candidate, where=where)
+        incoming.write_bytes(raw)
+        held = original_open(incoming, where=where)
+        pending.add(held[0])
+        return held
+
+    def read(descriptor, count):
+        if descriptor in pending:
+            pending.remove(descriptor)
+            os.replace(incoming, path)
+        return original_read(descriptor, count)
+
+    monkeypatch.setattr(pb, "_open_regular_nofollow", opened)
+    monkeypatch.setattr(pb.os, "read", read)
+
+
+def test_incoming_rename_metadata_churn_does_not_reject_or_renew_grace(
+        tmp_path, monkeypatch):
+    path = tmp_path / "action.progress"
+    _replace(path, _record(1))
+    watch = _watch(path)
+    with monkeypatch.context() as patch:
+        _publish_incoming_inode_during_read(patch, path, _record(2))
+        assert watch.sample(now=1) is False
+    assert watch.rejected == 0, watch.last_rejection
+    assert watch.last_rejection is None
+    assert watch.accepted == 0
+    assert watch.units_high_water == 0
+    assert watch.stall_deadline() == 10
+
+    assert watch.sample(now=2) is True
+    assert watch.units_high_water == 2
+    assert watch.stall_deadline() == 12
+
+
+def test_incoming_rename_metadata_churn_stays_tamper_for_strict_readers(
+        tmp_path, monkeypatch):
+    path = tmp_path / "object"
+    _replace(path, b"old")
+    _publish_incoming_inode_during_read(monkeypatch, path, b"new")
+    with pytest.raises(pb.CASTamperError) as error:
+        pb._read_regular_file_nofollow(path, where="CAS object")
+    assert not isinstance(error.value, pb.ReplacedRecordError)

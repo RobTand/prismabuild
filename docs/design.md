@@ -4097,6 +4097,21 @@ deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
 a regular-file operation can block in the kernel. Shared-filesystem recovery
 remains tracked by #16; this contract introduces no new queue or recovery owner.
 
+A rename can also change the incoming inode's `ctime` while its link count
+stays one (#1648). The shard diagnostic observed this case on the x86 worker's
+local Btrfs filesystem. Only `ctime` changed between the held inode's two
+samples. The final name and directory checks passed. Three consecutive
+metadata-only changes exhausted the stable-read limit and incorrectly counted
+as tamper. `pbgang` was absent from `sys.modules`, so its new fixture entry
+changed no module attribute in the race test.
+
+For `replaced_leaf=True`, exhausted metadata-only reads now raise
+`ReplacedRecordError` through the existing bounded replacement loop.
+The reader returns no unstable bytes. `ProgressWatch` records no rejection
+and grants no progress or additional grace. Strict CAS reads still raise
+`CASTamperError`. Substantive changes, invalid file types, and changed
+directory identity retain their existing refusals.
+
 Termination precedence is unchanged with one rung added at the bottom:
 resource containment, withdrawal, the sealed deadline, then the stall
 allowance. A stall files `status: timeout` with `termination_reason:
