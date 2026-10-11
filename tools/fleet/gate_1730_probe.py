@@ -219,7 +219,7 @@ def run_arm(paths: list[str], streams: int, cold: bool, prefix: int) -> dict:
 
 
 def _gate_arc_snapshot() -> dict | None:
-    """ZFS ARC counters when this host serves ZFS; else None.
+    """Up to six parsed ARC counters, or None when no wanted value parses.
 
     The Sparks are NFS clients, so this is None there. It records the
     attempt: a client cannot prove a server-cold read.
