@@ -28,11 +28,12 @@ symlinks, ranges and mismatched sizes are refused.
 `pbresident.py --pool-root QUEUE status [SET_ID]` returns set bodies, lease
 journals, host copy states and separately stored movement descriptors as JSON.
 `release SET_ID` appends a release
-without rewriting the declaration. Phase 1 does not change job paths,
-container mounts or placement. Publication alone does not claim a copy is
-available. The versioned `local_tier_policy.json` declares host roots,
-maximum GiB, the free-space floor and Docker allowance; the shipped host
-map is empty and does not enable any Spark.
+without rewriting the declaration. Phase 1 does not change job paths or container mounts.
+Rows with `resident_set` prefer an eligible host with a recorded resident copy.
+A gang election can report `deferred_for_resident_copy` until 30 seconds after its member row was published (#1733).
+The hold fails open on record errors and does not change eligibility or the gang start barrier. Phase 1 still serves the canonical path.
+Publication alone does not prove a copy is available. The versioned `local_tier_policy.json` declares host roots, maximum GiB, free-space floor and Docker allowance.
+Its empty default host map enables no Spark local tier.
 The renewal policy has `renewal_ceiling_s` (default 1209600 seconds, 14 days).
 An explicit renewal cannot set its hard maximum beyond that interval from
 the renewal time; the hard maximum remains required.
@@ -4343,6 +4344,12 @@ floor, in whole GiB, and measures it twice over:
   `--spool-gb live offer N GiB` when the value changes. A freed disk raises
   the offer on the next tick, and a filling one lowers it, to 0 when there is
   no room above the floor.
+
+On dl380g10, the roster uses `/tmp/pbscratch` and caps `--spool-gb` at 8 GiB
+(#1689). `tmp-pbscratch.mount` binds a root-NVMe Btrfs subvolume at that path.
+Check the actual mount, not its tmpfs parent, before each disk cohort.
+Preserve the action's declared growth and the D1 floor. A measured spool
+offer does not replace that check.
 
 Roster `args` are the supervisor's input: do not copy `--spool-gb auto` onto
 a `worker_loop.py` command line, which takes only integers.

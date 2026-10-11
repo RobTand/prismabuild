@@ -376,6 +376,8 @@ LIVE_DEFAULTS = (
     ("pbrun", "SH", "fleet"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("pbsweep", "SH", "fleet"),
+    ("gate_1730_probe", "CANONICAL_DIR", "gate-1730-canonical"),
+    ("gate_1730_probe", "STAGE_DIR", "gate-1730-stage"),
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("fleet_membership", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),
@@ -413,10 +415,9 @@ LIVE_DEFAULTS = (
     # default.  The guard test
     # ``test_every_live_store_constant_is_in_the_repoint_list`` named it
     # (#1506); left alone, a test that built the watcher's parser without a
-    # flag read the fleet's own repo link.  The gang launcher's ``SH`` is not
-    # listed: repointing it made the progress-reader race test fail in most
-    # runs of its shard, and the cause is not found (#1506).
+    # flag read the fleet's own repo link.
     ("pbcanary_watch", "DEFAULT_REPO_LINK", "fleet/repo"),
+    ("pbgang", "SH", "fleet"),
     ("qualify_rollout", "QUALIFICATION_ROOT", "qualification"),
     ("seal_and_publish", "SH", "fleet"),
     ("pbtest", "SHARED", "mount"),

@@ -4097,6 +4097,21 @@ deadline on NFS syscalls: like the existing lease and withdrawal checkpoints,
 a regular-file operation can block in the kernel. Shared-filesystem recovery
 remains tracked by #16; this contract introduces no new queue or recovery owner.
 
+A rename can also change the incoming inode's `ctime` while its link count
+stays one (#1648). The shard diagnostic observed this case on the x86 worker's
+local Btrfs filesystem. Only `ctime` changed between the held inode's two
+samples. The final name and directory checks passed. Three consecutive
+metadata-only changes exhausted the stable-read limit and incorrectly counted
+as tamper. `pbgang` was absent from `sys.modules`, so its new fixture entry
+changed no module attribute in the race test.
+
+For `replaced_leaf=True`, exhausted metadata-only reads now raise
+`ReplacedRecordError` through the existing bounded replacement loop.
+The reader returns no unstable bytes. `ProgressWatch` records no rejection
+and grants no progress or additional grace. Strict CAS reads still raise
+`CASTamperError`. Substantive changes, invalid file types, and changed
+directory identity retain their existing refusals.
+
 Termination precedence is unchanged with one rung added at the bottom:
 resource containment, withdrawal, the sealed deadline, then the stall
 allowance. A stall files `status: timeout` with `termination_reason:
@@ -6714,8 +6729,12 @@ to be declared.
 
 ## Whole-directory local resident sets (#1545)
 
-Resident sets are optional accelerators, not rolling residency windows or
-admission gates. Phase 1 does not inject container mounts or alter placement.
+Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
+Rows with `resident_set` prefer an eligible host with a recorded resident copy (#1733). Normal offer order places resident hosts first.
+During gang election, a non-resident host reports `deferred_for_resident_copy` while another matching resident host can elect this member.
+The preferred host must not already hold a sibling election. The hold ends 30 seconds after this member row was published.
+A missing set, invalid publication time, future timestamp, absent matching copy, or record error does not prevent fallback election.
+This preference changes neither eligibility nor the gang start barrier. Phase 1 still serves the canonical path.
 `resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
 under the queue root. The body is immutable: the normalized data manifest,
 canonical directory, hosts, initial lease and creator. Every manifest entry
@@ -6846,6 +6865,12 @@ current lease verdict and measured per-host capacity/held tokens through its
 existing bounded reader. Corrupt or unreadable records produce a partial view,
 never a complete empty census. No identity or provenance seal is added;
 whole-directory shape, byte digests, safe deletion and capacity remain refusals.
+
+## Fixed-arm storage probe (#1730)
+
+The #1730 probe runs from a submitted checkout through `pbrun`; runtime publication deliberately excludes this measurement tool.
+Its ARC snapshot retains up to six counters or `None`, unlike the generic storage parser. Tests repoint its canonical and stage-tier NFS roots to private directories.
+First and repeated passes do not establish client-warm performance. The retained space NO-GO does not establish a cleanup operation.
 
 ## Cluster-scoped storage tiers (#583)
 
@@ -11592,6 +11617,9 @@ pressure remains independent, and the sweep still takes only eligible orphans.
 The real gate re-checks
 everything before publishing; the probe only decides whether the room is
 worth reclaiming.
+
+The probe also counts the peak obligations of admitted declared units, minus
+their current holdings, against streaming newcomers (#1627).
 
 **A waiter that produces no pressure says why (#1627).** `window_pressure`
 decides in many places that a waiter asks the tier for nothing, and until
@@ -16601,6 +16629,12 @@ define the measurement. `local_disk`, on the box, names a directory on the
 filesystem the budget comes from; the roots themselves are the actions' sealed
 variables, which no box knows in advance. `local_disk_free_floor_percent`,
 beside `boxes`, is the fleet's disk-headroom floor, 5% of a filesystem's size.
+
+The dl380g10 roster names `/tmp/pbscratch` as `local_disk` and caps
+`--spool-gb` at 8 GiB (#1689). The mount is a root-NVMe Btrfs subvolume,
+mounted at `/tmp/pbscratch` by `tmp-pbscratch.mount`. It is not the parent tmpfs.
+The supervisor still measures the offer and preserves active reservations.
+The cap does not establish an action's D1 headroom.
 
 When `supervise.py` starts, it measures `f_bavail` on `local_disk` minus the
 floor, in whole GiB, and passes that as `--spool-gb`. A number in the roster

@@ -1,0 +1,120 @@
+# Gate 1730: local-set speed, space, bind mount (2026-10-10, re-measure)
+
+Question: does a local A8S copy on a Spark win for A8S?
+Set: `/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported`, 175527382717 bytes (163.47 GiB), 128 files.
+Method: `tools/fleet/gate_1730_probe.py` (schema v2) ran as a PB-admitted action on each Spark.
+Actions: sparky `4c034a6c16e47d2d704912881042f4711ae4638e2c3c92925a2019eb3bbdedef`, sparklina `5d0a66beabc10df12f2bcaa52a371794103f21ca2afbac36677ca2301b8e4d7b`.
+Raw reports: `docs/results/gate_1730_sparky_2026-10-10_v2.json`, `docs/results/gate_1730_sparklina_2026-10-10_v2.json`.
+Host pin reason: disk free, NFS paths, and Docker binds are host-local facts.
+This re-measure supersedes the v1 speed arms. The v1 files stay in this directory for audit.
+
+## What changed after review
+
+The review of the first measure found four faults. This run fixes each one:
+
+1. The NVMe arm now matches the NFS arms: 16 distinct files, same 8 GiB total, same 1/4/16 streams.
+2. Every arm reads 16 files with one file per thread at 16 streams. No thread idles (`idle_threads: 0` on all 36 arms).
+3. Before each first-pass arm, the client requests page-cache eviction.
+   The 16-stream arm reads the bytes first.
+   Server ARC/L2ARC remains outside client control.
+   The probe records `null` for server ARC on the Sparks.
+   These rates are storage-served observations, not proven cold-disk or client-warm-cache rates.
+4. The decision below rests on space alone. It makes no repay claim from speed.
+
+A `--measurement` action was not used. It pins the submitter host class, so it cannot target one Spark from the coordinator. All arms run back to back on one host. Each arm records its load average.
+
+## Speed (MiB/s, fixed 8 GiB arm: 16 files x 512 MiB prefix)
+
+sparky, stage tier (`/stage/prewarm`, NFS ro):
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 1865.8 | 1440.3 |
+| 4 | 5984.8 | 5969.7 |
+| 16 | 2291.9 | 7859.6 |
+
+sparky, HDD pool (`/mnt/shared`):
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 1540.5 | 1531.8 |
+| 4 | 4417.0 | 4502.6 |
+| 16 | 6114.1 | 6215.6 |
+
+sparky, host-local NVMe (16 written files, varied pattern, fsync, backing verified non-sparse, write 1274.9 MiB/s):
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 3001.7 | 2992.4 |
+| 4 | 7042.0 | 6701.2 |
+| 16 | 7689.8 | 7805.2 |
+
+sparklina, stage tier:
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 1673.3 | 1704.3 |
+| 4 | 6132.0 | 6071.5 |
+| 16 | 5904.6 | 7377.7 |
+
+sparklina, HDD pool:
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 4081.7 | 5520.1 |
+| 4 | 6476.5 | 5762.0 |
+| 16 | 1079.1 | 6695.0 |
+
+sparklina, host-local NVMe (backing verified non-sparse, write 2609.7 MiB/s):
+
+| streams | first pass | repeated pass |
+|---|---|---|
+| 1 | 1940.6 | 2063.1 |
+| 4 | 4237.8 | 4302.8 |
+| 16 | 6622.2 | 6558.4 |
+
+Read these numbers with care:
+
+- The 16-stream first-pass arm ran before the one- and four-stream arms on each source. Later first-pass arms re-read the same server-side bytes.
+- Sparklina HDD rates of 1079.1 MiB/s on first pass and 6695.0 MiB/s on repeat show different service conditions, not proven cache states.
+- Both actions had a 4 GiB memory cap. The 8 GiB arm could not stay in the client cache.
+- PB telemetry on sparklina records 157.14 GB of `read_bytes` and 154.66 GB of `rchar`, not equal counters.
+- Sparky telemetry records 154.73 GB of `read_bytes` and 154.66 GB of `rchar`, also not equal counters.
+- These counters do not establish a client-warm arm. The repeated NVMe rates remain close to the first-pass rates.
+- Client-warm cache performance is unmeasured. The old JSON labels `cold` and `warm` remain unchanged as recorded labels.
+- The 1-minute load averages ranged from 5.49 to 7.76 on sparky and 5.39 to 7.46 on sparklina. Per-arm values are in the raw JSON.
+- Fleet load was not controlled. These rates do not establish behavior under campaign load.
+- No full-set extrapolation follows. A rate over an 8 GiB prefix does not predict a 163 GiB load.
+
+## Space (D1 verdict for the 163.47 GiB set)
+
+D1 needs 1.5N + 20 GiB free (265.21 GiB here) plus the 5% floor.
+
+| host | avail GiB | floor GiB | verdict |
+|---|---|---|---|
+| sparky | 559.95 | 91.66 | fits |
+| sparklina | 109.88 | 45.77 | fails (1.5N+20GiB rule) |
+
+These free-space observations alone do not establish a cleanup operation. Sparklina cannot hold the set at the recorded free space.
+
+## Bind mount
+
+Sparky used `192.168.1.107/prismaquant/spark-vllm-nccl230:nightly-20260929`; sparklina used `localhost/prismaquant/spark-vllm-nccl230:nightly-20260929`. The tag matches, but the registry references differ.
+A `--mount type=bind,src=<local>,dst=/mnt/shared/gate-1730-<host>,readonly` inside a container that already has `-v /mnt/shared:/mnt/shared:ro` shows only the local files (`nested_shows_local_only: true`, rc 0).
+`--mount` with a missing source fails (rc 125, clear error), so it has no silent empty-directory trap.
+This leg passes on both hosts.
+
+## Decision: NO-GO for the A8S local copy, on space alone
+
+Sparklina fails space, so a two-host resident set is impossible now. That alone stops k1 shim work per the issue.
+The speed arms compare storage-served reads, not client-warm cache reads.
+At 16 streams, first-pass local NVMe rates are 7689.8 MiB/s on sparky and 6622.2 MiB/s on sparklina.
+The corresponding first-pass NFS rates range from 1079.1 to 6114.1 MiB/s, including sparklina's HDD result.
+Repeated NFS reads do not always match local NVMe.
+On sparky, both NFS sources are slower at one and four streams; its HDD pool is also slower at 16 streams.
+On sparklina, repeated HDD reads exceed local NVMe at all stream counts.
+On sparklina, repeated stage reads exceed local NVMe at four and 16 streams, but not at one stream.
+No repay claim follows because this probe does not measure A8S loader concurrency or control server-cache state.
+The bind-mount technique stays valid for any later set that passes this gate.
+Revisit only with new evidence: more free space on sparklina, the real vLLM loader concurrency for A8S, or NFS rates under campaign load.
+No queue, shim, or policy code changed in this task.
