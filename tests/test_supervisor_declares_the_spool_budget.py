@@ -554,12 +554,13 @@ def test_checked_in_gb10_budget_uses_the_five_percent_floor_without_a_cap(
     assert _worker_offer(args)[KIND] == expected_gib
 
 
-def test_checked_in_wsl_worker_offers_no_spool_without_a_disk_read(
-        tmp_path, monkeypatch):
-    monkeypatch.setattr(supervise, "CONFIG", ROSTER)
-    monkeypatch.setattr(supervise, "MIRROR", tmp_path / "absent")
+def test_checked_in_wsl_spool_declaration_offers_no_budget_without_a_disk_read(
+        monkeypatch):
     monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
-    _, args = supervise.declared_shape("wsl-gpu", 0)
+    document = json.loads(ROSTER.read_text())
+    entry = document["boxes"]["wsl-gpu"]
+    args = supervise.spool_declaration(
+        "wsl-gpu", entry, document, entry["args"], record=False)
     assert KIND not in _worker_offer(args)
 
 
