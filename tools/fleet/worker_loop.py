@@ -1193,8 +1193,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="serve at most one action and exit, whether or not "
                          "the queue had anything (debug)")
     ap.add_argument("--timeout-s", type=float, default=DEFAULT_EXECUTION_CEILING_S,
-                    help="how long a single action may run before this loop "
-                         "kills it")
+                    help="this loop's safety ceiling: it clamps an explicit "
+                         "payload budget and each stall allowance, but never "
+                         "ends a run for elapsed time alone")
     ap.add_argument("--poll-s", type=float, default=10.0,
                     help="seconds to sleep between queue polls")
     ap.add_argument("--max-idle", type=int, default=6,
