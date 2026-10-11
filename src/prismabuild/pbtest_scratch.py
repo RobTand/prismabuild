@@ -127,6 +127,7 @@ class Attempt:
             if int(code) == 0:
                 try:
                     _no_mounts(self.directory)
+                    _prepare_removal(self.directory_fd, os.fstat(self.directory_fd).st_dev)
                     shutil.rmtree(self.record["name"], dir_fd=self.root_fd)
                 except (OSError, ValueError):
                     self._keep_after_failed_cleanup()
@@ -236,8 +237,16 @@ def _ended(record):
     return dict(line.split() for line in events.splitlines()).get("populated") == "0"
 
 
-def _allocated(fd, device):
-    total = os.fstat(fd).st_blocks * 512
+def _prepare_removal(fd, device):
+    """Restore owner directory access without following links; count blocks."""
+    info = os.fstat(fd)
+    if info.st_dev != device:
+        raise ValueError("scratch contains another filesystem")
+    if info.st_uid != os.geteuid():
+        raise ValueError("scratch directory has another owner")
+    if info.st_mode & 0o700 != 0o700:
+        os.fchmod(fd, stat.S_IMODE(info.st_mode) | 0o700)
+    total = info.st_blocks * 512
     for name in os.listdir(fd):
         info = os.stat(name, dir_fd=fd, follow_symlinks=False)
         if info.st_dev != device:
@@ -247,7 +256,7 @@ def _allocated(fd, device):
             try:
                 if _identity(os.fstat(child)) != _identity(info):
                     raise ValueError("scratch tree changed")
-                total += _allocated(child, device)
+                total += _prepare_removal(child, device)
             finally:
                 os.close(child)
         elif info.st_nlink == 1:
@@ -306,7 +315,7 @@ def sweep_root(root, *, now=None, expected=None):
                     if not _ended(record):
                         raise ValueError("live or unknown attempt scope")
                     _no_mounts(root / name)
-                    allocated = _allocated(directory_fd, info.st_dev)
+                    allocated = _prepare_removal(directory_fd, info.st_dev)
                     if _identity(os.stat(name, dir_fd=root_fd, follow_symlinks=False)) != _identity(info):
                         raise ValueError("attempt identity changed")
                     shutil.rmtree(name, dir_fd=root_fd)

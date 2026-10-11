@@ -2049,7 +2049,7 @@ pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
 Exit 0 removes only this attempt directory; a nonzero exit retains it.
-When removal meets a filesystem or mount refusal, exit 0 also keeps the directory with a completion time, so cleanup never turns a green result red.
+If removal meets a filesystem or mount refusal, exit 0 retains scratch with a completion time and returns 0.
 The worker supervisor expires retained default scratch after 24 hours (#1710).
 It sweeps each registered sealed `TMPDIR` root once per hour, even while worker loops execute actions.
 With complete custody and an ended scope, retention is at most 25 hours plus a supervisor tick and the sweep duration.
@@ -2066,6 +2066,9 @@ The completion time, not the directory modification time, starts the retention c
 Expiry pins the root and attempt with directory descriptors.
 It checks their device and inode identities and refuses nested mounts.
 It does not follow symlinks during deletion.
+Before either removal path, the owner restores mode 0700 access on readable owned directories through pinned descriptors.
+Device and inode checks and `O_NOFOLLOW` protect this permission repair.
+It does not change file modes or symlink targets.
 Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories have no safe completion proof.
 Expiry preserves them, malformed records, interrupted attempts without completion metadata, and attempts without exact broker scope evidence.
 Age alone never authorizes their deletion.

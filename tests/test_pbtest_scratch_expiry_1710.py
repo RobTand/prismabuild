@@ -101,6 +101,40 @@ def test_attempt_lock_preserves_live_controller_after_pytest_returns(custody):
     assert report["removed"][0]["name"] == directory.name
 
 
+@pytest.mark.parametrize("state", ["expired", "live", "unexpired"])
+def test_read_only_kept_scratch_expires_only_after_release(custody, state):
+    attempt = scratch_owner.create(custody, KEY, NONCE)
+    directory = attempt.directory
+    parent = directory / "pytest" / "readonly"
+    nested = parent / "nested"
+    nested.mkdir(parents=True)
+    marker = nested / "evidence"
+    marker.write_text("kept failure")
+    try:
+        attempt.finish(1)
+        kept = attempt.record["kept_unix"]
+        nested.chmod(0o500)
+        parent.chmod(0o500)
+        directory.chmod(0o500)
+        if state != "live":
+            attempt.close()
+        now = kept + (60 if state == "unexpired" else 90000)
+        report = scratch_owner.sweep_root(custody, now=now)
+        if state == "expired":
+            assert not directory.exists(), report
+            assert [row["name"] for row in report["removed"]] == [directory.name]
+        else:
+            assert report["removed"] == []
+            assert marker.read_text() == "kept failure"
+            assert all(path.stat().st_mode & 0o777 == 0o500
+                       for path in (directory, parent, nested))
+    finally:
+        attempt.close()
+        for path in (directory, parent, nested):
+            if path.exists():
+                path.chmod(0o700)
+
+
 @pytest.mark.parametrize("events", ["populated 1\n", "unreadable", "populated 0\n"])
 def test_scope_liveness_controls_expiry(custody, events):
     directory = _kept(custody, "pb-scope", 90000)
@@ -212,12 +246,17 @@ def test_expiry_never_follows_symlinks_outside_root(custody, tmp_path):
     forged = custody / "pb-forged"
     forged.mkdir()
     (forged / scratch_owner.OWNER).symlink_to(marker)
-    report = scratch_owner.sweep_root(custody)
-    assert not old.exists()
-    assert marker.read_text() == "outside"
-    assert (custody / "pb-escape").is_symlink()
-    assert (forged / scratch_owner.OWNER).is_symlink()
-    assert [row["name"] for row in report["removed"]] == ["pb-old"]
+    outside.chmod(0o500)
+    try:
+        report = scratch_owner.sweep_root(custody)
+        assert not old.exists()
+        assert marker.read_text() == "outside"
+        assert outside.stat().st_mode & 0o777 == 0o500
+        assert (custody / "pb-escape").is_symlink()
+        assert (forged / scratch_owner.OWNER).is_symlink()
+        assert [row["name"] for row in report["removed"]] == ["pb-old"]
+    finally:
+        outside.chmod(0o700)
 
 
 def test_registered_root_replacement_cannot_authorize_deletion(custody):

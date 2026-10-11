@@ -67,7 +67,7 @@ def test_a_passing_shard_removes_its_attempt_base_temp(tmp_path):
         path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
 
 
-def test_a_passing_shard_keeps_read_only_scratch_without_changing_its_exit_code(tmp_path):
+def test_a_passing_shard_removes_read_only_scratch_without_changing_its_exit_code(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     checkout = _checkout(tmp_path, "assert True")
@@ -80,12 +80,7 @@ def test_a_passing_shard_keeps_read_only_scratch_without_changing_its_exit_code(
         result = _run(checkout, scratch)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "1 passed" in result.stdout
-        marker, = scratch.rglob("marker")
-        assert marker.read_text() == "kept"
-        attempt, = scratch.iterdir()
-        record = json.loads((attempt / ".pbtest-owner.json").read_text())
-        assert record["kept_unix"] > 0
-        assert (attempt / ".pbtest-lock").is_file()
+        assert list(scratch.iterdir()) == []
     finally:
         for marker in scratch.rglob("marker"):
             marker.parent.chmod(0o700)

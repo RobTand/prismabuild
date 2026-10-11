@@ -1705,7 +1705,7 @@ The standard eight-character suffix leaves an 86-byte socket path under
 and a 12-character file name (#1709).
 The worker removes only that attempt's directory after pytest exits 0.
 It keeps the directory on a non-zero exit, as the failed-only retention policy does.
-When removal meets a filesystem or mount refusal, a passing shard also keeps its directory with a completion time, and still reports exit 0.
+If removal meets a filesystem or mount refusal, a shard with exit 0 retains scratch with a completion time and returns 0.
 Default retained scratch expires after 24 hours (#1710).
 The worker supervisor runs a pass at startup and once per hour while it remains active.
 It sweeps registered sealed `TMPDIR` roots even when all worker loops execute actions.
@@ -1721,6 +1721,9 @@ Expiry also checks the exact broker scope for absence or `populated 0`.
 Live controllers, live descendants, and uncertain scope evidence preserve scratch.
 Directory descriptors and device/inode checks confine deletion to the sealed root.
 Expiry refuses nested mounts and does not follow symlinks.
+Both removal paths restore owner read, write, and search permissions on readable owned directories, including read-only subtrees.
+The permission repair uses directory descriptors, device and inode checks, and `O_NOFOLLOW`.
+It does not change file modes or symlink targets.
 
 Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories remain intact.
 Interrupted attempts without completion metadata also remain intact.
@@ -1745,7 +1748,8 @@ The byte count sums inode blocks before deletion; it does not measure filesystem
 The first dl380g10 pass removed **0 bytes** from `/home/rob/tmp` and `/tmp`.
 Action `d98c5e0bbfa5acb85b32d09f0a37519646eda77add0a907d8f2580b3f2569548` retains the complete pass report.
 It preserved legacy scratch because that scratch had no lifecycle metadata.
-The separate runtime smoke removed 8192 allocated bytes from one ended attempt under a private root.
+Runtime actions `936fcb4abf7f8d3203c16dd4787a4521793298d4581dbb34acee275ac49f5375` and `9727f6592fef3e514cfabfa341977acc79bc4fde07f102f19d8b8b6404a8b0c9` exercise live scope protection and later read-only expiry on dl380g10.
+The second action removed 32768 allocated bytes from one ended attempt under a private `/tmp` root and preserved a live attempt.
 That smoke used a simulated 90000-second age; it does not count as production space relief.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
