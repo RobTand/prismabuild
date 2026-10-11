@@ -86,7 +86,8 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
 
 
 def _publish_producer(tmp_path: Path, *, measurement: bool = False,
-                      demand: dict[str, int] = PRODUCER_DEMAND):
+                      demand: dict[str, int] = PRODUCER_DEMAND,
+                      timeout_s: float | None = None):
     """Seal and publish a spool producer without claiming it."""
     cas_root = tmp_path / "cas"
     template = fx._template(str(tmp_path / "canonical"))
@@ -95,6 +96,8 @@ def _publish_producer(tmp_path: Path, *, measurement: bool = False,
     request.pop("action_key")
     request["environment"]["variables"].update({ps.ROOT_ENV: str(tmp_path / "local"),
                                                 ps.MAX_ENV: "256"})
+    if timeout_s is not None:
+        request["params"]["execution_timeout_s"] = timeout_s
     if measurement:
         request["task"].update(task_class="measurement", determinism="stochastic")
         request["execution_scope"] = dict(MEASUREMENT_SCOPE)
@@ -113,7 +116,8 @@ def _publish_producer(tmp_path: Path, *, measurement: bool = False,
 
 
 def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
-              demand: dict[str, int] = PRODUCER_DEMAND):
+              demand: dict[str, int] = PRODUCER_DEMAND,
+              timeout_s: float | None = None):
     """A spool producer claimed through the adaptive path on an idle host.
 
     Its sealed environment names a spool root, as every Stage A chain's
@@ -121,7 +125,7 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     """
 
     (published, cas) = _publish_producer(tmp_path, measurement=measurement,
-                                         demand=demand)
+                                         demand=demand, timeout_s=timeout_s)
     queue, owner = published.queue, published.owner
     template, cas_root = published.template, published.cas_root
     _sample(monkeypatch, psi=0.)
@@ -378,7 +382,7 @@ def test_a_withholding_foreign_action_does_not_hold_the_export_out(
     allowance, would take free tokens: it is deferred behind the withhold
     with no pass, and a non-dependent behind it is not considered at all."""
 
-    spool, cas = _producer(tmp_path, monkeypatch)
+    spool, cas = _producer(tmp_path, monkeypatch, timeout_s=pool.WITHHOLD_CEILING_S)
     foreign = _foreign(spool, cas, "three-gib", {"cpu": 2, "mem_gb": 3})
     _running(spool, monkeypatch, psi=0.)
     for _ in range(pool.STARVATION_FLOOR + 1):
