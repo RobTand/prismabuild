@@ -21,7 +21,7 @@ jobs:
             const pattern = new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)\\s+(?:https://github\\.com/${escaped}/issues/|${escaped}#|#)([1-9][0-9]*)\\b`, 'gi');
             const numbers = [...new Set([...body.matchAll(pattern)].map(m => Number(m[1])))];
             const branch = pull.head.ref;
-            const branchExempt = branch.startsWith('ig/') || branch.startsWith('release')
+            const branchExempt = branch.startsWith('ig/') || branch.startsWith('pg/') || branch.startsWith('pg-train/') || branch.startsWith('release')
               || Date.parse(pull.created_at) < Date.parse('2026-10-09T17:00:00Z');
             const branchMatch = /^prismabuild-([1-9][0-9]*)(-[a-z0-9][a-z0-9-]*)?$/.exec(branch);
             for (const issue_number of numbers) {
