@@ -6742,8 +6742,8 @@ is a whole regular file with a real SHA-256 digest; publication lists the
 canonical directory and requires exact whole-directory name and size coverage.
 Symlinks and special files are refused. Source metadata is not an identity gate.
 
-The separate append-only `lease.jsonl` journal records publication and explicit
-release, each naming the manifest digest. A lease requires either an until
+The separate append-only `lease.jsonl` journal records publication, explicit
+renewal and release, each naming the manifest digest. A lease requires either an until
 timestamp or a campaign name, and an explicit hard maximum; no forever default.
 Per-host `copies/<host>.json` records use `prismabuild.resident_copy.v1` and
 `absent`, `copying`, `resident` or `evicting` states, a local root, verification
@@ -6806,9 +6806,29 @@ lifecycle wording). Until leases may be extended by ready or claimed rows,
 but never past their hard maximum. Campaign leases end on release or maximum.
 An explicit `ResidentSets.renew` appends a new bounded lease without changing
 the body. It can reactivate a released set; live rows cannot cancel a release.
+`ResidentSets.effective_lease` validates the journal's manifest binding, event
+data and lease bounds at each event's timestamp, then folds in append order.
+Each `published` or `renewed` event replaces the effective lease and clears
+its released flag; a later `released` event sets it. `lease_active` uses this
+same interpretation, so ready or claimed rows cannot override a release.
+
+`ResidentSets.close_campaign(NAME, by=OPERATOR)` validates the campaign name
+before mutation and returns `{"released": [SET_ID, ...], "errors": {SET_ID: ERROR, ...}}`.
+Under each set-record lock it releases exactly the effective unreleased leases
+whose campaign matches NAME, even after their hard maximum. Until-date leases
+never match. An A-to-B renewal survives A's close; a B-to-A renewal is released.
+Repeated close appends nothing after release; a later explicit renewal can
+make another close applicable. A missing store is an empty successful close.
+A candidate directory is skipped only when reading its body under the lock
+raises `FileNotFoundError`: refused publication can leave just the lock.
+Other body or journal failures for published sets are reported per set while
+processing continues. Close changes only matching release journals, leaving
+bodies, copy records, reader pins, payload bytes and occupancy tokens intact.
+
 Explicit Phase 1 readers take `local_resident.pin` and release that
 token only after their last read; a crashed reader pin stays until the existing
-broker scope attestation proves stop. Phase 2 will integrate container pins.
+broker scope attestation proves stop. Container mount and pin injection is a
+separate Phase 2 prerequisite; campaign close does not implement it.
 Explicit renewals are capped at `now + renewal_ceiling_s`, a positive finite
 policy value published in `local_tier_policy.json` (default: 14 days). The
 effective ceiling is recorded in the renewal journal; it does not replace
@@ -6817,7 +6837,12 @@ the lease's required hard maximum or allow automatic renewal past it.
 Eviction takes the per-host flock, checks pins, durably records `evicting`,
 then renames to `.evicting` under that lock. It releases the lock before
 deleting, and releases ledger tokens only after every tree is gone. An active
-mover holds its separate move lock, so eviction defers instead of deleting an
+pin reports `pinned` and prevents deletion. Recovery removes all final,
+`.partial` and `.evicting` trees, including a final tree beside an existing
+`.evicting` tree, before releasing tokens. Only after successful deletion and
+token release does the owner record `absent` with zero bytes. Deletion failures
+retain occupancy and the retryable `evicting` state. An active mover holds its
+separate move lock, so eviction defers instead of deleting an
 in-flight partial tree. Each localtier cycle attempts interrupted evictions
 before minting. Failed deletes retain their bytes and occupancy holders; the
 minter still counts the remaining trees and held tokens. Cross-host requests

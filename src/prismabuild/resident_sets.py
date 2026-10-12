@@ -191,6 +191,36 @@ class ResidentSets:
         path = self.set_path(set_id).parent / "lease.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+    def effective_lease(self, set_id):
+        """Return (lease, released) after validating and folding the journal."""
+        lease = None
+        released = False
+        for event in self.read_lease_log(set_id):
+            if not isinstance(event, dict) or event.get("manifest_sha256") != set_id:
+                raise ValueError("lease journal manifest disagrees")
+            kind = event.get("event")
+            if kind not in ("published", "renewed", "released"):
+                raise ValueError("invalid lease journal event")
+            unix = event.get("unix")
+            if type(unix) not in (int, float) or not math.isfinite(unix):
+                raise ValueError("lease journal event requires a finite timestamp")
+            if not isinstance(event.get("by"), str) or not event["by"].strip():
+                raise ValueError("lease journal event requires by")
+            if lease is None and kind != "published":
+                raise ValueError("resident set has no published lease journal")
+            if kind in ("published", "renewed"):
+                lease = validate_lease(event.get("lease"), now=unix)
+                if kind == "renewed":
+                    ceiling = _renewal_ceiling(event.get("renewal_ceiling_s"))
+                    if lease["hard_max"] > unix + ceiling:
+                        raise ValueError("renewed hard_max exceeds the renewal policy ceiling")
+                released = False
+            else:
+                released = True
+        if lease is None:
+            raise ValueError("resident set has no published lease journal")
+        return lease, released
+
 
     def lock(self, set_id):
         return posix_lock.held(self.set_path(set_id).parent / ".record.lock")
@@ -280,6 +310,36 @@ class ResidentSets:
             self.read(set_id)
             self._append_lease(set_id, {"event": "released", "unix": time.time() if now is None else now, "by": by})
         return self.status(set_id)
+
+    def close_campaign(self, name, *, by, now=None):
+        name = _resident_name(name, "campaign")
+        if not isinstance(by, str) or not by.strip():
+            raise ValueError("by is required")
+        now = time.time() if now is None else now
+        if type(now) not in (int, float) or not math.isfinite(now):
+            raise ValueError("close timestamp must be finite")
+        result = {"released": [], "errors": {}}
+        try:
+            directories = sorted(self.root.iterdir())
+        except FileNotFoundError:
+            return result
+        for directory in directories:
+            set_id = directory.name
+            try:
+                if not directory.is_dir():
+                    continue
+                with self.lock(set_id):
+                    try:
+                        self.read(set_id)
+                    except FileNotFoundError:
+                        continue
+                    lease, released = self.effective_lease(set_id)
+                    if not released and lease.get("campaign") == name:
+                        self._append_lease(set_id, {"event": "released", "unix": now, "by": by})
+                        result["released"].append(set_id)
+            except Exception as error:
+                result["errors"][set_id] = f"{type(error).__name__}: {error}"
+        return result
 
     def renew(self, set_id, lease, *, by, now=None, renewal_ceiling_s=DEFAULT_RENEWAL_CEILING_S):
         now = time.time() if now is None else now
