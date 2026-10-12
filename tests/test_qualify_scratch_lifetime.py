@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import json
 import os
+import select
 import signal
 import subprocess
 from pathlib import Path
@@ -121,17 +122,95 @@ def test_launcher_refusal_never_signals_already_pinned_target(launcher_target, m
         os.fstat(descriptors[0])
 
 
+def _exit_launcher_target(child):
+    descriptor = os.pidfd_open(child.pid)
+    try:
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        readable, _, _ = select.select([descriptor], [], [], 10)
+        assert descriptor in readable, "launcher target did not exit within ten seconds"
+        child.wait()
+    finally:
+        os.close(descriptor)
+
+
+def test_exit_launcher_target_waits_without_sleep_polling(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    descriptor = 42
+    calls = []
+    child = SimpleNamespace(pid=123, wait=lambda: calls.append(("wait",)))
+
+    def pin(pid):
+        calls.append(("pin", pid))
+        return descriptor
+
+    def ready(readable, writable, exceptional, timeout):
+        calls.append(("select", readable, writable, exceptional, timeout))
+        return [99, descriptor], [], []
+
+    def forbid_sleep(seconds):
+        pytest.fail("launcher target used sleep polling")
+
+    monkeypatch.setattr(os, "pidfd_open", pin)
+    monkeypatch.setattr(signal, "pidfd_send_signal",
+                        lambda fd, sig: calls.append(("signal", fd, sig)))
+    monkeypatch.setattr(select, "select", ready)
+    monkeypatch.setattr(os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(time, "sleep", forbid_sleep)
+
+    _exit_launcher_target(child)
+
+    assert calls == [
+        ("pin", child.pid),
+        ("signal", descriptor, signal.SIGTERM),
+        ("select", [descriptor], [], [], 10),
+        ("wait",),
+        ("close", descriptor),
+    ]
+
+
+@pytest.mark.parametrize("readable", [[], [99]])
+def test_exit_launcher_target_readiness_timeout_closes_handle(monkeypatch, readable):
+    import time
+    from types import SimpleNamespace
+
+    descriptor = 42
+    calls = []
+
+    def forbid_wait():
+        pytest.fail("launcher target reaped before descriptor readiness")
+
+    def ready(readers, writable, exceptional, timeout):
+        assert (readers, writable, exceptional, timeout) == ([descriptor], [], [], 10)
+        return readable, [], []
+
+    def forbid_sleep(seconds):
+        pytest.fail("launcher target used sleep polling")
+
+    child = SimpleNamespace(pid=123, wait=forbid_wait)
+    monkeypatch.setattr(os, "pidfd_open", lambda pid: descriptor)
+    monkeypatch.setattr(signal, "pidfd_send_signal",
+                        lambda fd, sig: calls.append(("signal", fd, sig)))
+    monkeypatch.setattr(select, "select", ready)
+    monkeypatch.setattr(os, "close", lambda fd: calls.append(("close", fd)))
+    monkeypatch.setattr(time, "sleep", forbid_sleep)
+
+    with pytest.raises(AssertionError, match="launcher target did not exit"):
+        _exit_launcher_target(child)
+
+    assert calls == [
+        ("signal", descriptor, signal.SIGTERM),
+        ("close", descriptor),
+    ]
+
+
 def test_launcher_exit_after_pin_never_signals_replacement(launcher_target, monkeypatch):
     import time
     args, child, directory = launcher_target
 
     def exit_target(seconds):
-        descriptor = os.pidfd_open(child.pid)
-        try:
-            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-        finally:
-            os.close(descriptor)
-        child.wait(timeout=10)
+        _exit_launcher_target(child)
 
     monkeypatch.setattr(time, "sleep", exit_target)
     assert qualification._launcher_killer(args, "b" * 64, {"host": "fixture"}) == 0
