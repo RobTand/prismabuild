@@ -1,17 +1,7 @@
-"""D38: refuse a GPU publication that has no matching preflight evidence (#1639).
+"""Evaluate and audit D38 evidence before GPU publication (#1639, #1649).
 
-D38 requires a CPU dry run before a new or changed GPU job.  This module is the
-consumer side of that rule.  It reads evidence only -- a content-verified CAS
-receipt or a scoped CEO grant -- and never asks anything to judge whether
-evidence exists.  Any missing, unreadable or mismatched evidence refuses.
-
-``pbrun`` calls :func:`require` at every point that would publish new runnable
-work.  A cache hit or a live attachment publishes nothing and needs no receipt.
-
-The producer that writes receipts (``--d38-plan``, ``--d38-preflight-for``) is a
-later change.  Until its code identity binds a receipt, a receipt is as honest
-as the submitter that filed the preflight action; the audited exception is the
-other path.  Both write an immutable audit event before anything is published.
+The reviewed fleet configuration selects enforcement. By default failed
+evidence checks are recorded and publication proceeds.
 """
 from __future__ import annotations
 
@@ -24,7 +14,7 @@ import re
 import socket
 import sys
 import uuid
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from prismabuild import action_result, container_images, core as pb, digest_primitives
 
@@ -51,12 +41,6 @@ AUDIT_DIR_NAME = "d38-audit"
 #: the file must grant this exact job.
 DECISION_DIR = Path("/home/rob/fleet/ceo/inbox/done")
 GPU_TAGS = frozenset({"gb10", "sparky", "sparklina"})
-#: The gate is on.  This is the one switch, and it is a module attribute on
-#: purpose: no flag, environment variable or caller input can reach it, because
-#: D38 allows no caller-controlled exemption.  Only the existing test suite
-#: turns it off (``tests/conftest.py``), because those tests submit as a Spark
-#: from a box-local checkout, which the spec's own rule counts as GPU intent.
-ENFORCE = True
 MAX_RECEIPT_BYTES = 64 * 1024
 MAX_NAMESPACE_BYTES = 64 * 1024
 
@@ -126,6 +110,24 @@ def _aware(text: object, where: str) -> datetime.datetime:
     return value
 
 
+def enforcement_enabled() -> bool:
+    """Read the reviewed setting beside this resolved gate module."""
+
+    path = Path(__file__).resolve().with_name("fleet_boxes.json")
+    try:
+        config = _json_without_duplicates(path.read_bytes())
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        raise SystemExit(f"pbrun: D38 configuration error in {path}: {exc}") from None
+    if not isinstance(config, dict):
+        raise SystemExit(f"pbrun: D38 configuration error in {path}: "
+                         "configuration must be a JSON object")
+    value = config.get("d38_enforce", False)
+    if not isinstance(value, bool):
+        raise SystemExit(f"pbrun: D38 configuration error in {path}: "
+                         "d38_enforce must be a JSON boolean")
+    return value
+
+
 def load_namespace(path: str | Path) -> tuple[dict, str]:
     """Read one namespace descriptor; return it with its ``sha256:`` digest."""
 
@@ -161,7 +163,7 @@ def _parse_receipt(raw: bytes) -> dict:
         raise Refusal("the receipt is not a JSON object")
     if set(body) != _RECEIPT_KEYS:
         raise Refusal("the receipt has missing or unknown fields")
-    if body["schema"] != RECEIPT_SCHEMA:
+    if not isinstance(body["schema"], str) or body["schema"] != RECEIPT_SCHEMA:
         raise Refusal("the receipt schema is not fleet.d38.preflight.v1")
     for name in ("job_identity_hash", "preflight_action_key"):
         if not isinstance(body[name], str) or not _HASH.match(body[name]):
@@ -179,9 +181,9 @@ def _parse_receipt(raw: bytes) -> dict:
         raise Refusal(f"the receipt names an invalid image: {exc}") from None
     if normalized != images:
         raise Refusal("the receipt images are not unique and normalized")
-    if body["host_class"] not in _MACHINES:
+    if not isinstance(body["host_class"], str) or body["host_class"] not in _MACHINES:
         raise Refusal("the receipt host_class is not x86 or gb10")
-    if body["result"] not in ("pass", "fail"):
+    if not isinstance(body["result"], str) or body["result"] not in ("pass", "fail"):
         raise Refusal("the receipt result is not pass or fail")
     created = _aware(body["created_at"], "created_at")
     if body["expires"] is not None:
@@ -257,7 +259,8 @@ def load_plan(cas, preflight: Mapping[str, object]) -> dict:
         plan = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise Refusal(f"the plan is not valid JSON: {exc}") from None
-    if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
+    if (not isinstance(plan, dict) or not isinstance(plan.get("schema"), str)
+            or plan["schema"] != PLAN_SCHEMA):
         raise Refusal("the plan schema is not fleet.d38.plan.v1")
     return plan
 
@@ -282,7 +285,7 @@ def _split_invocation(command: Sequence[str], entry: Mapping[str, object]
 
     kind, interpreter, target = (entry.get("kind"), entry.get("interpreter"),
                                  entry.get("target"))
-    if kind not in ("script", "module") or not all(
+    if not isinstance(kind, str) or kind not in ("script", "module") or not all(
             isinstance(item, str) and item for item in (interpreter, target)):
         raise Refusal("the plan's entry point is not a script or module "
                       "invocation")
@@ -312,6 +315,14 @@ def check_plan_binds(plan: Mapping[str, object], preflight: Mapping[str, object]
     target = plan.get("target")
     if not isinstance(target, Mapping):
         raise Refusal("the plan names no target")
+    if not isinstance(target.get("job_identity_hash"), str):
+        raise Refusal("the plan job_identity_hash is not a string")
+    planned_images = target.get("image_digest")
+    if not isinstance(planned_images, list) or any(
+            not isinstance(item, str) for item in planned_images):
+        raise Refusal("the plan image_digest is not a list of strings")
+    if not isinstance(target.get("namespace"), str):
+        raise Refusal("the plan namespace is not a string")
     if target.get("job_identity_hash") != job:
         raise Refusal("the plan binds a different job identity")
     if target.get("image_digest") != list(images):
@@ -404,11 +415,14 @@ def verify_receipt(cas, key: str, *, job: str, images: Sequence[str],
     check_plan_binds(plan, preflight, job=job, images=images,
                      namespace=namespace, target_command=target_command)
     result = receipt.get("result")
-    if not isinstance(result, Mapping) or not isinstance(
-            result.get("bytes"), int) or result["bytes"] > MAX_RECEIPT_BYTES:
+    if (not isinstance(result, Mapping)
+            or type(result.get("bytes")) is not int
+            or not 0 <= result["bytes"] <= MAX_RECEIPT_BYTES):
         raise Refusal("the receipt result is missing or larger than 64 KiB")
+    if not isinstance(result.get("sha256"), str) or not _HASH.match(result["sha256"]):
+        raise Refusal("the receipt result sha256 is not a 64-character hash")
     try:
-        raw = Path(cas.blob_path(str(result["sha256"]))).read_bytes()
+        raw = Path(cas.blob_path(result["sha256"])).read_bytes()
     except Exception as exc:                                    # noqa: BLE001
         raise Refusal(f"the receipt result cannot be read: {exc}") from None
     body = _parse_receipt(raw)
@@ -453,6 +467,9 @@ def verify_exception(decision_id: str, *, job: str, images: Sequence[str],
         raise Refusal(f"the decision is not valid JSON: {exc}") from None
     if not isinstance(decision, dict):
         raise Refusal("the decision is not a JSON object")
+    if any(not isinstance(decision.get(name), str)
+           for name in ("kind", "state", "verdict")):
+        raise Refusal("the decision kind, state and verdict must be strings")
     if (decision.get("kind") != "decision" or decision.get("state") != "decided"
             or decision.get("verdict") != "approve"):
         raise Refusal("the decision is not a decided approval")
@@ -460,11 +477,17 @@ def verify_exception(decision_id: str, *, job: str, images: Sequence[str],
     scoped = grant.get("d38_exception") if isinstance(grant, dict) else None
     if not isinstance(scoped, dict):
         raise Refusal("the decision carries no structured d38_exception grant")
+    if not isinstance(scoped.get("job_identity_hash"), str):
+        raise Refusal("the grant job_identity_hash is not a string")
     if scoped.get("job_identity_hash") != job:
         raise Refusal("the grant binds a different job identity")
     granted = scoped.get("image_digest")
-    if not isinstance(granted, list) or sorted(granted) != list(images):
+    if not isinstance(granted, list) or any(not isinstance(item, str) for item in granted):
+        raise Refusal("the grant image_digest is not a list of strings")
+    if sorted(granted) != list(images):
         raise Refusal("the grant binds different container images")
+    if not isinstance(scoped.get("namespace"), str):
+        raise Refusal("the grant namespace is not a string")
     if scoped.get("namespace") != namespace:
         raise Refusal("the grant binds a different namespace")
     if not at < _aware(scoped.get("expires"), "grant expires"):
@@ -531,53 +554,64 @@ def authorize(args, action: Mapping[str, object], *, cas,
     raise Refusal("no preflight receipt was supplied")
 
 
+def evaluate(args, action: Mapping[str, object], *, cas,
+             at: datetime.datetime) -> dict:
+    """Return authorized evidence or a failed check, independently of policy."""
+
+    try:
+        evidence = authorize(args, action, cas=cas, at=at)
+    except Refusal as exc:
+        return {"result": "failed", "reason": str(exc)}
+    return {"result": "authorized", **evidence}
+
+
 def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
            transport: str) -> tuple[str, str | None] | None:
-    """Authorize a new GPU publication; return ``(reason, namespace)`` if refused.
+    """Evaluate GPU evidence and audit it under the reviewed enforcement policy.
 
-    ``None`` means the job is not GPU intent or its evidence authorized it, and
-    the authorization is audited.  There is no exemption here for a cache hit
-    or a live run: whether new work would be created is decided inside the
-    publication, and a liveness read taken earlier goes stale.  The caller turns
-    a refusal into a path that cannot publish (a wait on a run it can see) or
-    into :func:`refusal`.
+    Return ``(reason, namespace)`` only when enforcement refuses publication.
+    The caller owns cache and attachment handling and must never publish on
+    a refusal.
     """
 
-    if not ENFORCE:
-        return None
     params = action["params"]
     demand = params.get("demand") or {}  # type: ignore[union-attr]
     tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
     if not requires_receipt(demand, tags,
                             host_class=getattr(args, "host_class", None)):
         return None
+    enforce = enforcement_enabled()
     job = str(action["action_key"])
     images = target_images(action)
     namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
     at = utc_now()
+    check = evaluate(args, action, cas=cas, at=at)
+    checked_namespace = namespace if isinstance(namespace, str) else None
+    if enforce and check["result"] == "failed":
+        return (check["reason"], checked_namespace)
+    event = {
+        "schema": AUDIT_SCHEMA, "job_identity_hash": job,
+        "image_digest": images, "namespace": namespace,
+        "submitter": f"{_user()}@{socket.gethostname()}",
+        "time": at.isoformat(), "transport": transport,
+        "mode": "enforce" if enforce else "record_only", **check}
     try:
-        evidence = authorize(args, action, cas=cas, at=at)
-        event = {
-            "schema": AUDIT_SCHEMA, "job_identity_hash": job,
-            "image_digest": images, "namespace": namespace,
-            "submitter": f"{_user()}@{socket.gethostname()}",
-            "time": at.isoformat(), "transport": transport,
-            "result": "authorized", **evidence}
-        try:
-            write_audit(queue_root, event)
-        except OSError as exc:
-            raise Refusal(f"the audit event cannot be written: {exc}") from None
-    except Refusal as exc:
-        return (str(exc), namespace if isinstance(namespace, str) else None)
-    if evidence["authorization"] == "exception":
-        print(f"pbrun: D38 exception {evidence['decision_id']} authorizes job "
+        write_audit(queue_root, event)
+    except OSError as exc:
+        reason = f"the audit event cannot be written: {exc}"
+        if enforce:
+            return (reason, checked_namespace)
+        print(f"pbrun: D38 record_only: {reason}; publication permitted",
+              file=sys.stderr, flush=True)
+    if check.get("authorization") == "exception":
+        print(f"pbrun: D38 exception {check['decision_id']} authorizes job "
               f"{job}", file=sys.stderr, flush=True)
     return None
 
 
 def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
             ) -> SystemExit:
-    """The exit-2 refusal for a verdict :func:`decide` returned."""
+    """The exit-2 refusal for a publication verdict."""
 
     reason, namespace = verdict
     return _exit_refused(reason, job=str(action["action_key"]),
@@ -586,7 +620,7 @@ def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
 
 def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
             transport: str) -> None:
-    """Refuse (exit 2) a new GPU publication without evidence; else audit it."""
+    """Apply the reviewed D38 policy to a new publication."""
 
     verdict = judge_publication(args, action, cas=cas, queue_root=queue_root,
                      transport=transport)
@@ -595,22 +629,16 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
 
 
 def refuse_deferred(args, params: Mapping[str, object]) -> None:
-    """Refuse (exit 2) a deferred ``--after`` submission with GPU intent.
+    """Enforced GPU intent cannot register before a sealed identity exists.
 
-    A deferred job has no identity until its producer ends: the data manifest
-    that completes the key is not known yet.  No receipt or grant can bind a
-    key that does not exist, so D38 could never authorize it.  Filing it would
-    queue work that is refused at release; refusing now says so while the
-    submitter is still there.  The release checks the sealed key again, for a
-    record an older client filed.
+    Record-only registration defers evaluation and auditing to release.
     """
-
-    if not ENFORCE:
-        return
     demand = params.get("demand") or {}
     tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
     if not requires_receipt(demand, tags,  # type: ignore[arg-type]
                             host_class=getattr(args, "host_class", None)):
+        return
+    if not enforcement_enabled():
         return
     images = list(container_images.normalize_refs(
         params.get("container_images") or []))

@@ -57,14 +57,14 @@ def _namespace_file(tmp_path: Path, descriptor: dict = NAMESPACE,
 
 
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch, tmp_path):
+def _isolated(monkeypatch, tmp_path, d38_config):
     """A controlled clock, a private decision store, no outer launch identity."""
 
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(d38_gate, "utc_now", lambda: NOW)
-    monkeypatch.setattr(d38_gate, "ENFORCE", True)
+    d38_config.write_text('{"d38_enforce": true}', encoding="utf-8")
     # The published runtime is not box-local; a test checkout is.  Without this
     # every placement would be pinned to the Spark it was submitted from.
     monkeypatch.setattr(pool, "is_box_local_path", lambda _path: False)
@@ -823,7 +823,7 @@ def test_an_attached_submission_keeps_the_gate(
     assert _ready(tmp_path) == []
 
 
-def test_the_shipped_gate_is_on_and_no_caller_input_can_turn_it_off() -> None:
+def test_the_shipped_gate_is_off_and_no_caller_input_can_turn_it_on() -> None:
     """Read the value a fresh interpreter ships with, not the fixture's."""
 
     import subprocess
@@ -831,9 +831,10 @@ def test_the_shipped_gate_is_on_and_no_caller_input_can_turn_it_off() -> None:
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "import d38_gate; print(d38_gate.ENFORCE)"],
+         "import d38_gate; print(d38_gate.enforcement_enabled())"],
         cwd=REPOSITORY, capture_output=True, text=True)
-    assert shipped.stdout.strip() == "True", shipped.stderr
+    assert shipped.returncode == 0, shipped.stderr
+    assert shipped.stdout.strip() == "False", shipped.stderr
     source = (REPOSITORY / "tools" / "fleet" / "d38_gate.py").read_text(
         encoding="utf-8")
     assert "os.environ" not in source and "getenv" not in source
@@ -898,25 +899,25 @@ def test_a_deferred_cpu_submission_still_files(
 
 
 def test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed(
-        tmp_path, monkeypatch, capsys) -> None:
+        tmp_path, monkeypatch, capsys, d38_config) -> None:
     """Defence in depth: a record filed with the gate off publishes nothing at
     release once the gate is on, because the sealed key has no evidence."""
 
     de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
-    monkeypatch.setattr(d38_gate, "ENFORCE", False)
+    d38_config.write_text('{"d38_enforce": false}', encoding="utf-8")
     assert _submit_deferred(work, monkeypatch, de, producer, template) == 0, \
         capsys.readouterr().err
     instance = de._start(queue, template, producer)
     de._commit(queue, template, instance, "b1", b"d38 handoff bytes")
     queue.finish(producer, status="executed")
-    monkeypatch.setattr(d38_gate, "ENFORCE", True)
+    d38_config.write_text('{"d38_enforce": true}', encoding="utf-8")
     events = de.dr.release_tick(queue)
     assert de._released(events) == [], events
     assert list(queue.dir(pool.READY).glob("*.json")) == [], (
         "the consumer was published without D38 evidence")
     # The control: the same pending record releases once the gate is off, so the
     # gate, and nothing else, held it back.
-    monkeypatch.setattr(d38_gate, "ENFORCE", False)
+    d38_config.write_text('{"d38_enforce": false}', encoding="utf-8")
     assert len(de._released(de.dr.release_tick(queue))) == 1
 
 
