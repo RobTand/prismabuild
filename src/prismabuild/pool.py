@@ -5862,6 +5862,34 @@ _CLAIM_DIAGNOSTICS: contextvars.ContextVar[_ClaimDiagnostics | None] = (
     contextvars.ContextVar("pool_claim_diagnostics", default=None))
 
 
+def _resident_preference_body_hosts(record: Mapping[str, object], set_id: str) -> list[str]:
+    """Validate recorded preference metadata without opening canonical payloads."""
+    manifest = pb.validate_data_manifest(record["manifest"])
+    if pb.raw_sha256(pb.compact_ascii_json_bytes(manifest)) != set_id:
+        raise ValueError("resident set normalized manifest digest mismatch")
+    canonical_root = record.get("canonical_root")
+    if not isinstance(canonical_root, str):
+        raise ValueError("resident set canonical_root must be a path")
+    root = Path(canonical_root)
+    if (not root.is_absolute() or root.parent == root
+            or str(root) != canonical_root or os.path.normpath(canonical_root) != canonical_root):
+        raise ValueError("resident set canonical_root must be normalized, absolute and non-root")
+    paths = set()
+    for entry in manifest["entries"]:
+        path = Path(entry["path"])
+        if (not path.is_relative_to(root) or path == root or path in paths
+                or entry["offset"] != 0 or entry["sha256"] is None):
+            raise ValueError("resident set requires unique whole-file entries under canonical_root")
+        paths.add(path)
+    hosts = record.get("hosts")
+    if (not isinstance(hosts, list) or not hosts
+            or any(not isinstance(host, str)
+                   or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", host) for host in hosts)
+            or len(set(hosts)) != len(hosts)):
+        raise ValueError("resident set hosts must be a nonempty unique list of safe names")
+    return hosts
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -6689,15 +6717,11 @@ class PoolQueue:
                 return set()
             store = resident_sets.ResidentSets(self.root)
             record = store.read(set_id)
-        except (OSError, ValueError, AttributeError, KeyError, TypeError):
-            return set()
-        hosts = record.get("hosts") if isinstance(record, Mapping) else None
-        if not isinstance(hosts, list):
+            hosts = _resident_preference_body_hosts(record, set_id)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError, pb.PrismaBuildError):
             return set()
         found = set()
         for host in hosts:
-            if not isinstance(host, str) or not host:
-                continue
             try:
                 copy = store.read_copy(set_id, host)
             except (OSError, ValueError, AttributeError, KeyError, TypeError):

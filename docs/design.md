@@ -6730,11 +6730,36 @@ to be declared.
 ## Whole-directory local resident sets (#1545)
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
-Rows with `resident_set` prefer an eligible host with a recorded resident copy (#1733). Normal offer order places resident hosts first.
-During gang election, a non-resident host reports `deferred_for_resident_copy` while another matching resident host can elect this member.
-The preferred host must not already hold a sibling election. The hold ends 30 seconds after this member row was published.
-A missing set, invalid publication time, future timestamp, absent matching copy, or record error does not prevent fallback election.
-This preference changes neither eligibility nor the gang start barrier. Phase 1 still serves the canonical path.
+Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
+`placeable_hosts` preserves the existing matching-offer and resource rules and eligible set,
+sorting resident hosts alphabetically before other eligible hosts alphabetically.
+It still returns `None` when there are no live offers. Rows without a nonempty set
+read no resident metadata and retain ordinary ordering and claim behavior.
+Preference requires a 64-character lowercase hexadecimal set ID and a JSON-object body
+with matching `SET_SCHEMA`, ID and literal `immutable: true`. Its manifest must pass
+`core.validate_data_manifest` and its normalized form must hash to the ID using the
+existing digest serialization. The canonical root must be normalized, absolute and
+non-root, including alternate root spellings such as `//`. Entries must lie under it,
+have zero offsets and real SHA-256 digests, and have unique paths. `hosts` must be a
+nonempty unique list matching `[A-Za-z0-9][A-Za-z0-9_.-]*`; any invalid body field
+disables the whole set's preference. Validation reads metadata only, without scanning
+or hashing canonical payload files.
+Only a declared host's readable JSON-object copy with matching `COPY_SCHEMA`, set ID,
+host and `resident` state confers preference. Absent, copying, evicting, missing,
+malformed or unreadable copies confer none; one bad copy does not suppress another
+valid copy. Invalid or unreadable set metadata never refuses fallback admission.
+During gang election, a nonresident host reports `deferred_for_resident_copy` only
+while a valid resident host matches that member's existing election rules, holds no
+sibling election, and `0 <= now - published_unix < RESIDENT_COPY_PREFER_S` (30.0 seconds).
+Publication time must have exact Python type `int` or `float`, be finite and no later
+than `now`; missing values, booleans, numeric strings, NaN, infinities and future
+values add no hold. A hold creates no election or ready mark, and repeated polls
+never extend its publication-based deadline. At the deadline, ordinary election and
+readiness/start barriers proceed. No set or no valid matching copy adds no locality
+wait. This preference changes neither eligibility nor the gang start barrier.
+Phase 1 still serves the canonical path and records `served_from: canonical` in
+the immutable attempt. `pbgang` forwards each supplied member `resident_set` as
+`--resident-set` before the payload separator; omission preserves the prior command.
 `resident_sets.ResidentSets` stores `resident-sets/<manifest sha256>/body.json`
 under the queue root. The body is immutable: the normalized data manifest,
 canonical directory, hosts, initial lease and creator. Every manifest entry
