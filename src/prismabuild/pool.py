@@ -21422,7 +21422,8 @@ class PoolQueue:
         row's own cost cross the host. This replays the owner's rule through
         the one shared calculation (:func:`adaptive_cpu.projected_cpu_fits`)
         with the live terms: every holder on the box plus this candidate at
-        its full sealed cost, plus the GPU row at its declared demand. Without
+        its complete admission cost, including accepted export allowances before
+        funding deductions, plus the GPU row at its declared demand. Without
         holder costs the row waits: unknown is unknown, never zero.
         """
         if holder_costs is None:
@@ -21458,7 +21459,9 @@ class PoolQueue:
         Called under host admission, with the row's own demand known, just before
         it takes its tokens; it reads nothing but the free tokens. ``demand`` is
         the token remainder this claim takes; ``candidate_demand`` is the row's
-        full sealed host demand, and the headroom check charges that full cost.
+        complete admission demand (sealed host demand plus accepted export
+        allowances, before funding deductions). The headroom check charges
+        that full cost; funding reduces only the token remainder.
         The row passes only if, after it takes its own, ``room``
         (:meth:`_class_scoped_room`) still fits them, and -- under adaptive
         admission -- the projected-cost gate keeps headroom for the GPU row
@@ -22206,6 +22209,11 @@ class PoolQueue:
 
     def _claim(self, **kwargs) -> dict[str, object] | None:
         """One claim pass (:meth:`_claim_pass`), with its transition holds timed.
+
+        Sealed host demand stays available to contract consumers. Complete
+        admission demand adds accepted export allowances; class-scoped
+        projected headroom charges it before funding reduces the free-token
+        reservation remainder.
 
         Every per-key transition lock the pass holds is timed from its
         acquisition to its release (#1029): a slow NFS round trip under the
@@ -23144,8 +23152,9 @@ class PoolQueue:
                 # physical GPU; the controller keeps multi-slot work exclusive.
                 reservation_demand = self._reservation_demand(
                     demand, gpu_controller=gpu_controller)
-                # The sealed host demand, before #985 adds a producer's export
-                # allowance to what this claim reserves (below).
+                # Sealed host demand excludes export allowances. CPU admission
+                # charges demand plus accepted allowances; funding later reduces
+                # only the token reservation remainder, not that complete cost.
                 sealed_host_demand = dict(demand)
                 allowance = None
                 dependent_owner: object = cpu_admission._UNREAD
@@ -23562,7 +23571,7 @@ class PoolQueue:
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
                                 continue
-                            class_full_demand = dict(sealed_host_demand)
+                            class_full_demand = dict(demand)
                             if funded_claim:
                                 # The funded kinds come from the producer's
                                 # allowance, not ``free/`` (#985): only the
@@ -23614,7 +23623,7 @@ class PoolQueue:
                                 # #1721: beside the eligible GPU row's own room, now.
                                 # Under adaptive admission the headroom replays the
                                 # owner's rule over every holder on the box plus this
-                                # candidate at its full sealed cost; a funded row pays
+                                # candidate at its complete admission cost; a funded row pays
                                 # that full cost, not its token remainder (the owner
                                 # charges a funded holder's reservation in full while
                                 # its rate is unknown). Host-local reads only, under

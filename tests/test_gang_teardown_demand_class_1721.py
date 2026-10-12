@@ -1,6 +1,6 @@
 """Gang teardown proof, demand-fence authority, and class-scoped CPU placement (#1721).
 
-Pure-unit cover for the three rules:
+Unit and integrated claim coverage for the three rules:
 
 * Teardown needs a synchronized fresh proof under the leads' locks, with a
   reset on any failure (proved by ``test_gang_residency_members``; this file
@@ -15,13 +15,17 @@ Pure-unit cover for the three rules:
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
 import math
+from queue import Queue
+from threading import Event, Thread
 import types
 
 import pytest
 
 from prismabuild import _measurement_reservation as reservation
-from prismabuild import adaptive_cpu, pool
+from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
 
 FIRST = 1000.0
 BOUND = reservation.GANG_RESERVE_AFTER_S
@@ -422,3 +426,236 @@ def test_beside_room_with_a_controller_keeps_projected_headroom():
         identity=(None, False), demand={"cpu": 1, "mem_gb": 2}, cpu_count=8,
         holder_costs=None, candidate_demand={"cpu": 1, "mem_gb": 2}) == {
         "class_scoped": "holder_costs_unreadable"}
+
+
+@pytest.fixture
+def class_claim_host(tmp_path, monkeypatch):
+    host = types.SimpleNamespace(
+        queue=pool.PoolQueue(tmp_path / "queue"), root=tmp_path,
+        now=10_000.0, busy=0.0,
+        capacity={"cpu": 8, "gpu": 1, "mem_gb": 32},
+        tiers={"preferred": list(range(8)), "fallback": []})
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
+    monkeypatch.setattr(pool, "_now", lambda: host.now)
+    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: host.now)
+    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+        "sampled_unix": host.now, "cpu_count": 8, "interval_s": 1.0,
+        "busy_cpus": host.busy, "psi_some": 0.0})
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: {
+        "sampled_unix": host.now, "foreign_processes": []})
+    host.queue.announce(host="sparky", tags=["gb10", "arm64"], has_gpu=True,
+                        capacity=host.capacity, cpu_tiers=host.tiers)
+    host.queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
+                        capacity={"cpu": 8, "mem_gb": 32})
+    return host
+
+
+def _publish_class_action(host, name, demand, *, producer=False, slots=None, owner=None):
+    checkout = host.root / name
+    checkout.mkdir()
+    (checkout / "task.py").write_text("print('fixture')\n")
+    variables = {} if slots is None else {
+        adaptive_cpu.SPOOL_ROOT_ENV: str(host.root / "spool"),
+        adaptive_cpu.EXPORT_SLOTS_ENV: str(slots)}
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": f"tests/{name}", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": ["/bin/true"], "working_directory": ".",
+                 "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {} if owner is None else {"produced_spool": {"owner": owner}},
+        "environment": {"variables": variables, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None}})
+    cas = pb.PrismaBuildCAS(host.root / "cas")
+    cas.publish_action_request(action)
+    key = action["action_key"]
+    host.now += 0.001
+    host.queue.publish(action_key=key, cas_root=str(cas.root),
+                       checkout_root=str(checkout), worker_script="worker.py",
+                       resources=demand, tags=["gb10"],
+                       needs_gpu=bool(demand.get("gpu")), dependent_of=owner)
+    if producer:
+        path = host.queue.item_path(pool.READY, key)
+        row = json.loads(path.read_text())
+        row["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
+                                  "template_id": "fixture", "template_sha256": "0" * 64}
+        path.write_text(json.dumps(row))
+    return key
+
+
+def _claim_class_action(host, *, adaptive=True):
+    return host.queue.claim(tags=["gb10", "arm64"], has_gpu=True,
+                            capacity=host.capacity, cpu_tiers=host.tiers,
+                            adaptive_cpu=adaptive)
+
+
+def _class_metadata(host, key):
+    return adaptive_cpu.read_json(
+        host.queue.ledger().held_dir / key / adaptive_cpu.METADATA)
+
+
+def _class_holder(host, *, slots=None):
+    key = _publish_class_action(host, "holder", {"cpu": 1, "mem_gb": 1},
+                                producer=slots is not None, slots=slots)
+    claimed = _claim_class_action(host)
+    assert claimed is not None and claimed["action_key"] == key
+    admitted = _class_metadata(host, key)["admitted_unix"]
+    host.now += 5.0
+    current = {"action_key": key, "complete": True, "nonce": "holder",
+               "sampled_unix": host.now, "wall_seconds": 5.0, "cpu_seconds": 4.0}
+    base = adaptive_cpu.local_state_base(host.queue.ledger().base)
+    adaptive_cpu.write_json(base / "telemetry" / f"{key}.json", current)
+    adaptive_cpu.write_json(base / "jobs.json", {key: dict(
+        current, sampled_unix=admitted, wall_seconds=0.0, cpu_seconds=0.0)})
+    return key
+
+
+def _class_denial(host, key):
+    base = adaptive_cpu.local_state_base(host.queue.ledger().base)
+    records = adaptive_cpu.read_json(base / pool.CLAIM_DENIALS)["records"]
+    return next(record for record in records.values() if record["action_key"] == key)
+
+
+@contextmanager
+def _class_gpu_lock_busy(host, gpu):
+    ready = Queue()
+    release = Event()
+
+    def hold():
+        try:
+            with host.queue._transition_locked(gpu) as acquired:
+                ready.put(acquired)
+                release.wait()
+        except BaseException as exc:
+            ready.put(exc)
+
+    thread = Thread(target=hold)
+    thread.start()
+    try:
+        acquired = ready.get()
+        if isinstance(acquired, BaseException):
+            raise acquired
+        assert acquired
+        yield
+    finally:
+        release.set()
+        thread.join()
+
+
+def _assert_class_deferred(host, candidate, gpu, *, cost, gpu_cost=4):
+    queue = host.queue
+    assert queue.item_path(pool.READY, candidate).exists()
+    assert not queue.item_path(pool.CLAIMED, candidate).exists()
+    assert queue.ledger().holder_tokens(candidate) == {}
+    assert not (queue.ledger().held_dir / candidate).exists()
+    assert queue.passes(candidate) == 0
+    denial = _class_denial(host, candidate)
+    assert denial["reason"] == "deferred_for_ready_gpu_row"
+    evidence = denial["evidence"]
+    assert evidence["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
+    assert evidence["gpu_row"] == gpu[:12]
+    assert evidence["holder_cost"] == cost
+    assert evidence["gpu_cost"] == gpu_cost
+    assert evidence["host_busy_cpus"] == host.busy
+    assert evidence["active_cpu_cost"] == 1.0 + cost
+    assert evidence["pending_cpu_cost"] == cost
+    assert evidence["decision"]["reason"] in {"admitted", "admitted_on_allowance"}
+
+
+def test_claim_class_scoped_producer_allowance_preserves_gpu_headroom(class_claim_host):
+    host = class_claim_host
+    holder = _class_holder(host)
+    candidate = _publish_class_action(host, "producer", {"cpu": 1, "mem_gb": 1},
+                                      producer=True, slots=2)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 8})
+    host.busy = 3.0
+    before = host.queue.ledger().available()
+    assert before["cpu"] >= 3 + 4 and before["mem_gb"] >= 3 + 8
+    with _class_gpu_lock_busy(host, gpu):
+        assert _claim_class_action(host) is None
+    _assert_class_deferred(host, candidate, gpu, cost=3)
+    assert host.queue.ledger().available() == before
+    assert host.queue.ledger().held_keys() == [holder]
+
+
+@pytest.mark.parametrize(("busy", "admitted"), [
+    (1.0, True), (1.01, True), (1.02, False),
+], ids=["equality", "tolerance-boundary", "beyond-tolerance"])
+def test_claim_class_scoped_producer_full_allowance_fits(class_claim_host, busy, admitted):
+    host = class_claim_host
+    _class_holder(host)
+    candidate = _publish_class_action(host, "producer", {"cpu": 1, "mem_gb": 1},
+                                      producer=True, slots=2)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 8})
+    host.busy = busy
+    with _class_gpu_lock_busy(host, gpu):
+        claimed = _claim_class_action(host)
+    if not admitted:
+        assert claimed is None
+        _assert_class_deferred(host, candidate, gpu, cost=3)
+        return
+    assert claimed is not None and claimed["action_key"] == candidate
+    assert host.queue.ledger().holder_tokens(candidate) == {"cpu": 3, "mem_gb": 3}
+    meta = _class_metadata(host, candidate)
+    assert meta["declared_cpu"] == 3
+    assert meta["dependent_allowance"]["slots"] == 2
+    assert len(meta["dependent_allowance"]["cpus"]) == 2
+    assert meta["dependent_allowance"]["mem_gb"] == 2
+    assert host.queue.passes(candidate) == 0
+    assert host.queue.item_path(pool.READY, gpu).exists()
+
+
+@pytest.mark.parametrize(("slots", "adaptive"), [
+    (None, True), (8, True), (2, False),
+], ids=["no-allowance", "capacity-omitted", "non-adaptive"])
+def test_claim_class_scoped_producer_without_accepted_allowance(
+        class_claim_host, slots, adaptive):
+    host = class_claim_host
+    _class_holder(host)
+    candidate = _publish_class_action(host, "producer", {"cpu": 1, "mem_gb": 1},
+                                      producer=True, slots=slots)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 8})
+    host.busy = 3.0 if adaptive else 7.0
+    with _class_gpu_lock_busy(host, gpu):
+        claimed = _claim_class_action(host, adaptive=adaptive)
+    assert claimed is not None and claimed["action_key"] == candidate
+    assert host.queue.ledger().holder_tokens(candidate) == {"cpu": 1, "mem_gb": 1}
+    meta = _class_metadata(host, candidate)
+    assert meta.get("dependent_allowance") is None
+    if adaptive:
+        assert meta["declared_cpu"] == 1
+    assert host.queue.passes(candidate) == 0
+    assert host.queue.item_path(pool.READY, gpu).exists()
+
+
+@pytest.mark.parametrize(("busy", "admitted"), [(2.0, True), (3.0, False)],
+                         ids=["funded-fits", "funded-defers"])
+def test_claim_class_scoped_funded_row_uses_full_demand(class_claim_host, busy, admitted):
+    host = class_claim_host
+    holder = _class_holder(host, slots=2)
+    candidate = _publish_class_action(host, "export", {"cpu": 1, "mem_gb": 1}, owner=holder)
+    gpu = _publish_class_action(host, "gpu", {"cpu": 5, "gpu": 1, "mem_gb": 8})
+    host.busy = busy
+    before = host.queue.ledger().available()
+    assert before["cpu"] == 5
+    with _class_gpu_lock_busy(host, gpu):
+        claimed = _claim_class_action(host)
+    assert host.queue.ledger().available() == before
+    if not admitted:
+        assert claimed is None
+        _assert_class_deferred(host, candidate, gpu, cost=1, gpu_cost=5)
+        return
+    assert claimed is not None and claimed["action_key"] == candidate
+    assert host.queue.ledger().holder_tokens(candidate) == {}
+    meta = _class_metadata(host, candidate)
+    assert meta["funded_by"] == holder
+    assert meta["declared_cpu"] == 1
+    assert meta["funded"]["mem_gb"] == 1
+    assert len(meta["funded"]["cpus"]) == 1
+    assert set(meta["funded"]["cpus"]) <= set(
+        _class_metadata(host, holder)["dependent_allowance"]["cpus"])
+    assert host.queue.passes(candidate) == 0
+    assert host.queue.item_path(pool.READY, gpu).exists()

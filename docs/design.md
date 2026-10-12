@@ -5790,10 +5790,13 @@ row's own room: the row must be no gang member with plain bounded demand, the
 GPU row must be no measurement, no gang member, with explicit CPU and memory
 and a readable contract, and after the row takes its tokens that room must
 still fit them, with adaptive headroom for the GPU row beside every holder
-plus the new row at declared demand, through the one shared projected-cost
-calculation (#1721). Remote reads are made once per host per claim
-pass and each yield
-charges that view, so a pass never leaves a host more rows than it fits.
+plus the new row at complete admission demand, including accepted producer
+export allowances before funding deductions, through the one shared
+projected-cost calculation (#1721). Funding reduces only the free-token
+reservation remainder used for the separate token-fit check. An allowance
+omitted for host capacity contributes nothing to either check.
+Remote reads are made once per host per claim pass and each yield charges
+that view, so a pass never leaves a host more rows than it fits.
 
 It is not a thermal control and nothing here measures temperature or
 throughput. The GPU side reads drawn power against a reference, because
