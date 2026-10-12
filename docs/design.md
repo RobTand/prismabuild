@@ -17514,10 +17514,29 @@ cleanup, and deployment still requires separate coordinator acceptance.
 
 ## D38 preflight gate (#1639)
 
-D38 requires a CPU dry run before a new or changed GPU job.  `tools/fleet/d38_gate.py`
-is the consumer side and `pbrun.py` calls it once, in the shared submission path, after
+D38 checks CPU dry-run evidence for a new or changed GPU job. `tools/fleet/d38_gate.py`
+is the consumer side and `pbrun.py` calls it in the shared submission path, after
 the target is sealed and before any new runnable work is published, on the pool and SLURM
 transports alike.  It reads evidence only; nothing asks a model whether evidence exists.
+
+**Configuration (#1649).** The gate reads `d38_enforce` from `fleet_boxes.json`
+beside its resolved module file: `tools/fleet_boxes.json` in the flat generation
+layout and `tools/fleet/fleet_boxes.json` in the nested layout. The shipped value
+is `false`; an absent key also means `false`. Only JSON booleans are accepted.
+An unreadable file, malformed JSON, nonobject configuration or nonboolean value
+produces an explicit D38 configuration error. No CLI argument or environment
+variable selects enforcement. Activation requires a reviewed configuration
+change to `true` in the runtime generation being used.
+
+Evidence evaluation is separate from enforcement. With enforcement disabled,
+every GPU publication that reaches the gate evaluates its evidence, including
+missing, conflicting, invalid, expired and mismatched evidence. It attempts an
+immutable audit with `mode: record_only`, job identity, transport and check
+result; failed checks include their reason, and authorized checks retain their
+authorization evidence. D38 failures permit ordinary publication on pool and
+SLURM. An audit-write `OSError` prints a diagnostic and also permits publication.
+Other submission validation remains in force. CPU-only work needs no D38 evidence
+or audit.
 
 A publication has GPU intent when its final sealed demand has `gpu` above zero, a required
 tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-class` is
@@ -17542,7 +17561,7 @@ the CPU changes that entry point allows, each `{flag, from, to}`; the CPU argume
 the target's arguments with exactly the plan's listed changes applied, so a changed program,
 module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
 receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
-the only path.  What the worker executes is `task.argv`, not the descriptive `params.command`:
+the only authorization path. What the worker executes is `task.argv`, not the descriptive `params.command`:
 the preflight's `task.argv` must be the standard captured-log recipe of its declared command
 (`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
 receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
@@ -17552,12 +17571,17 @@ host accelerator inventory is not task visibility: a CPU-only gb10 container sti
 Spark's GPU in its host evidence, so the check reads the sealed environment and keeps only the
 host-class (machine) check on the evidence.  `--d38-exception DECISION_ID` reads a CEO decision
 whose `grant.d38_exception` binds the exact job, images, namespace and expiry; it waives D38
-only, never together with a receipt.  Either way an immutable event is written under
-`pb-queue/d38-audit/<job hash>/` before the publication, and a failed write refuses.  The CAS
+only, never together with a receipt. Malformed external evidence field types fail
+the check before sorting, comparing or timestamp parsing. In particular, grant
+`image_digest` must be a list containing only strings; mixed lists, objects and
+null elements are refused evidence rather than uncaught `TypeError`s.
+Authorized evidence is audited under `pb-queue/d38-audit/<job hash>/` before
+publication. With enforcement enabled (`mode: enforce`), failed evidence checks
+and failed audit writes refuse publication. The CAS
 action request is written before authorization, so the guarantee is that no new runnable work is
 published, not that nothing is written.
 
-**No exemption by liveness.**  The gate has no early return for a cache hit or a live run:
+**Enforcement and liveness.** With enforcement enabled, the gate has no early return for a cache hit or a live run:
 whether a publication creates new work is decided inside the queue, and a liveness read taken
 earlier goes stale (and `slurm_outcome` submits a new job even when a pool run is live).  Without
 evidence, `pbrun` publishes and submits nothing.  Attached, it may only wait on a live pool run it
@@ -17566,12 +17590,18 @@ attached cache hit, are refused without evidence: stricter than "needs no receip
 detached submission still answers a cache hit or a live attachment without publishing.
 
 A deferred (`--after`) submission has no job identity until its producer ends, so no receipt or
-grant can bind it.  GPU intent is refused at registration, and the release checks the sealed key
-again for a record an older client filed (the two flags ride in its publication options, as
-optional keys so older records still read).  Deferred GPU work needs a separate design.
+grant can bind it. Registration and release use the same reviewed configuration
+lookup. With enforcement disabled, registration accepts GPU intent without
+evaluating evidence for an unsealed identity; release evaluates and audits the
+completed action identity before publishing. With enforcement enabled, GPU intent
+is refused at registration, and release rechecks the sealed key for an old pending
+record before publishing (the two evidence flags ride in its publication options,
+as optional keys so older records still read).
 
 The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
-flags and retiring old installed clients are later changes; until the producer lands a GPU job
-is publishable only through a scoped exception, and enforcement must not be published before
-them.  `d38_gate.ENFORCE` is the one switch; it is a module attribute that no flag or environment
-variable reaches, and only the existing test suite turns it off.
+flags and retiring old installed clients remain separate work. The invocation
+registry, preflight producers, action keys and evidence schemas are unchanged by
+#1649. This describes source behavior and isolated test coverage; it does not
+claim that a runtime generation carrying the change is deployed or that
+enforcement has been activated. Delivery is source only, with coordinator
+verification and runtime activation recorded separately.
