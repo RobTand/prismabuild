@@ -15,8 +15,55 @@ import pbstatus
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 
+class ControlledClock:
+    def __init__(self):
+        self.now = 1_700_000_000.0
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture(autouse=True)
+def controlled_clock(monkeypatch):
+    clock = ControlledClock()
+    monkeypatch.setattr(time, "time", clock.time)
+    return clock
+
+
+def synchronous_reader(section, read, *, deadline, abandoned,
+                       cap_s=None, announce_retained=True):
+    try:
+        return {"status": "ok", "value": read()}
+    except Exception as exc:
+        return {"status": "error", "type": type(exc).__name__, "error": str(exc)}
+
+
+@pytest.fixture(autouse=True)
+def controlled_readers(monkeypatch, controlled_clock):
+    monkeypatch.setattr(pbstatus, "bounded", synchronous_reader)
+    monkeypatch.setattr(pbstatus, "wedged_peers", lambda: {
+        "peers": [], "scanned": 0, "truncated": False, "note": None,
+    })
+    monkeypatch.setattr(pbstatus, "nfs_readahead_reading", lambda: {
+        "check": "nfs_readahead", "mount": "/mnt/shared",
+        "state": "not_nfs_client", "read_ahead_kib": None,
+        "recommended_kib": None, "bdi": None, "source": None,
+        "warning": False, "note": "fixture has no NFS client mount",
+    })
+    monkeypatch.setattr(pbstatus, "read_rollout_summary", lambda *args: {
+        "state": "idle", "epoch": None, "pending_phase": None,
+        "outstanding_hosts": [], "failed_hosts": [],
+    })
+    monkeypatch.setattr(pbstatus, "read_canary_summary", lambda *args: {
+        "state": "unavailable", "generation": None, "record": None,
+    })
+
+
 @pytest.fixture
-def live_pool(tmp_path, monkeypatch):
+def live_pool(tmp_path, monkeypatch, controlled_clock):
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 32, "gpu": 2},
@@ -62,7 +109,7 @@ def test_ready_pool_jobs_report_placement_and_admission_passes(live_pool, tmp_pa
     assert 'awaiting admission' in row['reason']
 
 
-def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, monkeypatch):
+def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, controlled_clock):
     key = "d" * 64
     live_pool.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root="/mnt/shared/status-fixture",
                       worker_script=ROOT / "tools/prismabuild_worker.py",
@@ -74,7 +121,7 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
             live_pool.item_path(pool.READY, key).read_text())["published_unix"],
         "host": "cpu-box", "reason": "adaptive_cpu_refused",
         "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
-        "denied_unix": time.time(),
+        "denied_unix": controlled_clock.time(),
     }}}))
     row = next(job for job in pbstatus.read_pool(live_pool.root)["jobs"]
                if job["action_key"] == key)
@@ -84,14 +131,15 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
         pbstatus.pool_job_lines([row], {"empty": False}))
 
 
-def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool):
-    offer = live_pool.root / pool.WORKERS / 'gpu-box.json'
+def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool, controlled_clock):
+    controlled_clock.advance(max(pool.OFFER_TIMEOUT_S, pool.LEASE_TIMEOUT_S) + 1)
+    offer = live_pool.root / pool.WORKERS / 'cpu-box.json'
     record = json.loads(offer.read_text())
-    record['announced_unix'] = time.time() - pool.OFFER_TIMEOUT_S - 1
+    record['announced_unix'] = controlled_clock.time()
     offer.write_text(json.dumps(record))
-    lease = live_pool.lease_path('b' * 64)
+    lease = live_pool.lease_path('a' * 64)
     record = json.loads(lease.read_text())
-    record['heartbeat_unix'] = time.time() - pool.LEASE_TIMEOUT_S - 1
+    record['heartbeat_unix'] = controlled_clock.time()
     lease.write_text(json.dumps(record))
     result = pbstatus.read_pool(live_pool.root)
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
@@ -102,34 +150,35 @@ def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool):
 
 
 @pytest.mark.parametrize("stall_at", ["workers", "ready", "claimed", "admission", "lease", "passes"])
-def test_pool_freshness_uses_the_completed_census(live_pool, tmp_path, monkeypatch, stall_at):
+def test_pool_freshness_uses_the_completed_census(
+    live_pool, tmp_path, monkeypatch, controlled_clock, stall_at,
+):
     key = "c" * 64
     live_pool.publish(action_key=key, cas_root=tmp_path / "cas",
                       checkout_root="/mnt/shared/status-fixture",
                       worker_script=ROOT / "tools/prismabuild_worker.py",
                       resources={"cpu": 1}, tags=["cpu-box"])
     live_pool.record_pass(key)
-    started = time.time()
+    started = controlled_clock.time()
     for host in ("cpu-box", "gpu-box"):
         directory = live_pool.ledger(host).base / "adaptive"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
-    clock = [started]
-    monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
     original_records, original_read = pbstatus._pool_records, pool._read_json
 
     def stalled_records(directory):
         result = original_records(directory)
-        if directory.name == stall_at:
-            clock[0] = started + 1000
+        if directory.name == stall_at and controlled_clock.time() == started:
+            controlled_clock.advance(1000)
         return result
 
     def stalled_read(path, **kwargs):
         result = original_read(path, **kwargs)
-        if ((stall_at == "admission" and path.name == "cpu-sample.json")
-                or (stall_at == "lease" and path.suffix == ".lease")
-                or (stall_at == "passes" and path.parent.name == pool.PASSES)):
-            clock[0] = started + 1000
+        selected = ((stall_at == "admission" and path.name == "cpu-sample.json")
+                    or (stall_at == "lease" and path.suffix == ".lease")
+                    or (stall_at == "passes" and path.parent.name == pool.PASSES))
+        if selected and controlled_clock.time() == started:
+            controlled_clock.advance(1000)
         return result
 
     monkeypatch.setattr(pbstatus, "_pool_records", stalled_records)
@@ -212,16 +261,25 @@ def test_malformed_active_records_remain_visible_without_hiding_valid_jobs(live_
     assert next(j for j in result['jobs'] if j['action_key'] == 'c' * 64)['state'] == 'UNREADABLE'
 
 
-def test_pool_status_reads_shared_admission_evidence_without_writing(live_pool):
+@pytest.mark.parametrize("sample_age, expected_state", [
+    pytest.param(30, "stale", id="original-stale-sample"),
+    pytest.param(pool.gpu_admission.MAX_SAMPLE_AGE_S, "fresh", id="fresh-at-threshold"),
+    pytest.param(pool.gpu_admission.MAX_SAMPLE_AGE_S + 1, "stale", id="stale-beyond-threshold"),
+])
+def test_pool_status_reads_shared_admission_evidence_without_writing(
+    live_pool, controlled_clock, sample_age, expected_state,
+):
     base = live_pool.ledger('gpu-box').base / 'adaptive'
-    base.mkdir(parents=True)
-    sample = {'sampled_unix': time.time() - 30, 'low_samples': 2}
+    base.mkdir(parents=True, exist_ok=True)
+    sample = {'sampled_unix': controlled_clock.time(), 'low_samples': 2}
     (base / 'gpu-state.json').write_text(json.dumps(sample))
+    controlled_clock.advance(sample_age)
     paths = [p for p in live_pool.root.rglob('*') if p.is_file()]
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
     result = pbstatus.read_pool(live_pool.root)
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
-    assert node['admission']['gpu']['state'] == 'stale'
+    assert node['admission']['gpu']['state'] == expected_state
+    assert node['admission']['gpu']['age_s'] == sample_age
     assert node['admission']['gpu']['record']['low_samples'] == 2
     after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
              for p in live_pool.root.rglob('*') if p.is_file()}
