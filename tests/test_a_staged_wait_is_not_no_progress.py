@@ -10,10 +10,10 @@ record against the consumer's own dependents (:meth:`PoolQueue.dependent_rows`)
 and does not count that time as quiet.  It counts it, and says so, in the
 progress observation.
 
-Only the action writes its wait record under the real launch token.
-The three positive fixtures delay the native Popen return until the action
-signals its declaration. A pipe releases the action after the real watch
-starts. Production graces and negative controls stay unchanged.
+Fixture records use the progress path and token supplied for that launch.
+Execution fixtures declare, initialize the real watch, cross its stall rung
+in logical time, and then commit or are terminated. Separate native fixtures
+exercise declaration notification and release after watch initialization.
 
 What still ends: a record that names a mover the consumer does not depend
 on, a mover that failed under a superseded plan, and a record with a foreign
@@ -25,6 +25,7 @@ from contextlib import contextmanager
 import inspect
 import json
 import os
+import select
 from pathlib import Path
 import sys
 import threading
@@ -42,57 +43,52 @@ from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa
 
 MANIFEST = "d" * 64
 
-#: Declares a staged wait on the mover named in argv, stays quiet past the
-#: grace, then commits one unit and exits.  Written without importing
-#: PrismaBuild, the way a container writes it.
+FIXTURE_UNIX = 10_000.0
+
 WAITER = '''
-import json, os, sys, time
+import json, os
 path = os.environ["PRISMABUILD_ACTION_PROGRESS_PATH"]
 token = os.environ["PRISMABUILD_ACTION_PROGRESS_TOKEN"]
-mover, seconds, forged = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "forged"
 record = {"schema": "prismabuild.staged_wait.v1",
-          "token": "0" * 32 if forged else token,
-          "since_unix": time.time(), "movers": [mover]}
+          "token": "0" * 32 if __FORGED__ else token,
+          "since_unix": __NOW__, "movers": [__MOVER__]}
 tmp = path + ".staged-wait.tmp"
 with open(tmp, "w") as handle:
     json.dump(record, handle)
 os.replace(tmp, path + ".staged-wait")
-time.sleep(seconds)
 os.unlink(path + ".staged-wait")
 report = {"schema": "prismabuild.action_progress.v1", "token": token,
-          "phase": "run", "units_completed": 1, "reported_unix": time.time()}
+          "phase": "run", "units_completed": 1, "reported_unix": __NOW__}
 with open(path + ".tmp", "w") as handle:
     json.dump(report, handle)
 os.replace(path + ".tmp", path)
 open("result", "w").write("ok")
 '''
 
-#: The action declares its wait, signals readiness, then awaits the real watch.
-#: Only the positive fixtures use this barrier. Other tests keep WAITER.
 WAITER_SYNC = WAITER.replace(
     'os.replace(tmp, path + ".staged-wait")',
     'os.replace(tmp, path + ".staged-wait")\n'
     'with open(__READY__, "w") as ready: ready.write("ok")\n'
+    'with open(__READY__ + ".ready", "wb", buffering=0) as notice: notice.write(b"1")\n'
     'with open(__RESUME__, "rb") as resume: assert resume.read(1) == b"1"')
 
 
 @contextmanager
 def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
-    """Return the native process after its action declares the wait.
-
-    Match only this action's progress path and real launch token. The
-    action's quiet interval starts after the unchanged watch constructor.
-    A failure before Popen returns uses the pool's native group cleanup.
-    """
-
+    """Notify declaration or child exit, then release after watch initialization."""
     path = queue.action_progress_path(str(item["action_key"]))
     resume = Path(str(signal) + ".resume")
+    notification = Path(str(signal) + ".ready")
+    os.mkfifo(notification)
     os.mkfifo(resume)
-    descriptor = os.open(resume, os.O_RDWR | os.O_NONBLOCK)
+    ready_descriptor = os.open(notification, os.O_RDWR | os.O_NONBLOCK)
+    resume_descriptor = os.open(resume, os.O_RDWR | os.O_NONBLOCK)
+    exited_read, exited_write = os.pipe()
     native_popen = pool.subprocess.Popen
     native_watch_init = pool.ProgressWatch.__init__
     launch_token = None
-    pause = threading.Event()
+    children = []
+    monitors = []
 
     def launch(*args, **kwargs):
         nonlocal launch_token
@@ -100,13 +96,20 @@ def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
         environment = kwargs.get("env")
         if environment is None or environment.get(pb.ACTION_PROGRESS_PATH_ENV) != str(path):
             return process
+        children.append(process)
+
+        def notify_exit():
+            process.wait()
+            os.write(exited_write, b"1")
+
+        monitor = threading.Thread(target=notify_exit)
+        monitors.append(monitor)
+        monitor.start()
         try:
             launch_token = environment[pb.ACTION_PROGRESS_TOKEN_ENV]
-            deadline = time.monotonic() + 30.0
-            while not signal.exists():
-                assert process.poll() is None, "the action exited before its declaration"
-                assert time.monotonic() < deadline, "the action never declared its wait"
-                pause.wait(0.01)
+            readable, _, _ = select.select([ready_descriptor, exited_read], [], [])
+            assert ready_descriptor in readable, "the action exited before its declaration"
+            assert os.read(ready_descriptor, 1) == b"1", "invalid declaration notification"
             assert process.poll() is None, "the action exited at its declaration"
             return process
         except BaseException:
@@ -119,7 +122,7 @@ def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
         if watch_path == path and token == launch_token:
             if on_ready is not None:
                 on_ready()
-            os.write(descriptor, b"1")
+            os.write(resume_descriptor, b"1")
 
     try:
         with monkeypatch.context() as patch:
@@ -127,8 +130,128 @@ def _declared_launch(queue, item, signal: Path, monkeypatch, *, on_ready=None):
             patch.setattr(pool.ProgressWatch, "__init__", watch_init)
             yield
     finally:
-        os.close(descriptor)
+        for process in children:
+            if process.poll() is None:
+                pb._terminate_process_group(process, grace_s=0.2)
+                pool._drain(process, timeout_s=0.2)
+        for monitor in monitors:
+            monitor.join()
+        for descriptor in (ready_descriptor, resume_descriptor, exited_read, exited_write):
+            os.close(descriptor)
+        notification.unlink()
         resume.unlink()
+
+
+class _Clock:
+    def __init__(self):
+        self.elapsed = 0.0
+
+    def time(self):
+        return FIXTURE_UNIX + self.elapsed
+
+    def monotonic(self):
+        return self.elapsed
+
+    def advance(self, seconds):
+        self.elapsed += seconds
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.fixture
+def _clock(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(pool, "_now", clock.time)
+    monkeypatch.setattr(pool, "time", clock)
+    monkeypatch.setattr(residency_plan, "time", clock)
+    return clock
+
+
+class _WaitProcess:
+    """Declaration -> watch -> quiet rung -> committed completion or termination."""
+    pid = 987654321
+
+    def __init__(self, environment, mover, forged, clock):
+        self.path = Path(environment[pb.ACTION_PROGRESS_PATH_ENV])
+        self.token = environment[pb.ACTION_PROGRESS_TOKEN_ENV]
+        self.clock = clock
+        self.returncode = None
+        self.watch = None
+        self.transitions = ["declared"]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        Path(progress.staged_wait_path(str(self.path))).write_text(json.dumps({
+            "schema": progress.STAGED_WAIT_SCHEMA_V1,
+            "token": "0" * 32 if forged else self.token,
+            "since_unix": clock.time(), "movers": [mover]}))
+
+    def poll(self):
+        return self.returncode
+
+    def communicate(self, *, timeout):
+        if self.returncode is not None:
+            return "", ""
+        assert self.watch is not None, "quiet begins only after watch initialization"
+        if self.transitions[-1] == "watch-initialized":
+            assert Path(progress.staged_wait_path(str(self.path))).exists()
+            self.transitions.append("stall-check")
+            self.clock.advance(1.5)
+            raise pool.subprocess.TimeoutExpired("scripted waiter", timeout)
+        assert self.transitions[-1] == "stall-check", self.transitions
+        assert self.watch.staged_wait is not None, "the real rung must inspect the declaration"
+        Path(progress.staged_wait_path(str(self.path))).unlink()
+        self.path.write_text(json.dumps({
+            "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": self.token,
+            "phase": "run", "units_completed": 1,
+            "reported_unix": self.clock.time()}))
+        self.transitions.append("committed")
+        self.returncode = 0
+        return "", ""
+
+    def terminate(self):
+        self.transitions.append("terminated")
+        self.returncode = -15
+
+
+@contextmanager
+def _scripted_launch(queue, item, row, clock, monkeypatch, *,
+                     forged=False, declared_seed=None, on_ready=None):
+    path = queue.action_progress_path(str(item["action_key"]))
+    native_popen = pool.subprocess.Popen
+    native_watch_init = pool.ProgressWatch.__init__
+    native_terminate = pb._terminate_process_group
+    processes = []
+
+    def launch(*args, **kwargs):
+        environment = kwargs.get("env") or {}
+        if environment.get(pb.ACTION_PROGRESS_PATH_ENV) != str(path):
+            return native_popen(*args, **kwargs)
+        mover = _hexkey(declared_seed) if declared_seed else str(row["action_key"])
+        process = _WaitProcess(environment, mover, forged, clock)
+        processes.append(process)
+        return process
+
+    def watch_init(watch, watch_path, token, policy, *, started):
+        native_watch_init(watch, watch_path, token, policy, started=started)
+        if processes and watch_path == path and token == processes[-1].token:
+            process = processes[-1]
+            assert process.transitions == ["declared"]
+            process.watch = watch
+            process.transitions.append("watch-initialized")
+            if on_ready is not None:
+                on_ready()
+
+    def terminate(process, *, grace_s):
+        if isinstance(process, _WaitProcess):
+            process.terminate()
+        else:
+            native_terminate(process, grace_s=grace_s)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.subprocess, "Popen", launch)
+        patch.setattr(pool.ProgressWatch, "__init__", watch_init)
+        patch.setattr(pb, "_terminate_process_group", terminate)
+        yield processes
 
 
 def _consumer_with_mover(tmp_path: Path, *, mover_seed: str, forged: bool = False,
@@ -143,9 +266,8 @@ def _consumer_with_mover(tmp_path: Path, *, mover_seed: str, forged: bool = Fals
     mover = _hexkey(mover_seed)
     declared = _hexkey(declared_seed or mover_seed)
     template = WAITER_SYNC if signal is not None else WAITER
-    source = template.replace("sys.argv[1]", repr(declared)).replace(
-        "float(sys.argv[2])", repr(seconds)).replace(
-        "sys.argv[3] == \"forged\"", repr(forged))
+    source = template.replace("__MOVER__", repr(declared)).replace(
+        "__FORGED__", repr(forged)).replace("__NOW__", repr(FIXTURE_UNIX))
     if signal is not None:
         source = source.replace("__READY__", repr(str(signal))).replace(
             "__RESUME__", repr(str(signal) + ".resume"))
@@ -185,30 +307,20 @@ def _execute(queue, item):
 
 
 def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
-        tmp_path: Path, monkeypatch) -> None:
-    """The copy is slower than every earlier receipt, and the mover is alive.
-
-    Quiet for 1.5 s against a 0.4 s grace, all of it blocked on the claimed
-    mover for its own range. The action declares before the watch starts.
-    The mover's first landed-bytes report occurs at that boundary, within two
-    heartbeats, which is the evidence the exemption now needs (#1022
-    review, item 1).
-    """
-
-    sentinel = tmp_path / "wait-declared"
-    queue, item, _plan, row = _consumer_with_mover(
-        tmp_path, mover_seed="slow", signal=sentinel)
+        tmp_path: Path, monkeypatch, _clock) -> None:
+    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="slow")
     _hand_to_claimed(queue, row)
-    with _declared_launch(
-            queue, item, sentinel, monkeypatch,
+    with _scripted_launch(
+            queue, item, row, _clock, monkeypatch,
             on_ready=lambda: _mover_reports(
-                queue, row, units=1 << 30, reported_unix=time.time())):
+                queue, row, units=1 << 30, reported_unix=_clock.time())) as processes:
         outcome = _execute(queue, item)
 
+    assert processes[0].transitions == [
+        "declared", "watch-initialized", "stall-check", "committed"]
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
-    assert sentinel.exists(), "the action never signalled it declared its wait"
-
     observed = outcome["progress_observation"]
+    assert observed["staged_wait_exempt_s"] == pytest.approx(1.5)
     assert observed["staged_wait_exempt_s"] > 0.4
     wait = observed["staged_wait"]
     assert wait["exempt"] is True
@@ -217,25 +329,21 @@ def test_a_consumer_waiting_on_its_claimed_mover_is_not_killed_no_progress(
         str(row["action_key"]), "claimed", "progress")
 
 
-def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path, monkeypatch) -> None:
-    sentinel = tmp_path / "wait-declared"
-    queue, item, _plan, row = _consumer_with_mover(
-        tmp_path, mover_seed="queued", signal=sentinel)
+def test_a_ready_mover_is_waited_on_as_well(tmp_path: Path, monkeypatch, _clock) -> None:
+    queue, item, _plan, row = _consumer_with_mover(tmp_path, mover_seed="queued")
     queue.publish(**dict(row))
-
-    with _declared_launch(queue, item, sentinel, monkeypatch):
+    with _scripted_launch(queue, item, row, _clock, monkeypatch) as processes:
         outcome = _execute(queue, item)
 
+    assert processes[0].transitions == [
+        "declared", "watch-initialized", "stall-check", "committed"]
     assert outcome["status"] == "executed"
-    assert sentinel.exists(), "the action never signalled it declared its wait"
     assert outcome["progress_observation"]["staged_wait"]["movers"][0][
         "state"] == "ready"
 
 
 def test_a_mover_that_failed_under_a_superseded_plan_is_not_waited_on(
-        tmp_path: Path) -> None:
-    """Nothing will republish it, so the wait is not a dependency wait."""
-
+        tmp_path: Path, monkeypatch, _clock) -> None:
     queue, item, plan, row = _consumer_with_mover(tmp_path, mover_seed="dead")
     key = str(row["action_key"])
     queue.item_path(pool.FAILED, key).parent.mkdir(parents=True, exist_ok=True)
@@ -245,9 +353,11 @@ def test_a_mover_that_failed_under_a_superseded_plan_is_not_waited_on(
         queue, str(item["action_key"]), plan=plan,
         filing=residency_plan.read_filed(queue, str(item["action_key"]))[1],
         reason="mover-withdrawn", movers=[key], by="test")
+    with _scripted_launch(queue, item, row, _clock, monkeypatch) as processes:
+        outcome = _execute(queue, item)
 
-    outcome = _execute(queue, item)
-
+    assert processes[0].transitions == [
+        "declared", "watch-initialized", "stall-check", "terminated"]
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
     wait = outcome["progress_observation"]["staged_wait"]
@@ -257,21 +367,132 @@ def test_a_mover_that_failed_under_a_superseded_plan_is_not_waited_on(
 
 @pytest.mark.parametrize("seed,forged", [("stranger", False), ("forged", True)])
 def test_a_wait_on_someone_elses_mover_or_a_forged_record_still_ends(
-        tmp_path: Path, seed: str, forged: bool) -> None:
-    """A claimed mover the plan never named, or a token this launch never minted."""
-
+        tmp_path: Path, seed: str, forged: bool, monkeypatch, _clock) -> None:
+    declared_seed = None if forged else "not-" + seed
     queue, item, _plan, row = _consumer_with_mover(
-        tmp_path, mover_seed=seed, forged=forged,
-        declared_seed=None if forged else "not-" + seed)
+        tmp_path, mover_seed=seed, forged=forged, declared_seed=declared_seed)
     _hand_to_claimed(queue, row)
     if not forged:
-        _hand_to_claimed(queue, {**dict(row), "action_key": _hexkey("not-" + seed)})
+        _hand_to_claimed(queue, {**dict(row), "action_key": _hexkey(declared_seed)})
+    with _scripted_launch(queue, item, row, _clock, monkeypatch,
+                          forged=forged, declared_seed=declared_seed) as processes:
+        outcome = _execute(queue, item)
 
-    outcome = _execute(queue, item)
-
+    assert processes[0].transitions == [
+        "declared", "watch-initialized", "stall-check", "terminated"]
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
     assert outcome["progress_observation"]["staged_wait_exempt_s"] == 0
+
+
+def test_declared_launch_notifies_before_watch_and_releases_after_initialization(
+        tmp_path: Path, monkeypatch) -> None:
+    signal = tmp_path / "declared"
+    queue, item, _plan, row = _consumer_with_mover(
+        tmp_path, mover_seed="native", signal=signal)
+    path = queue.action_progress_path(str(item["action_key"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    source = (tmp_path / "checkout" / "task.py").read_text()
+    environment = {**os.environ, pb.ACTION_PROGRESS_PATH_ENV: str(path),
+                   pb.ACTION_PROGRESS_TOKEN_ENV: TOKEN}
+    events = []
+    watches = []
+    native_init = pool.ProgressWatch.__init__
+
+    def observe_init(watch, watch_path, token, policy, *, started):
+        native_init(watch, watch_path, token, policy, started=started)
+        if watch_path == path and token == TOKEN:
+            events.append("initialized")
+            watches.append(watch)
+
+    def on_ready():
+        assert events == ["declared", "initialized"]
+        assert watches[0].path == path and watches[0].token == TOKEN
+        assert watches[0].accepted == 0
+        assert process.poll() is None
+        assert not (tmp_path / "result").exists()
+        assert_resume_empty()
+        events.append("callback")
+
+    def assert_resume_empty():
+        descriptor = os.open(str(signal) + ".resume", os.O_RDWR | os.O_NONBLOCK)
+        try:
+            with pytest.raises(BlockingIOError):
+                os.read(descriptor, 1)
+        finally:
+            os.close(descriptor)
+
+    monkeypatch.setattr(pool.ProgressWatch, "__init__", observe_init)
+    policy = pool.ProgressPolicy((pool.ProgressPhase("startup", 0.4, None),
+                                 pool.ProgressPhase("run", 0.4, None)), None)
+    with _declared_launch(queue, item, signal, monkeypatch, on_ready=on_ready):
+        unrelated = pool.subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            env={**environment, pb.ACTION_PROGRESS_PATH_ENV: str(tmp_path / "other")},
+            stdout=pool.subprocess.PIPE, stderr=pool.subprocess.PIPE, text=True,
+            start_new_session=True)
+        assert unrelated.communicate() == ("", "")
+        assert unrelated.returncode == 0
+        process = pool.subprocess.Popen(
+            [sys.executable, "-c", source], env=environment, cwd=tmp_path,
+            stdout=pool.subprocess.PIPE, stderr=pool.subprocess.PIPE, text=True,
+            start_new_session=True)
+        record, reason = pool.read_staged_wait(
+            Path(progress.staged_wait_path(str(path))), token=TOKEN)
+        assert not reason and record["movers"] == [str(row["action_key"])]
+        assert events == []
+        events.append("declared")
+        pool.ProgressWatch(tmp_path / "other", TOKEN, policy, started=0.0)
+        pool.ProgressWatch(path, "foreign", policy, started=0.0)
+        assert events == ["declared"]
+        assert_resume_empty()
+        watch = pool.ProgressWatch(path, TOKEN, policy, started=0.0)
+        out, err = process.communicate()
+        assert process.returncode == 0, err
+        assert out == ""
+        assert (tmp_path / "result").read_text() == "ok"
+        assert watch.sample(now=0.0) is True
+        assert watch.accepted == 1
+
+    assert events == ["declared", "initialized", "callback"]
+    assert process.poll() == 0
+    assert signal.read_text() == "ok"
+    assert not Path(str(signal) + ".ready").exists()
+    assert not Path(str(signal) + ".resume").exists()
+
+
+def test_declared_launch_reports_child_exit_before_declaration(
+        tmp_path: Path, monkeypatch) -> None:
+    signal = tmp_path / "never-declared"
+    queue, item, _plan, _row = _consumer_with_mover(tmp_path, mover_seed="exit")
+    path = queue.action_progress_path(str(item["action_key"]))
+    children = []
+    callbacks = []
+    native_popen = pool.subprocess.Popen
+
+    def observe_launch(*args, **kwargs):
+        child = native_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(pool.subprocess, "Popen", observe_launch)
+    with pytest.raises(AssertionError, match="exited before its declaration"):
+        with _declared_launch(queue, item, signal, monkeypatch,
+                              on_ready=lambda: callbacks.append("ready")):
+            pool.subprocess.Popen(
+                [sys.executable, "-c", "raise SystemExit(7)"],
+                env={**os.environ, pb.ACTION_PROGRESS_PATH_ENV: str(path),
+                     pb.ACTION_PROGRESS_TOKEN_ENV: TOKEN},
+                stdout=pool.subprocess.PIPE, stderr=pool.subprocess.PIPE,
+                text=True, start_new_session=True)
+
+    assert len(children) == 1
+    assert children[0].poll() == 7
+    assert callbacks == []
+    assert children[0].stdout.closed and children[0].stderr.closed
+    assert not signal.exists()
+    assert not Path(str(signal) + ".ready").exists()
+    assert not Path(str(signal) + ".resume").exists()
 
 
 def test_the_helper_writes_the_record_the_worker_reads(tmp_path: Path,
@@ -331,7 +552,32 @@ def _finish(queue: pool.PoolQueue, row, state: str) -> str:
     return key
 
 
-def test_a_landed_mover_is_not_waited_on(tmp_path: Path) -> None:
+def test_staged_wait_credit_is_counted_once_without_committed_progress(
+        tmp_path: Path, _clock) -> None:
+    queue, item, row, path = _verdict_fixture(tmp_path, over_committed_gib=0)
+    queue.publish(**dict(row))
+    policy = pool.ProgressPolicy((pool.ProgressPhase("startup", 0.4, None),), None)
+    watch = pool.ProgressWatch(path, TOKEN, policy, started=10.0)
+    before = watch.as_record(now=10.0)
+    deadline = watch.stall_deadline()
+    verdict = _judge(queue, item, path, now=FIXTURE_UNIX, window_s=watch.grace_s)
+    assert verdict["exempt"] is True
+
+    assert watch.exempt_staged_wait(verdict, now=12.0, since_monotonic=10.0) == 2.0
+    assert watch.stall_deadline() == pytest.approx(deadline + 2.0)
+    assert watch.exempt_staged_wait(verdict, now=12.0, since_monotonic=10.0) == 0.0
+    assert watch.stall_deadline() == pytest.approx(deadline + 2.0)
+    assert watch.exempt_staged_wait(verdict, now=13.0, since_monotonic=10.0) == 1.0
+    assert watch.stall_deadline() == pytest.approx(deadline + 3.0)
+    after = watch.as_record(now=13.0)
+    assert after["staged_wait_exempt_s"] == 3.0
+    for field in ("accepted_count", "last_accepted", "phases_entered"):
+        assert after[field] == before[field]
+    assert after["accepted_count"] == 0
+    assert watch.units_high_water == 0
+
+
+def test_a_landed_mover_is_not_waited_on(tmp_path: Path, _clock) -> None:
     """In ``done/`` and still holding its tokens: the range is resident (or
     being adopted), so a consumer still quiet is not waiting on it -- a
     reader that hung with a stale record, say.  Plan live, loop alive, tier
@@ -350,7 +596,7 @@ def test_a_landed_mover_is_not_waited_on(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("over,exempt", [(0, True), (161, False)])
 def test_an_evicted_range_is_waited_on_like_an_unpublished_one(
-        tmp_path: Path, over: int, exempt: bool) -> None:
+        tmp_path: Path, over: int, exempt: bool, _clock) -> None:
     """In ``done/`` with no tokens: evicted, and the window publishes it
     again (``tier_loop.evict_beyond_horizon``) -- while the tier fits it."""
 
@@ -364,7 +610,7 @@ def test_an_evicted_range_is_waited_on_like_an_unpublished_one(
     assert verdict["tier_over_committed_gib"] == over
 
 
-def test_a_withdrawn_mover_is_not_waited_on(tmp_path: Path) -> None:
+def test_a_withdrawn_mover_is_not_waited_on(tmp_path: Path, _clock) -> None:
     """The window never republishes a withdrawn mover: its publish passes
     ``refuse_withdrawn`` and the refusal supersedes the plan (#708)."""
 
@@ -379,7 +625,7 @@ def test_a_withdrawn_mover_is_not_waited_on(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("over,exempt", [(0, True), (161, False), (None, False)])
 def test_an_unpublished_range_is_exempt_only_on_a_tier_within_commitment(
-        tmp_path: Path, over: int | None, exempt: bool) -> None:
+        tmp_path: Path, over: int | None, exempt: bool, _clock) -> None:
     """The same unpublished range, the same live tier loop: only the tier's
     filed commitment differs.  No record filed reads as not exempt."""
 
@@ -393,7 +639,7 @@ def test_an_unpublished_range_is_exempt_only_on_a_tier_within_commitment(
 
 
 def test_a_queued_mover_stays_exempt_on_an_over_committed_tier(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """A published mover already holds its room."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
@@ -428,7 +674,8 @@ def _judge(queue, item, progress_path, **evidence):
 
 
 def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
-                   movers_ahead: list[str] | None = None) -> None:
+                   movers_ahead: list[str] | None = None,
+                   written_unix: float = FIXTURE_UNIX) -> None:
     """The consumer's landing record, the tier loop's way: its one queued
     range ``bytes_ahead`` behind the movers ahead of it (``movers_ahead``,
     left out when ``None``).  Written as the tier loop's JSON, not through
@@ -442,7 +689,7 @@ def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
         "range_end_bytes": int(residency["range_end_bytes"]),
         "state": "ready", "queue_position": len(movers_ahead or ()),
         "bytes_ahead": int(bytes_ahead),
-        "expected_landing_unix": time.time() + 600.0,
+        "expected_landing_unix": written_unix + 600.0,
         "claimed_unix": None, "waiting_for": "", "basis": "queue"}
     if movers_ahead is not None:
         queued["movers_ahead"] = list(movers_ahead)
@@ -452,7 +699,7 @@ def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
     path.write_text(json.dumps({
         "schema": residency_map.RESIDENCY_LANDING_SCHEMA_V1,
         "consumer_action_key": str(item["action_key"]), "tier_id": TIER,
-        "manifest_sha256": MANIFEST, "written_unix": time.time(),
+        "manifest_sha256": MANIFEST, "written_unix": written_unix,
         "rates_measured_bytes_per_s": [], "ranges": [queued]}))
 
 
@@ -476,7 +723,7 @@ def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
     ("never_fits_capacity", "refusal"),
 ])
 def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
-        tmp_path: Path, reason: str, kind: str) -> None:
+        tmp_path: Path, reason: str, kind: str, _clock) -> None:
     """Queued, and the claim pass's latest word on it is a refusal: nothing
     will copy it while that stands, so the consumer's wait on it is not a
     dependency wait.  Tier within commitment, loop alive.  A withhold is the
@@ -497,7 +744,7 @@ def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
 
 
 def test_a_ready_mover_is_waited_on_while_the_bytes_ahead_of_it_fall(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """The first look is the baseline; a fall in ``bytes_ahead`` renews it;
     a whole evidence window without one ends the exemption."""
 
@@ -508,12 +755,13 @@ def test_a_ready_mover_is_waited_on_while_the_bytes_ahead_of_it_fall(
     _landing_ahead(queue, item, row, bytes_ahead=100 * gib)
     first = _judge(queue, item, progress_path, prior=None, window_s=window)
 
-    _landing_ahead(queue, item, row, bytes_ahead=40 * gib)
+    _landing_ahead(queue, item, row, bytes_ahead=40 * gib,
+                   written_unix=FIXTURE_UNIX + 30.0)
     fell = _judge(queue, item, progress_path, prior=first, window_s=window,
-                  now=time.time() + 30.0)
+                  now=FIXTURE_UNIX + 30.0)
 
     stale = _judge(queue, item, progress_path, prior=fell, window_s=window,
-                   now=time.time() + 30.0 + window + 1.0)
+                   now=FIXTURE_UNIX + 30.0 + window + 1.0)
 
     assert first["exempt"] is True, first
     assert first["movers"][0].get("evidence") == "baseline", first
@@ -525,13 +773,13 @@ def test_a_ready_mover_is_waited_on_while_the_bytes_ahead_of_it_fall(
 
 
 def test_a_claimed_mover_is_waited_on_while_its_report_grows(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """Claimed, copying: exempt while its landed-bytes report is at most two
     heartbeats old, and not after."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     _hand_to_claimed(queue, row)
-    now = time.time()
+    now = FIXTURE_UNIX
     _mover_reports(queue, row, units=5 << 30, reported_unix=now - 10.0)
     fresh = _judge(queue, item, progress_path, now=now)
 
@@ -608,7 +856,7 @@ def _hold(queue, item, progress_path, mover: str, *, start: float,
 
 
 def test_a_claimed_mover_the_pacer_holds_keeps_its_consumer_waiting(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """The consumer's own mover is claimed, landed its first entry, and is
     held for three graces.  Its report is stale after two heartbeats; its
     lease is not.  On the first head the verdict read only the report and
@@ -617,7 +865,7 @@ def test_a_claimed_mover_the_pacer_holds_keeps_its_consumer_waiting(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     _hand_to_claimed(queue, row)
     mover = str(row["action_key"])
-    start = time.time()
+    start = FIXTURE_UNIX
     _mover_reports(queue, row, units=1 << 30, reported_unix=start)
 
     verdicts = _hold(queue, item, progress_path, mover, start=start,
@@ -632,7 +880,7 @@ def test_a_claimed_mover_the_pacer_holds_keeps_its_consumer_waiting(
 
 
 def test_a_claimed_mover_whose_lease_went_quiet_is_not_waited_on(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """The report is stale and the lease's heartbeat is older than the bound
     the reaper takes a claim back at (``LEASE_TIMEOUT_S``): nothing says the
     copy's worker is alive, so nothing says it is coming."""
@@ -640,7 +888,7 @@ def test_a_claimed_mover_whose_lease_went_quiet_is_not_waited_on(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     _hand_to_claimed(queue, row)
     mover = str(row["action_key"])
-    now = time.time()
+    now = FIXTURE_UNIX
     _mover_reports(queue, row, units=1 << 30, reported_unix=now - 3600.0)
     _mover_lease(queue, mover, heartbeat_unix=now - pool.LEASE_TIMEOUT_S - 1.0,
                  held_s=0.0)
@@ -654,7 +902,7 @@ def test_a_claimed_mover_whose_lease_went_quiet_is_not_waited_on(
 
 
 def test_a_ready_mover_behind_a_copy_the_pacer_holds_keeps_its_consumer_waiting(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """The consumer's mover is ready behind another consumer's copy, which
     the pacer holds for three graces.  The landing record does not change:
     ``bytes_ahead`` is frozen.  On the first head the evidence ran baseline,
@@ -666,7 +914,7 @@ def test_a_ready_mover_behind_a_copy_the_pacer_holds_keeps_its_consumer_waiting(
     copy = _other_claimed_copy(queue, "heldcopy")
     _landing_ahead(queue, item, row, bytes_ahead=22 * 10 ** 9, movers_ahead=[copy])
 
-    verdicts = _hold(queue, item, progress_path, copy, start=time.time(),
+    verdicts = _hold(queue, item, progress_path, copy, start=FIXTURE_UNIX,
                      seconds=3 * GRACE_S)
 
     ended = [verdict for verdict in verdicts if not verdict["exempt"]]
@@ -680,7 +928,7 @@ def test_a_ready_mover_behind_a_copy_the_pacer_holds_keeps_its_consumer_waiting(
 
 
 def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """Nothing was queued ahead of the ready mover when its wait first
     looked.  Then another row is claimed instead of it -- the claim pass
     placed that one and not this one -- and is copying.  Its lease is live,
@@ -689,7 +937,7 @@ def test_a_copy_claimed_after_the_wait_began_does_not_renew_it(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    start = time.time()
+    start = FIXTURE_UNIX
     _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
     first = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
                    now=start)
@@ -739,7 +987,7 @@ def _withheld(queue: pool.PoolQueue, row, reason: str, *,
                                     decision_reason=None)
     passes: dict[str, object] = {
         "action_key": key, "passes": pool.STARVATION_FLOOR,
-        "updated_unix": time.time() if stamp_unix is None else stamp_unix}
+        "updated_unix": FIXTURE_UNIX if stamp_unix is None else stamp_unix}
     if first_unix is not None:
         passes["first_unix"] = first_unix
     if epoch_unix is not None:
@@ -755,7 +1003,7 @@ def _withheld(queue: pool.PoolQueue, row, reason: str, *,
     "adaptive_refused_withholding",
 ])
 def test_a_ready_mover_the_claim_pass_withholds_for_is_waited_on(
-        tmp_path: Path, reason: str) -> None:
+        tmp_path: Path, reason: str, _clock) -> None:
     """F1: the withhold began 600 s ago, inside ``WITHHOLD_CEILING_S``, so
     the pool is still holding the box for this row.  The wait is exempt, the
     entry names the withhold and the host, and its ``evidence_unix`` is the
@@ -763,7 +1011,7 @@ def test_a_ready_mover_the_claim_pass_withholds_for_is_waited_on(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     epoch = now - 600.0
     _withheld(queue, row, reason, epoch_unix=epoch, first_unix=epoch - 120.0)
 
@@ -780,14 +1028,14 @@ def test_a_ready_mover_the_claim_pass_withholds_for_is_waited_on(
 
 
 def test_a_withhold_with_no_episode_is_bounded_by_the_first_denial(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """F1: a withhold with no episode on file (``in_flight``: the tokens
     are between an acquisition and its rename) is bounded by the row's own
     first-denial clock, the one the pool bounds it by."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     first = now - 100.0
     _withheld(queue, row, "reservation_unavailable_withholding",
               epoch_unix=None, first_unix=first)
@@ -803,7 +1051,7 @@ def test_a_withhold_with_no_episode_is_bounded_by_the_first_denial(
 
 
 def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """F1: one box's census can never place the row (``never_fits_capacity``),
     and the stage host withholds its box for it.  The row is coming on the
     stage host, so the consumer waits on it, as it would on a host that says
@@ -811,7 +1059,7 @@ def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
     queue._record_denial_transition(ready, host="sparky", reason="never_fits_capacity",
                                     decision_reason=None)
@@ -837,13 +1085,13 @@ def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
     (None, None),
 ], ids=["past-ceiling", "no-sidecar"])
 def test_a_withhold_past_its_ceiling_is_not_waited_on(
-        tmp_path: Path, epoch_age_s: float | None, first_age_s: float | None) -> None:
+        tmp_path: Path, epoch_age_s: float | None, first_age_s: float | None, _clock) -> None:
     """F1's bound: with no fresh pass on file, exempt only within
     ``WITHHOLD_CEILING_S`` of the epoch."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     _withheld(queue, row, "reservation_unavailable_withholding",
               epoch_unix=None if epoch_age_s is None else now - epoch_age_s,
               first_unix=None if first_age_s is None else now - first_age_s,
@@ -861,14 +1109,14 @@ def test_a_withhold_past_its_ceiling_is_not_waited_on(
 
 
 def test_a_withhold_past_its_ceiling_with_a_fresh_pass_is_waited_on(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """#1052 flips the old ``past-ceiling`` ruling: the episode is past
     ``WITHHOLD_CEILING_S``, but the claim pass counted a withholding denial
     of the row just now, so the pool still holds the box for it."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     _withheld(queue, row, "reservation_unavailable_withholding",
               epoch_unix=now - pool.WITHHOLD_CEILING_S - 1.0,
               first_unix=now - pool.WITHHOLD_CEILING_S - 60.0, stamp_unix=now - 5.0)
@@ -954,14 +1202,14 @@ def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, ro
 
 
 def test_a_withhold_the_pool_still_holds_past_the_ceiling_is_waited_on(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, _clock) -> None:
     """#1052: the episode is 1000 s old and has no refill, and the pool still
     withholds ``drains_soon`` for the mover on this pass.  So the consumer
     waits: its entry reads ``withheld`` on the claim pass's fresh stamp."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
 
     pool_says = _claim_pass(queue, row, ledger)
@@ -979,7 +1227,7 @@ def test_a_withhold_the_pool_still_holds_past_the_ceiling_is_waited_on(
 
 
 def test_a_withhold_whose_stamp_went_stale_past_the_ceiling_lapses(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, _clock) -> None:
     """#1052: the pool withheld for the mover, and then no claim pass
     re-judged it for longer than a claim pass's freshness bound
     (``WITHHOLD_STAMP_FRESH_S``).  Past the epoch's ceiling there is no
@@ -987,7 +1235,7 @@ def test_a_withhold_whose_stamp_went_stale_past_the_ceiling_lapses(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    now = time.time()
+    now = FIXTURE_UNIX
     ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
     assert _claim_pass(queue, row, ledger)["withhold"] is True
 
@@ -1001,7 +1249,7 @@ def test_a_withhold_whose_stamp_went_stale_past_the_ceiling_lapses(
 
 
 def test_a_withhold_the_pool_stops_is_not_waited_on_as_one(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, _clock) -> None:
     """#1052: the holder's declared end passes, so the claim pass stops
     withholding and stamps ``_starved``.  The row's latest word is no longer
     a withhold, so its fresh pass is not read as one: the withhold's epoch is
@@ -1010,7 +1258,7 @@ def test_a_withhold_the_pool_stops_is_not_waited_on_as_one(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
     _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
-    now = time.time()
+    now = FIXTURE_UNIX
     ledger = _transient_holder_past_the_ceiling(tmp_path, queue, row, monkeypatch, now)
     assert _claim_pass(queue, row, ledger)["withhold"] is True
     later = now + 450.0          # the holder's end, t=1500, is behind us
@@ -1028,7 +1276,7 @@ def test_a_withhold_the_pool_stops_is_not_waited_on_as_one(
 
 
 def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """F1: the previous check, 100 s ago, saw a withhold whose epoch was
     850 s old then, inside the ceiling.  The pool has since stopped
     withholding and denies the row only transiently.  The withhold's epoch
@@ -1038,7 +1286,7 @@ def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
     mover = str(row["action_key"])
-    now = time.time()
+    now = FIXTURE_UNIX
     _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
     ready = json.loads(queue.item_path(pool.READY, mover).read_text())
     queue._record_denial_transition(ready, host="dl380g10",
@@ -1057,7 +1305,7 @@ def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
 
 
 def test_a_mover_requeued_after_its_worker_died_gets_a_fresh_baseline(
-        tmp_path: Path) -> None:
+        tmp_path: Path, _clock) -> None:
     """F4: the previous check saw this mover ``claimed`` with a live lease
     400 s ago; its worker died, the reaper took the claim back at
     ``LEASE_TIMEOUT_S`` and the row is ``ready`` again with nothing ahead
@@ -1069,7 +1317,7 @@ def test_a_mover_requeued_after_its_worker_died_gets_a_fresh_baseline(
     queue.publish(**dict(row))
     mover = str(row["action_key"])
     _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
-    now = time.time()
+    now = FIXTURE_UNIX
     first = _judge(queue, item, progress_path, prior=None, window_s=300.0, now=now)
     prior = dict(first)
     prior["movers"] = [{"key": mover, "state": "claimed", "evidence": "lease-live",

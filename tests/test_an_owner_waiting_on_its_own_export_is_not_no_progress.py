@@ -67,6 +67,7 @@ WAITER_SYNC = WAITER.replace(
     'os.replace(tmp, path + ".export-wait")',
     'os.replace(tmp, path + ".export-wait")\n'
     'with open(__READY__, "w") as ready: ready.write("ok")\n'
+    'with open(__READY__ + ".ready", "wb", buffering=0) as notice: notice.write(b"1")\n'
     'with open(__RESUME__, "rb") as resume: assert resume.read(1) == b"1"')
 
 ENTRY_BYTES = 1 << 20
