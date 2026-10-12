@@ -3646,6 +3646,72 @@ def admit_funded_window(queue, instance: Mapping[str, object],
                            "admission")}
 
 
+class _PrewriteContainment:
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+        self.real_prefix = os.path.realpath(prefix)
+        self.suffix_modes: dict[str, int | None] = {}
+        try:
+            self.prefix_is_directory = stat.S_ISDIR(os.stat(self.real_prefix).st_mode)
+        except OSError:
+            self.prefix_is_directory = False
+
+    def _lexically_contained(self, path: str) -> bool:
+        if (not self.prefix_is_directory
+                or self.prefix.startswith("//") or path.startswith("//")
+                or self.prefix != os.path.normpath(self.prefix)
+                or path == self.prefix
+                or os.path.commonpath([self.prefix, path]) != self.prefix):
+            return False
+        suffix = os.path.relpath(path, self.prefix).split(os.sep)
+        mapped = os.path.join(self.real_prefix, *suffix)
+        if os.path.commonpath([self.real_prefix, mapped]) != self.real_prefix:
+            return False
+        current = self.real_prefix
+        for index, component in enumerate(suffix):
+            current = os.path.join(current, component)
+            if current not in self.suffix_modes:
+                try:
+                    mode = os.lstat(current).st_mode
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        return False
+                    mode = None
+                self.suffix_modes[current] = mode
+            mode = self.suffix_modes[current]
+            if mode is None:
+                return True
+            if stat.S_ISLNK(mode):
+                return False
+            if index < len(suffix) - 1 and not stat.S_ISDIR(mode):
+                return False
+        return True
+
+    def check(self, path: str) -> None:
+        if self._lexically_contained(path):
+            return
+        real_path = os.path.realpath(path)
+        try:
+            common = os.path.commonpath([self.real_prefix, real_path])
+        except ValueError as exc:
+            raise ProducedOutputError(
+                f"prewrite paths[] is not under the scope prefix: {exc}")
+        if common != self.real_prefix:
+            raise ProducedOutputError("prewrite paths[] escapes the scope prefix")
+
+
+def _prewrite_paths(prefix: str, paths: list[str]) -> list[str]:
+    containment: _PrewriteContainment | None = None
+    planned_paths: list[str] = []
+    for path in paths:
+        candidate = _abs_norm(path, where="prewrite paths[]")
+        if containment is None:
+            containment = _PrewriteContainment(prefix)
+        containment.check(candidate)
+        planned_paths.append(candidate)
+    return planned_paths
+
+
 def require_prewrite(queue, instance: Mapping[str, object],
                      template: Mapping[str, object], *, batch_id: str,
                      tier: str, class_bytes: Mapping[str, int],
@@ -3697,12 +3763,8 @@ def require_prewrite(queue, instance: Mapping[str, object],
                                    where=f"prewrite class_bytes.{cls}")
     if not isinstance(paths, list) or not paths:
         return {"ok": False, "refusal": "prewrite-paths-required"}
-    planned_paths: list[str] = []
-    for path in paths:
-        candidate = _abs_norm(path, where="prewrite paths[]")
-        _resolve_contained(str(checked_template["output_prefix"]), candidate,
-                           where="prewrite paths[]")
-        planned_paths.append(os.path.normpath(candidate))
+    planned_paths = _prewrite_paths(
+        str(checked_template["output_prefix"]), paths)
     if len(set(planned_paths)) != len(planned_paths):
         return {"ok": False, "refusal": "prewrite-paths-must-be-distinct"}
     planned_paths.sort()
