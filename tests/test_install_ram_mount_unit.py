@@ -6,6 +6,7 @@ and refusal coverage, not real privilege, kernel mount or reboot qualification.
 from __future__ import annotations
 
 import configparser
+import copy
 import errno
 import hashlib
 import importlib.util
@@ -19,6 +20,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+import pbstatus
+import tier_loop
+from prismabuild import pool, storage_tiers
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = "install_ram_mount_unit.py"
@@ -588,3 +593,374 @@ def test_actual_rendered_unit_verifies_in_private_systemd_graph(generation, tmp_
     verified = subprocess.run([analyzer, "verify", "--man=no", f"--root={private}",
                                unit.name, "local-fs.target"], capture_output=True, text=True, timeout=20)
     assert verified.returncode == 0, verified.stdout + verified.stderr
+
+
+RAM_GIB = 1_073_741_824
+RAM_HOST = "dl380g10"
+RAM_ID = f"ram:{RAM_HOST}"
+RAM_NOW = 2_000_000.0
+RAM_SAMPLED = RAM_NOW - 5
+RAM_FREE = {"0": 13 * 1024, "1": 987 * 1024}
+RAM_SHMEM = {"0": 765 * 1024, "1": 21 * 1024}
+
+
+@pytest.fixture
+def rendered_ram_options(generation):
+    def render(spelling):
+        arguments = _arguments(generation)
+        arguments[arguments.index("--size-bytes") + 1] = str(256 * RAM_GIB)
+        before = _snapshot(generation.parent)
+        result = _cli(generation, arguments, spelling=spelling)
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == b""
+        parsed = configparser.ConfigParser(interpolation=None)
+        parsed.read_string(result.stdout.decode("ascii"))
+        assert parsed.sections() == ["Unit", "Mount", "Install"]
+        assert parsed["Mount"]["What"] == "tmpfs"
+        assert parsed["Mount"]["Where"] == "/ram/prewarm"
+        assert parsed["Mount"]["Type"] == "tmpfs"
+        assert parsed["Install"]["WantedBy"] == "local-fs.target"
+        options = parsed["Mount"]["Options"]
+        assert options.split(",") == [
+            f"size={256 * RAM_GIB}", "noswap", "mpol=interleave",
+            f"uid={UID}", f"gid={GID}", "mode=0755",
+        ]
+        assert _snapshot(generation.parent) == before
+        return options
+
+    return render
+
+
+class _RenderedRamEvidence:
+    def __init__(self, root, options):
+        self.root = root
+        self.mount = root / "ram"
+        self.proc = root / "proc"
+        self.nodes = root / "sys/devices/system/node"
+        self.block = root / "sys/block"
+        self.by_id = root / "dev/disk/by-id"
+        for directory in (self.mount, self.proc, self.nodes, self.block, self.by_id):
+            directory.mkdir(parents=True)
+        (self.nodes / "has_memory").write_text("0-1\n")
+        (self.nodes / "online").write_text("0-1\n")
+        for node in (0, 1):
+            directory = self.nodes / f"node{node}"
+            directory.mkdir()
+            (directory / "cpulist").write_text("0\n" if node == 0 else "\n")
+        self.set_node_totals((147, 147))
+        self.set_options(options)
+        (self.proc / "meminfo").write_text(
+            f"MemTotal: {294 * RAM_GIB // 1024} kB\n")
+        (self.proc / "arcstats").write_text(
+            f"c_max 4 {22 * RAM_GIB}\nsize 4 {11 * RAM_GIB}\n"
+            f"arc_meta_used 4 {5 * RAM_GIB}\n")
+        (self.proc / "pressure").mkdir()
+        (self.proc / "pressure/io").write_text(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+        self.policy = {
+            "schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
+            "mountpoint": str(self.mount), "ceiling_gib_max": 256,
+            "window_gib_default": 112, "arc_floor_gib": 20,
+            "system_reserve_gib": 16, "prefill_depth": None,
+        }
+        self.policy_path = root / "ram-policy.json"
+        self.policy_path.write_text(json.dumps(self.policy))
+        self.discovered = None
+
+    def node_file(self, node):
+        return self.nodes / f"node{node}/meminfo"
+
+    def set_node_totals(self, totals):
+        assert sum(totals) == 294
+        for node, total in enumerate(totals):
+            self.node_file(node).write_text(
+                f"Node {node} MemTotal: {total * RAM_GIB // 1024} kB\n"
+                f"Node {node} MemFree: {13 if node == 0 else 987} kB\n"
+                f"Node {node} Shmem: {765 if node == 0 else 21} kB\n")
+
+    def set_options(self, options):
+        self.options = options
+        (self.proc / "mounts").write_text(
+            f"tmpfs {self.mount} tmpfs {options} 0 0\n")
+
+    def statvfs(self, path):
+        assert str(path) == str(self.mount)
+        return os.statvfs_result(
+            (1024, 1024, 256 * RAM_GIB // 1024, 200 * RAM_GIB // 1024,
+             200 * RAM_GIB // 1024, 1_000_000, 900_000, 900_000, 0, 255))
+
+    def discover(self, **kwargs):
+        def no_zfs(argv):
+            raise OSError(f"no {argv[0]} on this fixture box")
+
+        tiers = storage_tiers.discover_tiers(
+            **kwargs, runner=no_zfs, statvfs=self.statvfs,
+            arcstats_path=str(self.proc / "arcstats"),
+            sysfs=str(self.block), by_id=str(self.by_id),
+            proc_pressure=str(self.proc / "pressure/io"),
+            proc_mounts=str(self.proc / "mounts"),
+            meminfo_path=str(self.proc / "meminfo"),
+            memory_numa_root=str(self.nodes))
+        self.discovered = copy.deepcopy(tiers[RAM_ID])
+        return tiers
+
+
+@pytest.fixture
+def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
+    clock = [RAM_NOW]
+    monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
+    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    for name in ("LAST_CYCLE", "_VERDICT_CYCLE", "_VERDICT_SINCE", "_EVENT_LINES",
+                 "_LOCK_BUSY_COUNT", "_STAGED_WAITS", "_SHARED_MOVERS",
+                 "_CYCLE_COMMITMENTS", "_CENSUS_COST", "_JOINT_COMMITTED",
+                 "_FASTEST_CONSUMPTION", "_MANIFEST_SUMMARY_LAST"):
+        monkeypatch.setattr(tier_loop, name, copy.deepcopy(getattr(tier_loop, name)))
+    monkeypatch.setattr(tier_loop.residency_plan, "_SHARE_NAMESPACE_MEMO",
+                        copy.deepcopy(tier_loop.residency_plan._SHARE_NAMESPACE_MEMO))
+    real_statvfs = os.statvfs
+
+    def create(spelling="tools"):
+        options = rendered_ram_options(spelling)
+        evidence = _RenderedRamEvidence(tmp_path / "evidence", options)
+        monkeypatch.setattr(storage_tiers, "RAM_POLICY_FILE", str(evidence.policy_path))
+        assert tier_loop.load_ram_policy() == evidence.policy
+
+        def private_statvfs(path):
+            if str(path) == str(evidence.mount):
+                return evidence.statvfs(path)
+            return real_statvfs(path)
+
+        monkeypatch.setattr(tier_loop.os, "statvfs", private_statvfs)
+        queue = pool.PoolQueue(tmp_path / "pb-queue")
+        queue.ensure_layout()
+        queue.ledger(RAM_HOST).ensure_capacity({"mem_gb": 294})
+        assert queue.ledger(RAM_HOST).acquire("fixture-worker", {"mem_gb": 88})
+        assert queue.rows_host_memory_held(RAM_HOST) == 88
+        return SimpleNamespace(evidence=evidence, queue=queue, clock=clock,
+                               receipts=tier_loop.ReceiptCache())
+
+    return create
+
+
+def _rendered_ram_cycle(obj, capsys, *, reason=None):
+    announced = tier_loop.cycle(
+        obj.queue, host=RAM_HOST, source_pool="fixture-source", receipts=obj.receipts,
+        now=RAM_SAMPLED, discover=obj.evidence.discover)
+    assert tier_loop.LAST_CYCLE["completed"] is True
+    record = next(row for row in announced if row["tier_id"] == RAM_ID)
+    persisted = json.loads(obj.queue.tier_record_path(RAM_ID).read_text())
+    assert persisted == dict(record, announced_unix=obj.clock[0])
+    assert next(row for row in obj.queue.tiers() if row["tier_id"] == RAM_ID) == persisted
+    expected_tokens = {"ram_gib": 112} if reason is None else {}
+    for carrier in (obj.evidence.discovered, record, persisted):
+        assert carrier["mount_options"] == obj.evidence.options.split(",")
+        assert carrier["mountpoint"] == str(obj.evidence.mount)
+        assert carrier["ceiling_bytes"] == carrier["size_bytes"] == 256 * RAM_GIB
+        assert carrier["capacity_bytes"] == 200 * RAM_GIB
+        assert carrier["window_gib"] == 112
+        assert carrier["sampled_unix"] == RAM_SAMPLED
+        assert isinstance(carrier["epoch"], str) and carrier["epoch"]
+        admission = carrier["ram_admission"]
+        assert admission["admissible"] is (reason is None), admission
+        assert admission["reason"] == reason
+        for field, gib in {
+            "ceiling_bytes": 256, "window_bytes": 112, "mem_total_bytes": 294,
+            "rows_held_bytes": 88, "arc_c_max": 22, "arc_size": 11,
+            "arc_floor_bytes": 20, "arc_meta_used": 5, "system_reserve_bytes": 16,
+            "allowed_ceiling_bytes": 256, "allowed_window_bytes": 168,
+            "node_required_numerator_bytes": 150,
+        }.items():
+            assert admission[field] == gib * RAM_GIB, (field, admission)
+        assert storage_tiers.tier_tokens(carrier) == expected_tokens
+    expected_capacity = 112 if reason is None else 0
+    ledger = obj.queue.tier_ledger(RAM_ID)
+    assert ledger.capacity().get("ram_gib", 0) == expected_capacity
+    assert ledger.available().get("ram_gib", 0) == expected_capacity
+    capsys.readouterr()
+    return obj.evidence.discovered, record, persisted
+
+
+def _rendered_ram_status(obj, capsys, monkeypatch):
+    before = _snapshot(obj.evidence.root.parent)
+    open_path = Path.open
+
+    def no_sampling(path, *args, **kwargs):
+        for root in (obj.evidence.root / "sys", obj.evidence.proc, Path("/sys"), Path("/proc")):
+            assert path != root and root not in path.parents, "status resampled kernel evidence"
+        return open_path(path, *args, **kwargs)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", no_sampling)
+        assert pbstatus.main(["--starvation", "--queue-root", str(obj.queue.root),
+                              "--timeout-s", "0"]) == 0
+    blob = json.loads(capsys.readouterr().out)
+    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["complete"] is True
+    assert _snapshot(obj.evidence.root.parent) == before
+    operator = next(row for row in blob["tiers"] if row["tier_id"] == RAM_ID)
+    assert operator["announced"] is True
+    assert operator["sampled_age_s"] == obj.clock[0] - RAM_SAMPLED
+    return operator
+
+
+def _assert_rendered_ram_observations(carriers, *, free=RAM_FREE, shmem=RAM_SHMEM,
+                                      nodes=(0, 1)):
+    for carrier in carriers:
+        assert carrier["memory_nodes"] == (None if nodes is None else list(nodes))
+        for field, expected in (("node_memfree_bytes", free), ("node_shmem_bytes", shmem)):
+            assert field in carrier
+            assert carrier[field] == expected
+            if expected is not None:
+                assert list(carrier[field]) == ["0", "1"]
+                assert all(type(key) is str for key in carrier[field])
+                assert all(value is None or type(value) is int
+                           for value in carrier[field].values())
+
+
+@pytest.mark.parametrize("spelling", ["tools", "tools/fleet"])
+@pytest.mark.parametrize("placement", ["mpol=interleave", "mpol=interleave:0-1",
+                                        "mpol=interleave:0,1"])
+def test_rendered_ram_unit_admits_through_tier_cycle_and_status(
+        ram_integration, capsys, monkeypatch, spelling, placement):
+    obj = ram_integration(spelling)
+    options = obj.evidence.options
+    assert options.count("mpol=") == 1
+    if placement != "mpol=interleave":
+        obj.evidence.set_options(options.replace("mpol=interleave", placement))
+    carriers = _rendered_ram_cycle(obj, capsys)
+    assert carriers[1]["stage_root_owner"] == "registered"
+    admission = carriers[0]["ram_admission"]
+    assert admission["node_memtotal_bytes"] == {"0": 147 * RAM_GIB, "1": 147 * RAM_GIB}
+    assert admission["memory_node_count"] == 2
+    assert admission["failing_memory_node"] is None
+    operator = _rendered_ram_status(obj, capsys, monkeypatch)
+    assert operator["ledger_capacity"]["ram_gib"] == 112
+    _assert_rendered_ram_observations((*carriers, operator))
+
+
+@pytest.mark.parametrize("placement,noswap,reason", [
+    (None, True, "ram_mount_not_interleaved"),
+    ("mpol=bind:0-1", True, "ram_mount_not_interleaved"),
+    ("mpol=interleave:0", True, "ram_mount_not_interleaved"),
+    ("mpol=interleave", False, "ram_mount_not_noswap"),
+    (None, False, "ram_mount_not_noswap"),
+])
+def test_rendered_ram_unit_placement_damage_refuses_without_rotating_epoch(
+        ram_integration, capsys, monkeypatch, placement, noswap, reason):
+    obj = ram_integration()
+    baseline = _rendered_ram_cycle(obj, capsys)
+    epoch = baseline[0]["epoch"]
+    marker = obj.evidence.mount / storage_tiers.RAM_EPOCH_MARKER
+    marker_before = marker.read_bytes(), marker.stat().st_mtime_ns
+    options = obj.evidence.options
+    options = (options.replace(",mpol=interleave", "") if placement is None
+               else options.replace("mpol=interleave", placement))
+    if not noswap:
+        options = options.replace(",noswap", "")
+    obj.evidence.set_options(options)
+    carriers = _rendered_ram_cycle(obj, capsys, reason=reason)
+    operator = _rendered_ram_status(obj, capsys, monkeypatch)
+    assert operator["ledger_capacity"].get("ram_gib", 0) == 0
+    assert all(carrier["epoch"] == epoch for carrier in (*carriers, operator))
+    assert (marker.read_bytes(), marker.stat().st_mtime_ns) == marker_before
+    _assert_rendered_ram_observations((*carriers, operator))
+
+
+@pytest.mark.parametrize("totals,reason", [
+    ((60, 234), "ram_window_exceeds_node_memtotal_floor"),
+    ((75, 219), None),
+])
+def test_rendered_ram_unit_checks_every_node_and_admits_exact_equality(
+        ram_integration, capsys, monkeypatch, totals, reason):
+    obj = ram_integration()
+    obj.evidence.set_node_totals(totals)
+    carriers = _rendered_ram_cycle(obj, capsys, reason=reason)
+    for carrier in carriers:
+        admission = carrier["ram_admission"]
+        assert admission["node_memtotal_bytes"] == {
+            str(node): total * RAM_GIB for node, total in enumerate(totals)}
+        assert admission["memory_node_count"] == 2
+        assert admission["node_required_numerator_bytes"] == 150 * RAM_GIB
+        assert admission["failing_memory_node"] == (0 if reason else None)
+        if reason:
+            assert type(admission["failing_memory_node"]) is int
+            assert 150 * RAM_GIB > totals[0] * RAM_GIB * 2
+        else:
+            assert 150 * RAM_GIB == totals[0] * RAM_GIB * 2
+            assert all(150 * RAM_GIB <= total * RAM_GIB * 2 for total in totals)
+    operator = _rendered_ram_status(obj, capsys, monkeypatch)
+    assert operator["ledger_capacity"].get("ram_gib", 0) == (0 if reason else 112)
+    _assert_rendered_ram_observations((*carriers, operator))
+
+
+@pytest.mark.parametrize("metric,lines,kib,damage", [
+    pytest.param(metric, lines, kib, None, id=f"{metric}-{name}")
+    for metric in ("MemFree", "Shmem")
+    for name, lines, kib in [
+        ("valid", "Node 0 {metric}: 123 kB\n", 123),
+        ("zero", "Node 0 {metric}: 0 kB\n", 0),
+        ("missing", "", None),
+        ("tabs", "Node 0\t{metric}:\t123\tkB\t\n", 123),
+        ("unicode-whitespace", "Node 0\u2003{metric}:\u00a0123\u2009kB\u001f\n", 123),
+        ("splitlines", "Node 0 {metric}: 123 kB\u2028Node 0 Dirty: 17 kB\n", 123),
+        ("leading-zeros", "Node 0 {metric}: 00000000000000000123 kB\n", 123),
+        ("twenty-digits", "Node 0 {metric}: 12345678901234567890 kB\n", 12345678901234567890),
+        ("too-many-digits", "Node 0 {metric}: 123456789012345678901 kB\n", None),
+        ("unicode-digits", "Node 0 {metric}: ١٢٣ kB\n", None),
+        ("negative", "Node 0 {metric}: -1 kB\n", None),
+        ("signed", "Node 0 {metric}: +1 kB\n", None),
+        ("wrong-unit", "Node 0 {metric}: 123 MB\n", None),
+        ("literal-node-space", "Node\t0 {metric}: 123 kB\n", None),
+        ("leading-whitespace", " Node 0 {metric}: 123 kB\n", None),
+        ("trailing-junk", "Node 0 {metric}: 123 kB junk\n", None),
+        ("duplicate", "Node 0 {metric}: 123 kB\nNode 0 {metric}: 123 kB\n", None),
+        ("valid-plus-malformed", "Node 0 {metric}: 123 kB\nNode 0 {metric}: bad kB\n", None),
+        ("valid-plus-wrong-node", "Node 0 {metric}: 123 kB\nNode 1 {metric}: 1 kB\n", None),
+        ("wrong-node", "Node 1 {metric}: 123 kB\n", None),
+        ("bare-candidate", "Node 0 {metric}: 123 kB\n{metric}\n", None),
+        ("whitespace-candidate", "Node 0 {metric}: 123 kB\nother\u00a0{metric} garbage\n", None),
+        ("field-prefix-not-candidate", "Node 0 {metric}: 123 kB\nOther{metric}: bad\n", 123),
+        ("field-suffix-not-candidate", "Node 0 {metric}: 123 kB\n{metric}Other: bad\n", 123),
+    ]
+] + [
+    pytest.param(None, None, None, damage, id=damage)
+    for damage in ("missing-counters", "missing-has-memory", "missing-total", "zero-total")
+])
+def test_rendered_ram_unit_observations_preserve_unknowns_and_sample_age(
+        ram_integration, capsys, monkeypatch, metric, lines, kib, damage):
+    obj = ram_integration()
+    total = f"Node 0 MemTotal: {147 * RAM_GIB // 1024} kB\n"
+    free, shmem = dict(RAM_FREE), dict(RAM_SHMEM)
+    if metric is not None:
+        other = ("Node 0 Shmem: 765 kB\n" if metric == "MemFree"
+                 else "Node 0 MemFree: 13 kB\n")
+        obj.evidence.node_file(0).write_text(total + other + lines.format(metric=metric))
+        (free if metric == "MemFree" else shmem)["0"] = None if kib is None else kib * 1024
+    elif damage == "missing-counters":
+        for node in (0, 1):
+            obj.evidence.node_file(node).write_text(
+                f"Node {node} MemTotal: {147 * RAM_GIB // 1024} kB\n")
+        free = shmem = {"0": None, "1": None}
+    elif damage == "missing-has-memory":
+        (obj.evidence.nodes / "has_memory").unlink()
+    else:
+        obj.evidence.node_file(0).write_text(
+            ("" if damage == "missing-total" else "Node 0 MemTotal: 0 kB\n")
+            + "Node 0 MemFree: 13 kB\nNode 0 Shmem: 765 kB\n")
+    topology_unknown = damage in ("missing-has-memory", "missing-total", "zero-total")
+    reason = "ram_numa_topology_unreadable" if topology_unknown else None
+    carriers = _rendered_ram_cycle(obj, capsys, reason=reason)
+    if topology_unknown:
+        free = shmem = None
+    for node in (0, 1):
+        obj.evidence.node_file(node).write_text(
+            f"Node {node} MemTotal: {147 * RAM_GIB // 1024} kB\n"
+            f"Node {node} MemFree: 999 kB\nNode {node} Shmem: 888 kB\n")
+    (obj.evidence.nodes / "has_memory").write_text("0-1\n")
+    obj.clock[0] += 37.5
+    operator = _rendered_ram_status(obj, capsys, monkeypatch)
+    assert operator["sampled_age_s"] == 42.5
+    assert operator["ledger_capacity"].get("ram_gib", 0) == (0 if topology_unknown else 112)
+    _assert_rendered_ram_observations((*carriers, operator), free=free, shmem=shmem,
+                                      nodes=None if topology_unknown else (0, 1))
