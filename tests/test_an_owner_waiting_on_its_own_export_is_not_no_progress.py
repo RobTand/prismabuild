@@ -12,76 +12,171 @@ Now the owner writes an export-wait record beside its progress report
 ``PoolQueue.export_wait_verdict``, under the staged wait's evidence rules
 (#1016): exempt only while a named export of the owner's own shows progress;
 a withheld, refused, failed, stalled or foreign export is not exempt, and
-the verdict names the export and what it went on.  Only the owner action
-writes its export-wait record.  The export writer is a fixture thread, so
-the fixture waits on the thread's own ready event before the run.
-The native launch returns only after the action declares its wait.
-The real watch then releases the action's quiet interval through a pipe.
+the verdict names the export and what it went on.
+
+A test-local process adapter writes the owner's records under the actual
+launch token and lands export bytes in finite steps on an injected clock.
+The real execution loop, watch and export verdict decide each outcome.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
-import threading
-import time
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
-from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
-from test_a_staged_wait_is_not_no_progress import _declared_launch  # noqa: E402
-
-#: Declares an export wait on the keys in ``exports.json`` beside the
-#: checkout, stays quiet for ``seconds``, then commits one unit and exits.
-#: Written without importing PrismaBuild, the way PrismaQuant's owner would
-#: from a container.  The keys come from a file because the export names its
-#: owner, so it is sealed after the owner's key is known.
-WAITER = '''
-import json, os, sys, time
-path = os.environ["PRISMABUILD_ACTION_PROGRESS_PATH"]
-token = os.environ["PRISMABUILD_ACTION_PROGRESS_TOKEN"]
-seconds = float(sys.argv[2])
-exports = json.loads(open(EXPORTS).read())
-record = {"schema": "prismabuild.export_wait.v1", "token": token,
-          "since_unix": time.time(), "exports": exports}
-tmp = path + ".export-wait.tmp"
-with open(tmp, "w") as handle:
-    json.dump(record, handle)
-os.replace(tmp, path + ".export-wait")
-time.sleep(seconds)
-os.unlink(path + ".export-wait")
-report = {"schema": "prismabuild.action_progress.v1", "token": token,
-          "phase": "run", "units_completed": 1, "reported_unix": time.time()}
-with open(path + ".tmp", "w") as handle:
-    json.dump(report, handle)
-os.replace(path + ".tmp", path)
-open("result", "w").write("ok")
-'''
-
-#: The action declares its wait, signals readiness, then awaits the real watch.
-#: Only the live-export handshake fixture uses it.
-WAITER_SYNC = WAITER.replace(
-    'os.replace(tmp, path + ".export-wait")',
-    'os.replace(tmp, path + ".export-wait")\n'
-    'with open(__READY__, "w") as ready: ready.write("ok")\n'
-    'with open(__RESUME__, "rb") as resume: assert resume.read(1) == b"1"')
+from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 ENTRY_BYTES = 1 << 20
+PHASE_ALLOWANCE = 0.4
+FIXED_UNIX = 1000.0
 
 
-def _owner(tmp_path: Path, *, seconds: float, signal: Path | None = None):
-    exports = tmp_path / "exports.json"
-    template = WAITER_SYNC if signal is not None else WAITER
-    source = template.replace("EXPORTS", repr(str(exports)))
-    if signal is not None:
-        source = source.replace("__READY__", repr(str(signal))).replace(
-            "__RESUME__", repr(str(signal) + ".resume"))
-    queue, item = _claimed(tmp_path, mode="waiter", seconds=seconds,
-                           policy=_policy(0.4, 0.4, 0.4), source=source)
-    return queue, item, exports
+class _Clock:
+    def __init__(self) -> None:
+        self.elapsed = 0.0
+
+    def advance(self, seconds: float) -> None:
+        assert seconds >= 0
+        self.elapsed += seconds
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def time(self) -> float:
+        return FIXED_UNIX + self.elapsed
+
+    def perf_counter(self) -> float:
+        return self.elapsed
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(pool, "time", clock)
+    monkeypatch.setattr(pool, "_now", clock.time)
+    monkeypatch.setattr(progress, "time", clock)
+    return clock
+
+
+def _owner(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "task.py").write_text(
+        "raise AssertionError('the owner must use the scripted process adapter')\n")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/export-wait", "definition_version": "v1",
+                 "task_class": "generation", "determinism": "deterministic",
+                 "artifact_family": "generic", "artifact_kind": "generic",
+                 "argv": [sys.executable, "task.py"],
+                 "working_directory": ".", "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {pb.PROGRESS_PARAM: {
+            "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+            "phases": [{"name": name, "grace_s": PHASE_ALLOWANCE}
+                       for name in ("startup", "run", "publish")]}},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    cas.publish_action_request(action)
+    queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"),
+                                 capacity={"cpu": 1, "mem_gb": 4},
+                                 default_demand={"cpu": 1, "mem_gb": 1})
+    queue.publish(action_key=action["action_key"], cas_root=cas.root,
+                  checkout_root=checkout,
+                  worker_script=Path(__file__).resolve().parents[1]
+                  / "tools" / "prismabuild_worker.py")
+    item = queue.claim()
+    assert item is not None, "the owner was not admitted"
+    return queue, item
+
+
+@dataclass(frozen=True)
+class _Step:
+    seconds: float
+    landed_bytes: int | None = None
+    completes: bool = False
+
+
+class _OwnerProcess:
+    """Supply finite process observations and records to the real execution loop."""
+
+    pid = 99999999
+
+    def __init__(self, queue, item, export, destination, clock, monkeypatch,
+                 *, steps: list[_Step]) -> None:
+        self.path = queue.action_progress_path(str(item["action_key"]))
+        self.export = export
+        self.destination = Path(str(destination) + ".tmp")
+        self.clock = clock
+        self.steps = iter(steps)
+        self.returncode = None
+        self.token = None
+        self.argv = None
+        self.terminated = False
+        monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
+            **{**vars(subprocess), "Popen": self.launch}))
+        monkeypatch.setattr(pb, "_terminate_process_group", self.terminate)
+        monkeypatch.setattr(queue, "_box_window", lambda *args: {
+            "source": "test-local", "start_unix": FIXED_UNIX,
+            "end_unix": clock.time()})
+
+    def launch(self, argv, *, env, **kwargs):
+        assert self.argv is None, "the owner launched more than once"
+        assert env[pb.ACTION_PROGRESS_PATH_ENV] == str(self.path)
+        self.argv = argv
+        self.token = env[pb.ACTION_PROGRESS_TOKEN_ENV]
+        assert self.token
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        Path(progress.export_wait_path(str(self.path))).write_text(json.dumps({
+            "schema": progress.EXPORT_WAIT_SCHEMA_V1, "token": self.token,
+            "since_unix": self.clock.time(), "exports": [self.export]}))
+        return self
+
+    def poll(self):
+        return self.returncode
+
+    def communicate(self, *, timeout):
+        assert self.argv is not None, "the owner was never launched"
+        if self.terminated:
+            return "", ""
+        try:
+            step = next(self.steps)
+        except StopIteration:
+            raise AssertionError("the owner exhausted its process observations") from None
+        self.clock.advance(step.seconds)
+        if step.landed_bytes is not None:
+            self.destination.write_bytes(b"x" * step.landed_bytes)
+        if step.completes:
+            Path(progress.export_wait_path(str(self.path))).unlink()
+            self.path.write_text(json.dumps({
+                "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": self.token,
+                "phase": "run", "units_completed": 1,
+                "reported_unix": self.clock.time()}))
+            self.returncode = 0
+            return "", ""
+        raise subprocess.TimeoutExpired(self.argv, timeout)
+
+    def terminate(self, process, *, grace_s):
+        assert process is self
+        assert self.returncode is None, "the owner was already stopped"
+        self.terminated = True
+        self.returncode = -15
+
+    def assert_finished(self):
+        assert self.argv is not None
+        assert list(self.steps) == [], "the owner ended before consuming its observations"
+        assert self.returncode is not None, "the owner is still running"
 
 
 def _seal_export(tmp_path: Path, item, *, seed: str, owner: str | None = None
@@ -151,128 +246,98 @@ def _execute(queue, item):
                          timeout_grace_s=0.2)
 
 
-class _Writer:
-    """An export that writes its destination's temporary while it runs."""
-
-    def __init__(self, destination: Path) -> None:
-        self.path = Path(str(destination) + ".tmp")
-        self.stop = threading.Event()
-        self.ready = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        with open(self.path, "wb") as handle:
-            while not self.stop.wait(0.02):
-                handle.write(b"x" * 1024)
-                handle.flush()
-                self.ready.set()
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def wait_ready(self, timeout_s: float = 30.0) -> None:
-        """Return after the writer lands its first bytes (#1506).
-
-        The thread signals its own event after the first flush. The
-        fixture waits on that event, so the run starts only after the
-        export shows growth. The wait has a deadline and fails loudly.
-        """
-
-        assert self.ready.wait(timeout_s), "the export writer never started"
-
-    def __exit__(self, *exc) -> None:
-        self.stop.set()
-        self.thread.join()
-
-
-# -- red first: the owner the rung killed ------------------------------------
-
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
-        tmp_path: Path, monkeypatch) -> None:
-    """Quiet for 1.5 s against a 0.4 s grace, all of it waiting on its own
-    export, which is claimed and writing. The action declares before the
-    watch starts. The writer lands bytes before the run, so the
-    export already shows bytes at the first rung."""
-
-    sentinel = tmp_path / "export-declared"
-    queue, item, exports = _owner(tmp_path, seconds=1.5, signal=sentinel)
+        tmp_path: Path, monkeypatch, clock) -> None:
+    queue, item = _owner(tmp_path)
     export, destination = _seal_export(tmp_path, item, seed="live")
-    exports.write_text(json.dumps([export]))
     _claim(queue, item, export)
+    owner = _OwnerProcess(
+        queue, item, export, destination, clock, monkeypatch,
+        steps=[_Step(0.5, 1024), _Step(0.5, 2048), _Step(0.5, 3072),
+               _Step(0.0, completes=True)])
 
-    with _Writer(destination) as writer:
-        writer.wait_ready()
-        with _declared_launch(queue, item, sentinel, monkeypatch):
-            outcome = _execute(queue, item)
+    outcome = _execute(queue, item)
+    owner.assert_finished()
 
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
-    assert sentinel.exists(), "the action never signalled it declared its wait"
-
+    assert outcome["returncode"] == 0
+    assert owner.terminated is False
     observed = outcome["progress_observation"]
-    assert observed["export_wait_exempt_s"] > 0.4
+    assert observed["accepted_count"] == 1
+    assert observed["last_accepted"]["units_completed"] == 1
+    assert observed["export_wait_exempt_s"] > PHASE_ALLOWANCE
+    assert observed["export_wait_exempt_s"] == pytest.approx(clock.elapsed)
     wait = observed["export_wait"]
     assert wait["exempt"] is True, wait
     (entry,) = wait["exports"]
     assert (entry["key"], entry["state"]) == (export, "claimed")
-    assert entry["evidence"] in ("progress-grew", "baseline"), entry
+    assert entry["evidence"] == "progress-grew", entry
+    assert entry["landed_bytes"] == 3072
     assert 0 < entry["landed_bytes"] <= ENTRY_BYTES
     assert entry["export_bytes"] == ENTRY_BYTES
 
 
 def test_an_owner_waiting_on_an_export_that_writes_nothing_still_ends(
-        tmp_path: Path) -> None:
-    """Claimed, but its landed bytes never grow: the first look is the
-    baseline, the next one finds nothing, and the rung ends the owner with
-    the export named on the record."""
-
-    queue, item, exports = _owner(tmp_path, seconds=4.0)
-    export, _destination = _seal_export(tmp_path, item, seed="hung")
-    exports.write_text(json.dumps([export]))
+        tmp_path: Path, monkeypatch, clock) -> None:
+    queue, item = _owner(tmp_path)
+    export, destination = _seal_export(tmp_path, item, seed="hung")
     _claim(queue, item, export)
+    owner = _OwnerProcess(
+        queue, item, export, destination, clock, monkeypatch,
+        steps=[_Step(0.5), _Step(2.0)])
 
     outcome = _execute(queue, item)
+    owner.assert_finished()
 
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
-    wait = outcome["progress_observation"]["export_wait"]
+    assert owner.terminated is True
+    observed = outcome["progress_observation"]
+    assert observed["accepted_count"] == 0
+    assert observed["export_wait_exempt_s"] == pytest.approx(0.5)
+    wait = observed["export_wait"]
     assert wait["exempt"] is False
     assert wait["reason"] == "no named export shows progress"
+    assert wait["checked_unix"] - wait["exports"][0]["evidence_unix"] > (
+        wait["evidence_window_s"])
     (entry,) = wait["exports"]
     assert (entry["key"], entry["state"], entry["evidence"]) == (
         export, "claimed", "none")
+    assert entry["landed_bytes"] == 0
+    assert outcome["stall"]["quiet_s"] > outcome["progress_no_progress_bound_s"]
     assert outcome["stall"]["credited_s"]["export_wait"] == pytest.approx(
-        outcome["progress_observation"]["export_wait_exempt_s"])
+        observed["export_wait_exempt_s"])
 
 
 # -- the verdict, read directly ----------------------------------------------
 
 def _declare(queue: pool.PoolQueue, item, exports: list[str], *,
-             token: str = "t" * 32, since_unix: float | None = None) -> Path:
+             token: str = "t" * 32, since_unix: float = FIXED_UNIX) -> Path:
     path = queue.action_progress_path(str(item["action_key"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     Path(progress.export_wait_path(str(path))).write_text(json.dumps({
         "schema": progress.EXPORT_WAIT_SCHEMA_V1, "token": token,
-        "since_unix": time.time() if since_unix is None else since_unix,
+        "since_unix": since_unix,
         "exports": exports}))
     return path
 
 
 def _verdict(queue, item, path, **kwargs):
     kwargs.setdefault("window_s", 600.0)
+    kwargs.setdefault("now", FIXED_UNIX)
     return queue.export_wait_verdict(
         str(item["action_key"]), path, token="t" * 32,
         cas_root=item["cas_root"], **kwargs)
 
 
 def test_no_record_is_no_verdict(tmp_path: Path) -> None:
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     path = queue.action_progress_path(str(item["action_key"]))
     assert _verdict(queue, item, path) is None
 
 
 def test_a_claimed_export_is_waited_on_while_its_bytes_grow(tmp_path: Path) -> None:
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, destination = _seal_export(tmp_path, item, seed="grow")
     _claim(queue, item, export)
     path = _declare(queue, item, [export], since_unix=100.0)
@@ -307,9 +372,9 @@ def test_a_claimed_export_is_waited_on_while_its_bytes_grow(tmp_path: Path) -> N
 
 def test_a_fresh_claim_is_evidence_and_a_new_claim_takes_a_new_baseline(
         tmp_path: Path) -> None:
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="fresh")
-    now = time.time()
+    now = FIXED_UNIX
     _claim(queue, item, export, claimed_unix=now - 1.0)
     path = _declare(queue, item, [export], since_unix=now - 5.0)
 
@@ -336,7 +401,7 @@ def test_a_refused_or_withheld_export_is_not_waited_on(
     """#1035's ruling: the exemption holds only while the export shows
     progress, and a withheld or refused export shows none."""
 
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="denied")
     _publish(queue, item, export)
     ready = json.loads(queue.item_path(pool.READY, export).read_text())
@@ -358,7 +423,7 @@ def test_an_export_the_spool_refused_is_not_waited_on(tmp_path: Path) -> None:
     """A filed spool identity refusal (#1098) for the export: its retry will
     meet the same group, so it is not coming."""
 
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="spoolrefused")
     _publish(queue, item, export)
     filed = (queue.root / produced_spool.REFUSALS_SUBDIR / str(item["action_key"])
@@ -379,7 +444,7 @@ def test_a_queued_export_is_waited_on_for_one_window(tmp_path: Path) -> None:
     """Ready, and neither refused nor withheld: the first look is the
     baseline, and a whole window with the export still queued ends it."""
 
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="queued")
     _publish(queue, item, export)
     path = _declare(queue, item, [export], since_unix=100.0)
@@ -397,7 +462,7 @@ def test_a_queued_export_is_waited_on_for_one_window(tmp_path: Path) -> None:
 
 def test_a_failed_withdrawn_or_unpublished_export_is_not_waited_on(
         tmp_path: Path) -> None:
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     failed, _ = _seal_export(tmp_path, item, seed="failed")
     withdrawn, _ = _seal_export(tmp_path, item, seed="withdrawn")
     unpublished, _ = _seal_export(tmp_path, item, seed="unpublished")
@@ -418,7 +483,7 @@ def test_a_failed_withdrawn_or_unpublished_export_is_not_waited_on(
 
 def test_a_done_export_is_waited_on_only_for_the_report_latency(
         tmp_path: Path) -> None:
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="done")
     target = queue.item_path(pool.DONE, export)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -436,7 +501,7 @@ def test_someone_elses_export_or_a_forged_record_is_not_waited_on(
     """An export whose sealed request names another owner, however its row
     is labelled, and a record under a token this launch never minted."""
 
-    queue, item, _exports = _owner(tmp_path, seconds=0)
+    queue, item = _owner(tmp_path)
     stranger, destination = _seal_export(tmp_path, item, seed="stranger",
                                          owner="e" * 64)
     _claim(queue, item, stranger)
