@@ -287,19 +287,17 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
 
 
 @pytest.fixture(autouse=True)
-def _d38_gate_is_off_for_the_existing_suite(monkeypatch, request):
-    """The D38 gate is exercised by its own file; everything else submits freely.
-
-    Existing tests submit as ``sparky`` from a box-local checkout, so the
-    derived host pin is GPU intent under D38 and the gate would refuse them for
-    a reason they do not test.  ``tests/test_pbrun_d38_gate.py`` turns the gate
-    back on, and its default-on test reads the shipped value.
-    """
+def d38_config(monkeypatch, tmp_path):
+    """Private record-only fleet setting; enforcement tests opt in explicitly."""
 
     import d38_gate
 
-    if request.node.fspath.basename != "test_pbrun_d38_gate.py":
-        monkeypatch.setattr(d38_gate, "ENFORCE", False)
+    directory = tmp_path / "d38-config"
+    directory.mkdir()
+    path = directory / "fleet_boxes.json"
+    path.write_text('{"d38_enforce": false}', encoding="utf-8")
+    monkeypatch.setattr(d38_gate, "__file__", str(directory / "d38_gate.py"))
+    return path
 
 
 @pytest.fixture(autouse=True)
