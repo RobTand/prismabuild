@@ -302,18 +302,7 @@ def _resident_live_rows(store, set_id):
 def lease_active(store, set_id, *, now=None):
     now = time.time() if now is None else now
     store.read(set_id)
-    lease = None
-    released = False
-    for event in store.read_lease_log(set_id):
-        if event.get("manifest_sha256") != set_id:
-            raise ValueError("lease journal manifest disagrees")
-        if event["event"] in ("published", "renewed"):
-            lease = event["lease"]
-            released = False
-        elif event["event"] == "released":
-            released = True
-    if lease is None:
-        raise ValueError("resident set has no published lease journal")
+    lease, released = store.effective_lease(set_id)
     if released or now >= lease["hard_max"]:
         return False
     return "campaign" in lease or now < lease["until"] or _resident_live_rows(store, set_id)
@@ -410,12 +399,15 @@ def evict_resident_copy(store, set_id, host, spec, *, now=None):
                     os.rename(source, evicting)
                     resident_sets.fsync_directory(root)
         # No host lock during the slow delete. The record already refuses use.
-        for tree in (evicting, partial):
-            if tree.exists():
-                if tree.is_symlink():
-                    raise ValueError("unsafe evicting tree")
-                shutil.rmtree(tree)
-                resident_sets.fsync_directory(root)
+        for tree in (evicting, final, partial):
+            try:
+                info = tree.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("unsafe evicting tree")
+            shutil.rmtree(tree)
+            resident_sets.fsync_directory(root)
         # Capacity is released only once ALL local bytes have been deleted.
         pool.PoolQueue(store.queue_root).tier_ledger(local_tier.local_resident_tier_id(host)).release(set_id)
         with local_tier.host_lock(root):
