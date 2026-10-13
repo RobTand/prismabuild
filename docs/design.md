@@ -4086,8 +4086,9 @@ and terminal stall fields from the watch and contention state, without sampling
 or terminating a process. `PoolQueue.execute` remains the integrated interface:
 its execution loop schedules samples, refunds checkpoint intervals, verifies
 waits, samples the final report and applies termination precedence. Output
-still renews only the activity watch; output from a semantic action does not
-renew its semantic allowance. This internal separation preserves supervision
+and payload CPU still renew only the activity watch; neither renews a semantic
+action's allowance or changes its committed counters, phase grants or
+delivered-work rate. This internal separation preserves supervision
 outcomes and record fields. It establishes no new default or deployment claim.
 
 Reports use the existing stable no-follow regular-file reader with a 64 KiB

@@ -367,32 +367,55 @@ def test_supervision_prefactor_preserves_activity_execution_outcomes(
     process.assert_finished()
 
 
-def test_activity_sampling_does_not_mutate_semantic_accounting(tmp_path, monkeypatch):
-    path = tmp_path / "progress"
-    path.write_text(json.dumps({
-        "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "launch",
-        "phase": "run", "units_completed": 12, "reported_unix": 10001.0}))
-    semantic = pool.ProgressWatch(
-        path, "launch", pool.ProgressPolicy(
-            (pool.ProgressPhase("startup", 10.0, None),
-             pool.ProgressPhase("run", 20.0, None)), None), started=0.0)
-    assert semantic.sample(now=1.0)
-    before = copy.deepcopy(vars(semantic))
-    activity = pool.ActivityWatch(20.0, started=0.0)
-    monkeypatch.setattr(pool, "_observe_child", lambda *args, **kwargs: {
-        "cpu_seconds": 4.0})
-    process = SimpleNamespace(poll=lambda: None)
-    initial = pool._observe_execution(process)
-    assert not activity.observe(now=1.0, cpu_seconds=pool._observed_cpu_s(initial))
-    sample = pool._observe_execution(process, initial, stdout=b"output", stderr=b"err")
-    assert activity.observe(
-        now=30.0, stdout_bytes=sample["stdout_bytes"],
-        stderr_bytes=sample["stderr_bytes"], cpu_seconds=pool._observed_cpu_s(sample))
-    assert vars(semantic) == before
-    assert semantic.stall_deadline() == 21.0
-    assert activity.stall_deadline() == 50.0
-    assert semantic.delivered_units_per_s(now=31.0) == 0.4
-    assert semantic.as_record(now=31.0)["last_accepted"]["units_completed"] == 12
+@pytest.mark.parametrize("activity_steps", [
+    [_Step(0.5, stdout="a", stderr="é"),
+     _Step(0.5, stdout="ab", stderr="éé")],
+    [_Step(0.5, cpu=1.0), _Step(0.5, cpu=2.0)],
+])
+def test_activity_sampling_does_not_mutate_semantic_accounting(
+        tmp_path, monkeypatch, activity_steps):
+    queue, item = _claimed(
+        tmp_path, progress=_progress_policy(("startup", 1.0), ("run", 1.0)))
+    process = _ScriptedProcess(monkeypatch, queue, _Clock(), [
+        _Step(0.5, report=("run", 12)), *activity_steps])
+    outcome = queue.execute(item, timeout_s=1.0, heartbeat_s=0.5)
+    semantic = outcome["progress_observation"]
+    assert outcome["status"] == "timeout"
+    assert outcome["termination_reason"] == "no_progress"
+    assert outcome["elapsed_s"] == 1.5
+    assert semantic["accepted_count"] == 1
+    assert semantic["phases_entered"] == 2
+    assert semantic["phase"] == "run"
+    assert semantic["last_accepted"]["units_completed"] == 12
+    assert semantic["quiet_s"] == 1.0
+    assert semantic["delivered_units_per_s"] == 12.0
+    assert outcome["stall"]["delivered_units_per_s"] == 12.0
+    assert "stdout_bytes" not in semantic
+    assert "stderr_bytes" not in semantic
+    assert "cpu_seconds" not in semantic
+    observed = outcome["execution_observation"]
+    assert observed["stdout_bytes"] == len(activity_steps[-1].stdout.encode())
+    assert observed["stderr_bytes"] == len(activity_steps[-1].stderr.encode())
+    assert observed["child"]["cpu_seconds"] == activity_steps[-1].cpu
+    process.assert_finished()
+
+
+@pytest.mark.parametrize(("returncode", "status"), [(0, "executed"), (7, "failed")])
+def test_final_semantic_report_preserves_the_process_verdict(
+        tmp_path, monkeypatch, returncode, status):
+    queue, item = _claimed(tmp_path, progress=_progress_policy(("run", 1.0)))
+    process = _ScriptedProcess(monkeypatch, queue, _Clock(), [
+        _Step(0.5, report=("run", 6), returncode=returncode)])
+    outcome = queue.execute(item, timeout_s=1.0, heartbeat_s=0.5)
+    assert outcome["status"] == status
+    assert outcome["returncode"] == returncode
+    assert "termination_reason" not in outcome
+    assert "stall" not in outcome
+    assert outcome["progress_observation"]["accepted_count"] == 1
+    assert outcome["progress_observation"]["last_accepted"]["units_completed"] == 6
+    assert outcome["progress_observation"]["quiet_s"] == 0.0
+    assert not queue.action_progress_path(item["action_key"]).exists()
+    process.assert_finished()
 
 
 def test_supervision_prefactor_preserves_checkpoint_and_wait_credits(tmp_path, monkeypatch):
@@ -428,6 +451,60 @@ def test_supervision_prefactor_preserves_checkpoint_and_wait_credits(tmp_path, m
     assert outcome["progress_observation"]["quiet_s"] == 0.0
     assert "stall" not in outcome
     process.assert_finished()
+
+
+def test_activity_checkpoint_refunds_preserve_quiet(tmp_path, monkeypatch):
+    queue, item = _claimed(tmp_path, stall_s=1.0)
+    clock = _Clock()
+    process = _ScriptedProcess(monkeypatch, queue, clock, [_Step(0.5), _Step(0.5)])
+    write_lease = queue.write_lease
+    writes = []
+
+    def delayed_lease(*args, **kwargs):
+        write_lease(*args, **kwargs)
+        writes.append(clock.elapsed)
+        clock.elapsed += 10.0 if len(writes) == 1 else 3.0
+
+    monkeypatch.setattr(queue.queue, "write_lease", delayed_lease)
+    outcome = queue.execute(item, timeout_s=1.0, heartbeat_s=0.5)
+    assert writes == [0.0, 10.5, 14.0]
+    assert outcome["status"] == "timeout"
+    assert outcome["termination_reason"] == "no_progress"
+    assert outcome["elapsed_s"] == 17.0
+    assert outcome["progress_observation"]["accepted_count"] == 0
+    assert outcome["progress_observation"]["quiet_s"] == 1.0
+    assert outcome["stall"]["quiet_s"] == 1.0
+    process.assert_finished()
+
+
+def test_execution_samples_keep_activity_totals_and_output_time_separate(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(pool, "_now", clock.time)
+    cpu_samples = iter([3.0, 5.0, 5.0])
+    monkeypatch.setattr(pool, "_observe_child", lambda *args, **kwargs: {
+        "cpu_seconds": next(cpu_samples)})
+    process = SimpleNamespace(poll=lambda: None)
+    watch = pool.ActivityWatch(10.0, started=0.0)
+    initial = pool._observe_execution(process)
+    assert not watch.observe(now=0.0, cpu_seconds=pool._observed_cpu_s(initial))
+    clock.elapsed = 2.0
+    moving = pool._observe_execution(process, initial, stdout="é".encode(), stderr=b"err")
+    assert moving["stdout_bytes"] == 2
+    assert moving["stderr_bytes"] == 3
+    assert moving["last_output_unix"] == 10002.0
+    assert watch.observe(
+        now=2.0, stdout_bytes=moving["stdout_bytes"],
+        stderr_bytes=moving["stderr_bytes"], cpu_seconds=pool._observed_cpu_s(moving))
+    clock.elapsed = 5.0
+    quiet = pool._observe_execution(process, moving, stdout="é".encode(), stderr=b"err")
+    assert quiet["sampled_unix"] == 10005.0
+    assert quiet["last_output_unix"] == 10002.0
+    assert not watch.observe(
+        now=5.0, stdout_bytes=quiet["stdout_bytes"],
+        stderr_bytes=quiet["stderr_bytes"], cpu_seconds=pool._observed_cpu_s(quiet))
+    assert watch.stall_deadline() == 12.0
+    assert watch.as_record(now=5.0)["cpu_seconds"] == 5.0
+    assert watch.as_record(now=5.0)["accepted_count"] == 1
 
 
 @pytest.mark.parametrize("with_contention", [False, True])
