@@ -25,6 +25,7 @@ import json
 from pathlib import Path
 import sys
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -37,10 +38,15 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 ENTRY_BYTES = 1 << 20
 PHASE_ALLOWANCE = 0.4
 FIXED_UNIX = 1000.0
+CLOCK_ORIGINS = [(FIXED_UNIX, 0.0), (10_000.0, 7000.0),
+                 (1_700_000_000.0, 1_234_567.0)]
 
 
 class _Clock:
-    def __init__(self) -> None:
+    def __init__(self, *, unix_origin: float = FIXED_UNIX,
+                 monotonic_origin: float = 0.0) -> None:
+        self.unix_origin = unix_origin
+        self.monotonic_origin = monotonic_origin
         self.elapsed = 0.0
 
     def advance(self, seconds: float) -> None:
@@ -48,21 +54,33 @@ class _Clock:
         self.elapsed += seconds
 
     def monotonic(self) -> float:
-        return self.elapsed
+        return self.monotonic_origin + self.elapsed
 
     def time(self) -> float:
-        return FIXED_UNIX + self.elapsed
+        return self.unix_origin + self.elapsed
 
     def perf_counter(self) -> float:
-        return self.elapsed
+        return self.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        raise AssertionError("the owner path must not sleep")
+
+
+def _real_process_launch(*args, **kwargs):
+    raise AssertionError("the owner must use the scripted process adapter")
 
 
 @pytest.fixture(autouse=True)
-def clock(monkeypatch):
-    clock = _Clock()
+def clock(monkeypatch, request):
+    unix_origin, monotonic_origin = getattr(request, "param", (FIXED_UNIX, 0.0))
+    clock = _Clock(unix_origin=unix_origin, monotonic_origin=monotonic_origin)
     monkeypatch.setattr(pool, "time", clock)
     monkeypatch.setattr(pool, "_now", clock.time)
     monkeypatch.setattr(progress, "time", clock)
+    monkeypatch.setattr(pb, "time", clock)
+    monkeypatch.setattr(pool.materialize, "time", clock)
+    monkeypatch.setattr(time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
     return clock
 
 
@@ -114,12 +132,14 @@ class _OwnerProcess:
     pid = 99999999
 
     def __init__(self, queue, item, export, destination, clock, monkeypatch,
-                 *, steps: list[_Step]) -> None:
+                 *, steps: list[_Step], clock_reads: int = 0) -> None:
         self.path = queue.action_progress_path(str(item["action_key"]))
         self.export = export
         self.destination = Path(str(destination) + ".tmp")
         self.clock = clock
-        self.steps = iter(steps)
+        self.steps = tuple(steps)
+        self.next_step = 0
+        self.clock_reads = clock_reads
         self.returncode = None
         self.token = None
         self.argv = None
@@ -127,8 +147,9 @@ class _OwnerProcess:
         monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
             **{**vars(subprocess), "Popen": self.launch}))
         monkeypatch.setattr(pb, "_terminate_process_group", self.terminate)
+        started_unix = clock.time()
         monkeypatch.setattr(queue, "_box_window", lambda *args: {
-            "source": "test-local", "start_unix": FIXED_UNIX,
+            "source": "test-local", "start_unix": started_unix,
             "end_unix": clock.time()})
 
     def launch(self, argv, *, env, **kwargs):
@@ -150,14 +171,21 @@ class _OwnerProcess:
         assert self.argv is not None, "the owner was never launched"
         if self.terminated:
             return "", ""
-        try:
-            step = next(self.steps)
-        except StopIteration:
-            raise AssertionError("the owner exhausted its process observations") from None
+        assert self.returncode is None, "the owner already completed its observations"
+        before = (self.clock.monotonic(), self.clock.time(), self.clock.perf_counter())
+        for _ in range(self.clock_reads):
+            assert (self.clock.monotonic(), self.clock.time(),
+                    self.clock.perf_counter()) == before, "clock reads advanced time"
+        assert self.next_step < len(self.steps), (
+            "the owner exhausted its process observations")
+        step = self.steps[self.next_step]
+        self.next_step += 1
         self.clock.advance(step.seconds)
         if step.landed_bytes is not None:
             self.destination.write_bytes(b"x" * step.landed_bytes)
         if step.completes:
+            assert self.next_step == len(self.steps), (
+                "the owner completed before consuming its process observations")
             Path(progress.export_wait_path(str(self.path))).unlink()
             self.path.write_text(json.dumps({
                 "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": self.token,
@@ -175,7 +203,8 @@ class _OwnerProcess:
 
     def assert_finished(self):
         assert self.argv is not None
-        assert list(self.steps) == [], "the owner ended before consuming its observations"
+        assert self.next_step == len(self.steps), (
+            "the owner ended before consuming its observations")
         assert self.returncode is not None, "the owner is still running"
 
 
@@ -246,13 +275,14 @@ def _execute(queue, item):
                          timeout_grace_s=0.2)
 
 
-def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
-        tmp_path: Path, monkeypatch, clock) -> None:
+def _live_export_outcome(
+        tmp_path: Path, monkeypatch, clock, *, clock_reads: int = 0):
     queue, item = _owner(tmp_path)
     export, destination = _seal_export(tmp_path, item, seed="live")
     _claim(queue, item, export)
     owner = _OwnerProcess(
         queue, item, export, destination, clock, monkeypatch,
+        clock_reads=clock_reads,
         steps=[_Step(0.5, 1024), _Step(0.5, 2048), _Step(0.5, 3072),
                _Step(0.0, completes=True)])
 
@@ -262,6 +292,7 @@ def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
     assert outcome["status"] == "executed", repr(outcome.get("termination_reason"))
     assert outcome["returncode"] == 0
     assert owner.terminated is False
+    assert "termination_reason" not in outcome
     observed = outcome["progress_observation"]
     assert observed["accepted_count"] == 1
     assert observed["last_accepted"]["units_completed"] == 1
@@ -275,16 +306,17 @@ def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
     assert entry["landed_bytes"] == 3072
     assert 0 < entry["landed_bytes"] <= ENTRY_BYTES
     assert entry["export_bytes"] == ENTRY_BYTES
+    return outcome
 
 
-def test_an_owner_waiting_on_an_export_that_writes_nothing_still_ends(
-        tmp_path: Path, monkeypatch, clock) -> None:
+def _stalled_export_outcome(
+        tmp_path: Path, monkeypatch, clock, *, clock_reads: int = 0):
     queue, item = _owner(tmp_path)
     export, destination = _seal_export(tmp_path, item, seed="hung")
     _claim(queue, item, export)
     owner = _OwnerProcess(
         queue, item, export, destination, clock, monkeypatch,
-        steps=[_Step(0.5), _Step(2.0)])
+        steps=[_Step(0.5), _Step(2.0)], clock_reads=clock_reads)
 
     outcome = _execute(queue, item)
     owner.assert_finished()
@@ -307,6 +339,45 @@ def test_an_owner_waiting_on_an_export_that_writes_nothing_still_ends(
     assert outcome["stall"]["quiet_s"] > outcome["progress_no_progress_bound_s"]
     assert outcome["stall"]["credited_s"]["export_wait"] == pytest.approx(
         observed["export_wait_exempt_s"])
+    return outcome
+
+
+def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(
+        tmp_path: Path, monkeypatch, clock) -> None:
+    _live_export_outcome(tmp_path, monkeypatch, clock)
+
+
+def test_an_owner_waiting_on_an_export_that_writes_nothing_still_ends(
+        tmp_path: Path, monkeypatch, clock) -> None:
+    _stalled_export_outcome(tmp_path, monkeypatch, clock)
+
+
+@pytest.mark.parametrize("clock", CLOCK_ORIGINS, indirect=True)
+@pytest.mark.parametrize("clock_reads", [0, 17])
+def test_live_export_outcome_uses_only_scripted_time(
+        tmp_path: Path, monkeypatch, clock, clock_reads: int) -> None:
+    outcome = _live_export_outcome(tmp_path, monkeypatch, clock,
+                                   clock_reads=clock_reads)
+    assert outcome["elapsed_s"] == clock.elapsed == 1.5
+    observed = outcome["progress_observation"]
+    assert observed["last_accepted"]["reported_unix"] == clock.time()
+    wait = observed["export_wait"]
+    assert wait["since_unix"] == clock.unix_origin
+    assert wait["checked_unix"] == clock.time()
+    assert wait["exports"][0]["evidence_unix"] == clock.time()
+
+
+@pytest.mark.parametrize("clock", CLOCK_ORIGINS, indirect=True)
+@pytest.mark.parametrize("clock_reads", [0, 17])
+def test_stalled_export_outcome_uses_only_scripted_time(
+        tmp_path: Path, monkeypatch, clock, clock_reads: int) -> None:
+    outcome = _stalled_export_outcome(tmp_path, monkeypatch, clock,
+                                      clock_reads=clock_reads)
+    assert outcome["elapsed_s"] == clock.elapsed == 2.5
+    wait = outcome["progress_observation"]["export_wait"]
+    assert wait["since_unix"] == clock.unix_origin
+    assert wait["checked_unix"] == clock.time()
+    assert wait["exports"][0]["evidence_unix"] == clock.unix_origin + 0.5
 
 
 # -- the verdict, read directly ----------------------------------------------
