@@ -13,6 +13,8 @@ admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
 
+from collections import Counter
+import errno
 import hashlib
 import json
 import os
@@ -494,6 +496,289 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
         po.reservation_holder(instance)) == {}
     batch_ns = committed["batch_namespace"]
     assert queue.tier_ledger(STAGE_TIER).holder_tokens(batch_ns) == {}
+
+
+def _prewrite_scope(tmp_path: Path):
+    origin = tmp_path / "outputs"
+    origin.mkdir(exist_ok=True)
+    template = _template(str(origin))
+    queue = _queue(tmp_path)
+    instance = _bind(queue, template)["instance"]
+    assert po.admit_instance(queue, instance, template)["ok"] is True
+    return origin, queue, instance, template
+
+
+def _prewrite(queue, instance, template, paths, batch_id="group"):
+    return po.require_prewrite(
+        queue, instance, template, batch_id=batch_id, tier=STAGE_TIER,
+        class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
+        paths=paths)
+
+
+def _containment_calls(monkeypatch, prefix: Path):
+    realpath, lstat = os.path.realpath, os.lstat
+    resolved, inspected = [], Counter()
+
+    def resolve(path, *args, **kwargs):
+        resolved.append(os.fspath(path))
+        return realpath(path, *args, **kwargs)
+
+    def inspect(path, *args, **kwargs):
+        name = os.fspath(path)
+        if name.startswith(str(prefix) + "/"):
+            inspected[name] += 1
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", resolve)
+    monkeypatch.setattr(os, "lstat", inspect)
+    return resolved, inspected
+
+
+def test_prewrite_containment_walks_shared_ancestors_once(
+        tmp_path: Path, monkeypatch) -> None:
+    origin = tmp_path / "outputs"
+    shared = origin / "shared"
+    deep = shared / "deep"
+    deep.mkdir(parents=True)
+    files = [deep / "z.pt", shared / "a.pt", deep / "b.pt"]
+    for path in files:
+        path.write_bytes(b"data")
+    paths = [str(path) for path in files]
+    with monkeypatch.context() as scoped:
+        scoped.setitem(po._PREFIX_REALPATHS, str(origin), str(tmp_path / "stale"))
+        resolved, inspected = _containment_calls(scoped, origin)
+        assert po._prewrite_paths(str(origin), paths) == paths
+    assert resolved == [str(origin)]
+    assert inspected == Counter({str(path): 1 for path in [shared, deep, *files]})
+    _, queue, instance, template = _prewrite_scope(tmp_path)
+    result = _prewrite(queue, instance, template, paths)
+    assert result["ok"] is True
+    assert result["paths"] == sorted(paths)
+
+
+def test_prewrite_containment_accepts_missing_suffixes(
+        tmp_path: Path, monkeypatch) -> None:
+    origin = tmp_path / "outputs"
+    shared = origin / "shared"
+    shared.mkdir(parents=True)
+    absent = shared / "absent"
+    paths = [str(absent / "deep" / "a.pt"), str(shared / "leaf.pt"),
+             str(absent / "other" / "b.pt"), str(absent)]
+    with monkeypatch.context() as scoped:
+        resolved, inspected = _containment_calls(scoped, origin)
+        assert po._prewrite_paths(str(origin), paths) == paths
+    assert resolved == [str(origin)]
+    assert inspected == Counter({str(shared): 1, str(absent): 1,
+                                 str(shared / "leaf.pt"): 1})
+    _, queue, instance, template = _prewrite_scope(tmp_path)
+    result = _prewrite(queue, instance, template, paths)
+    assert result["ok"] is True
+    assert result["paths"] == sorted(paths)
+
+
+@pytest.mark.parametrize("kind,accepted,fallback", [
+    ("directory-internal", True, True),
+    ("directory-external", False, True),
+    ("directory-dangling-internal", True, True),
+    ("directory-dangling-external", False, True),
+    ("leaf-internal", True, True),
+    ("leaf-external", False, True),
+    ("leaf-dangling-internal", True, True),
+    ("leaf-dangling-external", False, True),
+    ("symlinked-prefix", True, False),
+    ("canonical-alias", True, True),
+    ("alternative-alias", True, True),
+    ("prefix-equality", True, True),
+    ("sibling-prefix", False, True),
+    ("double-slash", True, True),
+    ("double-slash-prefix", True, True),
+    ("non-directory", True, True),
+    ("missing-prefix", True, True),
+    ("file-prefix", True, True),
+])
+def test_prewrite_containment_fallback_matches_realpath(
+        tmp_path: Path, monkeypatch, kind, accepted, fallback) -> None:
+    origin = tmp_path / "outputs"
+    origin.mkdir()
+    target = origin / "target"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    prefix = str(origin)
+    if kind.startswith(("directory-", "leaf-")):
+        base = origin if kind.endswith("internal") else outside
+        destination = base / ("missing" if "dangling" in kind else "target")
+        if "dangling" not in kind:
+            if kind.startswith("directory"):
+                destination.mkdir(exist_ok=True)
+            else:
+                destination = base / "file.pt"
+                destination.write_bytes(b"data")
+        link = origin / "link"
+        link.symlink_to(destination, target_is_directory=kind.startswith("directory"))
+        path = str(link / "planned.pt" if kind.startswith("directory") else link)
+    elif kind in {"symlinked-prefix", "canonical-alias", "alternative-alias"}:
+        alias = tmp_path / "alias"
+        alias.symlink_to(origin, target_is_directory=True)
+        if kind == "alternative-alias":
+            path = str(alias / "target" / "planned.pt")
+        else:
+            prefix = str(alias)
+            path = str((alias if kind == "symlinked-prefix" else origin)
+                       / "target" / "planned.pt")
+    elif kind == "prefix-equality":
+        path = prefix
+    elif kind == "sibling-prefix":
+        path = str(tmp_path / "outputs-other" / "planned.pt")
+    elif kind.startswith("double-slash"):
+        path = "/" + str(target / "planned.pt")
+        if kind == "double-slash-prefix":
+            prefix = "/" + prefix
+            path = str(target / "planned.pt")
+    elif kind == "non-directory":
+        leaf = origin / "file.pt"
+        leaf.write_bytes(b"data")
+        path = str(leaf / "planned.pt")
+    elif kind == "missing-prefix":
+        target.rmdir()
+        origin.rmdir()
+        path = str(origin / "planned.pt")
+    else:
+        target.rmdir()
+        origin.rmdir()
+        origin.write_bytes(b"data")
+        path = str(origin / "planned.pt")
+    with monkeypatch.context() as scoped:
+        resolved, _ = _containment_calls(scoped, origin)
+        if accepted:
+            assert po._prewrite_paths(prefix, [path]) == [path]
+        else:
+            with pytest.raises(po.ProducedOutputError,
+                               match="prewrite paths\\[\\] escapes the scope prefix"):
+                po._prewrite_paths(prefix, [path])
+    assert resolved == ([prefix, path] if fallback else [prefix])
+
+
+@pytest.mark.parametrize("error", [errno.EACCES, errno.EIO])
+@pytest.mark.parametrize("location", ["prefix", "directory", "leaf"])
+@pytest.mark.parametrize("escapes", [False, True])
+def test_prewrite_containment_metadata_errors_use_fallback(
+        tmp_path: Path, monkeypatch, error, location, escapes) -> None:
+    origin = tmp_path / "outputs"
+    origin.mkdir()
+    shared = origin / "shared"
+    shared.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = shared / "planned.pt"
+    if escapes:
+        if location == "leaf":
+            path.symlink_to(outside / "planned.pt")
+        else:
+            shared.rmdir()
+            shared.symlink_to(outside, target_is_directory=True)
+    failing = {"prefix": origin, "directory": shared, "leaf": path}[location]
+    syscall = "stat" if location == "prefix" else "lstat"
+    original = getattr(os, syscall)
+    failures = []
+
+    def fail_once(name, *args, **kwargs):
+        if os.fspath(name) == str(failing) and not failures:
+            failures.append(os.fspath(name))
+            raise OSError(error, "injected metadata failure")
+        return original(name, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        resolved, _ = _containment_calls(scoped, origin)
+        scoped.setattr(os, syscall, fail_once)
+        if escapes:
+            with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+                po._prewrite_paths(str(origin), [str(path)])
+        else:
+            assert po._prewrite_paths(str(origin), [str(path)]) == [str(path)]
+    assert failures == [str(failing)]
+    assert resolved == [str(origin), str(path)]
+
+
+def test_prewrite_containment_observations_do_not_survive_calls(tmp_path: Path) -> None:
+    origin, queue, instance, template = _prewrite_scope(tmp_path)
+    shared = origin / "shared"
+    shared.mkdir()
+    paths = [str(shared / "planned.pt")]
+    assert _prewrite(queue, instance, template, paths, "first")["ok"] is True
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shared.rmdir()
+    shared.symlink_to(outside, target_is_directory=True)
+    for batch_id in ("first", "second"):
+        with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+            _prewrite(queue, instance, template, paths, batch_id)
+    records = po._prewrites_dir(queue.root, instance)
+    assert sorted(path.name for path in records.iterdir()) == ["first.prewrite.json"]
+
+
+def test_prewrite_containment_preserves_validation_and_replay(tmp_path: Path) -> None:
+    origin, queue, instance, template = _prewrite_scope(tmp_path)
+    records = po._prewrites_dir(queue.root, instance)
+    paths = [str(origin / "z.pt"), str(origin / "a.pt"),
+             "/" + str(origin / "double.pt")]
+    for invalid, message in [
+            ("relative.pt", "must be an absolute path"),
+            (str(origin) + "/nested/../a.pt", "must be normalized")]:
+        with pytest.raises(po.ProducedOutputError, match=message):
+            _prewrite(queue, instance, template, [invalid], "invalid")
+    for invalid in ([], tuple(paths), None):
+        assert _prewrite(queue, instance, template, invalid, "empty") == {
+            "ok": False, "refusal": "prewrite-paths-required"}
+    assert _prewrite(queue, instance, template, [paths[0], paths[0]], "duplicate") == {
+        "ok": False, "refusal": "prewrite-paths-must-be-distinct"}
+    with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+        _prewrite(queue, instance, template,
+                  [paths[0], str(tmp_path / "outside.pt")], "mixed")
+    with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+        _prewrite(queue, instance, template,
+                  [str(tmp_path / "outside.pt"), "relative.pt"], "order")
+    assert not records.exists()
+    result = _prewrite(queue, instance, template, paths)
+    assert result == {"ok": True, "batch_id": "group", "paths": sorted(paths),
+                      "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0}}
+    record_path = records / "group.prewrite.json"
+    raw = record_path.read_bytes()
+    assert json.loads(raw) == {
+        "batch_id": "group", "tier": STAGE_TIER, "paths": sorted(paths),
+        "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
+        "owner_action_key": instance["owner_action_key"],
+        "owner_attempt": instance["owner_attempt"]}
+    replay = _prewrite(queue, instance, template, list(reversed(paths)))
+    assert replay == result
+    conflict = _prewrite(queue, instance, template, [str(origin / "other.pt")])
+    assert conflict["ok"] is False
+    assert conflict["refusal"].startswith("prewrite-conflict:")
+    assert record_path.read_bytes() == raw
+
+
+def test_prewrite_containment_rechecks_changed_prefix(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    outside = tmp_path / "outside"
+    for directory in (first, second, outside):
+        directory.mkdir()
+    (first / "shared").mkdir()
+    (second / "shared").symlink_to(outside, target_is_directory=True)
+    prefix = tmp_path / "prefix"
+    prefix.symlink_to(first, target_is_directory=True)
+    paths = [str(prefix / "shared" / "planned.pt")]
+    with monkeypatch.context() as scoped:
+        scoped.setitem(po._PREFIX_REALPATHS, str(prefix), str(first))
+        resolved, _ = _containment_calls(scoped, first)
+        assert po._prewrite_paths(str(prefix), paths) == paths
+        prefix.unlink()
+        prefix.symlink_to(second, target_is_directory=True)
+        with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+            po._prewrite_paths(str(prefix), paths)
+        (second / "shared").unlink()
+        assert po._prewrite_paths(str(prefix), paths) == paths
+    assert resolved == [str(prefix), str(prefix), paths[0], str(prefix)]
 
 
 def test_prewrite_counts_outstanding_abort_proves_absence(tmp_path: Path) -> None:

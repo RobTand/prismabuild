@@ -9385,6 +9385,31 @@ declaration-less rows taint. Commit-batch funding, movement/tick
 handoff, and the general funded-window primitive remain with their
 owning lanes.
 
+**Prewrite containment (#1172).** The private prewrite path validator resolves
+the declared output prefix once per invocation. Its lexical fast path accepts
+only normalized absolute paths with one leading slash that are strict
+component-wise descendants of the declared prefix, whose freshly resolved
+prefix is an existing directory. It maps each relative suffix beneath that
+resolved prefix and checks `os.path.commonpath`. Suffix components are inspected
+with `lstat`, including the leaf: existing intermediate components must be
+nonsymlink directories, and an existing leaf must not be a symlink. An `ENOENT`
+after those directories establishes absence for every descendant of that
+component, without further inspection. Shared suffix observations live only
+inside that invocation; subsequent calls and owner attempts inspect again.
+The process-wide prefix-resolution cache supplies no containment evidence.
+
+All other paths use the existing realpath containment decision, reusing only
+the invocation's freshly resolved prefix. This includes prefix equality,
+sibling-prefix collisions, alternative aliases, double-leading-slash paths,
+suffix symlinks, non-directory ancestors, unavailable prefix metadata, and
+suffix metadata errors other than established absence. Contained aliases and
+symlinks remain accepted; resolved escapes remain rejected. An inspection error
+alone cannot authorize a write. Descriptor validation retains its existing
+`_resolve_contained` behavior. Original normalized, sorted path spellings,
+records, replay, quotas and ownership gates are unchanged. This is an
+optimization of existing containment behavior, not evidence of deployment or
+measured NFS savings.
+
 **Reading a batch record (#955).** `produced_output.batch_record(queue,
 instance, template, *, batch_id)` is the public, read-only reader of one
 committed batch, and `batch_records(queue, instance, template)` returns every
