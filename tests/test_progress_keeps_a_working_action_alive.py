@@ -9,8 +9,11 @@ a run that advances outlives the limit that killed those, and a run that only
 """
 import json
 import os
+import signal
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,19 +130,146 @@ def _run(tmp_path, **kwargs):
                          timeout_grace_s=0.2)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_queue_clocks(monkeypatch):
+    monkeypatch.setattr(pool.time, "time", lambda: 1_800_000_000.0)
+
+
+class _ScriptedChild:
+    """Script child I/O and time; the real execution loop decides when to stop."""
+
+    pid = 2_000_000_000
+
+    def __init__(self, script):
+        self.now = 0.0
+        self.returncode = None
+        self.stdout = ""
+        self.stderr = ""
+        self.stopped_at = None
+        self._steps = iter(script(self))
+        self._pending_at = None
+
+    def monotonic(self):
+        return self.now
+
+    def wall_time(self):
+        return 1_800_000_000.0 + self.now
+
+    def launch(self, argv, *, env, **kwargs):
+        self.argv = argv
+        self.env = env
+        return self
+
+    def poll(self):
+        return self.returncode
+
+    def communicate(self, timeout):
+        if self.returncode is not None:
+            return self.stdout, self.stderr
+        if self._pending_at is None:
+            try:
+                self._pending_at = next(self._steps)
+            except StopIteration:
+                self.returncode = 0
+                return self.stdout, self.stderr
+            assert self._pending_at > self.now
+        self.now = min(self._pending_at, self.now + timeout)
+        if self.now == self._pending_at:
+            self._pending_at = None
+        raise pool.subprocess.TimeoutExpired(
+            self.argv, timeout, output=self.stdout.encode(),
+            stderr=self.stderr.encode())
+
+    def stop(self, process, *, grace_s):
+        assert process is self
+        self.stopped_at = self.now
+        self.returncode = -signal.SIGTERM
+
+    @property
+    def observation(self):
+        lease = json.loads(self.queue.lease_path(self.item["action_key"]).read_text())
+        return lease["progress_observation"]
+
+    def publish(self, units, *, phase="run", token=None):
+        path = Path(self.env[pb.ACTION_PROGRESS_PATH_ENV])
+        record = {"schema": pb.PROGRESS_RECORD_SCHEMA_V1,
+                  "token": token if token is not None else
+                  self.env[pb.ACTION_PROGRESS_TOKEN_ENV],
+                  "phase": phase, "units_completed": units,
+                  "unit": "widgets", "reported_unix": self.wall_time()}
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record))
+        temporary.replace(path)
+
+    def busy(self, mode, number):
+        if mode == "silent":
+            return
+        if mode == "chatty":
+            self.stdout += "still working\n"
+        elif mode == "replay":
+            self.publish(1)
+        elif mode == "regressing":
+            self.publish(100 - number)
+        elif mode == "foreign":
+            self.publish(number, token="0" * 32)
+        elif mode == "undeclared":
+            self.publish(number, phase="somewhere-else")
+        elif mode == "torn":
+            Path(self.env[pb.ACTION_PROGRESS_PATH_ENV]).write_bytes(b"{not json")
+        else:
+            raise ValueError(f"unscripted busy mode: {mode}")
+
+    def execute(self):
+        return self.queue.execute(
+            self.item, timeout_s=self.ceiling, heartbeat_s=self.heartbeat_s,
+            timeout_grace_s=0.2)
+
+
+@contextmanager
+def _virtual_execution(tmp_path, script, *, policy, ceiling=0.4,
+                       timeout_s=None, mode="silent", heartbeat_s=0.1):
+    child = _ScriptedChild(script)
+    child.ceiling = ceiling
+    child.heartbeat_s = heartbeat_s
+    with pytest.MonkeyPatch.context() as patches:
+        patches.setattr(pool.time, "monotonic", child.monotonic)
+        patches.setattr(pool.time, "time", child.wall_time)
+        patches.setattr(pool, "subprocess", SimpleNamespace(
+            **(vars(pool.subprocess) | {"Popen": child.launch})))
+        patches.setattr(pb, "_terminate_process_group", child.stop)
+        child.queue, child.item = _claimed(
+            tmp_path, mode=mode, seconds=30, policy=policy, timeout_s=timeout_s)
+        assert child.item is not None
+        yield child
+
+
+def _running_until(expiry):
+    def script(child):
+        yield expiry
+        raise AssertionError(f"child survived virtual expiry at {expiry}")
+    return script
+
+
 # -- the regression itself ------------------------------------------------
 
 def test_a_progressing_action_outlives_the_ceiling_that_killed_the_glm_rows(tmp_path):
     """The whole issue in one assertion: advancing beats elapsed time."""
 
-    # A fresh Python interpreter can spend longer than 0.4 s importing the
-    # worker on a loaded fleet box.  Give startup a realistic allowance while
-    # keeping the action duration materially beyond the deadline it defeats.
-    outcome = _run(tmp_path, mode="report", seconds=3.5, ceiling=2.0,
-                   policy=_policy(2.0, 2.0, 2.0))
+    def script(child):
+        for units in range(1, 5):
+            child.publish(units)
+            yield float(units)
+            assert child.observation["accepted_count"] == units
+        assert child.poll() is None
+        assert child.now > child.ceiling
+
+    with _virtual_execution(tmp_path, script, mode="report", ceiling=2.0,
+                            heartbeat_s=1.0,
+                            policy=_policy(2.0, 2.0, 2.0)) as child:
+        outcome = child.execute()
+        assert child.now == 4.0
+        assert child.stopped_at is None
     assert outcome["status"] == "executed", repr(outcome)
-    # It ran materially beyond the limit a box without the contract enforces.
-    assert outcome["elapsed_s"] > 3.0
     assert outcome["execution_governed_by"] == "progress"
     # And the ceiling is still on the record, aimed at the quiet instead.
     assert outcome["worker_timeout_ceiling_s"] == 2.0
@@ -154,7 +284,12 @@ def test_a_progressing_action_outlives_the_ceiling_that_killed_the_glm_rows(tmp_
 def test_the_same_action_without_the_contract_is_killed_by_the_ceiling(tmp_path):
     """The control: nothing about the *work* is what makes the difference."""
 
-    outcome = _run(tmp_path, mode="report", seconds=1.5, ceiling=0.4, policy=None)
+    with _virtual_execution(tmp_path, _running_until(0.4), mode="report",
+                            ceiling=0.4, policy=None) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.4
+        assert pb.ACTION_PROGRESS_PATH_ENV not in child.env
+        assert pb.ACTION_PROGRESS_TOKEN_ENV not in child.env
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "execution_deadline"
     assert outcome["execution_governed_by"] == "deadline"
@@ -177,16 +312,34 @@ def test_the_same_action_without_the_contract_is_killed_by_the_ceiling(tmp_path)
 def test_looking_busy_is_not_progress(tmp_path, mode, rejection, accepted):
     """Bytes, heartbeats, replayed counters and foreign records are not work."""
 
-    outcome = _run(tmp_path, mode=mode, seconds=30, ceiling=5.0,
-                   policy=_policy(0.4, 0.4, 0.4))
+    expiry = 0.5 if accepted else 0.4
+
+    def script(child):
+        child.busy(mode, 1)
+        yield 0.1
+        assert child.observation["accepted_count"] == accepted
+        child.busy(mode, 2)
+        yield 0.2
+        if rejection is not None:
+            assert child.observation["last_rejection"] == rejection
+        yield expiry
+        raise AssertionError("busy child survived its stall allowance")
+
+    with _virtual_execution(tmp_path, script, mode=mode, ceiling=5.0,
+                            policy=_policy(0.4, 0.4, 0.4)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == expiry
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
     assert outcome["returncode"] is None
-    # Bounded by the declared allowance, not by the 30 s the action wanted.
-    assert outcome["elapsed_s"] < 5.0
+    assert outcome["progress_observation"]["quiet_s"] == pytest.approx(0.4)
     progress = outcome["progress_observation"]
     assert progress["accepted_count"] == accepted
     assert (progress["last_accepted"] is None) is (accepted == 0)
+    if accepted:
+        assert progress["last_accepted"]["units_completed"] == (
+            99 if mode == "regressing" else 1)
+        assert progress["last_accepted"]["unit"] == "widgets"
     if rejection is None:
         assert progress["rejected_count"] == 0
     else:
@@ -197,13 +350,17 @@ def test_looking_busy_is_not_progress(tmp_path, mode, rejection, accepted):
 def test_a_declaring_action_that_never_reports_ends_within_the_stated_bound(tmp_path):
     """Point 5: missing progress has a documented, computable bounded outcome."""
 
-    outcome = _run(tmp_path, mode="silent", seconds=30, ceiling=5.0,
-                   policy=_policy(0.3, 0.3, 0.3))
+    with _virtual_execution(tmp_path, _running_until(0.3), ceiling=5.0,
+                            policy=_policy(0.3, 0.3, 0.3)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.3
     assert outcome["status"] == "timeout"
+    assert outcome["termination_reason"] == "no_progress"
     # The first phase's allowance governs from the launch; the sum is the
     # bound only for an action that walks through its phases.
     assert outcome["progress_no_progress_bound_s"] == pytest.approx(0.9)
-    assert outcome["elapsed_s"] < 5.0
+    assert outcome["progress_observation"]["phase"] == "startup"
+    assert outcome["progress_observation"]["quiet_s"] == pytest.approx(0.3)
 
 
 # -- precedence ------------------------------------------------------------
@@ -211,12 +368,21 @@ def test_a_declaring_action_that_never_reports_ends_within_the_stated_bound(tmp_
 def test_an_explicitly_requested_deadline_still_ends_a_progressing_action(tmp_path):
     """Point 1: the contract must not silently override a submitted budget."""
 
-    outcome = _run(tmp_path, mode="report", seconds=30, ceiling=None,
-                   timeout_s=0.5, policy=_policy(60, 60, 60))
+    def script(child):
+        child.publish(1)
+        yield 0.1
+        assert child.observation["accepted_count"] == 1
+        yield 0.5
+        raise AssertionError("progress defeated the requested deadline")
+
+    with _virtual_execution(tmp_path, script, mode="report", ceiling=None,
+                            timeout_s=0.5,
+                            policy=_policy(60, 60, 60)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.5
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "execution_deadline"
     assert outcome["execution_timeout_requested_s"] == 0.5
-    assert outcome["elapsed_s"] < 5.0
     # It really was advancing; the deadline ended it anyway.
     assert outcome["progress_observation"]["accepted_count"] > 0
 
@@ -237,8 +403,10 @@ def test_a_withdrawal_beats_a_progressing_action(tmp_path):
 def test_the_worker_ceiling_clamps_the_allowance_and_says_so(tmp_path):
     """Point 6, the honest half: a box may shorten the quiet, never in silence."""
 
-    outcome = _run(tmp_path, mode="silent", seconds=30, ceiling=0.3,
-                   policy=_policy(600, 600, 600))
+    with _virtual_execution(tmp_path, _running_until(0.3), ceiling=0.3,
+                            policy=_policy(600, 600, 600)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.3
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
     assert outcome["progress_stall_clamped"] is True
@@ -250,9 +418,56 @@ def test_the_worker_ceiling_clamps_the_allowance_and_says_so(tmp_path):
     assert outcome["progress_no_progress_bound_s"] == pytest.approx(0.9)
 
 
+def test_progress_stall_expiry_obeys_the_virtual_allowance_boundary(tmp_path):
+    def script(child):
+        child.publish(1)
+        yield 0.1
+        assert child.observation["accepted_count"] == 1
+        yield 0.499
+        assert child.poll() is None
+        assert child.stopped_at is None
+        assert child.now < 0.1 + 0.4
+        yield 0.5
+        raise AssertionError("child survived the effective allowance boundary")
+
+    with _virtual_execution(tmp_path, script, ceiling=0.4,
+                            policy=_policy(600, 600, 600)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.5
+    assert outcome["status"] == "timeout"
+    assert outcome["termination_reason"] == "no_progress"
+    assert outcome["progress_observation"]["accepted_count"] == 1
+    assert outcome["progress_observation"]["quiet_s"] == pytest.approx(0.4)
+    assert outcome["progress_phases"][1]["grace_s"] == 0.4
+
+
+def test_progress_execution_harness_restores_patches_after_failure(tmp_path):
+    before = (pool.time.monotonic, pool.time.time, pool.subprocess,
+              pool.subprocess.Popen, pb._terminate_process_group)
+
+    def script(child):
+        child.publish(1)
+        yield 0.1
+        assert child.observation["accepted_count"] == 1
+        raise RuntimeError("scripted failure")
+
+    with pytest.raises(RuntimeError, match="scripted failure"):
+        with _virtual_execution(tmp_path, script, policy=_policy(1, 1, 1)) as child:
+            assert pool.time.monotonic != before[0]
+            assert pool.time.time != before[1]
+            assert pool.subprocess.Popen != before[3]
+            assert pb._terminate_process_group != before[4]
+            child.execute()
+    after = (pool.time.monotonic, pool.time.time, pool.subprocess,
+             pool.subprocess.Popen, pb._terminate_process_group)
+    assert all(restored is original for restored, original in zip(after, before))
+    assert child.returncode == -signal.SIGTERM
+    assert child.stopped_at == 0.1
+
+
 # -- the channel -----------------------------------------------------------
 
-def test_the_action_is_told_where_to_report_only_when_it_declared(tmp_path):
+def test_the_action_is_told_where_to_report_only_when_it_declared(tmp_path, monkeypatch):
     """The env forwarding is the whole channel; nothing else reaches the action."""
 
     sealed = {"schema": pb.ACTION_SCHEMA_V2,
@@ -265,9 +480,9 @@ def test_the_action_is_told_where_to_report_only_when_it_declared(tmp_path):
               "params": {}, "environment": {"variables": {}, "toolchain": {}},
               "execution_scope": {"portability": "portable", "platform_key": None,
                                   "host_class": None}}
-    os.environ[pb.ACTION_PROGRESS_PATH_ENV] = "/queue/k.progress"
-    os.environ[pb.ACTION_PROGRESS_TOKEN_ENV] = "deadbeef"
-    try:
+    with monkeypatch.context() as patches:
+        patches.setenv(pb.ACTION_PROGRESS_PATH_ENV, "/queue/k.progress")
+        patches.setenv(pb.ACTION_PROGRESS_TOKEN_ENV, "deadbeef")
         assert pb._progress_environment(sealed, {}) == {}
         declaring = {**sealed, "params": {pb.PROGRESS_PARAM: _policy(1)}}
         assert pb._progress_environment(declaring, {}) == {
@@ -276,12 +491,9 @@ def test_the_action_is_told_where_to_report_only_when_it_declared(tmp_path):
         with pytest.raises(pb.ActionContractError, match="seals"):
             pb._progress_environment(
                 declaring, {pb.ACTION_PROGRESS_PATH_ENV: "/elsewhere"})
-        del os.environ[pb.ACTION_PROGRESS_TOKEN_ENV]
+        patches.delenv(pb.ACTION_PROGRESS_TOKEN_ENV)
         with pytest.raises(pb.ActionContractError, match="must set both"):
             pb._progress_environment(declaring, {})
-    finally:
-        os.environ.pop(pb.ACTION_PROGRESS_PATH_ENV, None)
-        os.environ.pop(pb.ACTION_PROGRESS_TOKEN_ENV, None)
 
 
 def test_a_launcher_with_no_channel_refuses_rather_than_running_unbounded(tmp_path):
@@ -305,17 +517,14 @@ def test_a_launcher_with_no_channel_refuses_rather_than_running_unbounded(tmp_pa
     assert "Nothing would bound this run" in said
 
 
-def test_the_reporter_writes_what_the_worker_accepts(tmp_path):
+def test_the_reporter_writes_what_the_worker_accepts(tmp_path, monkeypatch):
     """Both sides of the wire, checked against each other rather than a fixture."""
 
     path = tmp_path / "k.progress"
-    os.environ[pb.ACTION_PROGRESS_PATH_ENV] = str(path)
-    os.environ[pb.ACTION_PROGRESS_TOKEN_ENV] = "tok"
-    try:
+    with monkeypatch.context() as patches:
+        patches.setenv(pb.ACTION_PROGRESS_PATH_ENV, str(path))
+        patches.setenv(pb.ACTION_PROGRESS_TOKEN_ENV, "tok")
         assert progress.report_action_progress("run", 7, unit="anchors") is True
-    finally:
-        del os.environ[pb.ACTION_PROGRESS_PATH_ENV]
-        del os.environ[pb.ACTION_PROGRESS_TOKEN_ENV]
     assert progress.report_action_progress("run", 8) is False  # no channel, no-op
     declared = pb.validate_progress_policy(_policy(60, 60, 60))
     watch = pool.ProgressWatch(path, "tok", pool.ProgressPolicy(
