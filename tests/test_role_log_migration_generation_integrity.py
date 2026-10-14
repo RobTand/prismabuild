@@ -114,7 +114,12 @@ def test_real_publication_manifest_resolves_both_tool_layouts_and_dependencies(m
         (ROOT / "src/prismabuild/core.py").read_bytes()).hexdigest()
     imports = publish_runtime._imported_modules(ROOT / "tools/fleet/migrate_role_logs.py")
     assert "prismabuild" in imports
-    for name in ("role_log_identity", "supervise", "publish_runtime", "fleet_roster"):
+    roster_source = ROOT / "src/prismabuild/fleet_roster.py"
+    assert published["src/prismabuild/fleet_roster.py"] == hashlib.sha256(
+        roster_source.read_bytes()).hexdigest()
+    assert "tools/fleet_roster.py" not in published
+    assert "tools/fleet/fleet_roster.py" not in published
+    for name in ("role_log_identity", "supervise", "publish_runtime"):
         assert name in imports
         assert f"tools/{name}.py" in published
     affected = ("tools/migrate_role_logs.py imports ", "tools/supervise.py imports ")

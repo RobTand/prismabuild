@@ -88,13 +88,12 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
-    decomposition as dc, dependency_digest, filesystem_floor, materialize,
+    decomposition as dc, dependency_digest, filesystem_floor, fleet_roster, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
 import d38_gate  # noqa: E402
 import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
-import fleet_roster  # noqa: E402
 from prismabuild import local_dependencies  # noqa: E402
 
 FLEET_ROSTER_PATH = Path(__file__).resolve().parent / "fleet_boxes.json"

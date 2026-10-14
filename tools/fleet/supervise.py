@@ -77,7 +77,6 @@ from typing import Collection, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
-import fleet_roster  # noqa: E402
 import role_log_identity  # noqa: E402
 # The generation readers, and the drift-record writer beside them, live in
 # the worker loop module -- the same object the role loops import as
@@ -86,7 +85,7 @@ import role_log_identity  # noqa: E402
 import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import filesystem_capacity, local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, fleet_roster, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
@@ -432,17 +431,12 @@ def _roster_entry(host: str) -> tuple[dict, dict] | None:
             continue
         if not isinstance(boxes, dict):
             continue
-        if host in boxes and isinstance(boxes[host], dict):
-            return boxes[host], document
-        # The second Spark was renamed from gx10-6b77 to sparklina.  Its
-        # declared alias names the same machine, not a second capacity offer.
-        # Keep one shape so the old and new hostname cannot drift apart.
-        aliases = [(name, shape) for name, shape in boxes.items()
-                   if isinstance(shape, dict) and shape.get("_alias") == host]
-        if len(aliases) > 1:
-            raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
-        if aliases:
-            return aliases[0][1], document
+        try:
+            entry = fleet_roster.entry_for_host(boxes, host)
+        except fleet_roster.RosterPresenceError as exc:
+            raise SystemExit(f"{exc}: {path}") from None
+        if entry is not None:
+            return entry, document
     return None
 
 

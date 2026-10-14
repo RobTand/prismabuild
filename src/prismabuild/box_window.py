@@ -36,10 +36,11 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import time
 import urllib.error
 import urllib.request
+
+from . import fleet_roster
 
 BOX_WINDOW_SCHEMA_V1 = "prismabuild.box_window.v1"
 
@@ -249,35 +250,15 @@ def _recorder_hosts(host: str) -> list[str]:
     declaration; unrelated CSVs in the directory are never identity evidence.
     """
 
-    names = {host}
     for path in _FLEET_CONFIG_PATHS:
         try:
             config = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
         boxes = config.get("boxes") if isinstance(config, dict) else None
-        if not isinstance(boxes, dict):
-            continue
-        groups = []
-        for name, shape in boxes.items():
-            group = {name}
-            if isinstance(shape, dict) and shape.get("_alias") is not None:
-                alias = shape["_alias"]
-                if not isinstance(alias, str):
-                    if name == host:
-                        raise ValueError(f"invalid recorder hostname alias for {host}")
-                    continue
-                group.add(alias)
-            groups.append(group)
-        matches = [group for group in groups if host in group]
-        if matches:
-            names = matches[0]
-            if sum(bool(names & group) for group in groups) != 1:
-                raise ValueError(f"ambiguous fleet hostname alias {host}")
-        break
-    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) for name in names):
-        raise ValueError("invalid recorder hostname")
-    return sorted(names)
+        if isinstance(boxes, dict):
+            return fleet_roster.recorder_hostnames(boxes, host)
+    return fleet_roster.recorder_hostnames({}, host)
 
 
 def _csv_files(csv_dir: Path, host: str, start_unix: float,

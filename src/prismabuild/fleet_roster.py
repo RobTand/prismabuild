@@ -31,6 +31,7 @@ keeping a second copy of the spelling.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 
 
@@ -138,3 +139,38 @@ def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
             members[key] = names
     return members
 
+
+
+def entry_for_host(boxes: Mapping[str, object], host: str) -> dict | None:
+    """Prefer a canonical entry; otherwise require one declared alias match."""
+    if host in boxes and isinstance(boxes[host], dict):
+        return boxes[host]
+    aliases = [shape for shape in boxes.values()
+               if isinstance(shape, dict) and shape.get("_alias") == host]
+    if len(aliases) > 1:
+        raise RosterPresenceError(f"ambiguous fleet hostname alias {host}")
+    return aliases[0] if aliases else None
+
+
+def recorder_hostnames(boxes: Mapping[str, object], host: str) -> list[str]:
+    """Names whose recorder evidence belongs to one unambiguous machine."""
+    names = {host}
+    groups = []
+    for name, shape in boxes.items():
+        group = {name}
+        if isinstance(shape, dict) and shape.get("_alias") is not None:
+            alias = shape["_alias"]
+            if not isinstance(alias, str):
+                if name == host:
+                    raise ValueError(f"invalid recorder hostname alias for {host}")
+                continue
+            group.add(alias)
+        groups.append(group)
+    matches = [group for group in groups if host in group]
+    if matches:
+        names = matches[0]
+        if sum(bool(names & group) for group in groups) != 1:
+            raise ValueError(f"ambiguous fleet hostname alias {host}")
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) for name in names):
+        raise ValueError("invalid recorder hostname")
+    return sorted(names)

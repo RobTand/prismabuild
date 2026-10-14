@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import fleet_roster  # noqa: E402
+from prismabuild import fleet_roster  # noqa: E402
 import supervise  # noqa: E402
 
 from test_the_coordinator_proves_the_fleet_before_a_barrier import (
@@ -49,6 +49,32 @@ def test_absent_status_is_active():
     assert fleet_roster.box_status("boxa", {"loops": 1}) == ("active", {})
     assert fleet_roster.box_status("boxa", {"loops": 1, "status": "active"}) == ("active", {})
     assert fleet_roster.box_status("boxa", "not-a-mapping") == ("active", {})
+
+
+@pytest.mark.parametrize("boxes, host, expected", [
+    ({"old": {"_alias": "renamed", "loops": 3}}, "renamed",
+     {"_alias": "renamed", "loops": 3}),
+    ({"old": {"_alias": "renamed"}, "renamed": {"loops": 2}}, "renamed",
+     {"loops": 2}),
+    ({"renamed": 7, "old": {"_alias": "renamed"}}, "renamed",
+     {"_alias": "renamed"}),
+    ({"old": {"_alias": "renamed"}}, "missing", None),
+])
+def test_host_entry_preserves_canonical_precedence(boxes, host, expected):
+    assert fleet_roster.entry_for_host(boxes, host) == expected
+
+
+def test_ambiguous_aliases_refuse_without_a_canonical_entry():
+    boxes = {"one": {"_alias": "renamed"}, "two": {"_alias": "renamed"}}
+    with pytest.raises(fleet_roster.RosterPresenceError, match="ambiguous.*renamed"):
+        fleet_roster.entry_for_host(boxes, "renamed")
+
+
+def test_recorder_evidence_cannot_use_canonical_precedence_to_hide_a_collision():
+    boxes = {"old": {"_alias": "renamed"}, "renamed": {"loops": 2}}
+    assert fleet_roster.entry_for_host(boxes, "renamed") == {"loops": 2}
+    with pytest.raises(ValueError, match="ambiguous.*renamed"):
+        fleet_roster.recorder_hostnames(boxes, "renamed")
 
 
 def test_absent_states_carry_their_provenance():

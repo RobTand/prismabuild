@@ -59,10 +59,11 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-import fleet_roster  # noqa: E402
 
 _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
+sys.path.insert(0, str(CHECKOUT / "src"))
+from prismabuild import fleet_roster  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
@@ -186,11 +187,6 @@ FLEET_SCRIPTS = (
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.
     "pbsweep.py",
-    # fleet_roster.py holds the roster presence contract (#606): which boxes
-    # count as declared absent and what provenance that needs.  The
-    # supervisor and the barrier preflight import it on boxes with no
-    # checkout, so a generation without it cannot enforce a retirement.
-    "fleet_roster.py",
     # Local JOIN/RESIGN and the worker-loop reconciliation hook must work
     # on registered hosts with only the published generation available.
     "fleet_membership.py",

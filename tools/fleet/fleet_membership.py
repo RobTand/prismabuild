@@ -61,8 +61,7 @@ RUNTIME_ROOT = REPO_ROOT
 SRC_ROOT = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
-import fleet_roster  # noqa: E402
-from prismabuild import pool as pool_module  # noqa: E402
+from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 import worker_loop  # noqa: E402
 
@@ -178,17 +177,12 @@ def roster_entry(host: str, roster_path: Path | None = None) -> dict[str, Any] |
             continue
         if not isinstance(boxes, dict):
             continue
-        if host in boxes and isinstance(boxes[host], dict):
-            return dict(boxes[host])
-        aliases = [
-            (name, shape)
-            for name, shape in boxes.items()
-            if isinstance(shape, dict) and shape.get("_alias") == host
-        ]
-        if len(aliases) > 1:
-            raise ValueError(f"ambiguous fleet hostname alias {host}: {path}")
-        if aliases:
-            return dict(aliases[0][1])
+        try:
+            entry = fleet_roster.entry_for_host(boxes, host)
+        except fleet_roster.RosterPresenceError as exc:
+            raise ValueError(f"{exc}: {path}") from None
+        if entry is not None:
+            return dict(entry)
     return None
 
 
