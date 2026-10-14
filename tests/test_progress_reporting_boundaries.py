@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -134,80 +133,76 @@ def test_unrepresentable_grace_is_a_contract_refusal():
         pb.validate_progress_policy(_policy(10**400))
 
 
-def test_first_lease_delay_does_not_spend_startup_grace(tmp_path, monkeypatch):
-    from test_progress_keeps_a_working_action_alive import _claimed
+def _scripted_execution(tmp_path, monkeypatch, *, policy):
+    from test_progress_keeps_a_working_action_alive import _claimed, _ScriptedChild
 
-    queue, item = _claimed(tmp_path, mode="report", seconds=0.5,
-                           policy=_policy(5, 5, 5))
-    offset = [0.0]
-    monkeypatch.setattr(pool, "time", SimpleNamespace(
-        monotonic=lambda: time.monotonic() + offset[0],
-        time=time.time, sleep=time.sleep))
-    original = queue.write_lease
+    def script(child):
+        child.publish(1)
+        yield 0.5
+
+    child = _ScriptedChild(script)
+    checkpoint_s = [0.0]
+    clock = pool.ExecutionClock(
+        lambda: child.monotonic() + checkpoint_s[0],
+        lambda: child.wall_time() + checkpoint_s[0])
+    child.queue, child.item = _claimed(
+        tmp_path, mode="report", seconds=0.5, policy=policy)
+    monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
+        **(vars(pool.subprocess) | {"Popen": child.launch})))
+    monkeypatch.setattr(pb, "_terminate_process_group", child.stop)
+    return child, clock, checkpoint_s
+
+
+def test_first_lease_delay_does_not_spend_startup_grace(tmp_path, monkeypatch):
+    child, clock, checkpoint_s = _scripted_execution(
+        tmp_path, monkeypatch, policy=_policy(5, 5, 5))
+    original = child.queue.write_lease
 
     def lease(*args, **kwargs):
         original(*args, **kwargs)
-        offset[0] += 10
+        checkpoint_s[0] += 10
 
-    monkeypatch.setattr(queue, "write_lease", lease)
-    outcome = queue.execute(item, timeout_s=20, heartbeat_s=0.05,
-                            timeout_grace_s=0.2)
+    monkeypatch.setattr(child.queue, "write_lease", lease)
+    outcome = child.queue.execute(
+        child.item, timeout_s=20, heartbeat_s=0.05,
+        timeout_grace_s=0.2, clock=clock)
     assert outcome["status"] == "executed"
+    assert outcome["progress_observation"]["accepted_count"] == 1
 
 
 def test_checkpoint_before_an_accepted_report_is_refunded_only_once(tmp_path, monkeypatch):
-    """A checkpoint that accepts a report is credited once, not twice.
-
-    Every withdrawal poll here costs 10 s on the worker's clock.  The report
-    is sampled at the start of the checkpoint that polls, and the whole
-    checkpoint is then refunded, so as that checkpoint ends the action has
-    exactly its run phase's grace left.  Sampling after the poll and then
-    refunding the poll as well would leave it 10 s more.
-
-    The allowance is read on the watch's own clock as that checkpoint ends.
-    It used to be inferred from the run's wall-clock ``elapsed_s`` against
-    1.2 s, which a loaded box stretched to 1.43 s (#1094), and from a 1.5 s
-    action outliving the stall, which a loaded box can also arrange.  So the
-    action here replays for a minute and the startup grace covers a slow
-    interpreter start: the report is always accepted, and only the stall
-    ends the run.
-    """
-
-    from test_progress_keeps_a_working_action_alive import _claimed
-
     run_grace = 0.3
-    queue, item = _claimed(tmp_path, mode="replay", seconds=60,
-                           policy=_policy(30, run_grace, run_grace))
-    offset = [0.0]
-    monkeypatch.setattr(pool, "time", SimpleNamespace(
-        monotonic=lambda: time.monotonic() + offset[0],
-        time=time.time, sleep=time.sleep))
-    original = queue.withdrawal_covers
+    child, clock, checkpoint_s = _scripted_execution(
+        tmp_path, monkeypatch, policy=_policy(30, run_grace, run_grace))
+    original = child.queue.withdrawal_covers
 
     def withdrawal(*args, **kwargs):
         result = original(*args, **kwargs)
-        offset[0] += 10
+        checkpoint_s[0] += 10
         return result
 
-    monkeypatch.setattr(queue, "withdrawal_covers", withdrawal)
-    # ``(reports accepted, allowance left)`` as each checkpoint's refund lands.
-    allowances: list[tuple[int, float]] = []
+    monkeypatch.setattr(child.queue, "withdrawal_covers", withdrawal)
+    allowances = []
 
     class Watch(pool.ProgressWatch):
-        def shift(self, seconds: float) -> None:
+        def shift(self, seconds):
             super().shift(seconds)
             allowances.append(
-                (self.accepted, self.stall_deadline() - pool.time.monotonic()))
+                (self.accepted, self.stall_deadline() - clock.monotonic()))
 
     monkeypatch.setattr(pool, "ProgressWatch", Watch)
-    outcome = queue.execute(item, timeout_s=30, heartbeat_s=0.05,
-                            timeout_grace_s=0.2)
+    outcome = child.queue.execute(
+        child.item, timeout_s=30, heartbeat_s=0.05,
+        timeout_grace_s=0.2, clock=clock)
     assert outcome["status"] == "timeout", repr(outcome)
     assert outcome["termination_reason"] == "no_progress"
     assert outcome["progress_observation"]["accepted_count"] == 1
-    # The checkpoint that accepted the report left the run grace, and no more.
     after_accept = [left for accepted, left in allowances if accepted]
-    assert after_accept and after_accept[0] <= run_grace, allowances
+    assert after_accept and after_accept[0] == pytest.approx(run_grace)
+    assert outcome["stall"]["quiet_s"] == pytest.approx(run_grace)
+    assert outcome["stall"]["credited_s"] == {
+        "staged_wait": 0.0, "pool_contention": 0.0, "start_gate": 0.0,
+        "reader_plan": 0.0, "export_wait": 0.0, "queued_child_wait": 0.0}
 
 
 def test_documented_package_reporter_is_available():

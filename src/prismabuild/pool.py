@@ -1739,6 +1739,11 @@ def _sealed_progress_policy(
         raise PoolContractError(str(exc)) from exc
 
 
+class ExecutionClock(NamedTuple):
+    monotonic: Callable[[], float]
+    unix: Callable[[], float]
+
+
 class ProgressWatch:
     """Accept semantic advancement from one launch, and refuse everything else.
 
@@ -1772,11 +1777,13 @@ class ProgressWatch:
     """
 
     def __init__(
-        self, path: Path, token: str, policy: ProgressPolicy, *, started: float
+        self, path: Path, token: str, policy: ProgressPolicy, *, started: float,
+        clock: ExecutionClock | None = None,
     ) -> None:
         self.path = path
         self.token = token
         self.policy = policy
+        self.clock = clock or ExecutionClock(time.monotonic, _now)
         # Launch already grants the first phase's allowance. Reporting zero
         # completed units in that phase cannot grant it again.
         self.units_high_water: int | float = 0
@@ -1845,7 +1852,7 @@ class ProgressWatch:
         working one -- must not decide either.
         """
 
-        self.sampled_unix = _now()
+        self.sampled_unix = self.clock.unix()
         try:
             raw = pb._read_regular_file_nofollow(
                 self.path, where="action progress report",
@@ -1928,7 +1935,7 @@ class ProgressWatch:
             reported = None
         self.last_advance_unix = (
             reported if reported is not None and math.isfinite(reported)
-            else _now()
+            else self.clock.unix()
         )
         self.last_accepted = {
             "phase": self.policy.phases[self.phase_index].name,
@@ -1938,6 +1945,38 @@ class ProgressWatch:
             "reported_unix": self.last_advance_unix,
         }
         return True
+
+    def recheck_stall(self) -> tuple[bool, float, float]:
+        """Sample at the stall boundary and refund only this read's duration."""
+        started = self.clock.monotonic()
+        advanced = self.sample(now=started)
+        spent = self.clock.monotonic() - started
+        self.shift(spent)
+        return advanced, spent, self.clock.monotonic()
+
+    def stall_record(self, *, now: float,
+                     contention: PoolContentionProbe | None) -> dict[str, object]:
+        delivered = self.delivered_units_per_s(now=now)
+        return {
+            "allowance_s": self.grace_s,
+            "phase": self.policy.phases[self.phase_index].name,
+            "last_landing": self.last_accepted,
+            "quiet_s": max(0.0, now - self.last_advance_monotonic),
+            "credited_s": {
+                "staged_wait": self.staged_wait_exempt_s,
+                "pool_contention": self.pool_contention_exempt_s,
+                "start_gate": self.start_gate_exempt_s,
+                "reader_plan": self.reader_plan_exempt_s,
+                "export_wait": self.export_wait_exempt_s,
+                "queued_child_wait": self.queued_child_wait_exempt_s},
+            "delivered_units_per_s": delivered,
+            "delivered_bytes_per_s": delivered if contention is not None else None,
+            "priced_bytes_per_s": (
+                contention.priced_bytes_per_s if contention is not None else None),
+            "pool": contention.last if contention is not None else None,
+            "start_gate_holder": (
+                contention.gate_holder if contention is not None else None),
+        }
 
     def shift(self, seconds: float) -> None:
         """Retain quiet spent on shared I/O this loop, not the action, did."""
@@ -28589,6 +28628,7 @@ class PoolQueue:
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
         containment: bool = False,
+        clock: ExecutionClock | None = None,
     ) -> dict[str, object]:
         """Materialize a sealed checkout and optionally contain the worker."""
         if not isinstance(item, dict):
@@ -28615,7 +28655,7 @@ class PoolQueue:
                 item, checkout_root=checkout_root, python=python,
                 timeout_s=budget.effective, heartbeat_s=heartbeat_s,
                 timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy,
+                progress=policy, clock=clock,
             )
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
@@ -28784,6 +28824,7 @@ class PoolQueue:
         heartbeat_s: float = HEARTBEAT_S,
         timeout_grace_s: float = TIMEOUT_GRACE_S,
         containment: bool = False,
+        clock: ExecutionClock | None = None,
         progress: ProgressPolicy | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
@@ -28799,6 +28840,7 @@ class PoolQueue:
         bounded end to end, because a timeout that can hang is not a timeout.
         """
 
+        clock = clock or ExecutionClock(time.monotonic, _now)
         key = str(item["action_key"])
         # One read of the sealed request answers both the deadline and whether
         # this attempt asked for a profile; the boolean is the immutable local
@@ -28836,7 +28878,7 @@ class PoolQueue:
                 # this multithread-capable parent. Descendants inherit it.
                 argv = _with_cpu_affinity(argv, cpus)
         owner = str(item.get("claimed_by") or "")
-        started = _now()
+        started = clock.unix()
         # Withdrawal checkpoint one of three: before the launch.  A cancellation
         # that landed in the microseconds between ``claim``'s rename and this
         # call would otherwise start the work anyway, and then have to stop it.
@@ -28853,7 +28895,7 @@ class PoolQueue:
         barrier = self._gang_start_barrier(item, owner=owner, heartbeat_s=heartbeat_s)
         if barrier is not None:
             return {"returncode": None, "stdout": "", "stderr": "",
-                    "elapsed_s": _now() - started, "argv": argv,
+                    "elapsed_s": clock.unix() - started, "argv": argv,
                     "cpu_allocation": allocation, **barrier}
         from . import local_scratch
 
@@ -28929,7 +28971,7 @@ class PoolQueue:
         )
         # No payload exists during withdrawal, scope preparation or status-file
         # cleanup. Shared I/O there must not spend its execution budget.
-        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        deadline = None if timeout_s is None else clock.monotonic() + timeout_s
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -28955,11 +28997,11 @@ class PoolQueue:
         # its own session with nothing left to reap it.  Everything after the
         # Popen belongs under the same guard.
         try:
-            checkpoint_started = time.monotonic()
+            checkpoint_started = clock.monotonic()
             observation = _observe_execution(process, scope=scope)
             watch = (None if progress is None else ProgressWatch(
                 progress_path, progress_token, progress,
-                started=checkpoint_started))
+                started=checkpoint_started, clock=clock))
             # A stage mover's pool, judged by this worker (#1010).
             contention = (
                 None if watch is None or progress is None
@@ -28986,7 +29028,7 @@ class PoolQueue:
                 if (verdict.get("blind_start")
                         and contention.blind_starts <= MAX_BLIND_EVENTS):
                     self._file_stall_watch_event(key, {
-                        "unix": _now(), "event": "mover-pool-blind",
+                        "unix": clock.unix(), "event": "mover-pool-blind",
                         "action_key": key, "missing": verdict.get("missing"),
                         "members": list(contention.members),
                         "blind_starts": contention.blind_starts})
@@ -28996,7 +29038,7 @@ class PoolQueue:
                     # a dead copy on a busy pool is never killed while it
                     # lasts, so its start is on the record like a blind one.
                     self._file_stall_watch_event(key, {
-                        "unix": _now(), "event": "mover-pool-over",
+                        "unix": clock.unix(), "event": "mover-pool-over",
                         "action_key": key,
                         **{field: verdict.get(field) for field in (
                             "read_await_ms", "backlog_ms", "util_pct",
@@ -29061,7 +29103,7 @@ class PoolQueue:
                     # a blind or over stretch: a mover credited while a
                     # holder stays wedged is what nobody would otherwise see.
                     self._file_stall_watch_event(key, {
-                        "unix": _now(), "event": "start-gate-held",
+                        "unix": clock.unix(), "event": "start-gate-held",
                         "action_key": key, "stage_root": contention.stage_root,
                         "holder": dict(holder)})
                 gate_held_since[0] = now
@@ -29077,41 +29119,13 @@ class PoolQueue:
 
                 stall: dict[str, object] | None = None
                 if watch is not None:
-                    ended = time.monotonic()
+                    ended = clock.monotonic()
                     outcome["progress_observation"] = watch.as_record(now=ended)
                     if contention is not None:
                         outcome["progress_observation"]["pool_contention"] = (
                             contention.as_record())
                     if outcome.get("termination_reason") == "no_progress":
-                        # What the kill measured the action against (#1010):
-                        # its allowance, its last landing, every credit, and
-                        # the rate it delivered beside the rate it was priced.
-                        delivered = watch.delivered_units_per_s(now=ended)
-                        stall = {
-                            "allowance_s": watch.grace_s,
-                            "phase": watch.policy.phases[watch.phase_index].name,
-                            "last_landing": watch.last_accepted,
-                            "quiet_s": max(0.0, ended - watch.last_advance_monotonic),
-                            "credited_s": {
-                                "staged_wait": watch.staged_wait_exempt_s,
-                                "pool_contention": watch.pool_contention_exempt_s,
-                                "start_gate": watch.start_gate_exempt_s,
-                                "reader_plan": watch.reader_plan_exempt_s,
-                                "export_wait": watch.export_wait_exempt_s,
-                                "queued_child_wait": watch.queued_child_wait_exempt_s},
-                            "delivered_units_per_s": delivered,
-                            "delivered_bytes_per_s": (
-                                delivered if contention is not None else None),
-                            "priced_bytes_per_s": (
-                                contention.priced_bytes_per_s
-                                if contention is not None else None),
-                            "pool": (contention.last if contention is not None
-                                     else None),
-                            # Who held the stage's ownership lock at the
-                            # gate's last look (#1021).
-                            "start_gate_holder": (
-                                contention.gate_holder if contention is not None
-                                else None)}
+                        stall = watch.stall_record(now=ended, contention=contention)
                 if stall is not None:
                     # Outside the diagnosis read below, so a failure there
                     # never loses what the kill was measured against.
@@ -29155,26 +29169,26 @@ class PoolQueue:
             # Pause only that measured interval, retaining all budget already
             # spent in spawn/communicate. This is not a fresh timeout grant.
             if deadline is not None:
-                deadline += time.monotonic() - checkpoint_started
+                deadline += clock.monotonic() - checkpoint_started
             if watch is not None:
-                watch.shift(time.monotonic() - checkpoint_started)
+                watch.shift(clock.monotonic() - checkpoint_started)
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
-            next_heartbeat = time.monotonic() + heartbeat_s
-            next_progress_poll = time.monotonic() + heartbeat_s
+            next_heartbeat = clock.monotonic() + heartbeat_s
+            next_progress_poll = clock.monotonic() + heartbeat_s
             while True:
                 try:
                     interval = min(heartbeat_s, 2.0) if scope is not None else heartbeat_s
                     if deadline is not None:
-                        interval = min(interval, max(0.0, deadline - time.monotonic()))
+                        interval = min(interval, max(0.0, deadline - clock.monotonic()))
                     if watch is not None:
                         interval = min(
                             interval,
-                            max(0.0, watch.stall_deadline() - time.monotonic()))
+                            max(0.0, watch.stall_deadline() - clock.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired as exc:
-                    checkpoint_started = time.monotonic()
+                    checkpoint_started = clock.monotonic()
                     observation = _observe_execution(
                         process, observation, stdout=exc.output,
                         stderr=exc.stderr, scope=scope)
@@ -29193,7 +29207,7 @@ class PoolQueue:
                                 "resource_telemetry": telemetry,
                                 "stdout": out, "stderr": err,
                                 "action_survived_kill": survived,
-                                "elapsed_s": _now() - started,
+                                "elapsed_s": clock.unix() - started,
                                 "child_rusage": _reaped_children(
                                     rusage_before,
                                     resource.getrusage(resource.RUSAGE_CHILDREN)),
@@ -29213,14 +29227,14 @@ class PoolQueue:
                             "returncode": process.returncode,
                             "stdout": out,
                             "stderr": err,
-                            "elapsed_s": _now() - started,
+                            "elapsed_s": clock.unix() - started,
                             "child_rusage": _reaped_children(
                                 rusage_before,
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
                             "argv": argv,
                             "cpu_allocation": allocation,
                         })
-                    if watch is not None and time.monotonic() >= next_progress_poll:
+                    if watch is not None and clock.monotonic() >= next_progress_poll:
                         # On the heartbeat's cadence, in the directory the
                         # heartbeat already writes to: one small read per
                         # running action per ``heartbeat_s``, which is the
@@ -29247,23 +29261,23 @@ class PoolQueue:
                         self._sample_queued_child_wait(
                             item, key, watch, progress,
                             now=checkpoint_started)
-                        next_progress_poll = time.monotonic() + heartbeat_s
-                    if time.monotonic() >= next_heartbeat:
+                        next_progress_poll = clock.monotonic() + heartbeat_s
+                    if clock.monotonic() >= next_heartbeat:
                         self.write_lease(
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
                             execution_observation=observation,
                             progress_observation=(
                                 None if watch is None
-                                else watch.as_record(now=time.monotonic())),
+                                else watch.as_record(now=clock.monotonic())),
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )
-                        next_heartbeat = time.monotonic() + heartbeat_s
+                        next_heartbeat = clock.monotonic() + heartbeat_s
                     if deadline is not None:
-                        deadline += time.monotonic() - checkpoint_started
+                        deadline += clock.monotonic() - checkpoint_started
                     if watch is not None:
-                        watch.shift(time.monotonic() - checkpoint_started)
-                    if deadline is not None and time.monotonic() >= deadline:
+                        watch.shift(clock.monotonic() - checkpoint_started)
+                    if deadline is not None and clock.monotonic() >= deadline:
                         # The branch's worst case stays the old three grace
                         # budgets.  The profiled flush opportunity, discovery
                         # included, is charged to the *first* grace: the
@@ -29277,7 +29291,7 @@ class PoolQueue:
                         settled = None
                         stop_grace_s = timeout_grace_s
                         if scope is not None:
-                            settle_deadline = time.monotonic() + timeout_grace_s
+                            settle_deadline = clock.monotonic() + timeout_grace_s
                             # Best effort by construction: an unexpected
                             # failure still leaves the hard stop below to end
                             # the attempt with the timeout verdict.
@@ -29288,7 +29302,7 @@ class PoolQueue:
                                 )
                             scope.terminate_owned("timeout")
                             stop_grace_s = max(
-                                0.0, settle_deadline - time.monotonic())
+                                0.0, settle_deadline - clock.monotonic())
                         pb._terminate_process_group(
                             process, grace_s=stop_grace_s
                         )
@@ -29320,7 +29334,7 @@ class PoolQueue:
                             # so the flag is the only notice that it was
                             # released for a GPU somebody still holds.
                             "action_survived_kill": survived,
-                            "elapsed_s": _now() - started,
+                            "elapsed_s": clock.unix() - started,
                             "child_rusage": _reaped_children(
                                 rusage_before,
                                 resource.getrusage(resource.RUSAGE_CHILDREN)),
@@ -29334,16 +29348,13 @@ class PoolQueue:
                             outcome["profile_settle"] = settled
                         return ending(outcome)
                     if (watch is not None
-                            and time.monotonic() >= watch.stall_deadline()):
+                            and clock.monotonic() >= watch.stall_deadline()):
                         # One more read before ending it.  The boundary is
                         # exactly where a reporter that publishes every few
                         # seconds lands, and a record already on disk is
                         # advancement whether or not a poll had reached it.
-                        stall_checkpoint = time.monotonic()
-                        advanced = watch.sample(now=stall_checkpoint)
-                        spent = time.monotonic() - stall_checkpoint
-                        watch.shift(spent)
-                        next_progress_poll = time.monotonic() + heartbeat_s
+                        advanced, spent, checked = watch.recheck_stall()
+                        next_progress_poll = checked + heartbeat_s
                         if deadline is not None:
                             deadline += spent
                         if not advanced:
@@ -29351,7 +29362,7 @@ class PoolQueue:
                             # mover is still coming, is waiting on a dependency
                             # rather than stuck (#989).  Checked here, at the
                             # rung only, so a working action pays nothing.
-                            exempt_checkpoint = time.monotonic()
+                            exempt_checkpoint = clock.monotonic()
                             try:
                                 # The previous verdict carries the evidence
                                 # it saw, and the phase grace is the window
@@ -29365,24 +29376,24 @@ class PoolQueue:
                                 verdict = {"exempt": False, "movers": [],
                                            "reason": f"unreadable: {exc!r}"}
                             if verdict is not None:
-                                now_unix = _now()
+                                now_unix = clock.unix()
                                 since = float(verdict.get("since_unix") or now_unix)
                                 watch.exempt_staged_wait(
                                     verdict, now=exempt_checkpoint,
                                     since_monotonic=exempt_checkpoint
                                     - max(0.0, now_unix - since))
-                            spent = time.monotonic() - exempt_checkpoint
+                            spent = clock.monotonic() - exempt_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and clock.monotonic() >= watch.stall_deadline()):
                             # An owner blocked on its own produced-output
                             # exports, one of which shows progress, is
                             # waiting on its own work rather than stuck
                             # (#1035).  At the rung only, like the staged
                             # wait, and credited through the same mark.
-                            export_checkpoint = time.monotonic()
+                            export_checkpoint = clock.monotonic()
                             try:
                                 exports = self.export_wait_verdict(
                                     key, progress_path, token=progress_token,
@@ -29393,18 +29404,18 @@ class PoolQueue:
                                 exports = {"exempt": False, "exports": [],
                                            "reason": f"unreadable: {exc!r}"}
                             if exports is not None:
-                                now_unix = _now()
+                                now_unix = clock.unix()
                                 since = float(exports.get("since_unix") or now_unix)
                                 watch.exempt_export_wait(
                                     exports, now=export_checkpoint,
                                     since_monotonic=export_checkpoint
                                     - max(0.0, now_unix - since))
-                            spent = time.monotonic() - export_checkpoint
+                            spent = clock.monotonic() - export_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and clock.monotonic() >= watch.stall_deadline()):
                             # A stage mover standing aside for a copy a
                             # claimed consumer is blocked on lands nothing on
                             # purpose (#1091 review 1).  Judged from the tier
@@ -29412,25 +29423,25 @@ class PoolQueue:
                             # worker reads them, never from the mover, and
                             # at the rung only, so a working mover pays
                             # nothing.
-                            aside_checkpoint = time.monotonic()
+                            aside_checkpoint = clock.monotonic()
                             try:
                                 aside = self.reader_plan_stand_aside(item)
                             except (OSError, ValueError, PoolContractError) as exc:
                                 aside = {"exempt": False,
                                          "reason": f"unreadable: {exc!r}"}
                             if aside is not None:
-                                now_unix = _now()
+                                now_unix = clock.unix()
                                 since = float(aside.get("since_unix") or now_unix)
                                 watch.exempt_reader_plan(
                                     aside, now=aside_checkpoint,
                                     since_monotonic=aside_checkpoint
                                     - max(0.0, now_unix - since))
-                            spent = time.monotonic() - aside_checkpoint
+                            spent = clock.monotonic() - aside_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and clock.monotonic() >= watch.stall_deadline()):
                             # A coordinator waiting on its declared queued
                             # children, one of which is ready or claimed, is
                             # waiting on admission rather than stuck (#1666).
@@ -29440,15 +29451,15 @@ class PoolQueue:
                             # its monotonic start, and credited through the
                             # same mark. A blocked gap never refunds, and a
                             # child that ended keeps its earned credit.
-                            queued_checkpoint = time.monotonic()
+                            queued_checkpoint = clock.monotonic()
                             self._sample_queued_child_wait(
                                 item, key, watch, progress, now=queued_checkpoint)
-                            spent = time.monotonic() - queued_checkpoint
+                            spent = clock.monotonic() - queued_checkpoint
                             watch.shift(spent)
                             if deadline is not None:
                                 deadline += spent
                         if (not advanced
-                                and time.monotonic() >= watch.stall_deadline()):
+                                and clock.monotonic() >= watch.stall_deadline()):
                             # Same three grace budgets, same precedence: this
                             # rung is reached only when containment,
                             # withdrawal and the requested deadline all had
@@ -29475,7 +29486,7 @@ class PoolQueue:
                                 "stdout": out,
                                 "stderr": err,
                                 "action_survived_kill": survived,
-                                "elapsed_s": _now() - started,
+                                "elapsed_s": clock.unix() - started,
                                 "child_rusage": _reaped_children(
                                     rusage_before,
                                     resource.getrusage(resource.RUSAGE_CHILDREN)),
@@ -29505,7 +29516,7 @@ class PoolQueue:
             # its last committed counter after the most recent poll. Retain
             # that evidence before ending() removes the channel. This read is
             # observational: it cannot change the completed action's verdict.
-            watch.sample(now=time.monotonic())
+            watch.sample(now=clock.monotonic())
         # Checkpoint three: on the way out.  When the operator's own signal
         # reached the action group first, the launcher reports the SIGTERM that
         # stopped it and this worker would otherwise log a defect for a
@@ -29519,7 +29530,7 @@ class PoolQueue:
             "returncode": process.returncode,
             "stdout": out,
             "stderr": err,
-            "elapsed_s": _now() - started,
+            "elapsed_s": clock.unix() - started,
             "child_rusage": _reaped_children(
                 rusage_before, resource.getrusage(resource.RUSAGE_CHILDREN)),
             "argv": argv,
