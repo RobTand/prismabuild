@@ -4,6 +4,12 @@ Base: `6073c9d36555`, the fetched `origin/main`. The input is the
 [root architecture review](../prismabuild-architecture-review-2026-10-13.html).
 All 31 candidates and all 18 open pull requests were checked against source.
 
+Completion correction: this branch is a verified first phase. Nine candidates
+received code changes, with several implemented only in part. The revised
+[disagreement brief](refactor_disagreements_2026-10-14.md) supersedes the broad
+reject/revise interpretations below and separates real choices from unfinished
+work. An implemented label below describes its recorded slice.
+
 The useful direction is to give existing knowledge one owner. The proposal
 sometimes goes further: it treats different authority boundaries as duplicate
 implementations, or proposes a new service around an already complicated
