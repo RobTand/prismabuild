@@ -415,10 +415,6 @@
    "src/prismabuild/pool.py",
    "tools/fleet/tier_loop.py"
   ],
-  "_keepable_version": [
-   "src/prismabuild/produced_output.py",
-   "tools/fleet/stage_move.py"
-  ],
   "_key": [
    "tools/fleet/bench_failed_mover_reclaim.py",
    "tools/fleet/bench_ram_promote_restart.py",
@@ -433,10 +429,6 @@
   "_matches": [
    "src/prismabuild/produced_spool.py",
    "tools/fleet/pbmcp.py"
-  ],
-  "_metadata_version": [
-   "src/prismabuild/produced_output.py",
-   "tools/fleet/stage_move.py"
   ],
   "_name": [
    "src/prismabuild/action_edges.py",
@@ -549,10 +541,6 @@
    "src/prismabuild/core.py",
    "src/prismabuild/dagster.py",
    "tools/fleet/pbstatus.py"
-  ],
-  "_version_fence": [
-   "src/prismabuild/produced_output.py",
-   "tools/fleet/stage_move.py"
   ],
   "_write": [
    "src/prismabuild/adaptive_snapshot.py",

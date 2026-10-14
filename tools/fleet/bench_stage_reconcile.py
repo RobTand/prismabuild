@@ -46,6 +46,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import prewarm_loop  # noqa: E402
@@ -131,7 +132,7 @@ def run_passes(args) -> int:
     work = Path(args.work)
     queue = pool.PoolQueue(work / "pb-queue")
     stage = work / "stage"
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
 
     def one() -> dict[str, object]:
         _orphans(stage, args.orphans)

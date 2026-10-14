@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"
                        / "fleet"))
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_move  # noqa: E402
@@ -210,7 +211,7 @@ def test_a_steady_walk_lists_no_directory_and_probes_no_mark(
     for index in range(12):
         _mark(_staged_file(stage, f"prewarm/p{index % 3}/obj-{index}.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
 
     first = stage_release.reconcile(queue, tier_id=TIER,
@@ -238,7 +239,7 @@ def test_a_created_file_is_seen_and_only_its_directory_is_listed(
     for index in range(6):
         _mark(_staged_file(stage, f"prewarm/obj-{index}.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -260,7 +261,7 @@ def test_an_unlinked_file_leaves_the_count(stage_fleet, monkeypatch):
     for index in range(6):
         _mark(_staged_file(stage, f"prewarm/obj-{index}.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -280,7 +281,7 @@ def test_a_renamed_file_is_classified_under_its_new_name(
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj-old.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -300,7 +301,7 @@ def test_an_in_place_write_is_probed_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -321,7 +322,7 @@ def test_a_changed_mark_is_probed_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -341,7 +342,7 @@ def test_a_symlink_replacement_is_not_a_staged_file(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -365,7 +366,7 @@ def test_a_removed_fragment_still_unattributes_on_a_reused_listing(
     attributed = _staged_file(stage, "prewarm/obj.bin")
     fragment = _fragment(queue, [attributed])
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
 
     first = stage_release.reconcile(queue, tier_id=TIER,
@@ -389,7 +390,7 @@ def test_a_live_pin_is_honored_on_a_reused_listing(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     pinned = _staged_file(stage, "prewarm/obj.bin")
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     real_live_for = stage_release.reader_lease.live_for
     pins: set[str] = set()
@@ -424,11 +425,11 @@ def test_a_refused_directory_stamp_lists_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj.bin"))
     _settle()
-    monkeypatch.setattr(stage_release, "_trusted_directory_stamp",
+    monkeypatch.setattr(kept_reads, 'trusted_directory_stamp',
                         lambda path: None)
-    monkeypatch.setattr(stage_release, "_keepable_version",
+    monkeypatch.setattr(kept_reads, 'keepable_version',
                         lambda info, fence, **context: None)
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)
@@ -467,7 +468,7 @@ def test_a_name_that_cannot_be_stat_ed_is_retried_on_the_next_pass(
     flaky = _mark(_staged_file(stage, "prewarm/flaky.bin"))
     _mark(_staged_file(stage, "prewarm/steady.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     broken = {os.path.normpath(str(flaky))}
     _flaky_lstat(monkeypatch, broken)
@@ -494,7 +495,7 @@ def test_a_stat_failure_on_a_cached_listing_is_retried(
     flaky = _mark(_staged_file(stage, "prewarm/flaky.bin"))
     _mark(_staged_file(stage, "prewarm/steady.bin"))
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     first = stage_release.reconcile(queue, tier_id=TIER,
                                     stage_root=str(stage), wanted=set(),
@@ -525,7 +526,7 @@ def test_a_pin_added_after_the_cached_walk_still_protects(
     queue, stage = stage_fleet
     protected = _staged_file(stage, "prewarm/obj.bin")
     _settle()
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     real_live_for = stage_release.reader_lease.live_for
     pins: set[str] = set()

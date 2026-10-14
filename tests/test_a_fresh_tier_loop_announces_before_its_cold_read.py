@@ -50,6 +50,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from prismabuild import kept_reads
 from prismabuild import pool  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
@@ -526,7 +527,7 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
     # Two readers take runs of ten entries, so the raise is mid-run; eight
     # take runs of two.
     for readers in (1, 2, 8):
-        records = stage_release.DirectoryRecords()
+        records = kept_reads.DirectoryRecords()
         with pytest.raises(Exception) as caught:
             records.read(directory, select=tier_loop._receipt_name,
                          parse=pool._read_json, readers=readers)
@@ -549,7 +550,7 @@ def test_the_parallel_reader_hands_stat_parse_the_stat_it_versioned(tmp_path):
         (directory / f"r-{index:03d}.json").write_text("x" * index)
     results = {}
     for readers in (1, 4):
-        records = stage_release.DirectoryRecords()
+        records = kept_reads.DirectoryRecords()
         results[readers] = [
             (path.name, record) for path, record in records.read(
                 directory, select=tier_loop._receipt_name,

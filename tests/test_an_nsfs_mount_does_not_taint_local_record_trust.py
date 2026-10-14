@@ -20,8 +20,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import kept_reads
 import test_btrfs_subvolume_records_are_retained as observations  # noqa: E402
 
 kernel = observations.kernel
@@ -55,10 +54,10 @@ def test_valid_nsfs_row_does_not_disable_local_record_retention(kernel, direct_m
     assert fields[2] == "0:5" and fields[-3:] == ["nsfs", "nsfs", "rw"]
     # The root is an opaque namespace dentry, NOT a mountpoint/path. The
     # existing path-only classifier must continue distinguishing the fields.
-    assert not stage_move._mount_path_field(fields[3])
-    assert stage_move._mount_path_field(fields[4])
+    assert not kept_reads._mount_path_field(fields[3])
+    assert kept_reads._mount_path_field(fields[4])
     assert os.stat(kernel.record).st_dev == observations.OBSERVED_DEVICE
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = observations._read(reader, kernel)
     assert first == [(kernel.record, {"v": 1})]
     assert observations._counts(reader) == (1, 0, 1)
@@ -76,29 +75,29 @@ def test_valid_nsfs_row_does_not_disable_local_record_retention(kernel, direct_m
 def test_other_proven_nsfs_kinds_preserve_local_record_trust(kernel, kind):
     row = NSFS_ROW.replace("net:[4026531833]", f"{kind}:[4026531833]")
     kernel.mountinfo_text = _with_namespace_row(kernel, row)
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = observations._read(reader, kernel)
     second = observations._read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
     assert observations._counts(reader) == (1, 1, 1)
-    assert stage_move._filesystem_type(NSFS_DEVICE) == "nsfs"
-    assert "nsfs" not in stage_move._LOCAL_CLOCK_FILESYSTEMS
+    assert kept_reads._filesystem_type(NSFS_DEVICE) == "nsfs"
+    assert "nsfs" not in kept_reads._LOCAL_CLOCK_FILESYSTEMS
 
 
 def test_nsfs_row_is_classified_but_never_local_clock_evidence(kernel):
     kernel.mountinfo_text = _with_namespace_row(kernel)
-    assert stage_move._filesystem_type(NSFS_DEVICE) == "nsfs"
-    assert "nsfs" not in stage_move._LOCAL_CLOCK_FILESYSTEMS
+    assert kept_reads._filesystem_type(NSFS_DEVICE) == "nsfs"
+    assert "nsfs" not in kept_reads._LOCAL_CLOCK_FILESYSTEMS
     # Exact descriptor evidence selecting that row must still refuse reuse,
     # even with settled stat fields and a separate valid btrfs row present.
     kernel.mount_id = 679
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     observations._read(reader, kernel)
     observations._read(reader, kernel)
     assert observations._counts(reader) == (2, 0, 2)
-    assert stage_move._trusted_directory_stamp(kernel.directory) is None
-    assert stage_move._current_directory_version(kernel.directory) is None
-    assert stage_move._keepable_version(
+    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
+    assert kept_reads.current_directory_version(kernel.directory) is None
+    assert kept_reads.keepable_version(
         os.stat(kernel.record), kernel.now, path=kernel.record) is None
 
 
@@ -133,19 +132,19 @@ def test_nsfs_exception_cannot_accept_malformed_or_ambiguous_table(kernel, inval
     if invalid == "duplicate-mount-id":
         row += NSFS_ROW
     kernel.mountinfo_text = local + row
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = observations._read(reader, kernel)
     second = observations._read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
     assert observations._counts(reader) == (2, 0, 2)
-    assert stage_move._trusted_directory_stamp(kernel.directory) is None
-    assert stage_move._current_directory_version(kernel.directory) is None
+    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
+    assert kept_reads.current_directory_version(kernel.directory) is None
 
 
 @pytest.mark.parametrize("loss", ["nfs4", "unknown", "watch-error", "namespace-change"])
 def test_valid_nsfs_row_does_not_bypass_later_trust_loss(kernel, loss):
     kernel.mountinfo_text = _with_namespace_row(kernel)
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     observations._read(reader, kernel)
     observations._read(reader, kernel)
     assert observations._counts(reader) == (1, 1, 1)

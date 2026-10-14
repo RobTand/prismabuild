@@ -55,7 +55,6 @@ import os
 from pathlib import Path
 import queue as queuelib
 import resource
-import select
 import socket
 import stat as statmod
 import struct
@@ -69,7 +68,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
-from prismabuild import manifest_layout
+from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -440,484 +439,6 @@ def _string_bytes(value: object) -> int:
     return _STR_HEADER_BYTES + _STR_CHAR_BYTES * len(str(value))
 
 
-def _metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
-    """Change evidence for one publication metadata file.
-
-    Device and inode catch a replacement, size and mtime catch a rewrite,
-    ctime catches a permission or ownership change that leaves mtime alone.
-    The same kind of stat fence every strict reader already uses; nothing
-    here invents an identity of its own.
-    """
-
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
-
-
-#: The clock a local Linux filesystem stamps a directory's mtime and ctime
-#: from: ``current_time()`` reads the coarse realtime clock (a multigrain
-#: filesystem may read the fine one, which is never behind it).  Python names
-#: the constant on some builds only; its value is 5 on every Linux ABI.
-_COARSE_REALTIME: int | None = (
-    int(getattr(time, "CLOCK_REALTIME_COARSE", 5))
-    if sys.platform.startswith("linux") else None)
-
-#: Filesystems whose directory timestamps this kernel writes from that clock
-#: at nanosecond granularity.  A network filesystem is not among them: its
-#: timestamps come from the server's clock, and its client may answer from
-#: an attribute cache.  Anything unlisted lists every directory every time.
-_LOCAL_CLOCK_FILESYSTEMS = frozenset({"zfs", "ext4", "xfs", "btrfs", "tmpfs"})
-
-#: The mount table :func:`_filesystem_type` reads, and the file whose
-#: ``POLLPRI`` says the table changed.
-_MOUNTINFO = "/proc/self/mountinfo"
-
-#: Direct device answers and mount-ID rows from one validated table. Tuple
-#: keys name mount rows or the table marker; integer keys are stat devices.
-_filesystem_types: dict[int | tuple[str, int], str | None] = {}
-_MOUNT_TABLE_KEY = ("table", 0)
-
-#: ``(pid, descriptor, poller)`` watching :data:`_MOUNTINFO`, or ``None``.
-_mount_watch: tuple[int, int, "select.poll"] | None = None
-_mount_lock = threading.Lock()
-_mount_watch_error = False
-_mount_namespace: tuple[int, int, int, str] | None = None
-_mount_generation = 0
-#: Parser byte caps, not syscall interruption or admission limits.
-_MOUNTINFO_MAX_BYTES = 1024 * 1024
-_FDINFO_MAX_BYTES = 4096
-
-
-def _mount_table_changed() -> bool:
-    """Whether the mount table may have changed since this was last asked.
-
-    The kernel marks an open ``/proc/self/mountinfo`` with ``POLLPRI`` and
-    ``POLLERR`` after any mount or unmount in the process's namespace, and
-    the poll that reports the mark clears it.  The watch is opened on first
-    use and again in a forked child, which must not clear its parent's mark
-    on a shared open file.  A first call, or a table that cannot be watched,
-    answers ``True``: nothing remembered before a watch existed is trusted.
-    Setup/poll failure or POLLNVAL also marks ``_mount_watch_error``; the
-    resolver refuses that observation rather than treating it as no event.
-    """
-
-    global _mount_watch, _mount_watch_error
-    watch = _mount_watch
-    if watch is None or watch[0] != os.getpid():
-        try:
-            descriptor = os.open(_MOUNTINFO, os.O_RDONLY | os.O_CLOEXEC)
-        except OSError:
-            _mount_watch_error = True
-            return True
-        try:
-            poller = select.poll()
-            poller.register(descriptor, select.POLLPRI | select.POLLERR)
-        except OSError:
-            os.close(descriptor)
-            _mount_watch_error = True
-            return True
-        if watch is not None:
-            # A fork closes only its inherited descriptor.
-            with suppress(OSError):
-                os.close(watch[1])
-        _mount_watch = (os.getpid(), descriptor, poller)
-        return True
-    try:
-        events = watch[2].poll(0)
-    except OSError:
-        with suppress(OSError):
-            os.close(watch[1])
-        _mount_watch = None
-        _mount_watch_error = True
-        return True
-    if any(mask & select.POLLNVAL for _descriptor, mask in events):
-        with suppress(OSError):
-            os.close(watch[1])
-        _mount_watch = None
-        _mount_watch_error = True
-        return True
-    return any(mask & (select.POLLPRI | select.POLLERR)
-               for _descriptor, mask in events)
-
-
-def _namespace_identity() -> tuple[int, int, int, str] | None:
-    """This process's mount namespace, not a pathname-based mount guess."""
-
-    try:
-        info = os.stat("/proc/self/ns/mnt")
-        link = os.readlink("/proc/self/ns/mnt")
-        if link != f"mnt:[{info.st_ino}]":
-            return None
-        return os.getpid(), info.st_dev, info.st_ino, link
-    except OSError:
-        return None
-
-
-def _mount_state() -> tuple[tuple[int, int, int, str], int] | None:
-    """Refresh the existing memo's namespace/watch fence; called under its lock."""
-
-    global _mount_namespace, _mount_watch, _mount_watch_error
-    global _mount_generation
-    namespace = _namespace_identity()
-    changed = namespace != _mount_namespace or namespace is None
-    if changed:
-        if _mount_watch is not None:
-            with suppress(OSError):
-                os.close(_mount_watch[1])
-            _mount_watch = None
-        _mount_namespace = namespace
-    _mount_watch_error = False
-    if namespace is not None:
-        changed = _mount_table_changed() or changed
-    if changed:
-        _filesystem_types.clear()
-        _mount_generation += 1
-    if namespace is None or _mount_watch_error:
-        return None
-    return namespace, _mount_generation
-
-
-def _proc_mount_text(path: str, limit: int) -> str:
-    """Bounded complete procfs record; caps are parser limits, not timing bounds."""
-
-    with open(path, "rb") as stream:
-        payload = stream.read(limit + 1)
-    if (not payload or len(payload) > limit or not payload.endswith(b"\n")
-            or b"\x00" in payload):
-        raise ValueError("incomplete or oversized procfs mount record")
-    return payload.decode("utf-8")
-
-
-def _decimal(value: str) -> bool:
-    return value.isascii() and value.isdigit()
-
-
-def _mount_path_field(value: str) -> bool:
-    if not value.startswith("/"):
-        return False
-    parts = value.split("\\")
-    return all(part[:3] in {"040", "011", "012", "134"}
-               for part in parts[1:])
-
-
-# Linux v6.14 nsfs_show_path prints ns_ops->name:[inode], not an absolute
-# path. These proc_ns_operations names are a closed, source-proven vocabulary;
-# accepting their root syntax does not make nsfs a local-clock filesystem.
-_NSFS_NAMESPACE_KINDS = frozenset({
-    "net", "pid", "pid_for_children", "time", "time_for_children", "uts",
-    "ipc", "mnt", "user", "cgroup",
-})
-
-
-def _mount_root_field(value: str, fstype: str) -> bool:
-    """A path root, or an nsfs-only opaque namespace dentry display token."""
-
-    if _mount_path_field(value):
-        return True
-    if fstype != "nsfs":
-        return False
-    kind, separator, inode = value.partition(":[")
-    return (separator == ":[" and kind in _NSFS_NAMESPACE_KINDS
-            and inode.endswith("]") and _decimal(inode[:-1]))
-
-
-def _load_mount_types() -> bool:
-    """Validate one table for both indexes; no ambiguous row grants trust.
-
-    Repeated bind rows may share a device and type. Contradictory types make
-    that device unusable (not absent); duplicate mount IDs or malformed rows
-    refuse the complete table, so fallback cannot reinterpret ambiguity.
-    """
-
-    try:
-        text = _proc_mount_text(_MOUNTINFO, _MOUNTINFO_MAX_BYTES)
-        devices: dict[int, str | None] = {}
-        mounts: dict[int, str] = {}
-        for line in text.splitlines():
-            fields = line.split()
-            # Three suffix fields follow the separator. The source field
-            # may itself be '-' (e.g. tmpfs); it is not another separator.
-            separator = len(fields) - 4
-            if (separator < 6 or fields[separator] != "-"
-                    or "-" in fields[:separator]
-                    or fields[separator + 1] == "-"
-                    or fields[separator + 3] == "-"):
-                return False
-            fstype = fields[separator + 1]  # suffix bounds proved above
-            if (not _decimal(fields[0]) or int(fields[0]) <= 0
-                    or not _decimal(fields[1])
-                    or not _mount_root_field(fields[3], fstype)
-                    or not _mount_path_field(fields[4])):
-                return False
-            numbers = fields[2].split(":")
-            if len(numbers) != 2 or not all(_decimal(n) for n in numbers):
-                return False
-            device = os.makedev(int(numbers[0]), int(numbers[1]))
-            mount = int(fields[0])
-            if mount in mounts:
-                return False
-            mounts[mount] = fstype
-            if device in devices and devices[device] != fstype:
-                devices[device] = None
-            else:
-                devices[device] = fstype
-        if not mounts:
-            return False
-    except (OSError, ValueError, OverflowError):
-        return False
-    for device, fstype in devices.items():
-        _filesystem_types[device] = fstype
-    for mount, fstype in mounts.items():
-        _filesystem_types["mount", mount] = fstype
-    _filesystem_types[_MOUNT_TABLE_KEY] = "validated"
-    return True
-
-
-def _filesystem_type(device: int) -> str | None:
-    """Unambiguous direct device/type evidence from the current mount table.
-
-    The fast path remains a device memo plus namespace/watch checks. A missing
-    device is not an alias: only :func:`_object_filesystem_type` can resolve it
-    from an exact descriptor. Unreadable/ambiguous tables never grant trust.
-    """
-
-    with _mount_lock:
-        before = _mount_state()
-        if before is None:
-            return None
-        if _MOUNT_TABLE_KEY not in _filesystem_types and not _load_mount_types():
-            return None
-        found = _filesystem_types.get(device)
-        return found if _mount_state() == before else None
-
-
-def _same_mount_object(info: os.stat_result, current: os.stat_result) -> bool:
-    return (info.st_mode == current.st_mode
-            and _metadata_version(info) == _metadata_version(current))
-
-
-def _descriptor_mount_id(descriptor: int, info: os.stat_result) -> tuple[int, str]:
-    text = _proc_mount_text(f"/proc/self/fdinfo/{descriptor}", _FDINFO_MAX_BYTES)
-    fields: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        key, separator, value = line.partition(":")
-        if not separator:
-            raise ValueError("malformed fdinfo")
-        fields.setdefault(key, []).append(value.strip())
-    ids = fields.get("mnt_id", [])
-    if len(ids) != 1 or not _decimal(ids[0]) or int(ids[0]) <= 0:
-        raise ValueError("ambiguous descriptor mount ID")
-    inodes = fields.get("ino", [])
-    if inodes and (len(inodes) != 1 or not _decimal(inodes[0])
-                   or int(inodes[0]) != info.st_ino):
-        raise ValueError("descriptor inode changed")
-    return int(ids[0]), text
-
-
-def _object_filesystem_type(info: os.stat_result, *,
-                            path: Path | str | None = None,
-                            descriptor: int | None = None,
-                            follow_symlinks: bool = True) -> str | None:
-    """Type of an observed object, with exact descriptor evidence for #1358.
-
-    Only a device absent from a validated table uses fallback. The supplied
-    descriptor stays open in its caller; otherwise O_PATH opens the exact name
-    with its original follow policy. Both fstats and the final path observation
-    must match the observed mode and five-field version. Mount ID, namespace
-    and watch generation are checked on both sides. Snapshot/final validation
-    hold the memo lock; object IO does not. No inferred alias is kept.
-    """
-
-    direct = _filesystem_type(info.st_dev)
-    if direct is not None:
-        return direct
-    if (path is None and descriptor is None) or not (
-            statmod.S_ISREG(info.st_mode) or statmod.S_ISDIR(info.st_mode)):
-        return None
-    with _mount_lock:
-        before = _mount_state()
-        if (before is None or _MOUNT_TABLE_KEY not in _filesystem_types
-                or info.st_dev in _filesystem_types):
-            return None
-        table = _filesystem_types
-    # A stalled exact-object probe must not block unrelated direct lookups.
-    # Table contents are used only under the lock after revalidating its state.
-    owned = None
-    try:
-        if descriptor is None:
-            if path is None:
-                return None
-            flags = os.O_PATH | os.O_CLOEXEC
-            if not follow_symlinks:
-                flags |= os.O_NOFOLLOW
-            if statmod.S_ISDIR(info.st_mode):
-                flags |= os.O_DIRECTORY
-            owned = descriptor = os.open(path, flags)
-        if not _same_mount_object(info, os.fstat(descriptor)):
-            return None
-        mount, text = _descriptor_mount_id(descriptor, info)
-        if (_descriptor_mount_id(descriptor, info) != (mount, text)
-                or not _same_mount_object(info, os.fstat(descriptor))):
-            return None
-        if path is not None:
-            current = os.stat(path) if follow_symlinks else os.lstat(path)
-            if not _same_mount_object(info, current):
-                return None
-        with _mount_lock:
-            if (_mount_state() != before or _filesystem_types is not table
-                    or _MOUNT_TABLE_KEY not in table or info.st_dev in table):
-                return None
-            found = table.get(("mount", mount))
-            return found if found in _LOCAL_CLOCK_FILESYSTEMS else None
-    except (OSError, ValueError, OverflowError):
-        return None
-    finally:
-        if owned is not None:
-            os.close(owned)
-
-
-def _trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
-    """A directory version a listing taken after this call may be reused under.
-
-    ``(device, inode, mtime, ctime)``, or ``None`` when no listing of this
-    directory may ever be reused (#992).  The argument that a later ``lstat``
-    returning the same version proves the listing still current:
-
-    * The coarse realtime clock ``T0`` is read first, then the directory's
-      ``lstat``.  The version is refused unless both its mtime and its ctime
-      are strictly before ``T0``.
-    * Every change to a directory's entries -- a create, an unlink, a rename
-      in or out -- stamps its mtime and ctime with the filesystem's current
-      time.  On a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS` that time is
-      read from the same clock, and a change made after ``T0`` reads a value
-      at or after ``T0``.  So once a version with both stamps before ``T0`` is
-      observed, any later entry change moves the version off it, and a
-      directory replaced by another has another inode.
-    * A listing taken after this call is therefore still the directory's
-      entries for as long as a fresh ``lstat`` returns this version.
-
-    The refusal closes the one hole a bare stat comparison leaves: two
-    changes in one clock tick share a timestamp (a coarse tick is 1 ms on
-    the Sparks), so a listing taken between them would carry a version the
-    second change does not move.  A refused directory is listed again on
-    every pass until a tick has gone by with no change to it.
-
-    Two things are outside the argument and stated here.  A file rewritten in
-    place does not touch its directory; every writer of the documents this
-    guards writes by rename (``residency_map.write_fragment``, the queue's
-    ``_write_json_atomic``), which does.  And a backward step of the realtime
-    clock could in principle stamp a later change with an earlier value; to
-    reproduce a remembered version it would have to land on the same
-    nanosecond in both mtime and ctime.
-    """
-
-    if _COARSE_REALTIME is None:
-        return None
-    try:
-        before = time.clock_gettime_ns(_COARSE_REALTIME)
-        info = os.lstat(path)
-    except OSError:
-        return None
-    if not statmod.S_ISDIR(info.st_mode):
-        return None
-    if _object_filesystem_type(info, path=path,
-                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
-        return None
-    ctime = int(getattr(info, "st_ctime_ns", 0))
-    if info.st_mtime_ns >= before or ctime >= before:
-        return None
-    return (info.st_dev, info.st_ino, info.st_mtime_ns, ctime)
-
-
-def _version_fence() -> int | None:
-    """The coarse realtime clock, read before a listing or an open (#1045).
-
-    What :func:`_keepable_version` compares a file's ctime with.  ``None``
-    where the coarse clock is not the one this kernel stamps file times from
-    (off Linux), and then no file version is kept.
-    """
-
-    if _COARSE_REALTIME is None:
-        return None
-    return time.clock_gettime_ns(_COARSE_REALTIME)
-
-
-def _keepable_version(info: "os.stat_result", fence: int | None, *,
-                      local: dict[int, bool] | None = None,
-                      path: Path | str | None = None,
-                      descriptor: int | None = None,
-                      follow_symlinks: bool = True,
-                      ) -> tuple[int, int, int, int, int] | None:
-    """A file's #761 version when a record read at it may be kept, else ``None``.
-
-    :func:`_trusted_directory_stamp`'s rule, applied to one file (#1045).
-    ``fence`` is :func:`_version_fence`, read before the ``stat`` or
-    ``fstat`` that gave ``info``.  A kept record is reused while a later
-    ``stat`` returns the same ``(dev, ino, size, mtime_ns, ctime_ns)``, and
-    that proves the file unchanged only if no change can reproduce it: a file
-    unlinked and another created under its name in one clock tick can be
-    given the freed inode number, and with the same size all five fields
-    match.  So the version is refused unless its ctime is strictly before
-    ``fence``: every later change to the file, a new file under its name
-    included, is stamped at or after the fence and so moves the ctime.  A
-    refused version is not kept, and the record is read again next pass, as
-    a refused directory is listed again.
-
-    Only on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`, whose file
-    times come from the clock the fence reads; a network filesystem's come
-    from the server's, so none of its versions is kept. ``path`` preserves
-    the stat's follow policy; ``descriptor`` is the still-open fstat source.
-    Without either, only a direct mount-table device match can grant trust.
-    ``local`` remains accepted for compatibility but is not trust evidence:
-    a listing-local device boolean cannot survive a mount/namespace change.
-    """
-
-    if fence is None or int(getattr(info, "st_ctime_ns", 0)) >= fence:
-        return None
-    trusted = _object_filesystem_type(
-        info, path=path, descriptor=descriptor,
-        follow_symlinks=follow_symlinks) in _LOCAL_CLOCK_FILESYSTEMS
-    return _metadata_version(info) if trusted else None
-
-
-def _current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
-    """The same four fields as :func:`_trusted_directory_stamp`, trust re-checked.
-
-    What a remembered stamp is compared with.  ``None`` for anything that is
-    not a directory or cannot be stat-ed, and for a directory whose device is
-    not currently on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`; none of
-    those ever equals a stamp.  The trust re-check is what keeps the stamp's
-    proof across a mount change (#1208): a remembered stamp was only sound
-    while the directory's times came from this kernel's clock, so a comparison
-    that skipped the check would go on reusing a listing after its filesystem
-    left :data:`_LOCAL_CLOCK_FILESYSTEMS`.  :func:`_filesystem_type` remembers
-    the answer per device only until the kernel says the mount table changed,
-    so an unchanged table costs a memo lookup, not a mount-table read.
-    """
-
-    return _directory_version_at(os.fspath(path))
-
-
-def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
-    """:func:`_current_directory_version` of a path already a string.
-
-    The census compares one of these per directory per decision. Direct
-    device matches use ``lstat`` and the namespace/watch-fenced table memo,
-    with no path object; unlisted devices need the exact descriptor probe.
-    """
-
-    try:
-        info = os.lstat(name)
-    except OSError:
-        return None
-    if not statmod.S_ISDIR(info.st_mode):
-        return None
-    if _object_filesystem_type(info, path=name,
-                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
-        return None
-    return (info.st_dev, info.st_ino, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
-
-
 def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
     """One metadata file's bytes, with the version those bytes were read at.
 
@@ -928,7 +449,7 @@ def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
     """
 
     with open(path, "rb") as stream:
-        version = _metadata_version(os.fstat(stream.fileno()))
+        version = kept_reads.metadata_version(os.fstat(stream.fileno()))
         return version, stream.read()
 
 
@@ -944,7 +465,7 @@ def _observe(path: Path) -> "tuple[int, int, int, int, int] | OSError":
     """
 
     try:
-        return _metadata_version(os.stat(path))
+        return kept_reads.metadata_version(os.stat(path))
     except OSError as exc:
         return exc
 
@@ -1689,8 +1210,8 @@ class _StagedPublisher:
         # two threads racing on one claim at worst derive it twice, and a
         # lock held across the census's directory scans and record reads
         # would serialize every worker's check behind them.
-        from stage_release import _CensusMemo
-        self._claim_memo = _CensusMemo()
+
+        self._claim_memo = kept_reads.CensusMemo()
         #: The range decision's partial-temporaries hint (#1028): each
         #: range directory is listed once under
         #: :func:`_trusted_directory_stamp` and a name revalidates the
@@ -2625,16 +2146,16 @@ class _StagedPublisher:
         key = os.path.normpath(str(directory))
         remembered = self._range_partials.get(key)
         if (remembered is not None
-                and _current_directory_version(directory) == remembered[0]):
+                and kept_reads.current_directory_version(directory) == remembered[0]):
             return remembered[1]
-        stamp = _trusted_directory_stamp(directory)
+        stamp = kept_reads.trusted_directory_stamp(directory)
         try:
             names = tuple(sorted(
                 entry.name for entry in os.scandir(directory)
                 if entry.name.endswith(".partial")))
         except OSError:
             return None
-        if stamp is not None and _current_directory_version(directory) == stamp:
+        if stamp is not None and kept_reads.current_directory_version(directory) == stamp:
             with self._range_lock:
                 self._range_partials[key] = (stamp, names)
         return names
@@ -3251,11 +2772,11 @@ class _StagedPublisher:
         root = self.residency_root
         kept_root = self._listed_root
         if (kept_root is not None
-                and _current_directory_version(root) == kept_root[0]):
+                and kept_reads.current_directory_version(root) == kept_root[0]):
             children = kept_root[1]
         else:
             self._listed_root = None
-            stamp = _trusted_directory_stamp(root)
+            stamp = kept_reads.trusted_directory_stamp(root)
             try:
                 children = sorted(
                     e.name for e in os.scandir(root)
@@ -3268,7 +2789,7 @@ class _StagedPublisher:
                 return ("unreadable", f"{root}: {exc}")
             for gone in set(self._listed_children) - set(children):
                 del self._listed_children[gone]
-            if stamp is not None and _current_directory_version(root) == stamp:
+            if stamp is not None and kept_reads.current_directory_version(root) == stamp:
                 self._listed_root = (stamp, children)
         slots: list[tuple] = []
         # The comparison runs once per directory per decision, under the
@@ -3278,12 +2799,12 @@ class _StagedPublisher:
         for child in children:
             kept = self._listed_children.get(child)
             if (kept is not None
-                    and _directory_version_at(prefix + child) == kept[0]):
+                    and kept_reads._directory_version_at(prefix + child) == kept[0]):
                 stamp, paths = None, kept[1]
             else:
                 self._listed_children.pop(child, None)
                 cdir = root / child
-                stamp = _trusted_directory_stamp(cdir)
+                stamp = kept_reads.trusted_directory_stamp(cdir)
                 try:
                     paths = tuple(
                         (name, cdir / name) for name in sorted(
@@ -3309,7 +2830,7 @@ class _StagedPublisher:
             slots.extend(listed)
             if (stamp is not None
                     and all(slot[3] != "tainted" for slot in listed)
-                    and _current_directory_version(root / child) == stamp):
+                    and kept_reads.current_directory_version(root / child) == stamp):
                 self._listed_children[child] = (stamp, paths)
         return ("listed", tuple(slots))
 
@@ -4659,7 +4180,7 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
-    (:func:`_keepable_version`), as :class:`stage_release._CensusMemo` reads
+    (:func:`_keepable_version`), as :class:`kept_reads.CensusMemo` reads
     its hint pass, so a qualified version can be compared once the lock is held
     (:func:`_reread_own_document`).  A same-key retry's own fragment can be
     large, and this is the mover's *first* wait for the stage lock
@@ -4673,10 +4194,10 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     document this one returns ``None`` for.
     """
 
-    fence = _version_fence()
+    fence = kept_reads.version_fence()
     try:
         with open(path, "rb") as stream:
-            version = _keepable_version(os.fstat(stream.fileno()), fence)
+            version = kept_reads.keepable_version(os.fstat(stream.fileno()), fence)
             document = validate(json.load(stream))
     except (OSError, ValueError):
         return None
@@ -4693,7 +4214,7 @@ def _reread_own_document(path: Path,
     :func:`_parse_own_document`'s answer from before the lock was taken.
     The file is opened and ``fstat``-ed again regardless -- a document
     added, removed, replaced or rewritten since the pre-lock parse must be
-    seen here, the same promise :class:`stage_release._CensusMemo` keeps for
+    seen here, the same promise :class:`kept_reads.CensusMemo` keeps for
     the egress's own census -- and the earlier parse is returned without a
     second parse only when the current version is still qualified by the
     local-filesystem/coarse-clock fence and equals the one ``prior`` was read
@@ -4703,9 +4224,9 @@ def _reread_own_document(path: Path,
     ``ValueError`` for one that exists but cannot be read or validated.
     """
 
-    fence = _version_fence()
+    fence = kept_reads.version_fence()
     with open(path, "rb") as stream:
-        version = _keepable_version(os.fstat(stream.fileno()), fence)
+        version = kept_reads.keepable_version(os.fstat(stream.fileno()), fence)
         if prior is not None and prior[0] == version:
             return prior[1]
         return validate(json.load(stream))
@@ -4779,7 +4300,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     lock is taken, then reopened and version-checked under it
     (:func:`_parse_own_document`,
     :func:`_reread_own_document`, #1008 item 1) -- the same #761 fence
-    :class:`stage_release._CensusMemo` reads its own hint pass under, so
+    :class:`kept_reads.CensusMemo` reads its own hint pass under, so
     this mover's first wait for the lock (``resume_lock_wait_s``) no longer
     pays for opening and parsing its own fragment, and a document that
     changed in the gap, or whose version cannot be trusted, is parsed fresh

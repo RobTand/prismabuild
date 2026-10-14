@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.reader_lease as reader_lease  # noqa: E402
 import prismabuild.residency_map as residency_map  # noqa: E402
+from prismabuild import kept_reads
 import stage_move  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -292,8 +293,8 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
     fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: filesystem)
-    monkeypatch.setattr(stage_move, "_version_fence", lambda: fence)
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda _device: filesystem)
+    monkeypatch.setattr(kept_reads, 'version_fence', lambda: fence)
 
     parsing = threading.Event()
     release = threading.Event()
@@ -341,7 +342,7 @@ def test_a_fragment_changed_between_the_pre_lock_parse_and_the_lock_is_reread(
     The pre-lock parse is a hint, exactly as the egress's own pre-lock
     census is (#988): the pass under the lock re-checks the file's #761
     version and re-parses whenever it changed
-    (:class:`stage_release._CensusMemo`'s promise, applied here to the
+    (:class:`kept_reads.CensusMemo`'s promise, applied here to the
     mover's own resume).  The fragment is rewritten -- a different digest
     for one already-covered entry -- while the pre-lock parse is paused on
     the *old* bytes, and the resumed coverage must carry the rewritten one.
@@ -429,8 +430,8 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
         return None if trust == "unknown" else trust
 
     monkeypatch.setattr(stage_move.os, "fstat", observed_fstat)
-    monkeypatch.setattr(stage_move, "_filesystem_type", filesystem)
-    monkeypatch.setattr(stage_move, "_version_fence", lambda: (
+    monkeypatch.setattr(kept_reads, '_filesystem_type', filesystem)
+    monkeypatch.setattr(kept_reads, 'version_fence', lambda: (
         None if trust == "no-clock" else
         repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
     real_ownership = queue.recorded_stage_ownership

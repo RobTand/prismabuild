@@ -50,6 +50,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
@@ -435,16 +436,16 @@ class ReceiptCache:
 
     Five things, all re-read only where they changed:
 
-    * ``records`` (:class:`stage_release.DirectoryRecords`): the active
+    * ``records`` (:class:`kept_reads.DirectoryRecords`): the active
       movement and prewarm receipts the fill supply is folded from, every
       ``ready/`` and ``claimed/`` record (:func:`stage_release.queue_records`,
       inside a cycle), and the tier and epoch of every residency fragment
       (:func:`drop_prior_ram_epochs`).  A directory nothing was filed in
       since its last listing is not listed again, and a file whose version
       is unchanged is not read again.
-    * ``census`` (:class:`stage_release.CensusIndex`): the validated fragment
+    * ``census`` (:class:`kept_reads.CensusIndex`): the validated fragment
       census every sweep and reconciliation takes.
-    * ``ledger_records`` (:class:`stage_release.DirectoryRecords`): token
+    * ``ledger_records`` (:class:`kept_reads.DirectoryRecords`): token
       directory names for explicitly guarded tier ledgers inside a cycle
       (#1027). These reads preserve missing/unreadable census errors, recheck
       filesystem trust on every reuse, and never cache host-ledger reads.
@@ -478,9 +479,9 @@ class ReceiptCache:
     """
 
     def __init__(self) -> None:
-        self.records = stage_release.DirectoryRecords()
-        self.census = stage_release.CensusIndex()
-        self.ledger_records = stage_release.DirectoryRecords()
+        self.records = kept_reads.DirectoryRecords()
+        self.census = kept_reads.CensusIndex()
+        self.ledger_records = kept_reads.DirectoryRecords()
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
         self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
@@ -548,7 +549,7 @@ class ReceiptCache:
         A changed directory's entries are stat-ed and parsed by
         :data:`RECEIPT_READERS` threads (#1153), in name order as seen by
         this thread, which alone checkpoints and keeps what was read
-        (`stage_release.DirectoryRecords.read`).  A stretch between two
+        (`kept_reads.DirectoryRecords.read`).  A stretch between two
         checkpoints is still at most one entry's read, and a hung entry
         stops the checkpoints once this thread reaches it.
 
@@ -919,7 +920,7 @@ def _cycle_withdrawn_keys(queue: pool.PoolQueue, receipts) -> frozenset[str]:
     """
 
     records = getattr(receipts, "records", None)
-    if not isinstance(records, stage_release.DirectoryRecords):
+    if not isinstance(records, kept_reads.DirectoryRecords):
         return queue.withdrawn_keys()
     names = records.names(queue.dir(pool.WITHDRAWN),
                           select=lambda name: name.endswith(".json"))
@@ -1121,7 +1122,7 @@ def _fragment_dir(entry: os.DirEntry) -> bool:
 def drop_prior_ram_epochs(
         queue: pool.PoolQueue,
         tiers: Mapping[str, Mapping[str, object]], *,
-        reader: stage_release.DirectoryRecords | None = None,
+        reader: kept_reads.DirectoryRecords | None = None,
 ) -> list[dict[str, object]]:
     """Drop every ram fragment and ghost token the current epoch does not cover.
 
@@ -1142,7 +1143,7 @@ def drop_prior_ram_epochs(
     every fragment of it is a prior one and every unclaimed holder is a ghost
     (#640).
 
-    ``reader`` is the tier loop's :class:`stage_release.DirectoryRecords`:
+    ``reader`` is the tier loop's :class:`kept_reads.DirectoryRecords`:
     with it, a namespace nothing was filed in since the last cycle is not
     listed, and a fragment whose version is unchanged is not read, because
     only its ``(tier_id, epoch)`` matters here and that is fixed by its
@@ -1156,7 +1157,7 @@ def drop_prior_ram_epochs(
         if record.get("tier") == "ram"}
     events: list[dict[str, object]] = []
     root = queue.residency_fragment_root()
-    reader = reader if reader is not None else stage_release.DirectoryRecords()
+    reader = reader if reader is not None else kept_reads.DirectoryRecords()
     try:
         consumers = [path.name for path, _ in reader.read(
             root, select=_fragment_dir, parse=lambda _path: None)]
@@ -9682,7 +9683,7 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
 def sweep_orphans(queue: pool.PoolQueue,
                   tiers: Mapping[str, Mapping[str, object]],
                   *, pressure: Mapping[str, int] | None = None,
-                  index: stage_release.CensusIndex | None = None,
+                  index: kept_reads.CensusIndex | None = None,
                   budget: Liveness | None = None,
                   ) -> list[dict[str, object]]:
     """Take back the stage from movers no live consumer still plans to read.
@@ -10812,6 +10813,7 @@ def _read_counts(receipts: ReceiptCache) -> dict[str, int]:
     return counts
 
 
+@kept_reads.file_version_scope()
 def cycle(
     queue: pool.PoolQueue,
     *,
@@ -10878,9 +10880,9 @@ def cycle(
     residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
     try:
         with pool.transition_locks_never_wait(refused), pool.tier_ledger_names_from(
-                ledger_names if isinstance(ledger, stage_release.DirectoryRecords)
+                ledger_names if isinstance(ledger, kept_reads.DirectoryRecords)
                 else None):
-            if isinstance(records, stage_release.DirectoryRecords):
+            if isinstance(records, kept_reads.DirectoryRecords):
                 with stage_release.queue_records_from(records):
                     announced = _cycle(queue, host=host, source_pool=source_pool,
                                        receipts=receipts, now=now,
@@ -10900,7 +10902,7 @@ def cycle(
         _STAGED_WAITS[0] = None
         _SHARED_MOVERS[0] = None
         residency_plan._SHARE_NAMESPACE_MEMO[0] = None
-        if isinstance(ledger, stage_release.DirectoryRecords):
+        if isinstance(ledger, kept_reads.DirectoryRecords):
             ledger.retain(ledger_directories)
         after = _read_counts(receipts)
         LAST_CYCLE = {

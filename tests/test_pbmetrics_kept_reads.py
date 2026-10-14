@@ -38,9 +38,9 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+from prismabuild import kept_reads
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
-import stage_move  # noqa: E402
 
 HOSTS = ("sparky", "gx10-6b77", "dl380g10")
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -477,7 +477,7 @@ def settle() -> None:
     """Let the coarse clock pass every directory's last change.
 
     A directory changed inside the current clock tick is never trusted
-    (``stage_move._trusted_directory_stamp``), and a fixture written a
+    (``kept_reads.trusted_directory_stamp``), and a fixture written a
     microsecond before the first scrape is exactly that.  A live queue's
     history directories are almost always many ticks old.
     """
@@ -510,9 +510,9 @@ def _require_trusted(root: Path) -> None:
     # A skip would certify nothing: a queue on a filesystem whose directory
     # stamps are never trusted (NFS) lists every directory every scrape by
     # design, and the test must say so rather than pass vacuously.
-    stamp = stage_move._trusted_directory_stamp(root / pool.DONE)
+    stamp = kept_reads.trusted_directory_stamp(root / pool.DONE)
     assert stamp is not None, (
-        f"{root} is on {stage_move._filesystem_type(os.lstat(root).st_dev)!r}, "
+        f"{root} is on {kept_reads._filesystem_type(os.lstat(root).st_dev)!r}, "
         "whose directory stamps are not trusted; this test needs a local "
         "filesystem (zfs, ext4, xfs, btrfs or tmpfs)")
 
@@ -538,7 +538,7 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert not_directories == [], (
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
-    probed = stage_move._filesystem_type(os.stat(live_shaped).st_dev) is None
+    probed = kept_reads._filesystem_type(os.stat(live_shaped).st_dev) is None
     assert len(probe.stats) <= (2 if probed else 1) * directories_under(live_shaped)
     assert probe.namespace_stats, "retention must still check its current namespace"
 
@@ -793,7 +793,7 @@ def _profile(argv: list[str]) -> int:
                                  "pbmetrics_sha256": exporter,
                                  "pbmetrics": pbmetrics.__file__,
                                  "directories": directories_under(args.root),
-                                 "filesystem": stage_move._filesystem_type(
+                                 "filesystem": kept_reads._filesystem_type(
                                      os.lstat(args.root).st_dev)}
     serial = 0
     cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)

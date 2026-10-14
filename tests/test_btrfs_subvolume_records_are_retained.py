@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 import pbmetrics  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import kept_reads
 import stage_release  # noqa: E402
 
 OBSERVED_DEVICE = os.makedev(0, 31)
@@ -111,14 +111,14 @@ class _KernelFacts:
         real_clock = time.clock_gettime_ns
 
         def clock(clock_id):
-            if clock_id == stage_move._COARSE_REALTIME:
+            if clock_id == kept_reads._COARSE_REALTIME:
                 return self.now
             return real_clock(clock_id)
 
         monkeypatch.setattr(time, "clock_gettime_ns", clock)
         # Reset existing process-local state, not its implementation/verdict.
-        monkeypatch.setattr(stage_move, "_filesystem_types", {})
-        monkeypatch.setattr(stage_move, "_mount_watch", None)
+        monkeypatch.setattr(kept_reads, '_filesystem_types', {})
+        monkeypatch.setattr(kept_reads, '_mount_watch', None)
 
     @staticmethod
     def identity(info):
@@ -326,7 +326,7 @@ def test_directory_records_retains_unlisted_btrfs_subvolume(kernel):
         assert all(row.split()[2] != "0:31" for row in rows)
     finally:
         os.close(descriptor)
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = _read(reader, kernel)
     assert first == [(kernel.record, {"v": 1})]
     assert _counts(reader) == (1, 0, 1)
@@ -342,7 +342,7 @@ def test_directory_records_retains_unlisted_btrfs_subvolume(kernel):
 
 def test_census_level_compares_unlisted_btrfs_directory(kernel):
     """Real census acquisition and post-listing/reuse comparison, no seeding."""
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     for _pass in range(2):
         fragments, tainted = [], []
         stage_release._census_level(
@@ -358,7 +358,7 @@ def test_census_level_compares_unlisted_btrfs_directory(kernel):
 def test_record_version_is_retained_when_directory_stamp_is_in_its_tick(kernel):
     """Isolate file keepability: neither pass may keep the directory listing."""
     kernel.directory_stamp = kernel.now
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = _read(reader, kernel)
     second = _read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
@@ -370,7 +370,7 @@ def test_record_version_is_retained_when_directory_stamp_is_in_its_tick(kernel):
 
 def test_direct_device_match_is_a_positive_fixture_control(kernel):
     kernel.table_device = OBSERVED_DEVICE
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (1, 1, 1)
@@ -411,20 +411,20 @@ def test_inference_refusals_do_not_keep_records(kernel, refusal):
         kernel.descriptor_changed = True
     elif refusal == "mount-change-during-resolution":
         kernel.change_during_fdinfo = True
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = _read(reader, kernel)
     second = _read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
     assert _counts(reader) == (2, 0, 2)
-    assert stage_move._trusted_directory_stamp(kernel.directory) is None
-    assert stage_move._current_directory_version(kernel.directory) is None
+    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
+    assert kept_reads.current_directory_version(kernel.directory) is None
 
 
 @pytest.mark.parametrize("fstype", ["nfs4", "fuse.fixture"])
 def test_direct_nonlocal_device_never_keeps_records(kernel, fstype):
     kernel.table_device = OBSERVED_DEVICE
     kernel.fstype = fstype
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (2, 0, 2)
@@ -432,7 +432,7 @@ def test_direct_nonlocal_device_never_keeps_records(kernel, fstype):
 
 @pytest.mark.parametrize("fstype", ["nfs4", "fuse.fixture"])
 def test_mount_watch_trust_loss_drops_inferred_listing_and_parse(kernel, fstype):
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (1, 1, 1)
@@ -445,7 +445,7 @@ def test_mount_watch_trust_loss_drops_inferred_listing_and_parse(kernel, fstype)
 
 
 def test_namespace_change_drops_inferred_listing_and_parse(kernel):
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (1, 1, 1)
@@ -461,7 +461,7 @@ def test_same_tick_record_is_not_kept(kernel, direct_match):
     if direct_match:
         kernel.table_device = OBSERVED_DEVICE
     kernel.record_stamp = kernel.now
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     # Model a same-size replacement reproducing every observed version field;
     # no pathname/object identity is silently substituted by the fixture.
@@ -473,15 +473,15 @@ def test_same_tick_record_is_not_kept(kernel, direct_match):
 def test_symlink_is_not_a_trusted_directory(kernel):
     link = kernel.directory.parent / "link"
     link.symlink_to(kernel.directory, target_is_directory=True)
-    assert stage_move._trusted_directory_stamp(link) is None
-    assert stage_move._current_directory_version(link) is None
-    assert stage_move._trusted_directory_stamp(kernel.record) is None
-    assert stage_move._current_directory_version(kernel.record) is None
+    assert kept_reads.trusted_directory_stamp(link) is None
+    assert kept_reads.current_directory_version(link) is None
+    assert kept_reads.trusted_directory_stamp(kernel.record) is None
+    assert kept_reads.current_directory_version(kernel.record) is None
 
 
 def test_parse_refusal_never_becomes_a_kept_listing(kernel):
     kernel.table_device = OBSERVED_DEVICE
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel, keep=lambda _record: False)
     _read(reader, kernel, keep=lambda _record: False)
     assert _counts(reader) == (2, 0, 2)
@@ -489,7 +489,7 @@ def test_parse_refusal_never_becomes_a_kept_listing(kernel):
 
 def test_parse_error_is_not_retained(kernel):
     kernel.table_device = OBSERVED_DEVICE
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
 
     def unreadable(_path):
         raise PermissionError("record parse refused")
@@ -517,7 +517,7 @@ def test_bounded_complete_proc_records_are_required(kernel, record):
         kernel.mountinfo_text = kernel.table().replace("0:30", "0:not-a-number")
     elif record == "bad-path-escape":
         kernel.mountinfo_text = kernel.table().replace("/subvol", r"/bad\999")
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (2, 0, 2)
@@ -530,7 +530,7 @@ def test_consistent_bind_rows_do_not_create_ambiguity(kernel, direct_match):
     kernel.mountinfo_text = (
         kernel.table() +
         f"78 25 0:{31 if direct_match else 30} /subvol /bind rw - btrfs /dev/fixture rw\n")
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (1, 1, 1)
@@ -540,7 +540,7 @@ def test_contradictory_device_types_cannot_fall_back_to_local(kernel):
     kernel.table_device = OBSERVED_DEVICE
     kernel.mountinfo_text = (
         kernel.table() + "78 25 0:31 / /other rw - nfs4 server:/other rw\n")
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (2, 0, 2)
@@ -548,17 +548,17 @@ def test_contradictory_device_types_cannot_fall_back_to_local(kernel):
 
 def test_file_fallback_requires_matching_live_descriptor_or_path(kernel):
     info = os.stat(kernel.record)
-    assert stage_move._keepable_version(info, kernel.now) is None
-    assert stage_move._keepable_version(info, kernel.now, path=kernel.directory) is None
+    assert kept_reads.keepable_version(info, kernel.now) is None
+    assert kept_reads.keepable_version(info, kernel.now, path=kernel.directory) is None
     descriptor = os.open(kernel.record, os.O_PATH | os.O_CLOEXEC)
     wrong = os.open(kernel.directory, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        version = stage_move._metadata_version(info)
-        assert stage_move._keepable_version(
+        version = kept_reads.metadata_version(info)
+        assert kept_reads.keepable_version(
             info, kernel.now, descriptor=descriptor) == version
-        assert stage_move._keepable_version(
+        assert kept_reads.keepable_version(
             info, kernel.now, descriptor=wrong) is None
-        assert stage_move._keepable_version(
+        assert kept_reads.keepable_version(
             info, kernel.now, descriptor=descriptor, path=kernel.directory) is None
         assert os.fstat(descriptor).st_ino == info.st_ino  # caller still owns FD
     finally:
@@ -567,22 +567,22 @@ def test_file_fallback_requires_matching_live_descriptor_or_path(kernel):
 
 
 def test_inferred_directory_type_is_not_an_alias_for_another_descriptor(kernel):
-    assert stage_move._trusted_directory_stamp(kernel.directory) is not None
+    assert kept_reads.trusted_directory_stamp(kernel.directory) is not None
     # The next exact descriptor selects the nonlocal row of the same table.
     kernel.mount_id = 77
     info = os.stat(kernel.record)
-    assert stage_move._keepable_version(info, kernel.now, path=kernel.record) is None
+    assert kept_reads.keepable_version(info, kernel.now, path=kernel.record) is None
 
 
 def test_listing_local_boolean_cannot_survive_a_watch_trust_loss(kernel):
     kernel.table_device = OBSERVED_DEVICE
     local = {OBSERVED_DEVICE: True}
     info = os.stat(kernel.record)
-    assert stage_move._keepable_version(
+    assert kept_reads.keepable_version(
         info, kernel.now, local=local, path=kernel.record) is not None
     kernel.fstype = "nfs4"
     kernel.generation += 1
-    assert stage_move._keepable_version(
+    assert kept_reads.keepable_version(
         info, kernel.now, local=local, path=kernel.record) is None
 
 
@@ -591,7 +591,7 @@ def test_listing_local_boolean_cannot_survive_a_watch_trust_loss(kernel):
 def test_lost_watch_or_namespace_evidence_drops_warm_records(kernel, direct_match, failure):
     if direct_match:
         kernel.table_device = OBSERVED_DEVICE
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     _read(reader, kernel)
     _read(reader, kernel)
     assert _counts(reader) == (1, 1, 1)
@@ -621,7 +621,7 @@ def _fragment_document(kernel, digest):
 def test_fragment_memo_keeps_live_fd_evidence_and_rechecks_trust(kernel):
     # Real schema validator, real record reader, real memo; no validator mock.
     kernel.record.write_text(json.dumps(_fragment_document(kernel, "c")))
-    memo = stage_release._CensusMemo()
+    memo = kept_reads.CensusMemo()
     first = stage_release._read_fragment(kernel.record, memo)
     second = stage_release._read_fragment(kernel.record, memo)
     assert isinstance(first, dict)

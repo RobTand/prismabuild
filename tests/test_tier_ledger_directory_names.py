@@ -15,9 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
+from prismabuild import kept_reads
 from prismabuild import pool  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:test-ledger"
@@ -31,16 +30,16 @@ def _settle() -> None:
     time.sleep(0.05)
 
 
-def _names(reader: stage_release.DirectoryRecords):
+def _names(reader: kept_reads.DirectoryRecords):
     return partial(reader.names, select=lambda _name: True, missing_ok=False)
 
 
 @pytest.fixture()
 def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    if stage_move._COARSE_REALTIME is None:
+    if kept_reads._COARSE_REALTIME is None:
         pytest.fail("ledger stamp qualification requires Linux's coarse clock")
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "tmpfs")
     queue = pool.PoolQueue(tmp_path / "queue")
@@ -49,7 +48,7 @@ def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ledger.ensure_capacity({KIND: 4})
     assert ledger.acquire(MOVER, {KIND: 1})
     _settle()
-    return queue, ledger, stage_release.DirectoryRecords()
+    return queue, ledger, kept_reads.DirectoryRecords()
 
 
 def _view(ledger: pool.ResourceLedger) -> tuple[int, int, int]:
@@ -146,7 +145,7 @@ def test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves(
         assert _view(held) == (4, 3, 1)
         listed, kept = reader.listed, reader.kept
         monkeypatch.setattr(
-            stage_move, "_object_filesystem_type",
+            kept_reads, '_object_filesystem_type',
             lambda info, *, path=None, descriptor=None,
             follow_symlinks=True: filesystem)
         assert _view(held) == (4, 3, 1)
@@ -159,7 +158,7 @@ def test_a_same_tick_listing_does_not_hide_an_added_token(ledger, monkeypatch):
     _queue, held, reader = ledger
     real_lstat = os.lstat
     real_clock = time.clock_gettime_ns
-    tick = real_clock(stage_move._COARSE_REALTIME)
+    tick = real_clock(kept_reads._COARSE_REALTIME)
 
     class Pinned:
         def __init__(self, info):
@@ -176,7 +175,7 @@ def test_a_same_tick_listing_does_not_hide_an_added_token(ledger, monkeypatch):
         return info
 
     def clock(clock_id):
-        return tick if clock_id == stage_move._COARSE_REALTIME else real_clock(clock_id)
+        return tick if clock_id == kept_reads._COARSE_REALTIME else real_clock(clock_id)
 
     monkeypatch.setattr(os, "lstat", lstat)
     monkeypatch.setattr(time, "clock_gettime_ns", clock)
@@ -202,7 +201,7 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
                      "minted": held.minted_dir}[namespace]
         # Refuse the warm stamp before injecting the actual listing failure.
         monkeypatch.setattr(
-            stage_move, "_object_filesystem_type",
+            kept_reads, '_object_filesystem_type',
             lambda info, *, path=None, descriptor=None,
             follow_symlinks=True: "nfs4")
         real = os.listdir
@@ -281,7 +280,7 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
         dead.mkdir()
     _settle()
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "nfs4")
     real = os.listdir

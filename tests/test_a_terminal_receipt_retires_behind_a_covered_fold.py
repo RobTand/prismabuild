@@ -47,9 +47,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
+from prismabuild import kept_reads
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
 import pb_gc  # noqa: E402
-import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
 
 #: The queue-root kind this requirement adds, spelled as the other kinds are.
@@ -699,7 +699,7 @@ def _filesystem_type(path: Path) -> str | None:
 
 
     info = os.stat(path)
-    return stage_move._object_filesystem_type(
+    return kept_reads._object_filesystem_type(
         info, path=path, follow_symlinks=False)
 
 
@@ -977,9 +977,9 @@ def test_a_steady_reading_cycle_reuses_the_validated_checkpoint(
     """
 
     info = os.stat(tmp_path)
-    assert stage_move._object_filesystem_type(
+    assert kept_reads._object_filesystem_type(
         info, path=tmp_path, follow_symlinks=False) in LOCAL_CLOCK, (
-        f"{stage_move._object_filesystem_type(info, path=tmp_path)} keeps no "
+        f"{kept_reads._object_filesystem_type(info, path=tmp_path)} keeps no "
         f"trusted stamp; run this on a local-clock filesystem (TMPDIR)")
 
     loop = _Loop(tmp_path)
@@ -1073,7 +1073,7 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     loop.cycle()                       # warm the cache
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: None)
     checkpoint = queue.mover_retirement_checkpoint_path()

@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
-from prismabuild import pool, produced_output as po  # noqa: E402
+from prismabuild import kept_reads, pool, produced_output as po  # noqa: E402
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template)
@@ -89,12 +89,17 @@ def _scope(queue, instance) -> Path:
     return po.instance_dir(queue.root, instance)
 
 
+@pytest.fixture(autouse=True)
+def _fleet_file_versions():
+    with kept_reads.file_version_scope():
+        yield
+
+
 def _version_keepable(path: Path) -> bool:
     """Whether this host can vouch for a version of this file (#1045)."""
 
-    trusted = po._trusted_version_facilities()
-    return (trusted is not None
-            and trusted[0](path.stat(), trusted[1]()) is not None)
+    fence = kept_reads.version_fence()
+    return kept_reads.keepable_version(path.stat(), fence) is not None
 
 
 def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
@@ -155,7 +160,7 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # Each sibling record once where the host can vouch for its version:
     # the tick's scan parse is reused (`_TickReads.batches`, #992).  On a
     # filesystem that cannot (a network mount), that parse is not kept
-    # (`stage_move._keepable_version`), so `owned` reads the document once
+    # (`kept_reads.keepable_version`), so `owned` reads the document once
     # for itself after the scan read it: two, never one per asker.
     sibling_scope = _scope(queue, sibling)
     expected = 1 if _version_keepable(sibling_scope / "commitments.json") else 2

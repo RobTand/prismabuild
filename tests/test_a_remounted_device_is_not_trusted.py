@@ -1,6 +1,6 @@
 """A device number remounted as another filesystem is judged again (#992).
 
-``stage_move._trusted_directory_stamp`` trusts a directory's stamp only on a
+``kept_reads.trusted_directory_stamp`` trusts a directory's stamp only on a
 filesystem whose directory times come from this kernel's clock, and it finds
 the type by the device's ``major:minor`` in ``/proc/self/mountinfo``.  The
 answer used to be remembered per device for the life of the process.
@@ -25,14 +25,14 @@ import io
 import os
 from pathlib import Path
 import sys
-import time
 
 import pytest
+from kept_read_clock import after_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-import stage_move  # noqa: E402
+from prismabuild import kept_reads
 
 MOUNTINFO = "/proc/self/mountinfo"
 
@@ -73,44 +73,42 @@ def table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _MountTable:
                     else io.StringIO(stand_in.text))
         return real_open(file, *args, **kwargs)
 
-    monkeypatch.setattr(stage_move, "open", opening, raising=False)
-    monkeypatch.setattr(stage_move, "_mount_table_changed", stand_in.changed,
+    monkeypatch.setattr(kept_reads, "open", opening, raising=False)
+    monkeypatch.setattr(kept_reads, '_mount_table_changed', stand_in.changed,
                         raising=False)
-    monkeypatch.setattr(stage_move, "_filesystem_types", {})
+    monkeypatch.setattr(kept_reads, '_filesystem_types', {})
     return stand_in
 
 
-def _settled_directory(tmp_path: Path) -> Path:
-    """A directory whose stamp predates the coarse clock (two ticks later)."""
-
+def _settled_directory(tmp_path: Path, monkeypatch) -> Path:
     directory = tmp_path / "kept"
     directory.mkdir()
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, directory)
     return directory
 
 
 def test_a_device_remounted_as_another_type_is_not_trusted(
-        table: _MountTable, tmp_path: Path) -> None:
-    directory = _settled_directory(tmp_path)
-    assert stage_move._trusted_directory_stamp(directory) is not None
+        table: _MountTable, tmp_path: Path, monkeypatch) -> None:
+    directory = _settled_directory(tmp_path, monkeypatch)
+    assert kept_reads.trusted_directory_stamp(directory) is not None
     # The same device number, now an NFS mount: the kernel signals the
     # change, and the next stamp is judged on the table as it now reads.
     table.remount(_table(os.stat(tmp_path).st_dev, "nfs4"))
-    assert stage_move._trusted_directory_stamp(directory) is None
+    assert kept_reads.trusted_directory_stamp(directory) is None
 
 
 def test_an_unchanged_table_is_not_read_again(
-        table: _MountTable, tmp_path: Path) -> None:
+        table: _MountTable, tmp_path: Path, monkeypatch) -> None:
     """Without the signal the remembered type stands: no read per stamp."""
 
-    directory = _settled_directory(tmp_path)
-    assert stage_move._trusted_directory_stamp(directory) is not None
+    directory = _settled_directory(tmp_path, monkeypatch)
+    assert kept_reads.trusted_directory_stamp(directory) is not None
     table.text = _table(os.stat(tmp_path).st_dev, "nfs4")
-    assert stage_move._trusted_directory_stamp(directory) is not None
+    assert kept_reads.trusted_directory_stamp(directory) is not None
 
 
 def test_the_kernel_signal_is_read_without_raising() -> None:
     """The real probe polls this process's ``mountinfo`` and answers a bool."""
 
-    assert isinstance(stage_move._mount_table_changed(), bool)
-    assert isinstance(stage_move._mount_table_changed(), bool)
+    assert isinstance(kept_reads._mount_table_changed(), bool)
+    assert isinstance(kept_reads._mount_table_changed(), bool)

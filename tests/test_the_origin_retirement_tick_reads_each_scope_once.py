@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
-from prismabuild import produced_output as po  # noqa: E402
+from prismabuild import kept_reads, produced_output as po  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _bind_owner, _publish_consumer, _run_consumer,
 )
@@ -109,6 +109,12 @@ class _World:
         return po.origin_retirement_tick(self.queue)
 
 
+@pytest.fixture(autouse=True)
+def _fleet_file_versions():
+    with kept_reads.file_version_scope():
+        yield
+
+
 def _version_keepable(path: Path) -> bool:
     """Whether this host can vouch for a file version here (#1045).
 
@@ -118,9 +124,8 @@ def _version_keepable(path: Path) -> bool:
     for one re-reads by design, and the count assertions below do not apply.
     """
 
-    trusted = po._trusted_version_facilities()
-    return (trusted is not None
-            and trusted[0](path.stat(), trusted[1]()) is not None)
+    fence = kept_reads.version_fence()
+    return kept_reads.keepable_version(path.stat(), fence) is not None
 
 
 class _Reads:

@@ -31,7 +31,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
-from prismabuild import manifest_layout
+from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
 import prewarm_loop  # noqa: E402
@@ -894,7 +894,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                         tier_id=tier_id)
     own_cas = (str(cas_root) if cas_root is not None
                else str(queue.root.parent / "cas"))
-    census_memo = stage_release._CensusMemo()
+    census_memo = kept_reads.CensusMemo()
     census_started = time.perf_counter()
     hinted: set[str] = set()
     try:

@@ -11,7 +11,7 @@ since the last check. The cost of one check grows with the entries of every
 claimed mover; the cost of a whole range grows with that times the range's
 own entries.
 
-``stage_release._CensusMemo.claims`` already exists to make this safe: a
+``kept_reads.CensusMemo.claims`` already exists to make this safe: a
 claimed range mover's *derived* stage paths depend only on its sealed
 request and its data manifest, both immutable under their digests, so once
 derived for a claim key the answer can never go stale. What must stay fresh,

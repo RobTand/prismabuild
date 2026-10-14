@@ -93,8 +93,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import contextvars
 import errno
@@ -112,7 +110,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
-from prismabuild import manifest_layout
+from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -127,9 +125,7 @@ from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
-    RANGE_SUFFIX, STAGE_MOVER_XATTR, _current_directory_version,
-    _is_action_key, _keepable_version, _metadata_version,
-    _trusted_directory_stamp, _version_fence, paths_named_once,
+    RANGE_SUFFIX, STAGE_MOVER_XATTR, _is_action_key, paths_named_once,
     pre_range_stage_relative, stage_relative,
 )
 
@@ -449,741 +445,15 @@ def _namespace_shaped(name: str) -> bool:
             and all(character in "0123456789abcdef" for character in name))
 
 
-class _CensusMemo:
-    """Parsed census documents, reused while their file version holds (#988).
-
-    An egress takes its ownership censuses twice: once before the stage
-    ownership lock, as a hint, and again under it, where the delete decision
-    is made.  The pass under the lock lists every directory again and opens
-    every document again, so a file that was added, removed, replaced or
-    rewritten is seen before any decision uses it.  Only a document whose
-    version is unchanged skips its read and parse, and the version is taken
-    with ``fstat`` on the descriptor the pass just opened.  It is the
-    publication gate's own reuse fence (``stage_move._metadata_version``,
-    #761): device, inode, size, mtime and ctime.
-
-    A read that failed is never remembered: unreadable stays freshly
-    unreadable.  A claim's derived stage paths are remembered by claim key,
-    because they come from the sealed request and the data manifest, and both
-    are immutable under their digests; the claim listing and each claim
-    record are still read fresh.  One memo lives for one call; nothing
-    carries over between calls.  (:class:`CensusIndex`, the tier loop's
-    subclass, is the exception, and its docstring says what it keeps.  So
-    is a staged publisher's claim-cover memo, which keeps only ``claims``
-    for the publisher's run: ``stage_move._StagedPublisher``, #1089.)
-
-    It counts what it parses and what it reuses (fragments and material
-    sidecars; for pins, what it parses), so a caller can record how much
-    census work ran inside its hold (:func:`_locked_parse_record`).
-    """
-
-    def __init__(self) -> None:
-        self.fragments: dict[str, tuple[tuple, dict[str, object]]] = {}
-        self.paths: dict[int, frozenset[str]] = {}
-        self.normalized: dict[int, frozenset[str]] = {}
-        self.claims: dict[tuple, frozenset[str]] = {}
-        self.sources: dict[tuple, frozenset[str]] = {}
-        self.pins = _PinMemo()
-        self.materials: dict[str, tuple[tuple, object]] = {}
-        #: A remembered fragment's file, by the parsed document's identity.
-        self.files: dict[int, str] = {}
-        self.parses = 0     # fragments and material sidecars parsed
-        self.reuses = 0     # fragments and material sidecars reused
-
-    def counts(self) -> tuple[int, int]:
-        """``(parsed, reused)`` so far: every document kind, pins included."""
-
-        return self.parses + self.pins.parses, self.reuses
-
-    def paths_of(self, document: Mapping[str, object]) -> frozenset[str] | None:
-        """The stage paths a remembered fragment names, or ``None``."""
-
-        return self.paths.get(id(document))
-
-    def normalized_paths_of(self, document: Mapping[str, object],
-                            ) -> frozenset[str] | None:
-        """The same paths, ``normpath``-ed once per parse, or ``None``."""
-
-        named = self.paths.get(id(document))
-        if named is None:
-            return None
-        normalized = self.normalized.get(id(document))
-        if normalized is None:
-            normalized = frozenset(os.path.normpath(path) for path in named)
-            self.normalized[id(document)] = normalized
-        return normalized
-
-    def version_of(self, document: Mapping[str, object],
-                   ) -> tuple[str, tuple] | None:
-        """The file and version a remembered fragment was read from, or ``None``.
-
-        The version is the one the parse, or its latest reuse, was fenced
-        on: ``fstat`` of the descriptor that read it (#1056 fences a skip
-        checkpoint on the co-owner fragments a verdict relied on).
-        """
-
-        key = self.files.get(id(document))
-        if key is None:
-            return None
-        hit = self.fragments.get(key)
-        if hit is None or hit[1] is not document:
-            return None
-        return key, hit[0]
-
-    def forget(self, key: str) -> None:
-        """Drop one fragment file's parse, and the path set keyed by it."""
-
-        old = self.fragments.pop(key, None)
-        if old is not None:
-            self.paths.pop(id(old[1]), None)
-            self.normalized.pop(id(old[1]), None)
-            self.files.pop(id(old[1]), None)
-
-
-class _PinMemo(dict):
-    """``reader_lease.live_for``'s pin memo, counting the pins it parses.
-
-    ``live_for`` stores a pin's parse exactly once per parse and never on a
-    reuse, so the number of stores is the number of pins it parsed.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.parses = 0
-
-    def __setitem__(self, key: str, value: object) -> None:
-        self.parses += 1
-        super().__setitem__(key, value)
-
-
-class CensusIndex(_CensusMemo):
-    """A census memo the tier loop keeps from one cycle to the next (#992).
-
-    Every cycle took the residency census from nothing: it listed every
-    namespace directory and parsed every fragment, 429 namespaces, 1,957
-    produced-output directories and 240,705 fragment entries on the live
-    shape, and nothing had changed since the cycle before.  This keeps what
-    a census read, and re-reads only what changed.
-
-    Two layers, both fences the census already trusts:
-
-    * **A document** is reused while its file version holds -- device,
-      inode, size, mtime and ctime, taken with ``fstat`` on the descriptor
-      that read it (:class:`_CensusMemo`, the publication gate's #761 fence).
-    * **A directory** is not listed again while its ``lstat`` version equals
-      a stamp taken before its last listing, and no document in it is opened
-      while its ``stat`` version still equals the one it was parsed at
-      (:func:`stage_move._trusted_directory_stamp` has the argument for the
-      directory; a stamp is refused inside the clock tick it was taken in,
-      on a network filesystem, and on anything that is not a directory).
-      The stamp is taken before the listing and compared again after it,
-      and only an equal pair with no unreadable entry is remembered, the way
-      a skip checkpoint is (:func:`_install_skip_checkpoint`).  So a census
-      under the stage lock still sees a fragment added, removed, replaced or
-      rewritten since the hint, as :class:`_CensusMemo` promises, and costs
-      one ``lstat`` per directory and one ``stat`` per fragment.
-
-    A directory whose listing produced taint is never remembered: unreadable
-    stays freshly unreadable.  A document that left its directory is
-    forgotten when the directory is listed again, and a directory that left
-    its level when the level is, so what is kept is bounded by what is on
-    disk.
-
-    Reader pins are not kept across calls: :func:`reader_lease.live_for`
-    lists and opens every pin each census, and its memo remembers every pin
-    it ever parsed, so each call that wants one takes a fresh
-    :class:`_PinMemo` (:meth:`fresh_pins`).  Neither are the claim and source
-    path sets, which only an egress reads.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        #: Stage directory (as ``str``) -> ``(stamp, children, entries)`` for
-        #: :func:`_unattributed_candidates`.  ``stamp`` is
-        #: :func:`stage_move._trusted_directory_stamp`'s version, or ``None``
-        #: when no listing of the directory may be reused; ``children`` are
-        #: the real subdirectories the walk recursed into; ``entries`` maps a
-        #: file name to ``(version, kind, mover)``, its classification from
-        #: the last probe.  A stale entry is a probe hint only: the directory
-        #: is listed again, and a file's classification is reused only while
-        #: its own version holds (#1045).
-        self.stage_walk: dict[str, tuple[
-            tuple | None, tuple[str, ...],
-            dict[str, tuple[tuple | None, str, str]]]] = {}
-        self.walk_listed = 0    # stage directories listed
-        self.walk_kept = 0      # stage directories whose listing was reused
-        self.walk_probed = 0    # stage files whose marks were read
-        self.walk_reused = 0    # stage files whose classification was reused
-        #: Namespace directory -> ``(stamp, [(mover, document)], file keys)``.
-        self.namespaces: dict[str, tuple[tuple, list[tuple[str, dict[str, object]]],
-                                         frozenset[str]]] = {}
-        #: Level directory -> ``(stamp, [(name, kind)])``, ``kind`` one of
-        #: ``dir``, ``link``, ``other`` or an ``error: ...`` string.
-        self.levels: dict[str, tuple[tuple, list[tuple[str, str]]]] = {}
-        #: File keys the last listing of each namespace directory read.
-        self._files: dict[str, frozenset[str]] = {}
-        self.listed = 0       # directories listed
-        self.kept = 0         # directories whose listing was reused
-        #: Dead owners whose stale-mention census a skip checkpoint stood
-        #: for, and dead owners censused (#1056): the cycle line counts both,
-        #: because a skip emits no per-owner receipt.
-        self.stale_skipped = 0
-        self.stale_censused = 0
-        #: Censused owners that were idle but whose skip checkpoint was
-        #: refused, by reason (#1069): the receipt names the reason, and the
-        #: cycle line counts them so a cycle that keeps re-censusing an
-        #: owner shows why.
-        self.stale_cache_refused: dict[str, int] = {}
-
-    def fresh_pins(self) -> _PinMemo:
-        """A pin memo for one call (see the class docstring)."""
-
-        self.pins = _PinMemo()
-        return self.pins
-
-    def stage_hit(self, directory: str,
-                  ) -> tuple[tuple[str, ...],
-                             dict[str, tuple[tuple | None, str, str]]] | None:
-        """One stage directory's listing, when its stamp still holds.
-
-        ``None`` for a directory never listed, one whose stamp cannot be
-        trusted, or one whose version moved: the caller lists it again.
-        """
-
-        kept = self.stage_walk.get(directory)
-        if kept is None or kept[0] is None:
-            return None
-        if _current_directory_version(directory) != kept[0]:
-            return None
-        self.walk_kept += 1
-        return kept[1], kept[2]
-
-    def stage_memo(self, directory: str,
-                   ) -> tuple[tuple | None, tuple[str, ...],
-                              dict[str, tuple[tuple | None, str, str]]] | None:
-        """A stage directory's last listing, stale stamps included.
-
-        A probe hint only: the caller that cannot reuse the listing reads
-        the directory again and compares each file's version before reusing
-        its classification.
-        """
-
-        return self.stage_walk.get(directory)
-
-    def remember_stage(self, directory: str, stamp: tuple | None,
-                       children: "list[str]",
-                       entries: dict[str, tuple[tuple | None, str, str]],
-                       previous_children: "list[str] | None" = None, *,
-                       retry: bool = False) -> None:
-        """Record one stage listing, and drop what left it.
-
-        The stamp is kept only while a fresh ``lstat`` still returns it, and
-        only when it was trusted before the listing; otherwise ``None``,
-        which carries the entries as a probe hint and nothing more.  A
-        ``retry`` listing -- one where a name could not be stat-ed -- never
-        keeps its stamp, because the failure did not move the directory's
-        version and the name must be tried again rather than lost.  A child
-        directory that is no longer in the listing loses its own listing and
-        every descendant's, so the memo owns no name that is not on disk.
-        """
-
-        self.walk_listed += 1
-        name = str(directory)
-        if previous_children is not None:
-            for gone in set(previous_children) - set(children):
-                self.forget_stage(gone)
-        if (retry or stamp is None
-                or _current_directory_version(directory) != stamp):
-            stamp = None
-        self.stage_walk[name] = (stamp, tuple(children), entries)
-
-    def refresh_stage(self, directory: str,
-                      entries: dict[str, tuple[tuple | None, str, str]],
-                      *, retry: bool = False,
-                      ) -> None:
-        """Replace a reused listing's per-file classifications.
-
-        ``retry`` drops the stamp, so a name whose ``lstat`` failed is listed
-        again on the next pass instead of being hidden by the listing that
-        could not read it.
-        """
-
-        kept = self.stage_walk.get(str(directory))
-        if kept is not None:
-            self.stage_walk[str(directory)] = (None if retry else kept[0],
-                                               kept[1], entries)
-
-    def forget_stage(self, directory: str) -> None:
-        """Drop one stage directory's listing and every descendant's."""
-
-        name = str(directory)
-        self.stage_walk.pop(name, None)
-        prefix = name.rstrip(os.sep) + os.sep
-        for known in [path for path in self.stage_walk
-                      if path.startswith(prefix)]:
-            self.stage_walk.pop(known, None)
-
-    def namespace_hit(self, directory: Path,
-                      ) -> list[tuple[str, dict[str, object]]] | None:
-        """The fragments a remembered listing of ``directory`` holds, or ``None``."""
-
-        kept = self.namespaces.get(str(directory))
-        if kept is None:
-            return None
-        if (_current_directory_version(directory) != kept[0]
-                or not self._documents_hold(kept[2])):
-            self.namespaces.pop(str(directory), None)
-            return None
-        self.kept += 1
-        return kept[1]
-
-    def _documents_hold(self, keys: frozenset[str]) -> bool:
-        """Whether every document a kept listing read is the version parsed.
-
-        One ``stat`` per fragment.  The directory's stamp says no fragment
-        was filed, removed or renamed; this says none was rewritten in
-        place, made unreadable or restored to an older mtime, each of which
-        moves the file's ctime.  No writer changes a fragment in place, but
-        the #988 census under the stage lock promised to see one, and this
-        keeps that promise for less than a listing costs.
-        """
-
-        fence = _version_fence()
-        for key in keys:
-            parsed = self.fragments.get(key)
-            if parsed is None:
-                return False
-            try:
-                info = os.stat(key)
-            except OSError:
-                return False
-            if _keepable_version(info, fence, path=key) != parsed[0]:
-                return False
-        return True
-
-    def remember_namespace(self, directory: Path, stamp: tuple | None,
-                           found: list[tuple[str, dict[str, object]]],
-                           read: set[str], tainted: bool) -> None:
-        """Record one listing of ``directory``: what it found and what it read."""
-
-        name = str(directory)
-        self.listed += 1
-        for gone in self._files.get(name, frozenset()) - read:
-            self.forget(gone)
-        self._files[name] = frozenset(read)
-        if (stamp is None or tainted
-                or _current_directory_version(directory) != stamp):
-            self.namespaces.pop(name, None)
-            return
-        self.namespaces[name] = (stamp, list(found), frozenset(read))
-
-    def forget_namespace(self, directory: str) -> None:
-        """Drop a namespace directory that left its level, and its documents."""
-
-        self.namespaces.pop(directory, None)
-        for gone in self._files.pop(directory, frozenset()):
-            self.forget(gone)
-
-    def level_hit(self, directory: Path) -> list[tuple[str, str]] | None:
-        """A remembered classification of ``directory``'s children, or ``None``."""
-
-        kept = self.levels.get(str(directory))
-        if kept is None:
-            return None
-        if _current_directory_version(directory) != kept[0]:
-            self.levels.pop(str(directory), None)
-            return None
-        self.kept += 1
-        return kept[1]
-
-    def remember_level(self, directory: Path, stamp: tuple | None,
-                       children: list[tuple[str, str]]) -> None:
-        """Record one listing of a level; forget namespaces that left it."""
-
-        name = str(directory)
-        self.listed += 1
-        present = {os.path.join(name, child) for child, kind in children
-                   if kind == "dir"}
-        prefix = name.rstrip(os.sep) + os.sep
-        for known in [path for path in self._files
-                      if path.startswith(prefix)
-                      and os.sep not in path[len(prefix):]
-                      and path not in present]:
-            self.forget_namespace(known)
-        if (stamp is None
-                or any(kind.startswith("error") for _child, kind in children)
-                or _current_directory_version(directory) != stamp):
-            self.levels.pop(name, None)
-            return
-        self.levels[name] = (stamp, list(children))
-
-
-class DirectoryRecords:
-    """Queue records re-read only where they changed (#992).
-
-    The tier loop reads the same small records every cycle: every movement
-    and prewarm receipt, and every ``ready/`` and ``claimed/`` record, three
-    times over.  This keeps each directory's parsed records by file version
-    and each directory's listing by the stamp of
-    :func:`stage_move._trusted_directory_stamp`, so a directory nothing was
-    filed in since is not listed, and a record whose version holds is not
-    read.  Every writer of these records files by rename
-    (``pool._write_json_atomic``), which is what both fences stand on.
-
-    A read that raises is never remembered, and the raise reaches the caller
-    exactly as the plain read's would.  One reader keeps one meaning per
-    directory: every read of a directory must pass the same ``select`` and
-    ``parse``, because what it returns from a kept listing is what the first
-    one parsed.
-
-    A changed directory stats every name it lists, not only the names it has
-    not seen.  These records are replaced under their own names -- a mover
-    re-run under the same content-hash key files its receipt again, and a
-    prewarm receipt is pruned and filed afresh -- and a file created after an
-    unlink can be given the unlinked file's inode number, so neither the name
-    nor the listing's inode number says a record is unchanged.  The #761
-    version, ctime included, does -- once its clock tick has passed: two
-    files in one tick can share all five fields, so a version is kept only
-    under :func:`stage_move._keepable_version`'s rule (#1045).
-    """
-
-    def __init__(self) -> None:
-        #: Directory -> ``(stamp or None, {name: (version, record)})``.
-        self._directories: dict[str, tuple[tuple | None,
-                                           dict[str, tuple[tuple, object]]]] = {}
-        #: Directory -> a count that moves whenever its record set changes.
-        self._generations: dict[str, int] = {}
-        #: Directory -> ``(stamp, names)`` for :meth:`names`.
-        self._names: dict[str, tuple[tuple, frozenset[str]]] = {}
-        self.listed = 0
-        self.kept = 0
-        self.parsed = 0
-
-    def names(self, directory: Path, *, select,
-              missing_ok: bool = True) -> frozenset[str]:
-        """The names in ``directory`` that ``select(name)`` keeps.
-
-        A names-only listing, kept under the same stamp as :meth:`read`'s:
-        creating, removing or renaming an entry moves the directory's
-        ``mtime`` and ``ctime``, so while its stamp holds the set is the
-        same.  Where no stamp can be trusted (a network filesystem, the tick
-        the directory last changed in), the directory is listed every call,
-        as a plain ``os.listdir`` is.  A directory that does not exist reads
-        as empty and is not remembered; any other ``OSError`` reaches the
-        caller, never an empty set.  ``missing_ok=False`` also raises on
-        absence, for authoritative ledger censuses that must refuse it.
-        """
-
-        name = str(directory)
-        kept = self._names.get(name)
-        if kept is not None and _current_directory_version(directory) == kept[0]:
-            self.kept += 1
-            return kept[1]
-        self._names.pop(name, None)
-        stamp = _trusted_directory_stamp(directory)
-        try:
-            listed = os.listdir(directory)
-        except FileNotFoundError:
-            if not missing_ok:
-                raise
-            return frozenset()
-        self.listed += 1
-        found = frozenset(child for child in listed if select(child))
-        if stamp is not None and _current_directory_version(directory) == stamp:
-            self._names[name] = (stamp, found)
-        return found
-
-    def retain(self, directories) -> None:
-        """Forget the listing and records of every directory not named.
-
-        For a caller that reads a changing set of directories -- one per
-        withdrawal decision, say -- so what is kept stays bounded by what it
-        still reads.  A forgotten directory is listed afresh on its next
-        read.  Its :meth:`generation` counter is kept, so a number a caller
-        remembered from before is never handed out again.
-        """
-
-        wanted = {str(directory) for directory in directories}
-        for kept in (self._directories, self._names):
-            for name in [name for name in kept if name not in wanted]:
-                del kept[name]
-
-    def generation(self, directory: Path) -> int:
-        """A number that changes whenever ``directory``'s records change.
-
-        Equal before and after a :meth:`read` exactly when that read returned
-        the same names with the same record objects, so a pure function of
-        the records can be remembered under it.
-        """
-
-        return self._generations.get(str(directory), 0)
-
-    def read(self, directory: Path, *, select, parse, thaw=None,
-             keep=None, stat_parse: bool = False,
-             checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
-        """``(path, record)`` for each selected name, in name order.
-
-        ``select(entry)`` takes an ``os.DirEntry`` and says whether the name
-        is read at all; ``parse(path)`` reads one record and may return
-        ``None`` (listed without a record) or raise.  ``keep(record)``, when
-        given, says whether a parse may be remembered: one it refuses is
-        returned but parsed again next time, and the directory is listed
-        again next time too.  ``thaw``, when given, turns what ``parse``
-        returned into what the caller receives, on every read: a caller that
-        may change the record it is handed keeps the file's bytes here and
-        parses them per read, so no change leaks into the next cycle.  A
-        directory that does not exist reads as empty and is not remembered.
-        With ``stat_parse`` the parse is called ``parse(path, info)``, where
-        ``info`` is the ``os.stat`` its version was taken from (``None`` when
-        that failed), so a parse that wants the file's metadata does not
-        stat the file a second time.
-
-        ``checkpoint``, when given, is called with no arguments after each
-        entry the listing yields, once the listing is complete, and before
-        each entry is stat-ed and, if it changed, parsed (#1148).  It is the
-        tier loop's liveness checkpoint (`tier_loop.Liveness.checkpoint`):
-        a directory on a loaded pool can take minutes to list and stat, and
-        the tier records must be re-announced inside that read, not only
-        after it.  A checkpoint is a clock read and a comparison, against a
-        stat that costs milliseconds or more on a loaded pool, so each
-        entry is its own batch.  What it raises reaches the caller as a
-        parse's raise would.  Without it the read is as before.
-
-        ``readers`` above 1 stats and parses a changed directory's entries on
-        that many threads (#1153): a cold read costs one seek per entry, and
-        the pool serves many seeks at once, so the read costs (entries /
-        readers) x latency rather than entries x latency.  Only the ``stat``
-        and the ``parse`` run on the readers, including the exact-object
-        trust recheck before returning an earlier parse. Everything else runs
-        on the calling thread, one entry at a time and in name order, exactly as a
-        serial read runs it: the version comparison, ``keep``, the #1045
-        fence, the counters, and ``checkpoint``, which is called before each
-        entry's result is taken.  A reader takes a run of consecutive entries
-        (:data:`READ_RUN_MAX` at most) and at most ``2 x readers`` runs are in
-        flight, so a raise, first in name order as a serial read's is, stops
-        the read with at most that many reads wasted, and nothing a reader
-        did is kept.  ``parse`` must then be safe to call from several
-        threads at once; ``pool._read_json`` is.
-        """
-
-        out = self._read(directory, select=select, parse=parse, keep=keep,
-                         stat_parse=stat_parse, checkpoint=checkpoint,
-                         readers=readers)
-        if thaw is None:
-            return out
-        return [(path, thaw(path, kept)) for path, kept in out]
-
-    def _read(self, directory: Path, *, select, parse, keep,
-              stat_parse: bool = False,
-              checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
-        name = str(directory)
-        kept = self._directories.get(name)
-        current = None
-        if kept is not None:
-            current = _current_directory_version(directory)
-        if kept is not None and kept[0] is not None and current == kept[0]:
-            self.kept += 1
-            return [(directory / child, record)
-                    for child, (_version, record) in sorted(kept[1].items())]
-        previous = kept[1] if kept is not None else {}
-        if kept is not None and current is None:
-            # The kept listing's proof left with its filesystem's trust
-            # (#1208): its stamp was only sound while the directory's times
-            # came from this kernel's clock.  What it parsed is then no
-            # evidence for any entry, even one whose bare stat still reads the
-            # same, so every entry is read again -- as a plain read on that
-            # filesystem reads it -- and the fresh parses are kept only if
-            # the fence below lets them.  A stamp refused for the tick the
-            # directory changed in leaves ``current`` non-None: the
-            # filesystem still answers for its clock, so the entries' own
-            # versions are evidence and are reused.
-            previous = {}
-        stamp = _trusted_directory_stamp(directory)
-        # Read before any entry is stat-ed: a version whose ctime is not
-        # strictly before it is not kept (#1045, :func:`_keepable_version`).
-        fence = _version_fence()
-        try:
-            if checkpoint is None:
-                entries = sorted((entry for entry in os.scandir(directory)
-                                  if select(entry)),
-                                 key=lambda entry: entry.name)
-            else:
-                # A listing is one stretch too, and on a loaded pool a long
-                # one (#1148): checkpoint after every entry it yields.
-                selected = []
-                with os.scandir(directory) as listing:
-                    for entry in listing:
-                        if select(entry):
-                            selected.append(entry)
-                        checkpoint()
-                entries = sorted(selected, key=lambda entry: entry.name)
-        except (FileNotFoundError, NotADirectoryError):
-            if self._directories.pop(name, None) is not None:
-                self._generations[name] = self._generations.get(name, 0) + 1
-            return []
-        self.listed += 1
-        if checkpoint is not None:
-            checkpoint()      # the directory is listed
-        records: dict[str, tuple[tuple, object]] = {}
-        out: list[tuple[Path, object]] = []
-        complete = True
-        changed = False
-
-        def entry_io(entry: os.DirEntry) -> tuple | None:
-            """One entry's ``stat`` and, when its version moved, its parse.
-
-            ``None`` for an entry gone since the listing; otherwise ``(info,
-            version, parsed, record)``.  The only part of an entry's read
-            that may run on a reader thread: it touches nothing but the file.
-            """
-
-            path = directory / entry.name
-            info = None
-            try:
-                # The listing's own string, not ``path``: converting a
-                # ``Path`` back to a string for every name was most of a
-                # 30,000-name listing's cost.
-                info = os.stat(entry.path)
-                version = _metadata_version(info)
-            except FileNotFoundError:
-                return None
-            except OSError:
-                version = None
-            hit = previous.get(entry.name)
-            if (info is not None and version is not None
-                    and hit is not None and hit[0] == version
-                    and _keepable_version(info, fence, path=entry.path) is not None):
-                return info, version, False, hit[1]
-            record = parse(path, info) if stat_parse else parse(path)
-            return info, version, True, record
-
-        try:
-            for entry, outcome in _entry_reads(entries, entry_io,
-                                               readers=readers,
-                                               checkpoint=checkpoint):
-                if outcome is None:
-                    continue
-                path = directory / entry.name
-                info, version, parsed, record = outcome
-                if version is None:
-                    complete = False      # the stat failed
-                if parsed:
-                    self.parsed += 1
-                    changed = True
-                    if keep is not None and not keep(record):
-                        complete = False
-                        version = None
-                if version is not None:
-                    # A version changed in the fence's tick could be matched
-                    # by a new file under this name given the freed inode
-                    # (#1045): not kept, so it is read again next pass, and
-                    # neither is the listing, which would lack it.
-                    version = _keepable_version(info, fence, path=entry.path)
-                    if version is None:
-                        complete = False
-                if version is not None:
-                    records[entry.name] = (version, record)
-                out.append((path, record))
-        except BaseException:
-            self._directories.pop(name, None)
-            self._generations[name] = self._generations.get(name, 0) + 1
-            raise
-        if changed or set(previous) != set(records) or not complete:
-            self._generations[name] = self._generations.get(name, 0) + 1
-        if (not complete or stamp is None
-                or _current_directory_version(directory) != stamp):
-            stamp = None
-        self._directories[name] = (stamp, records)
-        return out
-
-
-#: The most entries one reader takes at a time (#1153).  Handing an entry to
-#: a reader thread and taking its result back cost about as much as a warm
-#: ``stat`` (``tools/fleet/bench_tier_cold_start.py``: 12,000 entries of a
-#: changed directory took 0.26 to 0.28 s one entry per handoff, 0.12 to
-#: 0.17 s serially, on sparky), so a reader takes a run of consecutive
-#: entries and hands back the run.  16 makes the handoff a sixteenth of the
-#: warm cost.  It also bounds the longest wait between two checkpoints: 16
-#: cold reads, about 4 s at the 4 reads a second dl380g10's loaded pool
-#: gave a serial reader on 2026-09-25, against the 90 s horizon.
-READ_RUN_MAX = 16
-
-
-def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
-    """``(entry, entry_io(entry))`` in ``entries``' order, read by ``readers``.
-
-    ``checkpoint`` runs on the calling thread before each entry's result is
-    taken: serially that is before its ``stat``, as :meth:`DirectoryRecords.read`
-    promised (#1148).  With readers, each reader takes a run of consecutive
-    entries (:data:`READ_RUN_MAX` at most, fewer when there are too few
-    entries to give every reader two runs) and reads them in order; the
-    calling thread waits for a run before its first entry and takes the
-    rest of it without waiting.  A stretch between two checkpoints is
-    therefore at most one run's read.  A raise from ``entry_io`` ends its
-    run there, and reaches the caller at that entry's turn, after the
-    entries before it; the runs still being read are not waited for: they
-    touch nothing but their files.
-    """
-
-    readers = min(int(readers), len(entries))
-    if readers <= 1:
-        for entry in entries:
-            if checkpoint is not None:
-                checkpoint()      # before each entry's stat and parse
-            yield entry, entry_io(entry)
-        return
-    size = max(1, min(READ_RUN_MAX, len(entries) // (2 * readers)))
-
-    def read_run(run):
-        done = []
-        for entry in run:
-            try:
-                done.append((entry, entry_io(entry), None))
-            except BaseException as exc:  # noqa: BLE001 -- raised in order
-                done.append((entry, None, exc))
-                break
-        return done
-
-    runs = iter([entries[at:at + size] for at in range(0, len(entries), size)])
-    # A bounded read-ahead: two runs per reader in flight, enough to keep
-    # every reader busy while the caller takes the run before, and no more,
-    # so a raise early in the directory does not wait on the rest of it.
-    window = 2 * readers
-    executor = ThreadPoolExecutor(max_workers=readers,
-                                  thread_name_prefix="directory-records")
-    pending: deque = deque()
-    try:
-        for run in runs:
-            pending.append(executor.submit(read_run, run))
-            if len(pending) >= window:
-                break
-        while pending:
-            future = pending.popleft()
-            if checkpoint is not None:
-                checkpoint()      # before the run's first result is taken
-            done = future.result()
-            following = next(runs, None)
-            if following is not None:
-                pending.append(executor.submit(read_run, following))
-            for at, (entry, outcome, raised) in enumerate(done):
-                if at and checkpoint is not None:
-                    checkpoint()  # before each later entry's result is taken
-                if raised is not None:
-                    raise raised
-                yield entry, outcome
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-
-
-#: The tier loop's :class:`DirectoryRecords` while one of its cycles runs,
+#: The tier loop's :class:`kept_reads.DirectoryRecords` while one of its cycles runs,
 #: so every step that reads ``ready/`` and ``claimed/`` shares one read of
 #: them (#992).  ``None`` everywhere else, where the plain read runs.
-_QUEUE_RECORDS: contextvars.ContextVar["DirectoryRecords | None"] = (
+_QUEUE_RECORDS: contextvars.ContextVar["kept_reads.DirectoryRecords | None"] = (
     contextvars.ContextVar("stage_release_queue_records", default=None))
 
 
 @contextmanager
-def queue_records_from(reader: "DirectoryRecords"):
+def queue_records_from(reader: "kept_reads.DirectoryRecords"):
     """Serve :func:`queue_records` from ``reader`` inside the block."""
 
     token = _QUEUE_RECORDS.set(reader)
@@ -1193,8 +463,8 @@ def queue_records_from(reader: "DirectoryRecords"):
         _QUEUE_RECORDS.reset(token)
 
 
-def queue_records_reader() -> "DirectoryRecords | None":
-    """The cycle's :class:`DirectoryRecords`, or ``None`` outside a cycle.
+def queue_records_reader() -> "kept_reads.DirectoryRecords | None":
+    """The cycle's :class:`kept_reads.DirectoryRecords`, or ``None`` outside a cycle.
 
     A step that needs a listing rather than a record -- the names in
     ``withdrawn/``, or the names in the supersession marker directory --
@@ -1252,7 +522,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
                        thaw=_queue_record_from_bytes)  # type: ignore[return-value]
 
 
-def _locked_parse_record(memo: "_CensusMemo | None",
+def _locked_parse_record(memo: "kept_reads.CensusMemo | None",
                          before: tuple[int, int] | None) -> dict[str, object]:
     """How many census documents a hold parsed and reused (#988).
 
@@ -1270,7 +540,7 @@ def _locked_parse_record(memo: "_CensusMemo | None",
 
 
 def _read_own_material(root: Path, consumer_action_key: str,
-                       mover_action_key: str, memo: "_CensusMemo | None"):
+                       mover_action_key: str, memo: "kept_reads.CensusMemo | None"):
     """``reader_lease.read_material``, reused while its file version holds.
 
     The same three answers: the sidecar, ``None`` when it is absent, or the
@@ -1284,12 +554,12 @@ def _read_own_material(root: Path, consumer_action_key: str,
     path = reader_lease.material_path(root, consumer_action_key,
                                       mover_action_key)
     key = str(path)
-    fence = _version_fence()
+    fence = kept_reads.version_fence()
     try:
         with open(path) as stream:
             info = os.fstat(stream.fileno())
-            version = _metadata_version(info)
-            kept = _keepable_version(info, fence, descriptor=stream.fileno())
+            version = kept_reads.metadata_version(info)
+            kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
             hit = memo.materials.get(key)
             if kept is not None and hit is not None and hit[0] == version:
                 memo.reuses += 1
@@ -1297,7 +567,7 @@ def _read_own_material(root: Path, consumer_action_key: str,
             memo.parses += 1
             material = reader_lease.validate_material(json.load(stream))
             # Validate the original fstat while its exact descriptor is open.
-            kept = _keepable_version(info, fence, descriptor=stream.fileno())
+            kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
     except FileNotFoundError:
         memo.materials.pop(key, None)
         return None
@@ -1324,7 +594,7 @@ def _fragment_stage_paths(document: Mapping[str, object]) -> frozenset[str]:
     return frozenset(out)
 
 
-def _read_fragment(path: Path, memo: _CensusMemo | None = None,
+def _read_fragment(path: Path, memo: kept_reads.CensusMemo | None = None,
                    ) -> dict[str, object] | str:
     """One validated fragment, or the reason it is not one.  Never a skip.
 
@@ -1335,19 +605,19 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
     are lost.
 
     With a ``memo``, a document whose version is unchanged since the memo
-    parsed it is returned without a second parse (see :class:`_CensusMemo`).
+    parsed it is returned without a second parse (see :class:`kept_reads.CensusMemo`).
     """
 
     key = str(path)
-    fence = _version_fence() if memo is not None else None
+    fence = kept_reads.version_fence() if memo is not None else None
     try:
         with open(path) as stream:
             info = None
             kept = None
             if memo is not None:
                 info = os.fstat(stream.fileno())
-                version = _metadata_version(info)
-                kept = _keepable_version(info, fence, descriptor=stream.fileno())
+                version = kept_reads.metadata_version(info)
+                kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
                 hit = memo.fragments.get(key)
                 if kept is not None and hit is not None and hit[0] == version:
                     memo.reuses += 1
@@ -1355,7 +625,7 @@ def _read_fragment(path: Path, memo: _CensusMemo | None = None,
                 memo.parses += 1
             document = residency_map.validate_fragment(json.load(stream))
             if info is not None:
-                kept = _keepable_version(info, fence, descriptor=stream.fileno())
+                kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
     except (OSError, ValueError) as exc:
         if memo is not None:
             memo.forget(key)
@@ -1375,7 +645,7 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
                                direct: bool,
                                fragments: list[tuple[str, str, dict[str, object], bool]],
                                tainted: list[str],
-                               memo: _CensusMemo | None = None) -> None:
+                               memo: kept_reads.CensusMemo | None = None) -> None:
     """Every valid fragment filed directly under one namespace directory.
 
     ``direct`` is true only for a namespace that is an immediate child of the
@@ -1389,7 +659,7 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
     skip: a caller that deletes would otherwise read the loss as "no owner".
     """
 
-    index = memo if isinstance(memo, CensusIndex) else None
+    index = memo if isinstance(memo, kept_reads.CensusIndex) else None
     stamp = None
     if index is not None:
         kept = index.namespace_hit(directory)
@@ -1399,7 +669,7 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
             for mover, document in kept:
                 fragments.append((namespace, mover, document, direct))
             return
-        stamp = _trusted_directory_stamp(directory)
+        stamp = kept_reads.trusted_directory_stamp(directory)
     found: list[tuple[str, dict[str, object]]] = []
     read: set[str] = set()
     taint_before = len(tainted)
@@ -1467,7 +737,7 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                   fragments: list[tuple[str, str, dict[str, object], bool]],
                   tainted: list[str],
                   skip: frozenset[str] = frozenset(),
-                  memo: _CensusMemo | None = None) -> None:
+                  memo: kept_reads.CensusMemo | None = None) -> None:
     """Classify one directory level of the fragment store.
 
     One rule for both layouts: reserved bookkeeping is skipped, a
@@ -1491,10 +761,10 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
     nothing.
     """
 
-    index = memo if isinstance(memo, CensusIndex) else None
+    index = memo if isinstance(memo, kept_reads.CensusIndex) else None
     children = index.level_hit(directory) if index is not None else None
     if children is None:
-        stamp = (_trusted_directory_stamp(directory)
+        stamp = (kept_reads.trusted_directory_stamp(directory)
                  if index is not None else None)
         try:
             entries = sorted(os.scandir(directory),
@@ -1562,7 +832,7 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                                    memo=memo)
 
 
-def _fragment_census(root: Path, memo: _CensusMemo | None = None,
+def _fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None,
                      ) -> tuple[list[tuple[str, str, dict[str, object], bool]],
                                 list[str]]:
     """Every fragment under one residency root, and what cannot be read.
@@ -1609,7 +879,7 @@ def _fragment_census(root: Path, memo: _CensusMemo | None = None,
 def _fragment_owners(root: Path, wanted: set[str], *,
                      except_consumer: str = "",
                      except_mover: str = "",
-                     memo: _CensusMemo | None = None,
+                     memo: kept_reads.CensusMemo | None = None,
                      named_by: list[dict[str, object]] | None = None,
                      same_mover: list[str] | None = None,
                      ) -> tuple[dict[str, set[tuple[str, str]]], list[str]]:
@@ -1756,7 +1026,7 @@ def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
 def _claimed_paths(queue: pool.PoolQueue, tier_id: str,
                    cas_root: str | Path | None = None,
                    *, exclude: set[str] | frozenset[str] | None = None,
-                   memo: _CensusMemo | None = None,
+                   memo: kept_reads.CensusMemo | None = None,
                    ) -> tuple[set[str], list[str]]:
     """Staged paths a claimed copy may be writing, by sealed range.
 
@@ -1795,7 +1065,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
                               cas_root: str | Path | None = None, *,
                               exclude: set[str] | frozenset[str] | None = None,
                               own_key: str = "",
-                              memo: _CensusMemo | None = None,
+                              memo: kept_reads.CensusMemo | None = None,
                               ) -> tuple[set[str], list[str], set[str]]:
     """:func:`_claimed_paths`, attributing one key's paths separately.
 
@@ -2460,7 +1730,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     stage = Path(stage_root)
     auto_reclaimed: list[str] = []
     auto_retained: dict[str, str] = {}
-    memo = _CensusMemo()
+    memo = kept_reads.CensusMemo()
     fences: dict[str, tuple] | None = None
     census_s = 0.0
     if entries and tier_id is not None:
@@ -2494,7 +1764,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                 auto_retained.setdefault(ref_id, why)
         # The rest of the census, and each entry's containment fence, are
         # hints too (#988).  They run here, without the lock, so the pass
-        # under it re-reads only what changed (see :class:`_CensusMemo`)
+        # under it re-reads only what changed (see :class:`kept_reads.CensusMemo`)
         # and resolves no path.  Nothing decided here is acted on: every
         # verdict is judged again under the lock against the census taken
         # there.
@@ -2618,7 +1888,7 @@ def _entry_fences(stage: Path, entries: Mapping[str, object],
 def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
                       consumer_action_key: str, stage: Path, tier_id: str,
                       root: Path, entries: Mapping[str, object],
-                      memo: _CensusMemo | None = None,
+                      memo: kept_reads.CensusMemo | None = None,
                       shared: bool = False) -> dict[str, object]:
     """The four ownership censuses one egress decides on, in snapshot order.
 
@@ -2653,7 +1923,7 @@ def _ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
 
 def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
                           cas_root: str | Path | None = None,
-                          memo: _CensusMemo | None = None,
+                          memo: kept_reads.CensusMemo | None = None,
                           ) -> tuple[set[str], list[str]]:
     """Stage paths a live RAM promotion may be reading, by sealed source leg.
 
@@ -2820,7 +2090,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
                  reason: str, auto_reclaimed: list[str],
                  auto_retained: dict[str, str],
                  whole: bool = False,
-                 memo: _CensusMemo | None = None,
+                 memo: kept_reads.CensusMemo | None = None,
                  fences: Mapping[str, tuple] | None = None,
                  prune_after: set[Path] | None = None,
                  shared_range: bool = False) -> dict[str, object]:
@@ -3332,7 +2602,7 @@ def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
         return None
     if not statmod.S_ISREG(info.st_mode):
         return None
-    return _metadata_version(info)
+    return kept_reads.metadata_version(info)
 
 
 def _fenced_path_version(path: Path | str, fence: int | None,
@@ -3343,7 +2613,7 @@ def _fenced_path_version(path: Path | str, fence: int | None,
     ``version`` is :func:`_path_version`'s change evidence, which the prune
     compares before and after its scan.  ``trusted`` is the same version
     when a skip checkpoint may stand on it, else ``None``: the #1045 rule
-    (:func:`stage_move._keepable_version`) with ``fence`` read before this
+    (:func:`kept_reads.keepable_version`) with ``fence`` read before this
     ``lstat``.  A file whose ctime is not strictly before the fence changed
     in the fence's clock tick, and a rename cycle later in that tick can be
     given the freed inode number and reproduce all five fields (#1070).
@@ -3355,7 +2625,7 @@ def _fenced_path_version(path: Path | str, fence: int | None,
         return None, None
     if not statmod.S_ISREG(info.st_mode):
         return None, None
-    return _metadata_version(info), _keepable_version(
+    return kept_reads.metadata_version(info), kept_reads.keepable_version(
         info, fence, path=path, follow_symlinks=False)
 
 
@@ -3400,13 +2670,13 @@ def _forget_checkpoint_locked(key: tuple) -> None:
         _skip_checkpoint_usage["bytes"] -= int(record["bytes"])
 
 
-def _co_owner_fences(memo: _CensusMemo,
+def _co_owner_fences(memo: kept_reads.CensusMemo,
                      documents: list[dict[str, object]],
                      ) -> dict[str, tuple] | None:
     """The file version of every co-owner fragment a verdict relied on.
 
     Each is the version the census under the lock read the document at
-    (:meth:`_CensusMemo.version_of`), never a fresh sample, so a co-owner
+    (:meth:`kept_reads.CensusMemo.version_of`), never a fresh sample, so a co-owner
     removed or rewritten after that read is seen by the next pass.  ``None``
     when any document's version is unknown: then nothing may be cached.
     """
@@ -3466,7 +2736,7 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
     """Install the EXACT verified versions of one owner with nothing to act on.
 
     The caller passes the trusted stamps it sampled before its scan
-    (:func:`stage_move._trusted_directory_stamp`, #1062) and proved equal to
+    (:func:`kept_reads.trusted_directory_stamp`, #1062) and proved equal to
     a sample after it, and the co-owner fragment versions its census read
     (``documents``, which ``None`` refuses); nothing is sampled again here, so
     a rename that lands between the scan and this call can never be blessed
@@ -3534,7 +2804,7 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
         record = _skip_checkpoints.get(key)
     if record is None:
         return False
-    fence = _version_fence()  # before any current file observation (#1045)
+    fence = kept_reads.version_fence()  # before any current file observation (#1045)
     fresh = (_fenced_path_version(fragment_path, fence)[1] == record["fragment"]
              and _fenced_path_version(material_path, fence)[1] == record["material"])
     if fresh:
@@ -3544,7 +2814,7 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
                 break
     if fresh:
         for name, version in dict(record["dirs"]).items():
-            if _current_directory_version(Path(name)) != version:
+            if kept_reads.current_directory_version(Path(name)) != version:
                 fresh = False
                 break
     if not fresh:
@@ -3755,7 +3025,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # in the tick of the clock read before its ``lstat`` is one a same-tick
     # rename given the freed inode could reproduce, so it is scanned again
     # next pass, as a refused directory stamp is (#1062).
-    document_fence = _version_fence()
+    document_fence = kept_reads.version_fence()
     fragment_version_before, fragment_trusted = _fenced_path_version(
         fragment_path, document_fence)
     material_version_before, material_trusted = _fenced_path_version(
@@ -3765,7 +3035,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # the lock (#988): the pass under it re-reads only what changed, and the
     # observed entries are the ones it acts on, because it retains unless
     # the fragment under the lock equals ``observed``.
-    memo = _CensusMemo()
+    memo = kept_reads.CensusMemo()
     census_started = time.perf_counter()
     observed_entries = observed.get("entries")
     hint_fences: dict[str, tuple] | None = None
@@ -3944,14 +3214,14 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         # one coarse clock tick share a stamp, so a stamp sampled between
         # them would be one the second change never moves, and a checkpoint
         # standing on it would skip a rename made in that tick.
-        # ``stage_move._trusted_directory_stamp`` refuses a directory changed
+        # ``kept_reads.trusted_directory_stamp`` refuses a directory changed
         # in the current tick (and one on a filesystem whose times are not
         # this kernel's clock); a refused stamp still takes part in the
         # before/after comparison, at its bare version, but the checkpoint
         # refuses to install on it, so the owner is scanned again next pass.
         parents = {Path(str(entry["stage_path"])).parent
                    for entry in entries.values()}
-        dirs_trusted = {str(parent): _trusted_directory_stamp(parent)
+        dirs_trusted = {str(parent): kept_reads.trusted_directory_stamp(parent)
                         for parent in parents}
         dirs_before = {name: (stamp if stamp is not None
                               else _directory_version(name))
@@ -4071,7 +3341,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # The trim's own write is in the current tick, so this is
                 # trusted only once a tick has passed since it (#1070).
                 material_final_version = _fenced_path_version(
-                    material_path, _version_fence())[1]
+                    material_path, kept_reads.version_fence())[1]
             cacheable = _install_skip_checkpoint(
                 checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
@@ -4572,7 +3842,7 @@ def _uncharged_owner_report(queue: pool.PoolQueue, tier_id: str,
 def sweep_dead_owner_fragments(
         queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         residency_root: str | Path | None = None,
-        index: CensusIndex | None = None,
+        index: kept_reads.CensusIndex | None = None,
         budget=None,
         uncharged: "_UnchargedOwners | None" = None,
 ) -> list[dict[str, object]]:
@@ -4752,7 +4022,7 @@ def sweep_dead_owner_fragments(
 
 def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                      children: list[tuple[str, dict]], *, root: Path,
-                     stage_roots: dict[str, str], index: CensusIndex | None,
+                     stage_roots: dict[str, str], index: kept_reads.CensusIndex | None,
                      refuse, receipts: list[dict[str, object]],
                      uncertainty: tuple[type[BaseException], ...],
                      held_by_tier: Mapping[str, set[str]] | None = None,
@@ -4895,7 +4165,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
 def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
           residency_root: str | Path | None = None,
           pressure: Mapping[str, int] | None = None,
-          index: CensusIndex | None = None,
+          index: kept_reads.CensusIndex | None = None,
           budget=None) -> list[dict[str, object]]:
     """Evict every pinned mover no live item still names as a lead.
 
@@ -5224,7 +4494,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     return swept
 
 
-def _held_mover_fragment_owners(root: Path, index: "CensusIndex | None" = None,
+def _held_mover_fragment_owners(root: Path, index: "kept_reads.CensusIndex | None" = None,
                                 ) -> dict[str, list[tuple[str, bool]]] | str:
     """Every mover's fragment owners under ``root``, or why that is unknown.
 
@@ -5640,7 +4910,7 @@ ATTRIBUTION_TAINT_LIMIT = 8
 
 def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
                        residency_root: str | Path | None = None,
-                       memo: _CensusMemo | None = None,
+                       memo: kept_reads.CensusMemo | None = None,
                        ) -> tuple[set[str], list[str]]:
     """The strict attribution census behind :func:`attributed_stage_paths`.
 
@@ -5656,7 +4926,7 @@ def _attributed_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
 
 def _named_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
                   residency_root: str | Path | None = None,
-                  memo: _CensusMemo | None = None,
+                  memo: kept_reads.CensusMemo | None = None,
                   ) -> tuple[set[str], set[str], list[str]]:
     """:func:`_attributed_census`, and every path *any* fragment names.
 
@@ -5715,7 +4985,7 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
 
 def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
               wanted: set[str], residency_root: str | Path | None = None,
-              index: CensusIndex | None = None,
+              index: kept_reads.CensusIndex | None = None,
               ) -> dict[str, object]:
     """Evict what is on the stage that nothing on the fleet accounts for.
 
@@ -5839,9 +5109,9 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     # The tier loop's index when it passes one (#992): then neither census
     # below re-reads a namespace or document unchanged since the last cycle,
     # and the one under the lock compares each directory's stamp again
-    # rather than listing it (:class:`CensusIndex`).  Reader pins are read
+    # rather than listing it (:class:`kept_reads.CensusIndex`).  Reader pins are read
     # fresh by every call either way.
-    memo: _CensusMemo = index if index is not None else _CensusMemo()
+    memo: kept_reads.CensusMemo = index if index is not None else kept_reads.CensusMemo()
     if index is not None:
         index.fresh_pins()
     census_started = time.perf_counter()
@@ -5851,7 +5121,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
         queue, None, residency_root=residency_root, memo=memo.pins)
     hinted |= set(hint_pins)
     hinted_named |= set(hint_pins)
-    walk_memo = index if isinstance(index, CensusIndex) else None
+    walk_memo = index if isinstance(index, kept_reads.CensusIndex) else None
     if walk_memo is None:
         # The old call shape, so a caller's stand-in walk that knows nothing
         # of the memo still serves a reconcile with no census to keep.
@@ -5963,7 +5233,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
                 errors.append(f"{path.name}: {exc}")
                 continue
             if (not statmod.S_ISREG(info.st_mode)
-                    or _metadata_version(info) != identity):
+                    or kept_reads.metadata_version(info) != identity):
                 left += 1   # changed since the walk: the next pass decides
                 continue
             try:
@@ -6066,7 +5336,7 @@ def _under_resolved(path: Path, stage: Path, stage_resolved: Path) -> str:
 def _unattributed_candidates(stage: Path, stage_resolved: Path,
                              attributed: set[str],
                              named: set[str] | None = None, *,
-                             memo: "CensusIndex | None" = None,
+                             memo: "kept_reads.CensusIndex | None" = None,
                              ) -> tuple[list[tuple[Path, tuple | None, str,
                                                    int, str]],
                                         list[str]]:
@@ -6092,7 +5362,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     ``lstat`` is caught here, and one swapped after it changes the identity
     the locked re-check compares, which never re-checks containment.
 
-    ``memo`` is the tier loop's census (:class:`CensusIndex`).  With one, a
+    ``memo`` is the tier loop's census (:class:`kept_reads.CensusIndex`).  With one, a
     directory whose trusted stamp still holds is not listed again, and a
     file whose version still holds is not probed again: its classification
     from the last pass is reused.  Every entry is still ``lstat``-ed, and
@@ -6162,7 +5432,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         except OSError as exc:
             errors.append(f"{name}: {exc}")
             return
-        candidates.append((Path(path), _metadata_version(info), kind,
+        candidates.append((Path(path), kept_reads.metadata_version(info), kind,
                            int(info.st_size), mover))
 
     def skipped_name(directory: str, name: str) -> bool:
@@ -6186,7 +5456,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         except OSError as exc:
             errors.append(f"{name}: {exc}")
             return unreadable
-        version = _keepable_version(info, fence, path=path, follow_symlinks=False)
+        version = kept_reads.keepable_version(info, fence, path=path, follow_symlinks=False)
         if os.path.normpath(path) in attributed:
             # Attribution decides first and reads no mark; the name is kept
             # so a later pass that no longer attributes it can judge it.
@@ -6218,7 +5488,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         children: list[str] = []
         entries: dict[str, tuple] = {}
         retry = False
-        fence = _version_fence()
+        fence = kept_reads.version_fence()
         try:
             with os.scandir(directory) as scanned:
                 listed = list(scanned)
@@ -6254,7 +5524,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
             children, entries = kept
             refreshed: dict[str, tuple] = {}
             retry = False
-            fence = _version_fence()
+            fence = kept_reads.version_fence()
             for name, (version, kind, mover) in entries.items():
                 if skipped_name(directory, name):
                     continue
@@ -6267,7 +5537,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     errors.append(f"{name}: {exc}")
                     retry = True
                     continue
-                current_version = _keepable_version(
+                current_version = kept_reads.keepable_version(
                     info, fence, path=path, follow_symlinks=False)
                 normalized = os.path.normpath(path)
                 if kind == attributed_mark:
@@ -6305,7 +5575,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
             previous = previous_kept[2] if previous_kept is not None else None
             previous_children = (list(previous_kept[1])
                                  if previous_kept is not None else None)
-            stamp = (_trusted_directory_stamp(Path(directory))
+            stamp = (kept_reads.trusted_directory_stamp(Path(directory))
                      if memo is not None else None)
             scanned = fresh(directory, previous)
             if scanned is None:
@@ -6800,7 +6070,7 @@ def recover_orphaned_range(
                 "pre_range": pre_range}
 
     scope = _scope_outside_the_lock()
-    memo = _CensusMemo()
+    memo = kept_reads.CensusMemo()
     census_started = time.perf_counter()
     if not scope["refusal"]:
         # The censuses once, as hints that fill the memo; the pass under

@@ -63,7 +63,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
 )
-from prismabuild import action_edges  # noqa: E402
+from prismabuild import action_edges, kept_reads as read_cache  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
@@ -2150,6 +2150,7 @@ def blocked_origin_remedies(ref: Mapping[str, object], key: str) -> dict[str, st
 ORPHANED_PREWRITE_REMEDY = produced_output.ORPHANED_PREWRITE_REMEDY
 
 
+@read_cache.file_version_scope()
 def read_blocked_origins(queue_root: str | Path) -> dict:
     """List the consumed origin batches that only an operator can free (#926).
 

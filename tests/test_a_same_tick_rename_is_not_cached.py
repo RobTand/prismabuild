@@ -9,7 +9,7 @@ replaces a leaf in that tick leaves the recorded stamp current, the next pass
 hits the checkpoint, and the stale path is never pruned while nothing else
 touches the directory.
 
-``stage_move._trusted_directory_stamp`` closes that hole for the #992
+``kept_reads.trusted_directory_stamp`` closes that hole for the #992
 listings: it reads the coarse clock first and refuses a stamp whose mtime or
 ctime is not strictly before it.  These tests hold the checkpoint to the same
 rule.  A directory stamped in the tick of its last change is never cached
@@ -38,13 +38,13 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
-import stage_move  # noqa: E402
+from prismabuild import kept_reads
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 NAMES = red.NAMES
 TIER = red.TIER
-COARSE = stage_move._COARSE_REALTIME
+COARSE = kept_reads._COARSE_REALTIME
 TICK_NS = 1_000_000
 
 pytestmark = pytest.mark.skipif(
@@ -103,7 +103,7 @@ def _pin(monkeypatch, stage: Path, filesystem: str) -> dict[str, int]:
 
     monkeypatch.setattr(os, "lstat", lstat)
     monkeypatch.setattr(time, "clock_gettime_ns", clock)
-    monkeypatch.setattr(stage_move, "_filesystem_type",
+    monkeypatch.setattr(kept_reads, '_filesystem_type',
                         lambda device: filesystem)
     return state
 

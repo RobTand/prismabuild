@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-import stage_move  # noqa: E402
+from prismabuild import kept_reads
 import stage_release  # noqa: E402
 import test_btrfs_subvolume_records_are_retained as observations  # noqa: E402
 import test_stale_material_done_owner_retires as owner  # noqa: E402
@@ -146,7 +146,7 @@ def warm_checkpoint(fleet, monkeypatch):
     parents = {str((stage / owner.staged_name(name)).parent) for name in owner.NAMES}
     facts = _CheckpointKernelFacts(
         stage, root, fragment, material, {Path(name) for name in parents}, monkeypatch)
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
     key = stage_release._skip_checkpoint_key(queue, root, stage, owner.TIER,
                                              consumer, mover)
     stage_release.reset_skip_checkpoints()
@@ -185,7 +185,7 @@ def _observe_trust_loss(warm, loss):
     # Bare versions have not changed; the refusal must be about current trust.
     for path, version in warm["files"].items():
         assert stage_release._path_version(path) == version
-        bare, trusted = stage_release._fenced_path_version(path, stage_move._version_fence())
+        bare, trusted = stage_release._fenced_path_version(path, kept_reads.version_fence())
         assert bare == version
         if loss.startswith("file-") or loss in ("watch-error", "namespace-change"):
             assert trusted is None
@@ -193,7 +193,7 @@ def _observe_trust_loss(warm, loss):
             assert trusted == version  # dir-only loss leaves file proof intact
     for path, version in warm["directories"].items():
         assert stage_release._directory_version(path) == version
-        current = stage_move._current_directory_version(Path(path))
+        current = kept_reads.current_directory_version(Path(path))
         if loss.startswith("dir-") or loss in ("watch-error", "namespace-change"):
             assert current is None
         else:
@@ -256,7 +256,7 @@ def test_paused_exact_fdinfo_io_does_not_block_unrelated_direct_lookup(kernel, m
     kernel.mountinfo_text = (
         kernel.table() + "78 25 0:90 / /scratch rw - tmpfs fixture rw\n")
     # Warm validated direct evidence before any paused object IO.
-    assert stage_move._filesystem_type(DIRECT_DEVICE) == "tmpfs"
+    assert kept_reads._filesystem_type(DIRECT_DEVICE) == "tmpfs"
     info = os.stat(kernel.record)
     entered = threading.Event()
     release = threading.Event()
@@ -280,7 +280,7 @@ def test_paused_exact_fdinfo_io_does_not_block_unrelated_direct_lookup(kernel, m
 
     def fallback():
         try:
-            results["fallback"] = stage_move._keepable_version(
+            results["fallback"] = kept_reads.keepable_version(
                 info, kernel.now, path=kernel.record)
         except BaseException as exc:
             errors.append(exc)
@@ -288,7 +288,7 @@ def test_paused_exact_fdinfo_io_does_not_block_unrelated_direct_lookup(kernel, m
     def direct():
         direct_started.set()
         try:
-            results["direct"] = stage_move._filesystem_type(DIRECT_DEVICE)
+            results["direct"] = kept_reads._filesystem_type(DIRECT_DEVICE)
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -314,7 +314,7 @@ def test_paused_exact_fdinfo_io_does_not_block_unrelated_direct_lookup(kernel, m
         assert not fallback_thread.is_alive(), "fallback thread survived released IO"
         assert not direct_thread.is_alive(), "direct thread survived released IO"
     assert not errors, errors
-    assert results["fallback"] == stage_move._metadata_version(info)
+    assert results["fallback"] == kept_reads.metadata_version(info)
 
 
 @pytest.mark.parametrize("direct_match", [True, False])
@@ -324,7 +324,7 @@ def test_valid_unrelated_hyphen_mount_source_does_not_poison_local_retention(
         kernel.table_device = observations.OBSERVED_DEVICE
     kernel.mountinfo_text = (
         kernel.table() + "78 25 0:90 / /scratch rw - tmpfs - rw\n")
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = observations._read(reader, kernel)
     second = observations._read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]

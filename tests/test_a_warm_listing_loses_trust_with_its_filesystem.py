@@ -1,10 +1,10 @@
 """A warm listing is kept while its filesystem is trusted, and not after (#1208).
 
-``stage_release.DirectoryRecords`` keeps a directory's listing and its parsed
-records under a stamp taken by ``stage_move._trusted_directory_stamp``.  The
+``kept_reads.DirectoryRecords`` keeps a directory's listing and its parsed
+records under a stamp taken by ``kept_reads.trusted_directory_stamp``.  The
 stamp's argument rests on the directory's times coming from this kernel's
 clock, and every read compares the remembered stamp with
-``stage_move._current_directory_version``.  That comparison must re-check the
+``kept_reads.current_directory_version``.  That comparison must re-check the
 filesystem's trust too: a mount can change under a kept listing, and the
 stamp's argument leaves with it.  Without the re-check a warm cache reuses
 records the filesystem no longer answers for, and a checkpoint whose header
@@ -25,24 +25,18 @@ import sys
 import time
 
 import pytest
+from kept_read_clock import after_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import kept_reads
 
-COARSE = stage_move._COARSE_REALTIME
+COARSE = kept_reads._COARSE_REALTIME
 
 pytestmark = pytest.mark.skipif(
     COARSE is None, reason="the trusted stamp needs Linux's coarse clock")
-
-
-def _settle() -> None:
-    """Let the coarse clock tick so the first listing's stamp is trusted."""
-
-    time.sleep(0.05)
 
 
 def _write(path: Path, raw: bytes) -> None:
@@ -59,7 +53,7 @@ def _select(entry: os.DirEntry) -> bool:
     return entry.name.endswith(".json")
 
 
-def _counts(reader: stage_release.DirectoryRecords) -> tuple[int, int, int]:
+def _counts(reader: kept_reads.DirectoryRecords) -> tuple[int, int, int]:
     return (reader.listed, reader.kept, reader.parsed)
 
 
@@ -76,7 +70,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, int | None]:
         return real(clock_id)
 
     monkeypatch.setattr(time, "clock_gettime_ns", pinned)
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "zfs")
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda device: "zfs")
     return state
 
 
@@ -86,25 +80,24 @@ def test_the_current_version_is_refused_once_trust_leaves(
 
     directory = tmp_path / "ready"
     directory.mkdir()
-    _settle()
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "zfs")
-    assert stage_move._current_directory_version(directory) is not None
+    assert kept_reads.current_directory_version(directory) is not None
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "nfs4")
-    assert stage_move._current_directory_version(directory) is None
+    assert kept_reads.current_directory_version(directory) is None
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: None)
-    assert stage_move._current_directory_version(directory) is None
+    assert kept_reads.current_directory_version(directory) is None
 
 
 def test_a_warm_listing_is_read_again_when_its_trust_leaves(
@@ -115,13 +108,13 @@ def test_a_warm_listing_is_read_again_when_its_trust_leaves(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    _settle()
+    after_paths(monkeypatch, directory, record)
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "zfs")
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
     first = reader.read(directory, select=_select, parse=_parse)
     assert [value for _path, value in first] == [{"v": 1}]
     assert _counts(reader) == (1, 0, 1)
@@ -132,7 +125,7 @@ def test_a_warm_listing_is_read_again_when_its_trust_leaves(
         "an unchanged trusted directory is not listed or parsed again")
 
     monkeypatch.setattr(
-        stage_move, "_object_filesystem_type",
+        kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: None)
     third = reader.read(directory, select=_select, parse=_parse)
@@ -160,15 +153,15 @@ def test_a_record_whose_stat_was_cached_over_is_still_read_again(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    _settle()
+    after_paths(monkeypatch, directory, record)
 
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "zfs")
-    reader = stage_release.DirectoryRecords()
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda device: "zfs")
+    reader = kept_reads.DirectoryRecords()
     assert [value for _path, value in
             reader.read(directory, select=_select, parse=_parse)] == [{"v": 1}]
 
     cached = os.stat(record)
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: None)
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda device: None)
     _write(record, b'{"v": 2}')     # the ctime moves; the cached stat does not
     real_stat = os.stat
 
@@ -196,19 +189,32 @@ def test_a_directory_refused_in_its_tick_still_reuses_old_record_versions(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    time.sleep(0.05)
     os.utime(directory)                 # the tick the directory changed in
     info = os.lstat(directory)
     clock["now"] = max(info.st_mtime_ns, info.st_ctime_ns)
+    original_stat = os.stat
+    old_record = original_stat(record)
 
-    reader = stage_release.DirectoryRecords()
+    class BeforeTick:
+        st_ctime_ns = clock["now"] - 1
+
+        def __getattr__(self, name):
+            return getattr(old_record, name)
+
+    def stat(path, *args, **kwargs):
+        if not isinstance(path, int) and os.fspath(path) == str(record):
+            return BeforeTick()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+    reader = kept_reads.DirectoryRecords()
     first = reader.read(directory, select=_select, parse=_parse)
     assert [value for _path, value in first] == [{"v": 1}]
     assert _counts(reader) == (1, 0, 1), (
         "the directory's stamp is refused in its tick; the record is kept")
 
-    clock["now"] = None
-    time.sleep(0.05)
+    clock["now"] += 1
     second = reader.read(directory, select=_select, parse=_parse)
     assert [value for _path, value in second] == [{"v": 1}]
     assert _counts(reader) == (2, 0, 1), (

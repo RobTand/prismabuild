@@ -107,6 +107,7 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
+from prismabuild import kept_reads
 from collections.abc import Collection, Mapping, Sequence
 import contextlib
 import errno
@@ -1300,13 +1301,6 @@ def _foreign_live_path_owner(queue, checked_instance: Mapping[str, object],
     return None
 
 
-def _metadata_version(info: os.stat_result) -> tuple[int, int, int, int, int]:
-    """Change evidence for one file: device, inode, size, mtime, ctime."""
-
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
-
-
 def _file_stat(path: Path | str) -> os.stat_result | None:
     """One ``stat``; absent is ``None``, any other failure raises."""
 
@@ -1325,55 +1319,7 @@ def _file_version(path: Path | str) -> tuple[int, ...] | None:
     """
 
     info = _file_stat(path)
-    return None if info is None else _metadata_version(info)
-
-
-#: ``(keepable_version, version_fence)`` from ``stage_move`` (#1045), looked
-#: up once per process.  ``None`` once the import failed: a process without
-#: the fleet's ``tools/fleet`` (an action-side reader) keeps no file version
-#: and re-reads, as it did before #992.
-_TRUSTED_VERSIONS: "tuple[object, object] | None" = None
-_TRUSTED_VERSIONS_TRIED = False
-
-
-def _trusted_version_facilities() -> "tuple[object, object] | None":
-    """`stage_move`'s trusted file-version fence and keeper (#1045).
-
-    The one facility every versioned fleet memo uses (`DirectoryRecords`,
-    `_CensusMemo`): a version is kept only when its ctime is strictly before
-    a coarse-clock fence read before the stat, on a filesystem whose times
-    come from this kernel's clock.  A network filesystem's are the server's,
-    and a same-tick replacement can reproduce a version, so both are refused.
-    An unimportable ``stage_move`` keeps nothing.
-    """
-
-    global _TRUSTED_VERSIONS, _TRUSTED_VERSIONS_TRIED
-    if not _TRUSTED_VERSIONS_TRIED:
-        _TRUSTED_VERSIONS_TRIED = True
-        try:
-            from stage_move import _keepable_version, _version_fence
-        except ImportError:
-            pass
-        else:
-            _TRUSTED_VERSIONS = (_keepable_version, _version_fence)
-    return _TRUSTED_VERSIONS
-
-
-def _version_fence() -> int | None:
-    """`stage_move._version_fence`, read before the stat it guards."""
-
-    trusted = _trusted_version_facilities()
-    return None if trusted is None else trusted[1]()  # type: ignore[operator]
-
-
-def _keepable_version(info: os.stat_result, fence: int | None
-                      ) -> tuple[int, int, int, int, int] | None:
-    """`stage_move._keepable_version` of one stat, or ``None`` when refused."""
-
-    trusted = _trusted_version_facilities()
-    if trusted is None:
-        return None
-    return trusted[0](info, fence)  # type: ignore[operator]
+    return None if info is None else kept_reads.metadata_version(info)
 
 
 class _TickReads:
@@ -1419,11 +1365,13 @@ class _TickReads:
 
     def batches(self, scope: Path) -> dict[str, object]:
         path = scope / "commitments.json"
-        fence = _version_fence()
+        fence = (kept_reads.version_fence()
+                 if kept_reads.file_versions_enabled() else None)
         info = _file_stat(path)
-        version = None if info is None else _metadata_version(info)
+        version = None if info is None else kept_reads.metadata_version(info)
         kept = self._commitments.get(str(path))
-        if version is not None and kept is not None and kept[0] == version:
+        if (fence is not None and version is not None
+                and kept is not None and kept[0] == version):
             self.commitments_reused += 1
             return dict(kept[1])
         try:
@@ -1439,7 +1387,7 @@ class _TickReads:
         # Kept only at a version no later write can reproduce (#1045): the
         # fence was read before the stat, so a change after it moved ctime
         # to or past the fence, and a refused version is read again.
-        keepable = _keepable_version(info, fence)
+        keepable = kept_reads.keepable_version(info, fence)
         if keepable is None:
             self._commitments.pop(str(path), None)
         else:

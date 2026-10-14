@@ -28,6 +28,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"
                        / "fleet"))
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
@@ -76,7 +77,7 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
                     candidates.append((path, None, False))
                     continue
             candidates.append(
-                (path, stage_release._metadata_version(info), partial))
+                (path, kept_reads.metadata_version(info), partial))
     return candidates, errors
 
 

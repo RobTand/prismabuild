@@ -42,6 +42,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from kept_read_clock import after_paths
 
 import pytest
 
@@ -51,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import stage_move  # noqa: E402
@@ -93,7 +95,7 @@ def _filesystem_type(path: Path) -> str | None:
     """The type the complete trust resolver names for ``path`` (#1506)."""
 
     info = os.stat(path)
-    return stage_move._object_filesystem_type(
+    return kept_reads._object_filesystem_type(
         info, path=path, follow_symlinks=False)
 
 
@@ -267,11 +269,11 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
             return answer
         return call
 
-    monkeypatch.setattr(stage_move, "_trusted_directory_stamp",
-                        refused(stage_move._trusted_directory_stamp))
+    monkeypatch.setattr(kept_reads, 'trusted_directory_stamp',
+                        refused(kept_reads.trusted_directory_stamp))
     # _current_directory_version calls this function. Do not wrap both.
-    monkeypatch.setattr(stage_move, "_directory_version_at",
-                        refused(stage_move._directory_version_at))
+    monkeypatch.setattr(kept_reads, '_directory_version_at',
+                        refused(kept_reads._directory_version_at))
     return touches
 
 
@@ -320,12 +322,8 @@ def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     # the test below measures the fallback instead of the index.
     assert _filesystem_type(queue.root) in LOCAL_CLOCK, (
         _filesystem_type(queue.root))
-    # A listing is kept only under a stamp older than the clock the proof
-    # reads (CLOCK_REALTIME_COARSE), so a directory the fixture wrote in the
-    # current tick would be listed once more before it is kept.  Two ticks
-    # of that clock make every fixture write provably older than the first
-    # census, and the counts below exact.
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, queue.root, stage,
+                *queue.root.rglob("*"), *stage.rglob("*"))
     return publisher, destinations, consumer, mover, copier
 
 
@@ -368,7 +366,7 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     # ``lstat`` per directory where each trust check re-proves an anonymous
     # device through its descriptor (#1358). No listing, no read, no second
     # pass on either.
-    probed = stage_move._filesystem_type(os.stat(root).st_dev) is None
+    probed = kept_reads._filesystem_type(os.stat(root).st_dev) is None
     directory_cost = 2 if probed else 1
     per_hold = (1 + len(directories)) * directory_cost + fragments
     # Consume one earlier refusal for this directory at each re-list.
@@ -447,7 +445,7 @@ def test_a_refusal_cannot_pay_for_an_unjustified_listing(
     first.mkdir()
     second.mkdir()
     publisher = base._publisher(fleet, base._key(), base._key())
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, root, first, second)
     # Keep trust stable except for one root comparison. Exercise the real
     # census, including current -> version, rather than synthetic counters.
     refuse_root = False
@@ -459,7 +457,7 @@ def test_a_refusal_cannot_pay_for_an_unjustified_listing(
             return None
         return "tmpfs"
 
-    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
+    monkeypatch.setattr(kept_reads, '_object_filesystem_type', filesystem)
     touches = _forest_touches(monkeypatch, publisher, root)
     publisher._forest_census()
     assert publisher._listed_root is not None
@@ -492,7 +490,7 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
     first.mkdir()
     second.mkdir()
     publisher = base._publisher(fleet, base._key(), base._key())
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, root, first, second)
     target = {"stable": None, "root": str(root), "namespace": str(first),
               "initial": str(root), "both": str(root)}[changed]
     remaining = int(changed == "initial")
@@ -504,7 +502,7 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
             return None
         return "tmpfs"
 
-    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
+    monkeypatch.setattr(kept_reads, '_object_filesystem_type', filesystem)
     touches = _forest_touches(monkeypatch, publisher, root)
     publisher._forest_census()
     remaining = (2 if changed == "both"

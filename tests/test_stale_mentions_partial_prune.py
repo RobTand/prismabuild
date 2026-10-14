@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402
+from prismabuild import kept_reads
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
@@ -907,10 +908,10 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     # must be acquired by the same settled, trusted rule as a real sweep.
     # Bare versions captured in the write's coarse tick are not checkpoints.
     time.sleep(0.05)
-    fence = stage_release._version_fence()
+    fence = kept_reads.version_fence()
     fragment_version = stage_release._fenced_path_version(fragment, fence)[1]
     material_version = stage_release._fenced_path_version(material, fence)[1]
-    directory_stamp = stage_release._trusted_directory_stamp(tmp_path)
+    directory_stamp = kept_reads.trusted_directory_stamp(tmp_path)
     assert fragment_version is not None and material_version is not None
     assert directory_stamp is not None, "checkpoint fixture needs trusted local storage"
     stamps = {str(tmp_path): directory_stamp}

@@ -46,10 +46,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
+from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import stage_move  # noqa: E402
-import stage_release  # noqa: E402
 
 #: The campaign's range size, the shape the issue prices (#1028).
 NAMES = 2048
@@ -436,7 +436,7 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
 
     queue, stage, cas = fleet
     publisher, destinations = _adoption_world(fleet, 3)
-    monkeypatch.setattr(stage_move, "_current_directory_version",
+    monkeypatch.setattr(kept_reads, 'current_directory_version',
                         lambda path: None)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
@@ -479,7 +479,7 @@ def test_a_same_tick_partial_is_never_hidden_by_the_hint(
     target = os.fspath(destinations[0].parent)
     real_lstat = os.lstat
     real_clock = time.clock_gettime_ns
-    tick = real_clock(stage_move._COARSE_REALTIME)
+    tick = real_clock(kept_reads._COARSE_REALTIME)
 
     class Pinned:
         def __init__(self, info):
@@ -496,7 +496,7 @@ def test_a_same_tick_partial_is_never_hidden_by_the_hint(
         return info
 
     def clock(clock_id):
-        return (tick if clock_id == stage_move._COARSE_REALTIME
+        return (tick if clock_id == kept_reads._COARSE_REALTIME
                 else real_clock(clock_id))
 
     monkeypatch.setattr(os, "lstat", lstat)

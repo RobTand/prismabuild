@@ -22,8 +22,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 import pbstatus  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import kept_reads
 
 pool = pbstatus.pool
 
@@ -158,7 +157,7 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # (#992): a directory is not listed again while its ``lstat`` version equals
 # a stamp taken before its last listing (``stage_move._trusted_directory_
 # stamp``), and a record is not read again while its file version holds
-# (``stage_release.DirectoryRecords``).  Every queue writer files by rename,
+# (``kept_reads.DirectoryRecords``).  Every queue writer files by rename,
 # which is what both fences stand on.  A stamp is never trusted on a network
 # filesystem or inside the clock tick it was taken in, so on NFS every
 # listing repeats, by design: the exporter belongs on the queue's own host.
@@ -199,7 +198,7 @@ class _KeptEntry:
         self.path = path
         self.name = name
         self.mtime = info.st_mtime
-        #: The #761 version (``stage_move._metadata_version``).
+        #: The #761 version (``kept_reads.metadata_version``).
         self.version = version
         self._stat = _Stat(info)
         self.derived: object = None
@@ -219,7 +218,7 @@ def _kept_entry(path: Path, info: os.stat_result | None) -> _KeptEntry | None:
     if info is None:
         return None
     return _KeptEntry(str(path), path.name, info,
-                      stage_move._metadata_version(info))
+                      kept_reads.metadata_version(info))
 
 
 def _entry_kept(entry: _KeptEntry | None) -> bool:
@@ -323,7 +322,7 @@ class KeptReads:
     """
 
     def __init__(self) -> None:
-        self.records = stage_release.DirectoryRecords()
+        self.records = kept_reads.DirectoryRecords()
         #: Directory -> ``(stamp, {name: entry})`` for :meth:`history`.
         self._histories: dict[str, tuple[tuple, dict[str, _KeptEntry]]] = {}
         self._history_listed = 0
@@ -416,7 +415,7 @@ class KeptReads:
 
         name = os.fspath(directory)
         if name not in self._versions:
-            self._versions[name] = stage_move._current_directory_version(Path(name))
+            self._versions[name] = kept_reads.current_directory_version(Path(name))
         return self._versions[name]
 
     def fence(self, directory: Path) -> tuple[str, tuple] | None:
@@ -429,7 +428,7 @@ class KeptReads:
 
         current = Path(directory)
         while True:
-            stamp = stage_move._trusted_directory_stamp(current)
+            stamp = kept_reads.trusted_directory_stamp(current)
             if stamp is not None:
                 return os.fspath(current), stamp
             if os.path.lexists(current) or current.parent == current:
@@ -446,7 +445,7 @@ class KeptReads:
         """Whether every fence holds now, read fresh, not from this scrape."""
 
         return all(fence is not None
-                   and stage_move._current_directory_version(Path(fence[0])) == fence[1]
+                   and kept_reads.current_directory_version(Path(fence[0])) == fence[1]
                    for fence in fences)
 
     def memo(self, key: object, make_fences, compute, *, keep=None):
@@ -567,12 +566,12 @@ class KeptReads:
     def _list_history(self, name: str, select, absent_ok: bool,
                       previous: dict[str, _KeptEntry]) -> Iterable[_KeptEntry]:
         directory = Path(name)
-        stamp = stage_move._trusted_directory_stamp(directory)
+        stamp = kept_reads.trusted_directory_stamp(directory)
         # Read before any entry is stat-ed (#1045): an entry whose ctime is
         # not strictly before it is listed with no version, so the next
         # listing derives it afresh, and this listing is not kept.
-        fence = stage_move._version_fence()
-        keepable = stage_move._keepable_version
+        fence = kept_reads.version_fence()
+        keepable = kept_reads.keepable_version
         complete = True
         entries: dict[str, _KeptEntry] = {}
         stat = os.stat
@@ -599,7 +598,7 @@ class KeptReads:
             raise
         self._history_listed += 1
         if (stamp is not None and complete
-                and stage_move._current_directory_version(directory) == stamp):
+                and kept_reads.current_directory_version(directory) == stamp):
             self._histories[name] = (stamp, entries)
         return entries.values()
 
