@@ -138,9 +138,10 @@ def test_the_file_server_declares_the_tiers_role() -> None:
     assert supervise.ROLE_SCRIPTS["tiers"] == "tier_loop.py"
     # The pool whose receipts the fill bandwidth is learned from, plus the
     # explicit 5 s minimum cycle interval #873 set for short campaign quanta.
-    # Every capacity and price is still re-read each cycle.
+    # Every capacity and price is still re-read each cycle.  #905 phase 2
+    # step 1 adds --output-windows (the per-box rollout; the code default is off).
     assert roles["tiers"] == ["--source-pool", "storage_pool",
-                              "--interval-s", "5"]
+                              "--interval-s", "5", "--output-windows"]
     # And the storage role it runs beside is untouched.
     assert "storage" in roles
 
