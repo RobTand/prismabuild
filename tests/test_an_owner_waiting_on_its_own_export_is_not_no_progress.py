@@ -79,8 +79,6 @@ def clock(monkeypatch, request):
     monkeypatch.setattr(progress, "time", clock)
     monkeypatch.setattr(pb, "time", clock)
     monkeypatch.setattr(pool.materialize, "time", clock)
-    monkeypatch.setattr(time, "sleep", clock.sleep)
-    monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
     return clock
 
 
@@ -144,6 +142,8 @@ class _OwnerProcess:
         self.token = None
         self.argv = None
         self.terminated = False
+        monkeypatch.setattr(time, "sleep", clock.sleep)
+        monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
         monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
             **{**vars(subprocess), "Popen": self.launch}))
         monkeypatch.setattr(pb, "_terminate_process_group", self.terminate)
