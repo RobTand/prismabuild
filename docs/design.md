@@ -506,11 +506,13 @@ constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
 `execution_timeout_s` ends inside it, is transient; a bounded holder past that
 line is long; a holder past its own sealed end is overdue, which outranks age,
 since a holder that outlived what it declared is no evidence of a drain (#939);
-a progress-governed holder with no total timeout is unbounded;
+a progress- or stall-governed holder with no total timeout is unbounded;
+a legacy holder with no sealed request keeps the historical age-based
+transient/long answer;
 a raw ledger holder with no readable claim is judged by the waiting item's own
 first-denial clock, as every holder was before #924. The age half of
-"transient" is a presumption, not a declaration: a young deadline-governed
-holder with no requested timeout may yet run for hours, and it becomes long by
+"transient" is a presumption, not a declaration: a young legacy holder with
+no requested timeout may yet run for hours, and it becomes long by
 itself once it passes the line, so a veto resting on it ends on its own. A
 token shortage withholds when transient holders cover every short kind. An
 adaptive refusal that draining resolves withholds too: an exclusive need (a
@@ -641,8 +643,8 @@ This source change retains PB admission authority (SC-01), movement authority
 deployment or campaign completion.
 
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
-or a progress-governed action) does not void the election: requiring one left
-most live hosts unelected, so once the bounded attention above lapsed a
+a progress- or stall-governed action) does not void the election: requiring
+one left most live hosts unelected, so once the bounded attention above
 continuous lower-priority stream refilled the host indefinitely (#1419 residual,
 2026-10-04). With the election in place the measurement's wait is bounded by
 the actual remaining lifetime of the incumbents present at election, whatever
@@ -2049,7 +2051,31 @@ pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
 Exit 0 removes only this attempt directory; a nonzero exit retains it.
-The sealed `TMPDIR` and explicit `--basetemp` contracts stay unchanged.
+If removal meets a filesystem or mount refusal, exit 0 retains scratch with a completion time and returns 0.
+The worker supervisor expires retained default scratch after 24 hours (#1710).
+It sweeps each registered sealed `TMPDIR` root once per hour, even while worker loops execute actions.
+With complete custody and an ended scope, retention is at most 25 hours plus a supervisor tick and the sweep duration.
+
+The standalone `pbtest_scratch` owner travels in the shard's sealed argv.
+It records the full action key, nonce, scope, root identity, attempt identity, and completion time.
+Its private registry uses the account home, not the action's sealed `HOME`.
+A root lock serializes namespace creation, completion, and expiry.
+An attempt lock stays held until the shard interpreter exits.
+Expiry also requires the exact broker scope to be absent or to report `populated 0`.
+An active controller, populated scope, or unknown ownership prevents deletion.
+The completion time, not the directory modification time, starts the retention clock.
+
+Expiry pins the root and attempt with directory descriptors.
+It checks their device and inode identities and refuses nested mounts.
+It does not follow symlinks during deletion.
+Before either removal path, the owner restores mode 0700 access on readable owned directories through pinned descriptors.
+Device and inode checks and `O_NOFOLLOW` protect this permission repair.
+It does not change file modes or symlink targets.
+Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories have no safe completion proof.
+Expiry preserves them, malformed records, interrupted attempts without completion metadata, and attempts without exact broker scope evidence.
+Age alone never authorizes their deletion.
+The sealed `TMPDIR` placement stays unchanged.
+Explicit `--basetemp` uses its separate namespace and remains outside this expiry policy.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
@@ -3657,8 +3683,14 @@ keep streaming regardless.
 An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
 positive finite number of seconds. Its value participates in the action key.
 The pool reads and validates this value from the CAS request, not the mutable
-queue record, and applies the shorter of it and the worker's timeout ceiling.
-Without the field, existing actions retain the worker ceiling. The pool starts
+queue record, and applies the shorter of it and the worker's timeout ceiling
+for an action without progress phases. Without the field there is no
+wall-clock deadline at all (#1707): the run ends on a progress stall, the D30
+memory guard, or withdrawal. An action without progress phases runs under the
+default stall watch instead -- output or payload CPU activity restarts its
+quiet, and silence past its allowance ends it as a stall. The allowance
+defaults to 1800 s and `pbrun --stall-s` seals another value; the worker
+ceiling clamps it like a phase grace. The pool starts
 its monotonic budget immediately before launcher spawn, after checkout
 materialization, withdrawal checks, scope preparation and status-file cleanup.
 Those prelaunch operations and queue waiting do not consume it. After launch,
@@ -4178,8 +4210,9 @@ variable set is an `ActionContractError`, not a silent unbounded run.
 The versioned fleet configuration sets both GB10 worker ceilings to 86400
 seconds for dependent full-model calibration capture (issue #385). The CPU
 host retains its 3600-second ceiling. A GB10 action without an explicit budget
-inherits the one-day ceiling; capture requests that budget explicitly. This
-changes only the permitted duration: reservations, physical memory guards,
+has no wall-clock deadline (#1707); the ceiling clamps its stall allowance
+instead, and capture requests that budget explicitly. This changes only the
+permitted duration: reservations, physical memory guards,
 containment, priority and admission are unchanged. Supervisors adopt the
 published configuration through the existing idle-worker transition; a live
 attempt retains the ceiling under which it started.
@@ -6446,7 +6479,10 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and the following `wedged` sample each carry that
+child's kernel state and wchan, so the record itself separates a mount stall
+from a producer fault (#1398). Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
@@ -6596,17 +6632,50 @@ cannot exceed device VRAM, and currently free VRAM must cover a new reservation.
 Missing VRAM counters are unknown, never free. The pool-only `--gpu-memory-gb`
 option seals `params.gpu_memory_gb`; its GiB value must convert to between 1
 and 2**63 - 1 integer bytes. Submission, admission, and execution use the same
-bounded conversion. Without it the GPU budget conservatively
-defaults to `mem_gb`. RAM-heavy, GPU-light jobs should declare their separate
+bounded conversion. An omitted cap defaults to `mem_gb`. RAM-heavy, GPU-light
+jobs should declare their separate
 VRAM budget. On shared-memory devices this explicit GPU cap is an additional
-subset cap, not a second reservation of the same physical DRAM. The exact
-GPU budget follows scope creation, durable recovery and release. SLURM refuses
-this option until its execution contract supports separate VRAM budgets.
+subset cap, not a second reservation of the same physical DRAM.
+
+On `shared_system` hosts, each claimed or starting action charges its
+`mem_gb` once against the node offer (#1661). The GPU cap stays a subset of
+that charge, never a second one. A declared cap above `mem_gb` refuses at
+submission for unified-memory placements, and admission refuses it per device
+with `unified_gpu_cap_exceeds_mem`; an absent cap defaults to `mem_gb`. The
+node offer also subtracts unified GPU bytes the broker attributes to no pool
+holder. The kernel memory reading does not reliably show driver-held allocations.
+Attributed bytes never subtract twice: their host share sits inside the
+holder's `mem_gb` charge. The claim gate charges only fresh growth beyond the
+foreign GiB the offer already subtracted, so observation and admission never
+charge the same bytes twice.
+
+CPU-only candidates face the same gate on a GPU host, with the held caps
+identified from ledger metadata when GPU telemetry is absent or stale. A
+missing or stale sample only withholds the external term. New GPU claims
+still require fresh trusted telemetry. The refusal
+`unified_gpu_memory_budget` names each held cap, the cap total, the external
+bytes, the baseline the offer already subtracted, the candidate charge, and
+the offer.
+
+Sharing arbitration precedes the memory fit check. A candidate that cannot
+share the device refuses quietly there, as before this gate. Only a settled
+sharer reaches the memory check. Gang backfill reclamation keeps its election.
+
+Memory refusals retain the existing background preemption and age rules.
+The release must cover the candidate and fresh external growth before preemption can select a holder.
+Withdrawal does not release memory tokens. The holder's finish path returns them.
+`rejoin` clears both observation histories and resets the external baseline.
+The first new offer respects the current memory reading and the ledger cap.
+
+The exact GPU budget follows scope creation, durable recovery, and release.
+This admission change does not alter scope containment or the GPU memory guard.
+SLURM refuses this option until its execution contract supports separate VRAM budgets.
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
-submission. Manifest preflight validates the bounded numeric conversion and
-refuses a budget without GPU demand (explicit or implied by `exclusive`) or
-under SLURM before any row is submitted.
+submission. Manifest preflight validates the bounded numeric conversion, refuses
+a budget without GPU demand (explicit or implied by `exclusive`) or under SLURM,
+and refuses a cap above the row's `mem_gb` on unified-memory placements before
+any row is submitted.
 
 ## Storage prewarm pacing
 
@@ -13127,6 +13196,9 @@ the `progress-queued-child-v1` worker tag (`core.QUEUED_CHILD_TAG`): a
 worker without it cannot claim the row, so an older loop never ends a
 valid queue wait as `no_progress`. No seal or identity wall is added
 (D32), and the scientific and native limits stay unchanged.
+
+The CLI parses this declaration before it captures the checkout.
+Malformed keys or a relative controller-state path cause a terminal refusal.
 
 **The verdict.** The worker samples the awaited set on the heartbeat
 cadence and judges each interval since the last look. It credits an

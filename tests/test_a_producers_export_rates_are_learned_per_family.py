@@ -51,7 +51,8 @@ def _template(tmp_path: Path, template_id: str, family: str | None) -> dict:
 
 
 def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
-             demand: dict[str, int], **variables: str) -> str:
+             demand: dict[str, int], *, timeout_s: float | None = None,
+             **variables: str) -> str:
     """Seal a spool producer of ``template`` and publish it; return its key."""
 
     cas_root = tmp_path / "cas"
@@ -60,6 +61,8 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
     request.pop("action_key")
     request["environment"]["variables"].update({
         ps.ROOT_ENV: str(tmp_path / "local"), ps.MAX_ENV: "256", **variables})
+    if timeout_s is not None:
+        request["params"]["execution_timeout_s"] = timeout_s
     action = core.seal_action(request)
     cas.publish_action_request(action)
     owner = str(action["action_key"])
@@ -207,7 +210,8 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     assert adaptive_cpu.learn_export(ledger, earlier_template, earlier, 1010., 20.,
                                      family=FAMILY)
 
-    owner = _publish(tmp_path, queue, template, al.PRODUCER_DEMAND)
+    owner = _publish(tmp_path, queue, template, al.PRODUCER_DEMAND,
+                     timeout_s=pool.WITHHOLD_CEILING_S)
     claimed = _claim_producer(queue, monkeypatch, owner)
     allowance = _allowance(queue, owner)
     assert allowance["slots"] == 2 and allowance["basis"]["basis"] == "measured", allowance

@@ -1,9 +1,11 @@
 """What kills an action is said at submit and recorded in the receipt.
 
 Every worker loop enforces an execution ceiling of its own -- 7200 s by
-``worker_loop.py``'s default -- and ``pool._execution_timeout`` applies it as a
-silent ``min`` against the submitter's sealed ``execution_timeout_s``.  Nothing
-carried either number anywhere a reader could reach it: not the offer, not the
+``worker_loop.py``'s default -- and ``pool._execution_timeout`` applies it as
+a ``min`` against an explicit sealed ``execution_timeout_s``. With no sealed
+budget there is no wall-clock deadline at all (#1707): the stall watch ends
+the run, and the ceiling only clamps the stall allowance. Nothing used to
+carry either number anywhere a reader could reach it: not the offer, not the
 submission ack, not the outcome.
 
 So the PrismaQuant #275 campaign asked for 13000 s, was admitted without a
@@ -87,14 +89,15 @@ def test_a_request_inside_the_ceiling_is_not_reported_as_clamped(tmp_path):
     assert budget.clamped is False
 
 
-def test_an_unbounded_submitter_runs_under_the_ceiling_but_is_not_clamped(tmp_path):
-    # Nothing was cut short: the submitter named no deadline, so the ceiling
-    # is the only number there ever was.  Calling that "clamped" would put a
-    # false positive in front of every ordinary submission.
+def test_an_unbounded_submitter_sets_no_deadline(tmp_path):
+    # No sealed budget means no wall-clock deadline (#1707): the stall watch
+    # ends the run, never elapsed time. The ceiling still clamps the stall
+    # allowance, so it stays on the record without choosing the ending.
     _queue, item = _claimed(tmp_path, None)
     budget = pool.execution_budget(item, 7200)
-    assert budget.effective == 7200
+    assert budget.effective is None
     assert budget.requested is None
+    assert budget.ceiling == 7200
     assert budget.clamped is False
 
 

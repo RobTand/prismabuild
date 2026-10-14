@@ -1193,8 +1193,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="serve at most one action and exit, whether or not "
                          "the queue had anything (debug)")
     ap.add_argument("--timeout-s", type=float, default=DEFAULT_EXECUTION_CEILING_S,
-                    help="how long a single action may run before this loop "
-                         "kills it")
+                    help="this loop's safety ceiling: it clamps an explicit "
+                         "payload budget and each stall allowance, but never "
+                         "ends a run for elapsed time alone")
     ap.add_argument("--poll-s", type=float, default=10.0,
                     help="seconds to sleep between queue polls")
     ap.add_argument("--max-idle", type=int, default=6,
@@ -1405,7 +1406,8 @@ def private_claim_parameters(queue):
     _declared, capacity, _gpus = observed_claim_capacity(
         queue, args=args, base_declared=base, observer=observer,
         gpu_sample=None, known_physical_gpus=0)
-    return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True}
+    return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True,
+            "observed_external_gib": observer.last_offer_external_gib}
 
 
 def stable_host_capacity(live: dict[str, int],
@@ -2203,6 +2205,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
                 ready=discovery.snapshot, observed_images=claim_images,
+                observed_external_gib=(
+                    observer.last_offer_external_gib if observer is not None else 0),
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),
                 # Re-checked under the per-key transition lock just before

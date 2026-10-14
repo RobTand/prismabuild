@@ -1318,8 +1318,19 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 `pbrun --timeout-s` seals a positive finite execution budget into the action.
 Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
-`--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
-budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+`--timeout-s` safety ceiling (7200 seconds by default) when the action
+declares no progress phases. Without an explicit budget, SLURM receives no
+`--time` and the pool sets no wall-clock deadline at all: the run ends on
+a progress stall, the D30 memory guard, or withdrawal -- never on elapsed
+time. An action without `--progress-phase` runs under the default stall
+watch: output or payload CPU activity restarts its quiet, and silence past
+its allowance ends it as a stall (`status: timeout`,
+`termination_reason: no_progress`). The allowance defaults to 1800 s (one
+ceod LONG-JOB interval, half the old 3600 s pytest ceiling and a quarter of
+the worker ceiling); `pbrun --stall-s SECONDS` seals another value, and the
+worker's ceiling clamps it like a phase grace. `pbstatus` shows each running
+action's age, last phase, counters and silence in its AGE, OUTPUT and
+PROGRESS columns.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the
@@ -1498,8 +1509,11 @@ submit:
     `--transport slurm`. The budget accepts a JSON number or numeric string
     converting to between 1 and `2**63 - 1` bytes, just like `pbrun`.
     Booleans, non-finite values and out-of-range budgets refuse before any row
-    is submitted. For example, `"demand": {"gpu": 1, "mem_gb": 80},
-    "gpu_memory_gb": 32` retains the 80 GiB aggregate budget and 32 GiB GPU cap.
+    is submitted. A cap above the row's `mem_gb` refuses too on unified-memory
+    placements: the GPU cap is a subset of `mem_gb` on unified memory.
+    For example, `"demand": {"gpu": 1,
+    "mem_gb": 80}, "gpu_memory_gb": 32` retains the 80 GiB aggregate budget
+    and 32 GiB GPU cap.
 *   `measurement` without `host_class` under `--transport slurm`. A SLURM
     measurement is keyed on the scheduler-attested class that produced it.
     Under `--transport pool`, omitting `host_class` is the default form: the
@@ -1706,10 +1720,52 @@ The standard eight-character suffix leaves an 86-byte socket path under
 and a 12-character file name (#1709).
 The worker removes only that attempt's directory after pytest exits 0.
 It keeps the directory on a non-zero exit, as the failed-only retention policy does.
-Expiry of kept directories is out of scope. With `--basetemp root` pytest does not
-remove the directory at the end of the session: it deletes and recreates
-the root at the start of the next session that uses that path, so a leftover
-root has to be cleaned by whoever sealed it.
+If removal meets a filesystem or mount refusal, a shard with exit 0 retains scratch with a completion time and returns 0.
+Default retained scratch expires after 24 hours (#1710).
+The worker supervisor runs a pass at startup and once per hour while it remains active.
+It sweeps registered sealed `TMPDIR` roots even when all worker loops execute actions.
+With complete ownership evidence and an ended scope, removal takes at most 25 hours plus a supervisor tick and the sweep duration.
+The registry uses `<account-home>/.local/state/prismabuild/pbtest-scratch`, independent of the action's `HOME`.
+The shard source records each root before pytest starts.
+The supervisor records each pass in its log as `pbtest-scratch-expiry`.
+
+The retention clock starts when the attempt keeps scratch and stamps its completion time.
+A root lock protects startup, completion, and deletion.
+An attempt lock protects the shard until its interpreter exits.
+Expiry also checks the exact broker scope for absence or `populated 0`.
+Live controllers, live descendants, and uncertain scope evidence preserve scratch.
+Directory descriptors and device/inode checks confine deletion to the sealed root.
+Expiry refuses nested mounts and does not follow symlinks.
+Both removal paths restore owner read, write, and search permissions on readable owned directories, including read-only subtrees.
+The permission repair uses directory descriptors, device and inode checks, and `O_NOFOLLOW`.
+It does not change file modes or symlink targets.
+
+Legacy `pbtest-<key12>/<nonce>` directories and unmarked `pb-*` directories remain intact.
+Interrupted attempts without completion metadata also remain intact.
+An operator must prove ownership and termination before any separate removal of those directories.
+Age and a quiet process name do not prove termination.
+Attempts without an exact broker scope, including uncontained transport runs, remain outside automatic expiry.
+Explicit `--basetemp` also remains outside this policy.
+
+Run a host-specific operator pass through PrismaBuild:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /path/to/prismabuild --tag x86 --cpus 1 --demand mem_gb=2 \
+  --env TMPDIR=/tmp --env PYTHONPATH=src \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+  /home/rob/venvs/pb-cpu/bin/python -m prismabuild.pbtest_scratch \
+  --root /home/rob/tmp --root /tmp
+```
+
+The JSON report names roots, removed directories, skipped directories, and removed allocated bytes.
+The byte count sums inode blocks before deletion; it does not measure filesystem free-space changes.
+The first dl380g10 pass removed **0 bytes** from `/home/rob/tmp` and `/tmp`.
+Action `d98c5e0bbfa5acb85b32d09f0a37519646eda77add0a907d8f2580b3f2569548` retains the complete pass report.
+It preserved legacy scratch because that scratch had no lifecycle metadata.
+Runtime actions `936fcb4abf7f8d3203c16dd4787a4521793298d4581dbb34acee275ac49f5375` and `9727f6592fef3e514cfabfa341977acc79bc4fde07f102f19d8b8b6404a8b0c9` exercise live scope protection and later read-only expiry on dl380g10.
+The second action removed 32768 allocated bytes from one ended attempt under a private `/tmp` root and preserved a live attempt.
+That smoke used a simulated 90000-second age; it does not count as production space relief.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -1835,10 +1891,10 @@ CUDA visibility. With the published runtime, GPU's default tag is `gb10`;
 override `--tag` for another real hardware dependency with the named interpreter.
 `--mem-gb` still reserves the aggregate host memory for one shard (default
 3 GiB), including all pytest workers. Pool `--gpu-memory-gb N` sets its GPU
-subset/VRAM budget, defaulting to the host budget when omitted. It requires
-`--gpu`, must represent a positive finite byte budget, and is refused with
-SLURM, which cannot enforce this separate budget. PB owns GPU placement and
-sharing; shard count supplies work and does not prescribe GPU concurrency.
+cap, which defaults to the host budget. On GB10 the cap is a subset of that
+budget, never a second charge. Discrete admission reserves VRAM separately.
+The option requires pool transport; SLURM cannot enforce this budget. PB owns
+GPU placement and sharing; shard count supplies work and does not prescribe GPU concurrency.
 
 `--disk-metadata` requests `disk_metadata=1` for **every shard** of the
 invocation (#1008 item 4). A worker must opt in with
@@ -4187,14 +4243,25 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 
 | Memory domain | Budget contract |
 |---|---|
-| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission for unified-memory placements, and admission refuses it per device. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
 | `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
+Unified admission charges each claimed and starting action's `mem_gb` once
+against the node offer, RAM fills and export allowances included (#1661).
+The node offer also subtracts unified GPU bytes the broker attributes to no
+pool holder. CPU-only candidates face the same gate on a GPU host; held caps
+are identified from ledger metadata when GPU telemetry is absent or stale.
+New GPU claims still require fresh trusted telemetry. The refusal
+`unified_gpu_memory_budget` names each held cap, the cap total, the external
+bytes, the candidate charge, and the offer. The 104 GiB roof, the 8 GiB margin,
+and the memory observation window remain unchanged.
+
 For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
-RAM and 8 GiB VRAM on a discrete device; on GB10 it permits 32 GiB aggregate
-DRAM with an 8 GiB GPU subset cap. Missing VRAM counters refuse discrete GPU
-admission. Unknown memory domains grant no capacity. `--gpu-memory-gb` is
-refused with `--transport slurm`, whose separate VRAM enforcement is unsupported.
+RAM and 8 GiB VRAM on a discrete device; on GB10 it charges 32 GiB once
+against the unified offer, with 8 GiB as the GPU subset cap. Missing VRAM
+counters refuse discrete GPU admission. Unknown memory domains grant no
+capacity. `--gpu-memory-gb` is refused with `--transport slurm`, whose
+separate VRAM enforcement is unsupported.
 
 On GB10 the broker identifies its 140 W reference as SoC TDP, not a programmable
 GPU-only power limit. That envelope stays on the device sample as

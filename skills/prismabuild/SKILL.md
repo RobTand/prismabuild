@@ -160,6 +160,14 @@ actually advanced (RobTand/prismabuild#480).
 repeat it for each phase. Both spellings require a caller-selected stall
 allowance and seal the same policy.
 
+An action that declares no phases runs under the same supervision with a
+default watch on output and payload CPU activity (issue #1707): steady work
+runs with no total-duration limit, and silence past the allowance ends it as
+a stall. The allowance defaults to 1800 s; `--stall-s SECONDS` seals another
+value, and the worker ceiling clamps it like a phase grace. `--timeout-s`
+still ends such an action at its limit, and the D30 memory guard still ends
+it first.
+
 For loops that repeat phases, add `--progress-cycle` (campaign row
 `progress_cycle: true`). Example: `--progress encode=200 --progress publish=5
 --progress-cycle`. After durably publishing a unit and reporting its cumulative
@@ -359,7 +367,11 @@ including the first action. Check the broker/worker evidence when work waits.
 Use pool `--gpu-memory-gb N` for the GPU memory budget in GiB. On a discrete
 device, it reserves VRAM independently of host `--demand mem_gb=M`; both must
 fit. On GB10 (`shared_system`), `mem_gb` covers total physical DRAM and the GPU
-budget caps its GPU subset. The GPU cap defaults to `mem_gb` when omitted.
+budget caps its GPU subset. The GPU cap defaults to `mem_gb` when omitted, and
+a cap above `mem_gb` refuses at submission for unified-memory placements
+(admission refuses it per device). The node offer also subtracts
+unified GPU bytes no pool holder owns (#1661). The 104 GiB roof and 8 GiB
+margin remain unchanged.
 The option requires GPU demand and is unsupported with `--transport slurm`.
 
 The live pool contains each attempt's payload, descendants and Docker
