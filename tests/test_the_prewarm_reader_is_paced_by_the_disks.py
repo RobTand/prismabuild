@@ -26,6 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
+from prismabuild import storage_tiers
 
 
 def stat_row(*, reads: int, read_ms: int, io_ticks: int, weighted: int,
@@ -355,7 +356,7 @@ def test_only_the_pools_own_data_disks_pace_the_reader(tmp_path: Path) -> None:
                                   "nvme1n1p5": "nvme1n1",
                                   "nvme1n1p6": "nvme1n1"})
 
-    devices = prewarm_loop.pool_member_devices(
+    devices = storage_tiers.pool_member_devices(
         "storage_pool", runner=lambda argv: status, sysfs=sysfs)
 
     assert devices == ["sdb", "sdc"], (
@@ -377,7 +378,7 @@ def test_an_unresolvable_data_member_refuses_the_whole_pool(tmp_path: Path) -> N
     ).expandtabs(2)
     sysfs = fake_sysfs(tmp_path, {"sdb1": "sdb"})
 
-    assert prewarm_loop.pool_member_devices(
+    assert storage_tiers.pool_member_devices(
         "storage_pool", runner=lambda argv: status, sysfs=sysfs) == []
 
 
@@ -386,7 +387,7 @@ def test_a_whole_disk_vdev_is_its_own_pacing_device(tmp_path: Path) -> None:
 
     sysfs = fake_sysfs(tmp_path, {"sdb": "sdb"})
 
-    assert prewarm_loop.whole_disk_of("/dev/sdb", sysfs=sysfs) == "sdb"
+    assert storage_tiers.whole_disk_of("/dev/sdb", sysfs=sysfs) == "sdb"
 
 
 def test_a_host_with_no_pool_paces_nothing_and_says_why() -> None:
@@ -395,7 +396,7 @@ def test_a_host_with_no_pool_paces_nothing_and_says_why() -> None:
     def missing(argv: list[str]) -> str:
         raise FileNotFoundError("zpool")
 
-    assert prewarm_loop.pool_member_devices("storage_pool",
+    assert storage_tiers.pool_member_devices("storage_pool",
                                             runner=missing) == []
 
 
@@ -547,7 +548,7 @@ def test_zpool_is_resolved_off_path_as_well() -> None:
     so the binary is looked up by name and then by the two places it lives.
     """
 
-    resolved = prewarm_loop.zpool_binary()
+    resolved = storage_tiers.zpool_binary()
 
     assert resolved.endswith("zpool")
     assert resolved == "zpool" or Path(resolved).is_absolute()

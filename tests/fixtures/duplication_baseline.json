@@ -6,34 +6,6 @@
    "tools/fleet/resource_broker.py::scope_id"
   ],
   [
-   "src/prismabuild/storage_tiers.py::pool_mountpoint",
-   "tools/fleet/prewarm_loop.py::pool_mountpoint"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::read_arcstats",
-   "tools/fleet/prewarm_loop.py::arcstats"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::whole_disk_of",
-   "tools/fleet/prewarm_loop.py::whole_disk_of"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::zfs_binary",
-   "tools/fleet/prewarm_loop.py::zfs_binary"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::zfs_binary",
-   "tools/fleet/prewarm_loop.py::zpool_binary"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::zpool_binary",
-   "tools/fleet/prewarm_loop.py::zfs_binary"
-  ],
-  [
-   "src/prismabuild/storage_tiers.py::zpool_binary",
-   "tools/fleet/prewarm_loop.py::zpool_binary"
-  ],
-  [
    "tools/fleet/fleet_membership.py::_membership_owner_parts",
    "tools/fleet/resource_broker.py::_supervisor_owner_parts"
   ],
@@ -243,7 +215,8 @@
   "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.mover_cap",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.attest",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.report",
-  "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
+  "sorted-json:tools/fleet/upgrade_client.py::canonical_json",
+  "sorted-json:tools/maintenance/test_inventory.py::main"
  ],
  "same_name_distinct": [
   {
@@ -336,18 +309,18 @@
    "reason": "The migration consumer returns a closed three-leaf read-only plan or original-FD-only mode change with partial-effect reporting. Existing run helpers execute actions, broker scopes, canary watches, benchmark loops or stage/upgrade operations; their arguments, effects and returned evidence are different."
   },
   {
-   "name": "census",
    "modules": [
     "src/prismabuild/filesystem_floor.py",
     "src/prismabuild/prelaunch_group.py"
    ],
+   "name": "census",
    "reason": "The prelaunch group census counts the tokens of one reservation group in the tier ledger, in its private acquisition handles and in its chunk movers. The filesystem floor census reads mounted filesystem trust. The two share a name and no contract."
   },
   {
-   "name": "reconcile",
    "modules": [
     "src/prismabuild/prelaunch_group.py"
    ],
+   "name": "reconcile",
    "reason": "The prelaunch group reconcile runs the crash-recovery rule table of one reservation group against the tier ledger and its receipts. Other reconcile helpers repair queue records or host holds. Their inputs and outcomes differ."
   },
   {
@@ -677,14 +650,6 @@
    "tools/fleet/admission_shared_io.py",
    "tools/fleet/pbtest_outcomes.py"
   ],
-  "pool_member_devices": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
-  "pool_member_paths": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
   "pool_mountpoint": [
    "src/prismabuild/storage_tiers.py",
    "tools/fleet/prewarm_loop.py"
@@ -696,10 +661,6 @@
   "published_commit": [
    "tools/fleet/pbrun.py",
    "tools/fleet/worker_loop.py"
-  ],
-  "read_disk_stat": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
   ],
   "reconcile": [
    "src/prismabuild/pool_reconcile.py",
@@ -764,21 +725,9 @@
    "src/prismabuild/slurm_lane.py",
    "tools/fleet/qualify_claim_recovery.py"
   ],
-  "whole_disk_of": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
   "write_json": [
    "src/prismabuild/adaptive_cpu.py",
    "tools/fleet/pbcanary.py"
-  ],
-  "zfs_binary": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
-  "zpool_binary": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
   ]
  }
 }

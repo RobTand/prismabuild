@@ -196,7 +196,6 @@ import json
 import os
 import queue as queuelib
 import re
-import shutil
 import socket
 import stat as statmod
 import subprocess
@@ -245,7 +244,6 @@ STAT_READ_MS = storage_tiers.STAT_READ_MS
 STAT_IN_FLIGHT = storage_tiers.STAT_IN_FLIGHT
 STAT_IO_TICKS = storage_tiers.STAT_IO_TICKS
 STAT_WEIGHTED_IO_MS = storage_tiers.STAT_WEIGHTED_IO_MS
-SYSFS_BLOCK = "/sys/class/block"
 #: Where the kernel's own NFS server says how much it has served.  The ``io``
 #: line is ``io <read_bytes> <write_bytes>``, counted for every client of this
 #: host.  The prewarm reader reads the pool through the host's local path, so
@@ -285,11 +283,6 @@ HOLD_RELEASE_FRACTION = storage_tiers.HOLD_RELEASE_FRACTION
 #: of magnitude above the few hundred kB/s of attribute and directory traffic
 #: an idle mount produces.
 CLIENT_ACTIVE_MB_S = 2.6
-#: Top-level ``zpool status`` groups whose members are not the pool's data
-#: spindles.  Pacing on the L2ARC device would hold the reader off an SSD that
-#: was never the constraint.
-ZPOOL_AUX_GROUPS = frozenset(
-    {"cache", "log", "logs", "spares", "spare", "special", "dedup"})
 #: A ZFS pool is this fleet's stage tier when its name carries this prefix
 #: (#582).  The pool's *name* is the declaration, which is why the rule is
 #: not "any unused SSD": on dl380g10 ``nvme0n1p1`` still carries a stale
@@ -384,22 +377,6 @@ def utc(unix: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(unix))
 
 
-def arcstats(path: str = ARCSTATS) -> dict[str, int]:
-    out: dict[str, int] = {}
-    try:
-        with open(path) as handle:
-            for line in handle:
-                fields = line.split()
-                if len(fields) == 3:
-                    try:
-                        out[fields[0]] = int(fields[2])
-                    except ValueError:
-                        pass
-    except OSError:
-        pass
-    return out
-
-
 def arc_headroom(reserve_fraction: float, path: str = ARCSTATS) -> dict[str, int]:
     """The ARC this loop may spend, and the counters that explain the number.
 
@@ -421,7 +398,7 @@ def arc_headroom(reserve_fraction: float, path: str = ARCSTATS) -> dict[str, int
     and fell 99 GB inside one five-minute window on 2026-09-11.
     """
 
-    stats = arcstats(path)
+    stats = storage_tiers.read_arcstats(path)
     size = stats.get("size", 0)
     current = stats.get("c", 0)
     ceiling = stats.get("c_max", 0)
@@ -471,144 +448,7 @@ class MountMap:
 # ----------------------------------------------------------------- pacing
 
 
-def zpool_binary() -> str:
-    """``zpool``'s path, resolved rather than left to ``PATH``.
-
-    The loop runs under a supervisor-spawned unit, and a unit's ``PATH`` need
-    not carry ``/usr/sbin``.  Losing discovery to a missing ``PATH`` entry
-    would silently reinstate #499's unpaced reads, so the sbin paths are tried
-    by name when the lookup fails.
-    """
-
-    found = shutil.which("zpool")
-    if found:
-        return found
-    for candidate in ("/usr/sbin/zpool", "/sbin/zpool"):
-        if os.path.exists(candidate):
-            return candidate
-    return "zpool"
-
-
-def pool_member_paths(
-    pool: str,
-    *,
-    runner: Callable[[list[str]], str] | None = None,
-) -> list[str] | None:
-    """Every data-vdev leaf of ``pool``, as ``zpool status -P`` prints it.
-
-    Split out of :func:`pool_member_devices` so the stage tier can bind the
-    same leaves to their ``/dev/disk/by-id`` names (#582) without a second
-    copy of this parse: two parses of one topology is how the two disagree.
-    ``None`` when the pool cannot be read at all.
-    """
-
-    try:
-        # One subprocess boundary for every topology question this module
-        # asks, so a caller that can answer one can answer all of them.
-        text = (runner or run_tool)([zpool_binary(), "status", "-P", pool])
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-    leaves: list[str] = []
-    in_config = False
-    section = "data"
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not in_config:
-            in_config = stripped.startswith("config:")
-            continue
-        if not stripped:
-            continue
-        if stripped.startswith("NAME "):
-            continue
-        if stripped.startswith("errors:"):
-            break
-        indent = len(line) - len(line.lstrip())
-        name = stripped.split()[0]
-        # The pool itself and the auxiliary group headers sit at the same
-        # depth; anything deeper belongs to whichever of them came last.
-        if indent <= 2:
-            section = "aux" if name.lower() in ZPOOL_AUX_GROUPS else "data"
-            continue
-        if section != "data" or not name.startswith("/"):
-            continue
-        if name not in leaves:
-            leaves.append(name)
-    return leaves
-
-
-def pool_member_devices(
-    pool: str,
-    *,
-    runner: Callable[[list[str]], str] | None = None,
-    sysfs: str = SYSFS_BLOCK,
-) -> list[str]:
-    """The block devices behind ``pool``'s data vdevs, as ``sdb``-style names.
-
-    ``zpool status -P`` prints every leaf as an absolute path, so the members
-    are read from the pool's own topology rather than guessed from a device
-    glob -- a box whose root disks are also ``sd*`` would otherwise be paced by
-    a disk the pool never touches.  The auxiliary groups are dropped: an L2ARC
-    or SLOG device is not the raidz queue this loop must stay off.
-
-    Returns ``[]`` on any failure, including no ``zpool`` at all.  That is not
-    a silent degradation: the caller records the empty list and reports pacing
-    inactive, which is the honest answer on a host that has no pool.
-    """
-
-    devices: list[str] = []
-    for name in pool_member_paths(pool, runner=runner) or []:
-        device = whole_disk_of(name, sysfs=sysfs)
-        if not device:
-            # A partial topology is not a smaller healthy pool.  Letting the
-            # reader pace only the resolvable members would let an unavailable
-            # busy vdev disappear behind its quiet peer.
-            return []
-        if device not in devices:
-            devices.append(device)
-    return devices
-
-
-def whole_disk_of(path: str, *, sysfs: str = SYSFS_BLOCK) -> str | None:
-    """``/dev/sdb1`` -> ``sdb``: the disk whose queue the partition shares.
-
-    Resolved through sysfs rather than by stripping trailing digits, which
-    gets ``nvme0n1`` wrong in both directions.  A partition's sysfs node is a
-    child of its disk's node; a whole disk's parent is the ``block`` class
-    directory and has no ``dev`` file.
-    """
-
-    base = os.path.basename(path)
-    try:
-        node = Path(sysfs, base).resolve(strict=True)
-    except OSError:
-        return None
-    parent = node.parent
-    if parent.name != "block" and (parent / "dev").exists():
-        return parent.name
-    return node.name
-
-
-def read_disk_stat(device: str, *, root: str = "/sys/block") -> list[int] | None:
-    return storage_tiers.read_disk_stat(device, root=root)
-
-
 # ------------------------------------------------------------- stage tier
-
-
-def zfs_binary() -> str:
-    """``zfs``'s path, resolved the same way ``zpool``'s is and for the same
-    reason: a supervised role's ``PATH`` need not carry ``/usr/sbin``, and a
-    lookup that fails there would report a stage pool as having no mountpoint
-    rather than as unreadable."""
-
-    found = shutil.which("zfs")
-    if found:
-        return found
-    for candidate in ("/usr/sbin/zfs", "/sbin/zfs"):
-        if os.path.exists(candidate):
-            return candidate
-    return "zfs"
 
 
 def run_tool(argv: list[str]) -> str:
@@ -636,7 +476,7 @@ def stage_pool_rows(prefix: str,
 
     try:
         text = (runner or run_tool)([
-            zpool_binary(), "list", "-Hp",
+            storage_tiers.zpool_binary(), "list", "-Hp",
             "-o", "name,size,allocated,free,health"])
     except (OSError, subprocess.SubprocessError):
         return None
@@ -667,7 +507,7 @@ def pool_mountpoint(name: str,
 
     try:
         text = (runner or run_tool)(
-            [zfs_binary(), "get", "-H", "-o", "value", "mountpoint", name])
+            [storage_tiers.zfs_binary(), "get", "-H", "-o", "value", "mountpoint", name])
     except (OSError, subprocess.SubprocessError):
         return None
     value = text.strip()
@@ -692,7 +532,7 @@ def dataset_available(name: str,
 
     try:
         text = (runner or run_tool)(
-            [zfs_binary(), "get", "-Hp", "-o", "value", "available", name])
+            [storage_tiers.zfs_binary(), "get", "-Hp", "-o", "value", "available", name])
     except (OSError, subprocess.SubprocessError):
         return None
     try:
@@ -1339,7 +1179,7 @@ def discover_stage(prefix: str, *,
             state="unreadable",
             reason=f"{mountpoint} is not a writable directory on this host",
             mountpoint=mountpoint, **common)
-    leaves = pool_member_paths(name, runner=runner)
+    leaves = storage_tiers.pool_member_paths(name, runner=runner or run_tool)
     members = by_id_names(leaves or [], by_id=by_id)
     # Ask the dataset what it can still take.  Falling back to the pool's
     # ``free`` is a real answer to a different question, so it is recorded as
@@ -1806,7 +1646,7 @@ class DiskPacer:
         max_backlog_ms: float,
         sample_s: float = 0.5,
         hold_s: float = 0.25,
-        stat_source: Callable[[str], list[int] | None] = read_disk_stat,
+        stat_source: Callable[[str], list[int] | None] = storage_tiers.read_disk_stat,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         reason: str = "",
@@ -2337,7 +2177,7 @@ def pacer_from_args(args) -> DiskPacer:
                if name]
     reason = "from --disks" if devices else ""
     if not devices and getattr(args, "pace_pool", None):
-        devices = pool_member_devices(str(args.pace_pool))
+        devices = storage_tiers.pool_member_devices(str(args.pace_pool), runner=run_tool)
         reason = (f"from zpool status -P {args.pace_pool}" if devices
                   else f"pool {args.pace_pool} has no readable data vdev members")
     client_rate = None
