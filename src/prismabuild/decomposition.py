@@ -154,6 +154,11 @@ _COMMON_KEYS = frozenset({
     "retry_safe", "max_attempts", "tags", "snapshot_ref",
     "deterministic", "no_default_env", "exclusive", "gpu_capacity",
     "measurement", "host_class", "anywhere", "here",
+    # The D38 namespace descriptor path (#1639): key material every child
+    # shares, so it reaches each child's key through the template. A receipt
+    # or grant names one job, so neither is a shared policy and both stay
+    # unknown fields here.
+    "d38_namespace",
 })
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
 _FROZEN_COMMON_KEYS = frozenset({"schema", "argv", "action_common"})
@@ -396,6 +401,10 @@ def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
     if "host_class" in common:
         policies["host_class"] = pb._text(
             common["host_class"], where="common spec host_class"
+        )
+    if "d38_namespace" in common:
+        policies["d38_namespace"] = pb._text(
+            common["d38_namespace"], where="common spec d38_namespace"
         )
     for key in ("max_attempts", "gpu_capacity"):
         if key in common:
