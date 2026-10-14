@@ -155,8 +155,7 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # parsed and censused.  ``KeptReads`` is what one exporter keeps between
 # scrapes instead, under the fences the tier loop's census already trusts
 # (#992): a directory is not listed again while its ``lstat`` version equals
-# a stamp taken before its last listing (``stage_move._trusted_directory_
-# stamp``), and a record is not read again while its file version holds
+# a stamp taken before its last listing (``kept_reads.trusted_directory_stamp``), and a record is not read again while its file version holds
 # (``kept_reads.DirectoryRecords``).  Every queue writer files by rename,
 # which is what both fences stand on.  A stamp is never trusted on a network
 # filesystem or inside the clock tick it was taken in, so on NFS every

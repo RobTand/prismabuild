@@ -32,6 +32,7 @@ def file_version_scope():
 def file_versions_enabled() -> bool:
     return _FILE_VERSION_SCOPE.get()
 
+
 def metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
     """Change evidence for one publication metadata file.
 
@@ -1234,5 +1235,3 @@ def _entry_reads(entries, entry_io, *, readers: int, checkpoint):
                 yield entry, outcome
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
-
-

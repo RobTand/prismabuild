@@ -1214,14 +1214,14 @@ class _StagedPublisher:
         self._claim_memo = kept_reads.CensusMemo()
         #: The range decision's partial-temporaries hint (#1028): each
         #: range directory is listed once under
-        #: :func:`_trusted_directory_stamp` and a name revalidates the
+        #: :func:`kept_reads.trusted_directory_stamp` and a name revalidates the
         #: hint with one directory version, re-listing only what moved.
         #: The claim census and the pin census are main's, per name.
         #: Guarded by ``_range_lock`` because every copy worker thread
         #: shares one publisher.
         self._range_lock = threading.Lock()
         #: Each range directory's ``(stamp, partial names)``, listed once
-        #: per :func:`_trusted_directory_stamp`; only a fenced listing is
+        #: per :func:`kept_reads.trusted_directory_stamp`; only a fenced listing is
         #: remembered.
         self._range_partials: dict[str, tuple[tuple, tuple[str, ...]]] = {}
 
@@ -2126,7 +2126,7 @@ class _StagedPublisher:
     def _range_partial_census(self, directory: Path) -> tuple[str, ...] | None:
         """One range directory's partial temporaries, as a fenced hint (#1028).
 
-        Listed once per :func:`_trusted_directory_stamp` of the directory
+        Listed once per :func:`kept_reads.trusted_directory_stamp` of the directory
         and remembered -- the stamp taken before the scan, kept only while
         a fresh directory version still equals it, the same fence the
         forest census's listings are kept under (#1004, #992) --
@@ -2221,7 +2221,7 @@ class _StagedPublisher:
         means the directory could not be read (fail closed).
 
         The range directory is listed once per
-        :func:`_trusted_directory_stamp` and remembered
+        :func:`kept_reads.trusted_directory_stamp` and remembered
         (#1028, :meth:`_range_partial_census`); each name revalidates the
         listing with one directory version
         (:func:`_current_directory_version`) and the directory is listed
@@ -2754,7 +2754,7 @@ class _StagedPublisher:
 
         A directory is listed only when it moved (#1004 item 4, #992).  Each
         listing's names are remembered under the stamp
-        :func:`_trusted_directory_stamp` took before it, and a later census
+        :func:`kept_reads.trusted_directory_stamp` took before it, and a later census
         whose ``lstat`` of the directory still returns that stamp reuses the
         names without listing: no entry was created, removed or renamed
         since.  Every fragment is still stat-ed and looked up through the
@@ -4180,7 +4180,7 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
-    (:func:`_keepable_version`), as :class:`kept_reads.CensusMemo` reads
+    (:func:`kept_reads.keepable_version`), as :class:`kept_reads.CensusMemo` reads
     its hint pass, so a qualified version can be compared once the lock is held
     (:func:`_reread_own_document`).  A same-key retry's own fragment can be
     large, and this is the mover's *first* wait for the stage lock
