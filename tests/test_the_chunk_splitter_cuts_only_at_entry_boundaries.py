@@ -23,8 +23,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
 
 GIB = storage_tiers.GIB
 V1 = "prismaquant.prismabuild.data_manifest.v1"
@@ -33,13 +33,13 @@ V2 = "prismaquant.prismabuild.data_manifest.v2"
 
 def split(start: int, end: int, chunk: int, sizes: list[int],
           window: int | None = None) -> list[tuple[int, int]]:
-    return storage_tiers.split_range_into_chunks(
+    return manifest_layout.split_range_into_chunks(
         start, end, chunk, entry_bytes=sizes, window_bytes=window)
 
 
 def test_the_splitter_cannot_be_called_without_the_entries() -> None:
     with pytest.raises(TypeError):
-        storage_tiers.split_range_into_chunks(  # type: ignore[call-arg]
+        manifest_layout.split_range_into_chunks(  # type: ignore[call-arg]
             0, 80 * GIB, 40 * GIB)
 
 
@@ -72,7 +72,7 @@ def test_an_entry_larger_than_the_chunk_is_a_chunk_of_its_own() -> None:
 def test_an_entry_larger_than_the_window_refuses() -> None:
     sizes = [10 * GIB, 161 * GIB, 10 * GIB]
 
-    with pytest.raises(storage_tiers.EntryExceedsWindow) as caught:
+    with pytest.raises(manifest_layout.EntryExceedsWindow) as caught:
         split(0, 181 * GIB, 40 * GIB, sizes, window=160 * GIB)
 
     refusal = caught.value
@@ -179,29 +179,6 @@ def _v1(sizes: list[int], cuts: list[int]) -> dict[str, object]:
             "entry_count": len(sizes), "total_bytes": sum(sizes)}
 
 
-def _v2(sizes: list[int], order: list[list[int]]) -> dict[str, object]:
-    phases, running = [], 0
-    for ordinal, indices in enumerate(order):
-        size = sum(sizes[index] for index in indices)
-        running += size
-        phases.append({"name": f"phase-{ordinal}", "entry_indices": indices,
-                       "bytes": size, "cumulative_bytes": running})
-    return {"schema": V2, "produced_by": {}, "annotations": {},
-            "mount_prefix": "/mnt/shared", "entries": _entries(sizes),
-            "entry_count": len(sizes), "total_bytes": sum(sizes),
-            "read_plan": {"phases": phases, "read_bytes": running}}
-
-
-@pytest.mark.parametrize("manifest", [
-    _v1([3 * GIB, 5, 7 * GIB, 11], [2, 2]),
-    _v2([3 * GIB, 5, 7 * GIB, 11], [[2, 0], [3, 1]]),
-    _v2([3 * GIB, 5, 7 * GIB, 11], [[0], [1, 2, 3]]),
-])
-def test_the_seal_and_the_movers_read_one_order(manifest) -> None:
-    assert (storage_tiers.manifest_read_entries(manifest)
-            == prewarm_loop.manifest_read_entries(manifest))
-
-
 def test_a_manifest_whose_phases_are_refused_has_no_read_order() -> None:
     """The same refusal ``manifest_phase_ranges`` makes: a phase table that
     cuts an entry describes no read order a chunk could be cut against."""
@@ -209,5 +186,5 @@ def test_a_manifest_whose_phases_are_refused_has_no_read_order() -> None:
     manifest = _v1([3 * GIB, 5, 7 * GIB, 11], [2, 2])
     manifest["annotations"]["phases"][0]["cumulative_bytes"] = GIB  # type: ignore[index]
 
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
-    assert storage_tiers.manifest_read_entries(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_read_entries(manifest) == []

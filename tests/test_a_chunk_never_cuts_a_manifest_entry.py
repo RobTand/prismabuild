@@ -33,6 +33,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
@@ -210,7 +211,7 @@ def _leg_ranges(phase: dict, leg: str) -> list[tuple[int, int, dict]]:
 
 def _boundaries(manifest: dict[str, object]) -> set[int]:
     running, seen = 0, {0}
-    for entry in prewarm_loop.manifest_read_entries(manifest):
+    for entry in manifest_layout.read_entries(manifest):
         running += int(entry["bytes"])
         seen.add(running)
     return seen
@@ -230,13 +231,13 @@ def test_every_sealed_range_covers_exactly_the_entries_it_reserves(
 
     manifest = _manifest(_straddling_sizes(GIB, LIVE_ODD_BYTES))
     staged = _seal(tmp_path, manifest)
-    read = prewarm_loop.manifest_read_entries(manifest)
+    read = manifest_layout.read_entries(manifest)
     edges = _boundaries(manifest)
 
     for phase in staged["plan"]["phases"]:  # type: ignore[index]
         for start, end, mover in _leg_ranges(phase, leg):
             covered = sum(int(entry["bytes"]) for entry in
-                          prewarm_loop.entries_between(read, start, end))
+                          manifest_layout.entries_between(read, start, end))
             assert covered == end - start, (
                 f"{leg} range [{start}, {end}) of {phase['name']} covers "
                 f"{covered} bytes of entries: residency_overran_reservation")
@@ -274,17 +275,17 @@ def test_a_phase_s_chunks_stage_each_entry_once(tmp_path, leg) -> None:
 
     manifest = _manifest(_straddling_sizes(GIB, LIVE_ODD_BYTES))
     staged = _seal(tmp_path, manifest)
-    read = prewarm_loop.manifest_read_entries(manifest)
+    read = manifest_layout.read_entries(manifest)
 
     for phase in staged["plan"]["phases"]:  # type: ignore[index]
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
         spans = _leg_ranges(phase, leg)
         staged_entries = [entry["path"] for cstart, cend, _ in spans
-                          for entry in prewarm_loop.entries_between(
+                          for entry in manifest_layout.entries_between(
                               read, cstart, cend)]
         assert staged_entries == [
             entry["path"] for entry in
-            prewarm_loop.entries_between(read, start, end)]
+            manifest_layout.entries_between(read, start, end)]
         assert sum(cend - cstart for cstart, cend, _ in spans) == end - start
 
 

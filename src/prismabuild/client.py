@@ -72,6 +72,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from . import manifest_layout
 from . import action_result as _action_result
 from . import core as _core
 from . import local_scratch as _local_scratch
@@ -101,7 +102,7 @@ containment_certificate_ok = _reader_lease.containment_certificate_ok
 
 DATA_MANIFEST_MAX_BYTES = _core.DATA_MANIFEST_MAX_BYTES
 read_data_manifest = _core.read_data_manifest
-manifest_read_entries = _storage_tiers.manifest_read_entries
+manifest_read_entries = manifest_layout.manifest_read_entries
 
 # -- the queue ---------------------------------------------------------------
 

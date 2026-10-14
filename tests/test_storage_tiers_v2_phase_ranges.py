@@ -21,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
 
 GIB = storage_tiers.GIB
@@ -81,7 +82,7 @@ def _phases(manifest: dict[str, object]) -> list[dict[str, object]]:
 
 def test_v2_ranges_follow_the_manifests_own_read_order() -> None:
     manifest = _manifest_v2([3 * GIB, 7 * GIB])
-    assert storage_tiers.manifest_phase_ranges(manifest) == [
+    assert manifest_layout.manifest_phase_ranges(manifest) == [
         {"name": "phase-0", "start_bytes": 0, "end_bytes": 3 * GIB},
         {"name": "phase-1", "start_bytes": 3 * GIB, "end_bytes": 10 * GIB},
     ]
@@ -98,15 +99,15 @@ def test_v2_ranges_follow_a_reordered_read_plan() -> None:
     """
 
     manifest = _manifest_v2([3 * GIB, 7 * GIB], order=[1, 0])
-    assert storage_tiers.manifest_phase_ranges(manifest) == [
+    assert manifest_layout.manifest_phase_ranges(manifest) == [
         {"name": "phase-0", "start_bytes": 0, "end_bytes": 7 * GIB},
         {"name": "phase-1", "start_bytes": 7 * GIB, "end_bytes": 10 * GIB},
     ]
 
 
 def test_v1_and_v2_agree_on_the_same_logical_manifest() -> None:
-    assert (storage_tiers.manifest_phase_ranges(_manifest_v2([3 * GIB, 7 * GIB]))
-            == storage_tiers.manifest_phase_ranges(_manifest_v1([3 * GIB, 7 * GIB])))
+    assert (manifest_layout.manifest_phase_ranges(_manifest_v2([3 * GIB, 7 * GIB]))
+            == manifest_layout.manifest_phase_ranges(_manifest_v1([3 * GIB, 7 * GIB])))
 
 
 # -- the v1 refusals, against v2 inputs ---------------------------------------
@@ -115,16 +116,16 @@ def test_v1_and_v2_agree_on_the_same_logical_manifest() -> None:
 def test_v2_missing_phase_key_is_a_refusal_not_a_keyerror() -> None:
     manifest = _manifest_v2([GIB, GIB])
     del _phases(manifest)[0]["cumulative_bytes"]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
     manifest = _manifest_v2([GIB, GIB])
     del _phases(manifest)[1]["name"]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_non_mapping_phase_is_a_refusal() -> None:
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0] = "phase-0"  # type: ignore[assignment]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 @pytest.mark.parametrize("cumulative", [True, False, 1.5, "10", None])
@@ -133,7 +134,7 @@ def test_v2_non_integer_cumulative_is_refused(cumulative: object) -> None:
 
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0]["cumulative_bytes"] = cumulative
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 @pytest.mark.parametrize("name", ["", 7, None, "phase-1"])
@@ -142,20 +143,20 @@ def test_v2_bad_or_duplicate_name_is_refused(name: object) -> None:
 
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0]["name"] = name
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_non_monotonic_table_is_refused() -> None:
     manifest = _manifest_v2([3 * GIB, 7 * GIB])
     _phases(manifest)[0]["cumulative_bytes"] = 10 * GIB
     _phases(manifest)[1]["cumulative_bytes"] = 7 * GIB
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_cumulative_past_the_total_is_refused() -> None:
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[1]["cumulative_bytes"] = 3 * GIB
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_boundary_off_an_entry_is_refused() -> None:
@@ -164,7 +165,7 @@ def test_v2_boundary_off_an_entry_is_refused() -> None:
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0]["cumulative_bytes"] = GIB // 2
     _phases(manifest)[1]["cumulative_bytes"] = 2 * GIB
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_short_table_is_refused() -> None:
@@ -172,34 +173,34 @@ def test_v2_short_table_is_refused() -> None:
 
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[1]["cumulative_bytes"] = GIB
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_entries_that_do_not_sum_to_the_total_are_refused() -> None:
     manifest = _manifest_v2([GIB, GIB])
     manifest["entries"][0]["bytes"] = GIB + 1  # type: ignore[index]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_read_bytes_disagreement_is_refused() -> None:
     manifest = _manifest_v2([GIB, GIB])
     manifest["read_plan"]["read_bytes"] = 3 * GIB  # type: ignore[index]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_missing_read_plan_is_a_refusal() -> None:
     manifest = _manifest_v2([GIB, GIB])
     del manifest["read_plan"]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
     manifest = _manifest_v2([GIB, GIB])
     manifest["read_plan"] = {}  # type: ignore[assignment]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
 
 
 def test_v2_entry_index_outside_the_entries_is_refused() -> None:
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0]["entry_indices"] = [7]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
     manifest = _manifest_v2([GIB, GIB])
     _phases(manifest)[0]["entry_indices"] = [True]
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []

@@ -137,6 +137,7 @@ import tempfile
 import time
 import uuid
 
+from . import manifest_layout
 from . import core as pb
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
@@ -18887,7 +18888,7 @@ class PoolQueue:
             try:
                 path = pb.PrismaBuildCAS(cas_root).input_path(entry)
                 manifest, _ = pb.read_data_manifest(path)
-                declares = storage_tiers.manifest_prelaunch_phases(manifest)
+                declares = manifest_layout.manifest_prelaunch_phases(manifest)
             except (OSError, ValueError, pb.PrismaBuildError) as exc:
                 # Unknown evidence waits; it never admits.  ``map_unreadable``
                 # is the nearest existing refusal: like an unreadable composed

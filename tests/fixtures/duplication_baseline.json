@@ -215,8 +215,7 @@
   "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.mover_cap",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.attest",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.report",
-  "sorted-json:tools/fleet/upgrade_client.py::canonical_json",
-  "sorted-json:tools/maintenance/test_inventory.py::main"
+  "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
  ],
  "same_name_distinct": [
   {
@@ -625,10 +624,6 @@
    "tools/fleet/pbcampaign.py",
    "tools/fleet/prewarm_loop.py",
    "tools/fleet/stage_move.py"
-  ],
-  "manifest_read_entries": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
   ],
   "mint_generation": [
    "src/prismabuild/produced_output.py",

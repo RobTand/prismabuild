@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 import prismabuild.client as client
+from prismabuild import manifest_layout
 from prismabuild import (
     action_result,
     local_scratch,
@@ -183,7 +184,7 @@ REEXPORTS = {
     "live_for": reader_lease.live_for,
     "containment_certificate_ok": reader_lease.containment_certificate_ok,
     "read_data_manifest": pb.read_data_manifest,
-    "manifest_read_entries": storage_tiers.manifest_read_entries,
+    "manifest_read_entries": manifest_layout.manifest_read_entries,
     "PoolQueue": pool.PoolQueue,
     "CLAIMED": pool.CLAIMED,
     "RESIDENCY": pool.RESIDENCY,

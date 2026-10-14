@@ -15,14 +15,19 @@ import pbrun  # noqa: E402
 
 
 @pytest.mark.parametrize("use_defaults", [False, True])
+@pytest.mark.parametrize("changed_member", [
+    "src/prismabuild/core.py", "tools/fleet/prewarm_loop.py",
+    "src/prismabuild/manifest_layout.py",
+])
 def test_v2_requires_published_and_verified_core_and_storage_reader(
-        tmp_path: Path, monkeypatch, use_defaults) -> None:
+        tmp_path: Path, monkeypatch, use_defaults, changed_member) -> None:
     source = tmp_path / "source"
     published = tmp_path / "fleet" / "repo"
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", source)
     monkeypatch.setattr(pbrun, "SH", published.parent)
     roots = {} if use_defaults else {"source_root": source, "published_root": published}
-    members = ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py")
+    members = ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py",
+               "src/prismabuild/manifest_layout.py")
     files = {}
     for member in members:
         original = source / member
@@ -34,11 +39,11 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
         files[member] = hashlib.sha256(original.read_bytes()).hexdigest()
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
     pbrun.require_deployed_read_plan_storage(**roots)
-    (published / members[1]).write_text("old prewarmer")
+    (published / changed_member).write_text("old storage owner")
     with pytest.raises(SystemExit, match="compatible published storage"):
         pbrun.require_deployed_read_plan_storage(**roots)
-    (published / members[1]).write_bytes((source / members[1]).read_bytes())
-    files[members[1]] = "0" * 64
+    (published / changed_member).write_bytes((source / changed_member).read_bytes())
+    files[changed_member] = "0" * 64
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
     with pytest.raises(SystemExit, match="compatible published storage"):
         pbrun.require_deployed_read_plan_storage(**roots)

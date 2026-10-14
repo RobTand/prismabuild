@@ -69,6 +69,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
+from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -5007,8 +5008,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
     cas_root = Path(args.cas_root)
     manifest = load_manifest(cas_root, args.action_key, args.manifest)
     mount_prefix = str(manifest["mount_prefix"])
-    entries = prewarm_loop.manifest_read_entries(manifest)
-    window = prewarm_loop.entries_between(
+    entries = manifest_layout.read_entries(manifest)
+    window = manifest_layout.entries_between(
         entries, int(args.range_start_bytes), int(args.range_end_bytes))
     declared = int(args.range_end_bytes) - int(args.range_start_bytes)
     if declared <= 0:

@@ -28,6 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from prismabuild import manifest_layout
 from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
 
 MOVER = "1" * 64
@@ -101,7 +102,7 @@ def _residency(*, range_start: int, range_end: int) -> dict[str, object]:
 
 def test_the_range_comes_out_of_the_manifests_own_read_order() -> None:
     manifest = _manifest_v1([3 * GIB, 7 * GIB, GIB // 2])
-    ranges = storage_tiers.manifest_phase_ranges(manifest)
+    ranges = manifest_layout.manifest_phase_ranges(manifest)
     assert ranges == [
         {"name": "phase-0", "start_bytes": 0, "end_bytes": 3 * GIB},
         {"name": "phase-1", "start_bytes": 3 * GIB, "end_bytes": 10 * GIB},
@@ -145,16 +146,16 @@ def test_a_phase_table_that_does_not_describe_this_manifest_yields_no_ranges() -
 
     manifest = _manifest_v1([GIB, GIB])
     manifest["annotations"]["phases"][0]["cumulative_bytes"] = GIB // 2  # cuts an entry
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []
     absent = _manifest_v1([GIB])
     absent["annotations"] = {}
-    assert storage_tiers.manifest_phase_ranges(absent) == []
+    assert manifest_layout.manifest_phase_ranges(absent) == []
 
 
 def test_publish_refuses_a_demand_below_the_range_it_declares(
     queue: pool.PoolQueue,
 ) -> None:
-    ranges = storage_tiers.manifest_phase_ranges(_manifest_v1([3 * GIB, 7 * GIB]))
+    ranges = manifest_layout.manifest_phase_ranges(_manifest_v1([3 * GIB, 7 * GIB]))
     lead = ranges[0]
     derived = storage_tiers.residency_demand(
         tier_id=TIER, range_start_bytes=lead["start_bytes"],

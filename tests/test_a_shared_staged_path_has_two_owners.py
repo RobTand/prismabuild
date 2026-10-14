@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
@@ -133,7 +134,7 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     manifest = _split_manifest(pool_dir)
     manifest_path.write_text(json.dumps(manifest))
 
-    entries = prewarm_loop.manifest_read_entries(manifest)
+    entries = manifest_layout.read_entries(manifest)
     stage_copier = _Copier(
         mounts=prewarm_loop.MountMap([f"/mnt/shared={pool_dir}"]),
         pacer=None, stage_root=stage, mount_prefix="/mnt/shared",
@@ -736,7 +737,7 @@ def test_an_uncuttable_window_taints(fleet, monkeypatch) -> None:
     def boom(*args, **kwargs):
         raise ValueError("cut refused")
 
-    monkeypatch.setattr(prewarm_loop, "entries_between", boom)
+    monkeypatch.setattr(manifest_layout, "entries_between", boom)
     receipt = stage_release.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))

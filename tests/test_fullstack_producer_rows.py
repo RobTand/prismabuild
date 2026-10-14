@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import manifest_layout
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
 from fullstack_fixtures import corpus, manifest_entry  # noqa: E402
@@ -98,7 +99,7 @@ _PHASES = [
 def test_manifest_phases_tile_the_read_order(tmp_path: Path) -> None:
     """Production phase ranges tile the manifest contiguously (ACC-01)."""
     manifest = _manifest(tmp_path / "pool")
-    ranges = storage_tiers.manifest_phase_ranges(manifest)
+    ranges = manifest_layout.manifest_phase_ranges(manifest)
     assert [r["name"] for r in ranges] == ["head", "layer-000", "layer-001"]
     assert ranges[0]["start_bytes"] == 0
     assert ranges[-1]["end_bytes"] == manifest["total_bytes"]
@@ -126,4 +127,4 @@ def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
     """A manifest whose entries disagree with its bytes yields no ranges."""
     manifest = _manifest(tmp_path / "pool")
     manifest["entries"][1]["bytes"] = int(manifest["entries"][1]["bytes"]) + 1
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []

@@ -72,7 +72,7 @@ def main() -> None:
     if args.json:
         args.json.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: value for key, value in report.items()
-                      if key != "findings"}, sort_keys=True))
+                      if key != "findings"}))
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
     decomposition as dc, dependency_digest, filesystem_floor, materialize,
@@ -2368,7 +2369,7 @@ def require_deployed_read_plan_storage(*, source_root: Path | None = None,
 
     A source checkout can seal v2 before the fleet's storage role knows it.
     The old role would skip the manifest and the row would claim cold; compare
-    the exact two contract owners to the published, hashed generation first.
+    the contract owners to the published, hashed generation first.
     The operator also verifies the DL380 role has reloaded that generation.
     """
 
@@ -2377,7 +2378,8 @@ def require_deployed_read_plan_storage(*, source_root: Path | None = None,
     try:
         receipt = json.loads((published_root / "RUNTIME_VERSION.json").read_text())
         files = receipt["files"]
-        for member in ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py"):
+        for member in ("src/prismabuild/core.py", "src/prismabuild/manifest_layout.py",
+                       "tools/fleet/prewarm_loop.py"):
             expected = hashlib.sha256((source_root / member).read_bytes()).hexdigest()
             if (files.get(member) != expected or
                     hashlib.sha256((published_root / member).read_bytes()).hexdigest()
@@ -6335,10 +6337,10 @@ def residency_leg_cuts(
     cuts: list[list[tuple[int, int]]] = []
     for span, (start, end) in zip(ranges, spans):
         try:
-            cuts.append(storage_tiers.split_range_into_chunks(
+            cuts.append(manifest_layout.split_range_into_chunks(
                 start, end, chunk_gib * storage_tiers.GIB,
                 entry_bytes=sizes, window_bytes=window_bytes))
-        except storage_tiers.EntryExceedsWindow as exc:
+        except manifest_layout.EntryExceedsWindow as exc:
             entry = read_entries[exc.entry_index]
             raise SystemExit(
                 f"pbrun: residency_entry_exceeds_window: phase "
@@ -6385,7 +6387,7 @@ def residency_stage_rows(
             "no other way to say which bytes a range means")
     entry = manifest_input["input"]
     manifest, _ = pb.read_data_manifest(cas.input_path(entry))
-    ranges = storage_tiers.manifest_phase_ranges(manifest)
+    ranges = manifest_layout.manifest_phase_ranges(manifest)
     if not ranges:
         raise SystemExit(
             "pbrun: --residency stage needs a manifest that declares its read "
@@ -6396,7 +6398,7 @@ def residency_stage_rows(
     # manifest reaches this reader unchecked by ``core``.  Refuse a
     # non-boolean or a non-prefix declaration here.
     try:
-        prelaunch = storage_tiers.manifest_prelaunch_phases(manifest)
+        prelaunch = manifest_layout.manifest_prelaunch_phases(manifest)
     except ValueError as exc:
         raise SystemExit(
             f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
@@ -6532,7 +6534,7 @@ def residency_stage_rows(
     # Every chunk of both legs is cut here, before a single node is sealed or
     # published: an entry that no chunk of a tier can hold refuses the whole
     # submission now, rather than after half its nodes reached the CAS.
-    read_entries = storage_tiers.manifest_read_entries(manifest)
+    read_entries = manifest_layout.manifest_read_entries(manifest)
     stage_cuts = residency_leg_cuts(tier, leg="stage", ranges=ranges,
                                     read_entries=read_entries)
     ram_cuts = (None if ram_tier is None else
@@ -8627,7 +8629,7 @@ def submit_deferred(prepared: Mapping[str, object],
             require_declared_origin_batches(
                 static, transport=args.transport, queue_root=q.root)
             if (args.residency == "stage"
-                    and not storage_tiers.manifest_phase_ranges(static)):
+                    and not manifest_layout.manifest_phase_ranges(static)):
                 raise SystemExit(
                     "pbrun: --residency stage needs the static --data-manifest "
                     "to declare its read order in phases; the release adds one "

@@ -36,6 +36,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
 import shape_gate  # noqa: E402
@@ -202,7 +203,7 @@ def test_a_byte_cut_splitter_is_refused_by_name(
         return [(position, min(position + chunk_bytes, end))
                 for position in range(start, end, chunk_bytes)]
 
-    monkeypatch.setattr(storage_tiers, "split_range_into_chunks", byte_cuts)
+    monkeypatch.setattr(manifest_layout, "split_range_into_chunks", byte_cuts)
     with pytest.raises(shape_gate.ShapeGateFailure) as caught:
         _run(tmp_path, _campaign_like())
     assert caught.value.reason == "movement_refused", caught.value

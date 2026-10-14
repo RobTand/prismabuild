@@ -217,6 +217,7 @@ import worker_loop as runtime_gate  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import manifest_layout
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
@@ -2711,148 +2712,6 @@ def load_manifest(cas_root: Path, entry: dict) -> dict | None:
         return None
 
 
-def manifest_phases(manifest: dict) -> list[dict[str, object]]:
-    """The read order the producer wrote down, or an empty list.
-
-    ``annotations.phases`` is a running byte sum over ``entries`` in the order
-    the action consumes them: ``[{"name", "bytes", "cumulative_bytes"}, ...]``,
-    the last boundary being the whole manifest.  PrismaQuant's joint pass
-    writes one phase per hidden layer (PQ #524), which is what lets a 4.75 TB
-    manifest be warmed a window at a time instead of refused whole.
-
-    A table that does not describe this manifest is treated as absent rather
-    than repaired: windowing on the wrong boundaries reads the wrong bytes and
-    calls them resident, which is worse than not windowing at all.
-    """
-
-    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
-        # The core validator checked every reference, running sum and phase
-        # name before the storage role sees this CAS-backed manifest.
-        return [{"name": phase["name"],
-                 "cumulative_bytes": phase["cumulative_bytes"]}
-                for phase in manifest["read_plan"]["phases"]]
-    annotations = manifest.get("annotations")
-    if not isinstance(annotations, dict):
-        return []
-    declared = annotations.get("phases")
-    if not isinstance(declared, list) or not declared:
-        return []
-    total = int(manifest.get("total_bytes", 0))
-    # A reader submits whole manifest entries.  A phase table whose boundary
-    # cuts one in half would make the stated window smaller than the bytes the
-    # reader actually faults into ARC, so it is not a usable residency table.
-    entry_boundaries: set[int] = set()
-    entry_total = 0
-    for entry in manifest.get("entries", []):
-        entry_total += int(entry.get("bytes", 0))
-        entry_boundaries.add(entry_total)
-    if entry_total != total:
-        return []
-    table: list[dict[str, object]] = []
-    seen: set[str] = set()
-    previous = 0
-    for phase in declared:
-        if not isinstance(phase, dict):
-            return []
-        name = phase.get("name")
-        cumulative = phase.get("cumulative_bytes")
-        if not isinstance(name, str) or not name or name in seen:
-            return []
-        if isinstance(cumulative, bool) or not isinstance(cumulative, int):
-            return []
-        if cumulative < previous or cumulative > total \
-                or cumulative not in entry_boundaries:
-            return []
-        seen.add(name)
-        table.append({"name": name, "cumulative_bytes": cumulative})
-        previous = cumulative
-    if previous != total:
-        return []
-    return table
-
-
-def manifest_read_entries(manifest: dict) -> list[dict[str, object]]:
-    """Actual read timeline; v1 keeps its original consumption-order list."""
-
-    entries = manifest["entries"]
-    if manifest.get("schema") != pb.DATA_MANIFEST_SCHEMA_V2:
-        return list(entries)
-    return [entries[index]
-            for phase in manifest["read_plan"]["phases"]
-            for index in phase["entry_indices"]]
-
-
-def manifest_read_bytes(manifest: dict) -> int:
-    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
-        return int(manifest["read_plan"]["read_bytes"])
-    return int(manifest["total_bytes"])
-
-
-def consumed_through(phases: list[dict[str, object]], phase_name: str) -> int:
-    """Bytes an action reporting ``phase_name`` has finished reading.
-
-    The phase it names is the one it is reading now, so what it is done with
-    is everything before that phase began.  Counting the named phase's own
-    bytes as consumed would release a window the action is still inside.
-    A name this manifest does not carry releases nothing.
-    """
-
-    consumed = 0
-    for phase in phases:
-        if phase["name"] == phase_name:
-            return consumed
-        consumed = int(phase["cumulative_bytes"])
-    return 0
-
-
-def window_target(phases: list[dict[str, object]], entries: list[dict[str, object]],
-                  *, consumed: int, budget: int) -> tuple[int, str]:
-    """The furthest entry boundary that stays within ``budget`` of the reader.
-
-    Phase boundaries are accepted-progress frontiers: only a matching worker
-    observation can move ``consumed`` to one.  They are not a minimum warm
-    unit.  An oversized phase can contain many manifest entries, and any
-    entry-aligned prefix inside it is safe to fault into ARC without claiming
-    that the action has consumed those bytes.  Return the target boundary and
-    its phase name when it happens to end a phase; an in-phase target has no
-    phase name.
-    """
-
-    phase_names = {int(phase["cumulative_bytes"]): str(phase["name"])
-                   for phase in phases}
-    target = 0
-    cumulative = 0
-    for entry in entries:
-        cumulative += int(entry["bytes"])
-        if cumulative <= consumed:
-            continue
-        if cumulative - consumed > budget:
-            break
-        target = cumulative
-    return target, phase_names.get(target, "")
-
-
-def entries_between(entries: list[dict[str, object]], start: int,
-                    end: int) -> list[dict[str, object]]:
-    """The entries covering ``[start, end)`` of the manifest's own byte order.
-
-    ``cumulative_bytes`` is a sum over these same entries, so a phase boundary
-    falls between two of them and the slice is exact.  An entry straddling the
-    start is included whole, because a warm reads files, not byte ranges.
-    """
-
-    chosen: list[dict[str, object]] = []
-    position = 0
-    for entry in entries:
-        size = int(entry.get("bytes", 0))
-        if position >= end:
-            break
-        if position + size > start:
-            chosen.append(entry)
-        position += size
-    return chosen
-
-
 def declares_progress(request: dict | None) -> bool:
     """Did the sealed request ask for progress reporting?
 
@@ -3015,14 +2874,14 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             # been warmed.
             entry = manifest_input_of(request)
             manifest = load_manifest(root, entry) if entry is not None else None
-            phases = manifest_phases(manifest) if manifest else []
+            phases = manifest_layout.manifest_phases(manifest) if manifest else []
             if declared and phases:
                 policy = ((request.get("params") or {}).get(pb.PROGRESS_PARAM)
                           if isinstance(request, dict) else None)
                 cyclic = isinstance(policy, dict) and bool(policy.get("cycle"))
                 reported = (progress_phase(queue, key, float(claimed_unix))
                             if not cyclic else None)
-                consumed = (consumed_through(phases, reported["phase"])
+                consumed = (manifest_layout.consumed_through(phases, reported["phase"])
                             if reported is not None else 0)
                 live[key]["consumed_bytes"] = consumed
                 windows.append({
@@ -3062,9 +2921,9 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             # exists for.
             entry = manifest_input_of(request)
             manifest = load_manifest(root, entry) if entry is not None else None
-            phases = manifest_phases(manifest) if manifest else []
+            phases = manifest_layout.manifest_phases(manifest) if manifest else []
             if phases:
-                consumed = consumed_through(phases, reported["phase"])
+                consumed = manifest_layout.consumed_through(phases, reported["phase"])
         ahead = max(0, resident - consumed)
         released = resident - ahead
         reserved += ahead
@@ -3260,7 +3119,7 @@ def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
                          "reason": "the sealed manifest is no longer readable"})
             continue
         outcome = release_stage_band(
-            stage, manifest_read_entries(manifest),
+            stage, manifest_layout.read_entries(manifest),
             str(manifest.get("mount_prefix", "")),
             start=0, end=through, others=lambda: others_for(key),
             apply=apply)
@@ -3582,7 +3441,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         """
 
         nonlocal budget, budget_before_progress, cycle_spent
-        total = manifest_read_bytes(manifest)
+        total = manifest_layout.manifest_read_bytes(manifest)
         want = max(0, target - start_bytes)
         served = (served_addresses(queue, served_host) if served_host is not None
                   else {"served_host": "", "served_addresses": (),
@@ -3736,7 +3595,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                               if other_entry is not None else None)
             if other_manifest is None:
                 continue
-            yield (manifest_read_entries(other_manifest),
+            yield (manifest_layout.read_entries(other_manifest),
                    str(other_manifest.get("mount_prefix", "")),
                    int(other["consumed_bytes"]))
         for other_item in ready:
@@ -3752,7 +3611,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             if other_manifest is None:
                 continue
             # A ready row has read nothing yet, so it still wants all of it.
-            yield (manifest_read_entries(other_manifest),
+            yield (manifest_layout.read_entries(other_manifest),
                    str(other_manifest.get("mount_prefix", "")), 0)
 
     def release_window(key: str, manifest: dict, consumed: int) -> dict:
@@ -3763,7 +3622,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         prior = dict((queue.prewarm(key) or {}).get("stage") or {})
         start = int(prior.get("evicted_through_bytes", 0) or 0)
         outcome = release_stage_band(
-            stage, manifest_read_entries(manifest),
+            stage, manifest_layout.read_entries(manifest),
             str(manifest.get("mount_prefix", "")),
             start=start, end=consumed,
             others=lambda: other_live_rows(key), apply=apply)
@@ -3808,7 +3667,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 "residency_state": "resident",
             })
             continue
-        phases = manifest_phases(manifest) if manifest else []
+        phases = manifest_layout.manifest_phases(manifest) if manifest else []
         if not phases:
             continue
         resident = int(window["warmed_bytes"])
@@ -3817,8 +3676,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # already; pricing the advance against a budget that also pays for
         # them would stop a window from ever extending.
         row_budget = budget + int(window["resident_ahead"])
-        read_entries = manifest_read_entries(manifest)
-        target, phase = window_target(phases, read_entries,
+        read_entries = manifest_layout.read_entries(manifest)
+        target, phase = manifest_layout.window_target(phases, read_entries,
                                       consumed=consumed, budget=row_budget)
         if target <= resident:
             event["advanced"].append({
@@ -3830,7 +3689,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         start = max(resident, consumed)
         record = warm(
             key=key, manifest=manifest, digest=str(entry["sha256"]),
-            entries=entries_between(read_entries, start, target),
+            entries=manifest_layout.entries_between(read_entries, start, target),
             start_bytes=start, target=target, phase=phase, phased=True,
             trigger="progress" if window["phase"] else "claim",
             served_host=str(window.get("claimed_host") or ""),
@@ -3900,7 +3759,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         if manifest is None:
             event["skipped"].append({"action_key": key, "reason": "unreadable manifest"})
             continue
-        total = manifest_read_bytes(manifest)
+        total = manifest_layout.manifest_read_bytes(manifest)
         if total < args.min_manifest_bytes:
             # A trivial action is not worth a warm window. On the GLM census
             # only 42 of 132 rows are 864-unit expert rows; the other 90 carry
@@ -3915,8 +3774,8 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             })
             continue
         digest = str(entry["sha256"])
-        phases = manifest_phases(manifest)
-        read_entries = manifest_read_entries(manifest)
+        phases = manifest_layout.manifest_phases(manifest)
+        read_entries = manifest_layout.read_entries(manifest)
         prior = warm_record(queue, key, digest)
         resident = resident_bytes(prior)
         # This row's own warmed bytes are already charged to the budget by
@@ -3928,7 +3787,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # names boundaries in it, so the window is cut the same way either
         # way.  Without phases the loop simply cannot *advance* the window
         # later: no worker report maps to a byte count (#499).
-        target, phase = window_target(phases, read_entries,
+        target, phase = manifest_layout.window_target(phases, read_entries,
                                       consumed=0, budget=row_budget)
         if (prior and prior.get("status") == "complete") or (
                 target and target <= resident):
@@ -3963,7 +3822,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         taken += 1
         record = warm(
             key=key, manifest=manifest, digest=digest,
-            entries=entries_between(read_entries, resident, target),
+            entries=manifest_layout.entries_between(read_entries, resident, target),
             start_bytes=resident,
             target=target, phase=phase, phased=bool(phases),
             trigger=("progress" if target > row_budget_before_progress

@@ -31,6 +31,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import manifest_layout
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
 import prewarm_loop  # noqa: E402
@@ -696,7 +697,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             if (stage_release._bounded_int(start) is None
                     or stage_release._bounded_int(end) is None or end < start):
                 raise ValueError("reference names an invalid extent")
-            for entry in prewarm_loop.entries_between(entries, start, end):
+            for entry in manifest_layout.entries_between(entries, start, end):
                 relative = stage_relative(
                     str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
                     mount_prefix=prefix)

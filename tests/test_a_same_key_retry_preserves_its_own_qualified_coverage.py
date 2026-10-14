@@ -27,6 +27,7 @@ than the previous prefix.  The grace is shortened for the retry only --
 the assertions are about which proof survives, never about the duration.
 """
 from __future__ import annotations
+from prismabuild import manifest_layout
 
 import hashlib
 import json
@@ -254,8 +255,8 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
 
     manifest = stage_move.load_manifest(
         Path(args.cas_root), args.action_key, args.manifest)
-    entries = stage_move.prewarm_loop.manifest_read_entries(manifest)
-    window = stage_move.prewarm_loop.entries_between(
+    entries = manifest_layout.read_entries(manifest)
+    window = manifest_layout.entries_between(
         entries, int(args.range_start_bytes), int(args.range_end_bytes))
     queue = pool.PoolQueue(Path(args.pool_root))
     return queue, dict(

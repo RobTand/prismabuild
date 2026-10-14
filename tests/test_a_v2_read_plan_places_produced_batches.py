@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
+from prismabuild import manifest_layout
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
@@ -166,9 +167,9 @@ def _staged_windows(queue: pool.PoolQueue, key: str,
 
     plan = residency_plan.read(queue, key)
     assert plan is not None
-    timeline = prewarm_loop.manifest_read_entries(manifest)
+    timeline = manifest_layout.read_entries(manifest)
     return [(str(phase["name"]),
-             [str(entry["path"]) for entry in prewarm_loop.entries_between(
+             [str(entry["path"]) for entry in manifest_layout.entries_between(
                  timeline, int(phase["start_bytes"]), int(phase["end_bytes"]))])
             for phase in plan["phases"]]
 

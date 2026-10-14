@@ -112,6 +112,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -1698,7 +1699,7 @@ def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[
         return None
     if not isinstance(manifest, Mapping):
         return None
-    entries = prewarm_loop.manifest_read_entries(manifest)
+    entries = manifest_layout.read_entries(manifest)
     if not isinstance(entries, list):
         return None
     prefix = manifest.get("mount_prefix")
@@ -1951,7 +1952,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
         mount_prefix, entries = layout
         named_once = paths_named_once(entries)
         try:
-            window = prewarm_loop.entries_between(entries, start, end)
+            window = manifest_layout.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
             # A window that cannot be cut is an undeterminable range: taint,
             # never unowned.
@@ -2772,7 +2773,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
         mount_prefix, entries = layout
         named_once = paths_named_once(entries)
         try:
-            window = prewarm_loop.entries_between(entries, start, end)
+            window = manifest_layout.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
             tainted.append(f"{key[:12]}: range not cuttable: {exc}")
             continue
@@ -6339,7 +6340,7 @@ def _scope_for_range(cas_root: str, manifest_sha256: str,
         return None
     mount_prefix, entries = layout
     try:
-        window = prewarm_loop.entries_between(entries, start, end)
+        window = manifest_layout.entries_between(entries, start, end)
     except (ValueError, TypeError):
         return None
     names: set[str] = set()
@@ -6700,7 +6701,7 @@ def recover_orphaned_range(
                 f"undeterminable")
         mount_prefix, entries = layout
         try:
-            window = prewarm_loop.entries_between(entries, start, end)
+            window = manifest_layout.entries_between(entries, start, end)
         except (ValueError, TypeError) as exc:
             return scoped(f"range not cuttable: {exc}")
         if not window:
