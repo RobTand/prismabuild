@@ -53,7 +53,7 @@ def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
            "kind": "stage_gib", "tokens": names,
            "generation": "b" * 32, "state": "reserved",
            "unix": 1.0, "published_unix": 1.0}
-    q._write_funding_locked(rec, expect_generation=None)
+    q._write_funding_record_locked(rec, expect_generation=None, binding="window")
     assert q.advance_funding_state(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True

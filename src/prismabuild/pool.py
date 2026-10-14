@@ -111,7 +111,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from typing import Any, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
 import contextvars
 import errno
@@ -780,10 +780,10 @@ TIER_FUNDING_STATES = frozenset({
 })
 #: Legal funding state steps, the single table every writer enforces.
 #: :meth:`PoolQueue._advance_funding_state_locked` and
-#: :meth:`PoolQueue._write_funding_locked` both read it; there is no second
+#: :meth:`PoolQueue._write_funding_record_locked` both read it; there is no second
 #: state machine.  Fresh generations are born ``reserved``, and only the
 #: reserve path mints them (see
-#: :meth:`PoolQueue._rotate_funding_locked`).
+#: :meth:`PoolQueue._write_funding_record_locked`).
 _FUNDING_TRANSITIONS = {
     "reserved": frozenset({"transferring", "released"}),
     "transferring": frozenset({"consumed", "released"}),
@@ -13909,7 +13909,7 @@ class PoolQueue:
         never races a verifying claim.  The generation check itself is
         read-check-replace -- a loud refusal on rotation, not an atomic
         compare-and-swap; the lock is what makes concurrent writers safe.
-        See :meth:`_write_funding_locked` for the body.
+        See :meth:`_write_funding_record_locked` for the body.
         """
 
         checked = self.validate_funding(record)
@@ -13918,113 +13918,70 @@ class PoolQueue:
             if not acquired:
                 raise PoolContractError(
                     "funding writer lost the transition race")
-            return self._write_funding_locked(
-                checked, expect_generation=expect_generation)
+            return self._write_funding_record_locked(
+                checked, expect_generation=expect_generation, binding="window")
 
-    def _write_funding_locked(self, record: Mapping[str, object], *,
-                              expect_generation: str | None = None) -> Path:
-        """Advance one generation's record; caller holds the mover lock.
+    def _write_funding_record_locked(
+            self, record: Mapping[str, object], *,
+            binding: Literal["window", "output"],
+            expect_generation: str | None = None,
+            rotate: bool = False) -> Path:
+        """Persist one binding under its mover lock, keeping its wire variant.
 
-        ``expect_generation`` names the record this write replaces (``None``
-        when creating).  Enforces, against the filed record: the generation
-        still matches (a mismatch refuses instead of overwriting), the
-        binding is unchanged (every field but ``state``/``unix`` must equal
-        the filed record -- a rewrite changing consumer, plan, range, tokens
-        or generation itself is a different binding wearing a live
-        generation), and the state step is legal in
-        :data:`_FUNDING_TRANSITIONS` (same-state rewrites are idempotent and
-        allowed; ``consumed`` -> ``transferring`` and every other backward
-        or skipping step refuses, so physical holdings can never be
-        reclassified as credit).  Births must be ``reserved``.  Rotation to
-        a fresh generation is not this function's job -- see
-        :meth:`_rotate_funding_locked`, owned by the reserve path alone.
+        Ordinary writes preserve the binding and advance only legal states.
+        The reserve path alone rotates to a fresh reserved generation.
         """
-
-        checked = self.validate_funding(record)
-        path = self.funding_path(str(checked["mover_action_key"]),
-                                 str(checked["tier_id"]))
+        if binding == "output":
+            validate = self.validate_output_funding
+            binding_fields = _FUNDING_OUTPUT_BINDING_FIELDS
+            label = "output funding"
+        else:
+            validate = self.validate_funding
+            binding_fields = _FUNDING_BINDING_FIELDS
+            label = "funding"
+        checked = validate(record)
+        if rotate and checked.get("state") != "reserved":
+            raise PoolContractError(f"rotated {label} generations are born reserved")
+        mover, tier = str(checked["mover_action_key"]), str(checked["tier_id"])
+        path = (self.funding_output_path(mover, tier) if binding == "output"
+                else self.funding_path(mover, tier))
         path.parent.mkdir(parents=True, exist_ok=True)
+        if binding == "output":
+            self._refuse_retired_output_funding(checked)
         try:
             raw = _read_json(path)
         except (OSError, PoolContractError):
-            raise PoolContractError("funding record unreadable for CAS")
+            raise PoolContractError(f"{label} record unreadable for CAS")
         if raw is None:
             if expect_generation is not None:
-                raise PoolContractError(
-                    "funding record vanished underneath this write")
-            if checked.get("state") != "reserved":
-                raise PoolContractError(
-                    "funding records are born reserved")
+                raise PoolContractError(f"{label} record vanished underneath this write")
+            if not rotate and checked.get("state") != "reserved":
+                raise PoolContractError(f"{label} records are born reserved")
         else:
             try:
-                current = self.validate_funding(raw)
+                current = validate(raw)
             except (PoolContractError, ValueError):
-                raise PoolContractError(
-                    "funding record unreadable for CAS")
+                raise PoolContractError(f"{label} record unreadable for CAS")
             if (expect_generation is None
                     or str(current.get("generation")) != str(expect_generation)
-                    or str(checked.get("generation")) != str(
-                        current.get("generation"))):
-                raise PoolContractError(
-                    "funding generation rotated underneath this write")
-            for field in _FUNDING_BINDING_FIELDS:
-                if current.get(field) != checked.get(field):
+                    or (not rotate and str(checked.get("generation")) != str(
+                        current.get("generation")))):
+                raise PoolContractError(f"{label} generation rotated underneath this write")
+            if rotate:
+                if str(checked.get("generation")) == str(current.get("generation")):
+                    raise PoolContractError("rotation must mint a fresh generation")
+            else:
+                for field in binding_fields:
+                    if current.get(field) != checked.get(field):
+                        raise PoolContractError(
+                            f"{label} {field} is immutable within one generation")
+                if (str(checked.get("state")) != str(current.get("state"))
+                        and str(checked.get("state")) not in _FUNDING_TRANSITIONS.get(
+                            str(current.get("state")), frozenset())):
                     raise PoolContractError(
-                        f"funding {field} is immutable within one generation")
-            if (str(checked.get("state")) != str(current.get("state"))
-                    and str(checked.get("state")) not in _FUNDING_TRANSITIONS.get(
-                        str(current.get("state")), frozenset())):
-                raise PoolContractError(
-                    "funding state step "
-                    f"{current.get('state')!r}->{checked.get('state')!r} "
-                    "is not a legal advance")
-        _write_json_atomic(path, checked)
-        return path
-
-    def _rotate_funding_locked(self, record: Mapping[str, object], *,
-                               expect_generation: str | None) -> Path:
-        """Replace one generation with a fresh ``reserved`` one, reserve path.
-
-        Caller holds the mover lock and has already applied the reserve
-        path's keep-or-rotate rules (see :meth:`_reserve_fence_locked`): a
-        live ``reserved`` binding whose names still match is kept, never
-        rotated, and anything handed off or spent is left alone.  This only
-        checks the replaced generation is still the one the reserve read,
-        the replacement mints a strictly fresh generation, and the fresh
-        record is ``reserved`` -- it cannot advance a state, edit a binding,
-        or reclassify physical holdings, because those go through
-        :meth:`_write_funding_locked`.  Fresh creates (no filed record)
-        require ``expect_generation=None``.
-        """
-
-        checked = self.validate_funding(record)
-        if checked.get("state") != "reserved":
-            raise PoolContractError(
-                "rotated funding generations are born reserved")
-        path = self.funding_path(str(checked["mover_action_key"]),
-                                 str(checked["tier_id"]))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            raw = _read_json(path)
-        except (OSError, PoolContractError):
-            raise PoolContractError("funding record unreadable for CAS")
-        if raw is None:
-            if expect_generation is not None:
-                raise PoolContractError(
-                    "funding record vanished underneath this write")
-        else:
-            try:
-                current = self.validate_funding(raw)
-            except (PoolContractError, ValueError):
-                raise PoolContractError(
-                    "funding record unreadable for CAS")
-            if (expect_generation is None
-                    or str(current.get("generation")) != str(expect_generation)):
-                raise PoolContractError(
-                    "funding generation rotated underneath this write")
-            if str(checked.get("generation")) == str(current.get("generation")):
-                raise PoolContractError(
-                    "rotation must mint a fresh generation")
+                        f"{label} state step "
+                        f"{current.get('state')!r}->{checked.get('state')!r} "
+                        "is not a legal advance")
         _write_json_atomic(path, checked)
         return path
 
@@ -14051,14 +14008,15 @@ class PoolQueue:
 
     def _advance_funding_state_locked(self, mover_action_key: str, tier_id: str, *,
                                       expect: str, advance_to: str,
-                                      generation: str | None = None) -> bool:
-        """Move a funding record one legal step, or refuse with ``False``.
+                                      generation: str | None = None,
+                                      binding: Literal["window", "output"] = "window") -> bool:
+        """Move either funding binding one legal step, or refuse with ``False``.
 
         Caller holds the mover's transition lock (see
         :meth:`advance_funding_state`).
 
         Legal steps are :data:`_FUNDING_TRANSITIONS` -- the same table
-        :meth:`_write_funding_locked` enforces, so the two can never
+        :meth:`_write_funding_record_locked` enforces, so the two can never
         disagree about what a step is.  When ``generation`` is given it must
         match the filed record: the check turns a stale writer into a loud
         ``False``, while the mover lock (held by the caller) is what keeps
@@ -14067,7 +14025,9 @@ class PoolQueue:
         through the reserve path instead.
         """
 
-        current = self.read_funding(mover_action_key, tier_id)
+        current = (self.read_output_funding(mover_action_key, tier_id)
+                   if binding == "output"
+                   else self.read_funding(mover_action_key, tier_id))
         if current is None or current.get("state") != expect:
             return False
         if (generation is not None
@@ -14081,7 +14041,9 @@ class PoolQueue:
         updated["state"] = advance_to
         updated["unix"] = time.time()
         try:
-            self.write_funding(
+            write = (self.write_output_funding if binding == "output"
+                     else self.write_funding)
+            write(
                 updated,
                 expect_generation=(str(current.get("generation"))
                                    if isinstance(current.get("generation"),
@@ -14546,8 +14508,8 @@ class PoolQueue:
                     return False
                 self.write_funding(record)
             else:
-                self._rotate_funding_locked(
-                    record, expect_generation=current_generation)
+                self._write_funding_record_locked(
+                    record, expect_generation=current_generation, binding="window", rotate=True)
         except (OSError, PoolContractError, ValueError):
             return False
         return True
@@ -14775,7 +14737,7 @@ class PoolQueue:
 
         Same CAS + binding-immutability + table rules as V1, under the
         mover's transition lock (non-blocking; refuse when a claim holds
-        it).  See _write_output_funding_locked for the body.
+        it).  See _write_funding_record_locked for the body.
         """
 
         checked = self.validate_output_funding(record)
@@ -14784,55 +14746,8 @@ class PoolQueue:
             if not acquired:
                 raise PoolContractError(
                     "output funding writer lost the transition race")
-            return self._write_output_funding_locked(
-                checked, expect_generation=expect_generation)
-
-    def _write_output_funding_locked(
-            self, record: Mapping[str, object], *,
-            expect_generation: str | None = None) -> Path:
-        """File one output generation; caller holds the mover lock."""
-
-        checked = self.validate_output_funding(record)
-        path = self.funding_output_path(str(checked["mover_action_key"]),
-                                        str(checked["tier_id"]))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._refuse_retired_output_funding(checked)
-        try:
-            raw = _read_json(path)
-        except (OSError, PoolContractError):
-            raise PoolContractError("output funding record unreadable for CAS")
-        if raw is None:
-            if expect_generation is not None:
-                raise PoolContractError(
-                    "output funding record vanished underneath this write")
-            if checked.get("state") != "reserved":
-                raise PoolContractError(
-                    "output funding records are born reserved")
-        else:
-            try:
-                current = self.validate_output_funding(raw)
-            except (PoolContractError, ValueError):
-                raise PoolContractError(
-                    "output funding record unreadable for CAS")
-            if (expect_generation is None
-                    or str(current.get("generation")) != str(expect_generation)
-                    or str(checked.get("generation")) != str(
-                        current.get("generation"))):
-                raise PoolContractError(
-                    "output funding generation rotated underneath this write")
-            for field in _FUNDING_OUTPUT_BINDING_FIELDS:
-                if current.get(field) != checked.get(field):
-                    raise PoolContractError(
-                        f"output funding {field} is immutable within one generation")
-            if (str(checked.get("state")) != str(current.get("state"))
-                    and str(checked.get("state")) not in _FUNDING_TRANSITIONS.get(
-                        str(current.get("state")), frozenset())):
-                raise PoolContractError(
-                    "output funding state step "
-                    f"{current.get('state')!r}->{checked.get('state')!r} "
-                    "is not a legal advance")
-        _write_json_atomic(path, checked)
-        return path
+            return self._write_funding_record_locked(
+                checked, expect_generation=expect_generation, binding="output")
 
     def _refuse_retired_output_funding(self, checked: Mapping[str, object]) -> None:
         """A retired record is terminal: no write may land beside it.
@@ -14956,86 +14871,6 @@ class PoolQueue:
         except FileNotFoundError:
             # The holder directory is absent: the mover holds nothing here.
             return True
-        except (OSError, PoolContractError, ValueError):
-            return False
-        return True
-
-    def _rotate_output_funding_locked(
-            self, record: Mapping[str, object], *,
-            expect_generation: str | None) -> Path:
-        """Replace one output generation with a fresh reserved one."""
-
-        checked = self.validate_output_funding(record)
-        if checked.get("state") != "reserved":
-            raise PoolContractError(
-                "rotated output funding generations are born reserved")
-        path = self.funding_output_path(str(checked["mover_action_key"]),
-                                        str(checked["tier_id"]))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._refuse_retired_output_funding(checked)
-        try:
-            raw = _read_json(path)
-        except (OSError, PoolContractError):
-            raise PoolContractError("output funding record unreadable for CAS")
-        if raw is None:
-            if expect_generation is not None:
-                raise PoolContractError(
-                    "output funding record vanished underneath this write")
-        else:
-            try:
-                current = self.validate_output_funding(raw)
-            except (PoolContractError, ValueError):
-                raise PoolContractError(
-                    "output funding record unreadable for CAS")
-            if (expect_generation is None
-                    or str(current.get("generation")) != str(expect_generation)):
-                raise PoolContractError(
-                    "output funding generation rotated underneath this write")
-            if str(checked.get("generation")) == str(current.get("generation")):
-                raise PoolContractError(
-                    "rotation must mint a fresh generation")
-        _write_json_atomic(path, checked)
-        return path
-
-    def advance_output_funding_state(
-            self, mover_action_key: str, tier_id: str, *,
-            expect: str, advance_to: str,
-            generation: str | None = None) -> bool:
-        """Move an output funding record one legal step, or refuse False."""
-
-        with self.mover_transition_lock(str(mover_action_key),
-                                        blocking=False) as acquired:
-            if not acquired:
-                return False
-            return self._advance_output_funding_state_locked(
-                mover_action_key, tier_id, expect=expect,
-                advance_to=advance_to, generation=generation)
-
-    def _advance_output_funding_state_locked(
-            self, mover_action_key: str, tier_id: str, *,
-            expect: str, advance_to: str,
-            generation: str | None = None) -> bool:
-        """Move an output record one step; caller holds the mover lock."""
-
-        current = self.read_output_funding(mover_action_key, tier_id)
-        if current is None or current.get("state") != expect:
-            return False
-        if (generation is not None
-                and str(current.get("generation")) != str(generation)):
-            return False
-        if expect == advance_to:
-            return True
-        if advance_to not in _FUNDING_TRANSITIONS.get(str(expect), frozenset()):
-            return False
-        updated = dict(current)
-        updated["state"] = advance_to
-        updated["unix"] = time.time()
-        try:
-            self.write_output_funding(
-                updated,
-                expect_generation=(str(current.get("generation"))
-                                   if isinstance(current.get("generation"),
-                                                str) else None))
         except (OSError, PoolContractError, ValueError):
             return False
         return True
@@ -15610,8 +15445,8 @@ class PoolQueue:
                     # never a second intent).
                     pass
                 try:
-                    self._write_output_funding_locked(
-                        record, expect_generation=None)
+                    self._write_funding_record_locked(
+                        record, expect_generation=None, binding="output")
                 except (OSError, PoolContractError, ValueError) as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
                 return {"ok": True, "generation": generation,
@@ -15914,9 +15749,9 @@ class PoolQueue:
                 _rotated["generation"] = uuid.uuid4().hex
                 _rotated["unix"] = time.time()
                 try:
-                    self._rotate_output_funding_locked(
+                    self._write_funding_record_locked(
                         _rotated, expect_generation=str(
-                            current.get("generation")))
+                            current.get("generation")), binding="output", rotate=True)
                 except (OSError, PoolContractError, ValueError) as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
                 current = self.read_output_funding(mover_key, tier)
@@ -15944,7 +15779,7 @@ class PoolQueue:
                 "range_end_bytes": int(binding.get("range_end_bytes")),
             }
             try:
-                self._write_output_funding_locked(record, expect_generation=None)
+                self._write_funding_record_locked(record, expect_generation=None, binding="output")
             except (OSError, PoolContractError, ValueError) as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             current = self.read_output_funding(mover_key, tier)
@@ -15964,9 +15799,9 @@ class PoolQueue:
             return {"ok": False, "refusal": "transfer-short",
                     "moved": moved, "expected": len(names),
                     "generation": generation}
-        if not self._advance_output_funding_state_locked(
+        if not self._advance_funding_state_locked(
                 mover_key, tier, expect="reserved",
-                advance_to="transferring", generation=generation):
+                advance_to="transferring", generation=generation, binding="output"):
             # Already transferring with same generation is success (retry
             # after crash between transfer and advance).
             check = self.read_output_funding(mover_key, tier)
@@ -16174,9 +16009,9 @@ class PoolQueue:
                     rotated["generation"] = uuid.uuid4().hex
                     rotated["unix"] = time.time()
                     try:
-                        self._rotate_output_funding_locked(
+                        self._write_funding_record_locked(
                             rotated,
-                            expect_generation=str(record.get("generation")))
+                            expect_generation=str(record.get("generation")), binding="output", rotate=True)
                     except (OSError, PoolContractError, ValueError) as exc:
                         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
                     record = self.read_output_funding(mover, tier)
@@ -16246,10 +16081,10 @@ class PoolQueue:
                             "moved": moved, "expected": len(names),
                             "generation": str(record.get("generation"))}
                 if record.get("state") == "reserved":
-                    if not self._advance_output_funding_state_locked(
+                    if not self._advance_funding_state_locked(
                             mover, tier, expect="reserved",
                             advance_to="transferring",
-                            generation=str(record.get("generation"))):
+                            generation=str(record.get("generation")), binding="output"):
                         check = self.read_output_funding(mover, tier)
                         if not (isinstance(check, dict)
                                 and check.get("state") == "transferring"
@@ -16337,9 +16172,9 @@ class PoolQueue:
             current, dead_input=dead_input)
         if proven is not True:
             return proven
-        if self._advance_output_funding_state_locked(
+        if self._advance_funding_state_locked(
                 mover, str(tier_id), expect=state, advance_to="released",
-                generation=str(current.get("generation"))):
+                generation=str(current.get("generation")), binding="output"):
             return True
         # Every proven refusal answered above; a False here is a read or
         # write fault under the advance's own idempotence, which the next
@@ -16626,18 +16461,6 @@ class PoolQueue:
                     outstanding += live
         return (outstanding, False)
 
-    def output_intents_sourcing_from(self, owner_key: str) -> list[dict]:
-        """Outstanding output intents whose source window is this owner.
-
-        Deprecated wrapper (fail-open on unknown); prefer
-        `output_census_for_owner` + `output_keep_names_for_owner` which
-        propagate UNKNOWN. Kept for diagnostics only; finish/reaper paths
-        must use the keep-names helper below, never this list alone.
-        """
-
-        intents, _ = self.output_census_for_owner(str(owner_key))
-        return intents
-
     def output_keep_names_for_owner(
             self, owner_key: str, tier_id: str, *,
             census: Callable[[], tuple[list[dict], bool]] | None = None,
@@ -16690,73 +16513,6 @@ class PoolQueue:
                 if name in held:
                     keep.add(name)
         return (keep, False)
-
-    def validate_output_mover_publishable(
-            self, *, instance, template, batch_id: str,
-            descriptors: list[Mapping[str, object]],
-            mover_key: str, tier_id: str,
-            residency: Mapping[str, object]) -> dict:
-        """Writer-side publication check (R3, no publish edit).
-
-        744 calls this BEFORE publishing a mover READY row; it rejects a
-        contradictory/missing declared reference before exposure using
-        existing validators only: bound precommit (live owner + prewrite +
-        descriptors + manifest via `describe_output_precommit_for_funding`),
-        staged output intent exists for (mover, tier) naming the same
-        batch/manifest (reserved, any publication incl. 0.0 sentinel), and
-        sealed residency matching the precommit manifest/tier/range.
-        Returns {"ok": True, ...} or typed refusal; never raises for
-        queue-state reasons.
-        """
-
-        try:
-            tier = self._check_tier_id(str(tier_id))
-        except (PoolContractError, ValueError) as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        try:
-            from . import produced_output as produced_mod
-            binding = produced_mod.describe_output_precommit_for_funding(
-                self, instance, template, batch_id, descriptors,
-                tier, str(mover_key))
-        except produced_mod.ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        except (OSError, PoolContractError, ValueError) as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        except Exception as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        record = self.read_output_funding(str(mover_key), tier)
-        if record is None:
-            # Distinguish absent file (missing staged intent => refuse) from
-            # corrupt file (unknown => refuse); both refuse publication, with
-            # different reasons for diagnostics.
-            _, file_state = self.output_funding_file_state(
-                str(mover_key), tier)
-            if file_state == "absent":
-                return {"ok": False, "refusal": "output-funding-missing"}
-            return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
-        if str(record.get("state")) not in ("reserved", "transferring"):
-            return {"ok": False, "refusal": "output-funding-not-pending"}
-        if (str(record.get("batch_id")) != str(binding.get("batch_id"))
-                or str(record.get("manifest_digest")) != str(
-                    binding.get("manifest_digest"))):
-            return {"ok": False, "refusal": "mover-publication-mismatch"}
-        if not isinstance(residency, Mapping):
-            return {"ok": False, "refusal": "mover-publication-mismatch"}
-        try:
-            if (str(residency.get("tier_id")) != tier
-                    or str(residency.get("manifest_sha256")) != str(
-                        binding.get("manifest_digest"))
-                    or int(residency.get("range_start_bytes")) != int(  # type: ignore[arg-type]
-                        binding.get("range_start_bytes"))
-                    or int(residency.get("range_end_bytes")) != int(  # type: ignore[arg-type]
-                        binding.get("range_end_bytes"))):
-                return {"ok": False, "refusal": "mover-publication-mismatch"}
-        except (TypeError, ValueError):
-            return {"ok": False, "refusal": "mover-publication-mismatch"}
-        return {"ok": True, "batch_id": str(binding.get("batch_id")),
-                "manifest_digest": str(binding.get("manifest_digest")),
-                "generation": str(record.get("generation")),
-                "state": str(record.get("state"))}
 
     def mover_transition_lock(self, mover_action_key: str, *,
                               blocking: bool = True,
@@ -24156,11 +23912,11 @@ class PoolQueue:
                         # Locked spelling: the claim holds this key's
                         # transition lock from its tier acquire through here.
                         if variant == "output":
-                            marked = self._advance_output_funding_state_locked(
+                            marked = self._advance_funding_state_locked(
                                 key, funded_tier, expect="transferring",
                                 advance_to="consumed",
                                 generation=pinned if isinstance(
-                                    pinned, str) else None)
+                                    pinned, str) else None, binding="output")
                             if marked:
                                 continue
                             current = self.read_output_funding(

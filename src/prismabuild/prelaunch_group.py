@@ -1020,8 +1020,9 @@ def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
                 or not _row_is_ready(queue, mover)):
             return None
         try:
-            queue._rotate_funding_locked(dict(fresh),
-                                         expect_generation=expect_generation)
+            queue._write_funding_record_locked(
+                dict(fresh), expect_generation=expect_generation,
+                binding="window", rotate=True)
         except (OSError, pool.PoolContractError, ValueError):
             return None
     return str(fresh["generation"])

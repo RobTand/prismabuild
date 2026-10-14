@@ -841,7 +841,7 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
               "range_end_bytes": SPAN, "kind": "stage_gib", "tokens": names,
               "generation": "a" * 32, "state": "reserved",
               "unix": 1.0, "published_unix": float(live["published_unix"])}
-    queue._write_funding_locked(record, expect_generation=None)
+    queue._write_funding_record_locked(record, expect_generation=None, binding="window")
     protection = {"protected": {(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": 2, "phase": "phase-0",
         "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}

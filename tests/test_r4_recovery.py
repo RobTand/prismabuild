@@ -78,8 +78,8 @@ def _terminal_transferring(q: pool.PoolQueue, gib: int = 3
     assert ledger.acquire(mover, {"stage_gib": 1}) is True
     name = sorted(p.name
                   for p in (ledger.held_dir / mover).glob("*-*"))[0]
-    q._write_funding_locked(
-        _funding(q, mover, tokens=[name]), expect_generation=None)
+    q._write_funding_record_locked(
+        _funding(q, mover, tokens=[name]), expect_generation=None, binding="window")
     assert q.advance_funding_state(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True

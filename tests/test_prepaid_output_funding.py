@@ -1028,10 +1028,8 @@ def test_unreadable_census_finish_retains(tmp_path: Path) -> None:
     assert ledger.available().get(KIND, 0) == cap
 
 
-def test_publishable_helper_rejects_before_exposure(tmp_path: Path) -> None:
-    """Writer-side publication gate rejects missing/contradictory refs."""
+def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path) -> None:
     owner = _hexkey("pub-owner")
-    mover = _hexkey("pub-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
     inst, _, _, _ = _bind(q, template, owner)
@@ -1039,30 +1037,64 @@ def test_publishable_helper_rejects_before_exposure(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
+    ref = _ref(inst, template, "b1", descs)
+    cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "publication")
+    mover = action["action_key"]
+    publication = dict(
+        action_key=mover, cas_root=cas.root, worker_script="/w.py",
+        checkout_root=checkout,
+        resources={"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1})
     residency = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                  "manifest_sha256": manifest, "manifest_bytes": total,
                  "range_start_bytes": 0, "range_end_bytes": total}
-    # Missing staged intent => refuse before exposure.
-    out = q.validate_output_mover_publishable(
-        instance=inst, template=template, batch_id="b1", descriptors=descs,
-        mover_key=mover, tier_id=TIER, residency=residency)
-    assert out.get("ok") is False, out
-    assert out.get("refusal") == "output-funding-missing", out
-    # Stage, then publishable.
+    with pytest.raises(pool.PoolContractError):
+        q.publish(**publication, residency=residency)
+    assert not q.item_path(pool.READY, mover).exists()
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
-    out = q.validate_output_mover_publishable(
-        instance=inst, template=template, batch_id="b1", descriptors=descs,
-        mover_key=mover, tier_id=TIER, residency=residency)
-    assert out.get("ok") is True, out
-    # Contradictory residency (wrong manifest) => refuse.
-    bad_residency = dict(residency, manifest_sha256="0" * 64)
-    out = q.validate_output_mover_publishable(
-        instance=inst, template=template, batch_id="b1", descriptors=descs,
-        mover_key=mover, tier_id=TIER, residency=bad_residency)
-    assert out.get("ok") is False, out
+    with pytest.raises(pool.PoolContractError):
+        q.publish(**publication, residency=dict(residency, manifest_sha256="0" * 64))
+    assert not q.item_path(pool.READY, mover).exists()
+    q.publish(**publication, residency=residency)
+    row = pool._read_json(q.item_path(pool.READY, mover))
+    assert row["produced_output_batch"] == ref
+
+
+def test_output_funding_write_keeps_binding_and_transition_contract(tmp_path: Path) -> None:
+    owner, mover = _hexkey("record-owner"), _hexkey("record-mover")
+    q = _queue(tmp_path)
+    template = _template(str(tmp_path / "outputs"))
+    inst, _, _, _ = _bind(q, template, owner)
+    descs = _descriptors(tmp_path, template, inst)
+    _prewrite(q, inst, template, "b1", TIER, descs)
+    staged = q.stage_output_intent(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert staged["ok"] is True
+    record = q.read_output_funding(mover, TIER)
+    path = q.funding_output_path(mover, TIER)
+    original = path.read_bytes()
+    generation = record["generation"]
+    other_nonce = ("0" if record["owner_nonce"][0] != "0" else "1") + record["owner_nonce"][1:]
+    other_generation = ("0" if generation[0] != "0" else "1") + generation[1:]
+    available = q.tier_ledger(TIER).available()
+    for changed in (dict(record, state="consumed"),
+                    dict(record, owner_nonce=other_nonce),
+                    dict(record, generation=other_generation)):
+        with pytest.raises(pool.PoolContractError):
+            q.write_output_funding(changed, expect_generation=generation)
+        assert path.read_bytes() == original
+    for state in ("transferring", "consumed"):
+        record = dict(record, state=state)
+        q.write_output_funding(record, expect_generation=generation)
+        assert q.read_output_funding(mover, TIER)["state"] == state
+    spent = path.read_bytes()
+    with pytest.raises(pool.PoolContractError):
+        q.write_output_funding(dict(record, state="released"), expect_generation=generation)
+    assert path.read_bytes() == spent
+    assert q.tier_ledger(TIER).available() == available
 
 
 def _sealed_cas_with_ref(tmp_path: Path, ref: dict, tag: str):
@@ -1259,7 +1291,7 @@ def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path) -> N
            "manifest_digest": manifest, "range_start_bytes": 0,
            "range_end_bytes": total}
     with q.mover_transition_lock(mover, blocking=True):
-        q._write_output_funding_locked(rec, expect_generation=None)
+        q._write_funding_record_locked(rec, expect_generation=None, binding="output")
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-mp") is None
     assert q.item_path(pool.READY, mover).exists()
