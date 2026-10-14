@@ -17680,3 +17680,47 @@ registry, preflight producers, action keys and evidence schemas are unchanged by
 claim that a runtime generation carrying the change is deployed or that
 enforcement has been activated. Delivery is source only, with coordinator
 verification and runtime activation recorded separately.
+
+
+## Source ownership after the 2026-10-14 simplification
+
+`src/prismabuild/kept_reads.py` owns local filesystem version trust and retained
+directory/census reads. Produced-output per-tick memos retain versions only
+inside `file_version_scope`; the tier cycle and blocked-origin observation
+entrypoints establish that scope. Action-side callers default to fresh reads.
+The scope resets after exceptions. Directory readers still require trusted local
+filesystem metadata older than the coarse clock fence before reuse.
+
+`manifest_layout.py` owns manifest timelines, phase frontiers, ranges and
+entry-aligned chunk cuts. Movement uses `read_entries`, which preserves v1
+entry order without phase annotations. The public SDK's `manifest_read_entries`
+retains the existing phased refusal contract through the package owner. The
+v2 source/deployed compatibility check verifies core, `manifest_layout.py` and
+the prewarm entrypoint. A generation must carry the actual implementation bytes.
+
+`fleet_roster.py` owns presence/class facts and host alias resolution in the
+package. Callers choose their generation or checkout path and parse policy.
+Supervisor/membership prefer an explicit canonical entry; recorder evidence
+rejects ambiguous alias groups. Bootstrap and privileged policy checks retain
+their own input/authorization boundaries.
+
+`decomposition.py` owns decomposition addressing, membership capture and durable
+child verification. Reporter capture stops after an invalid plan; queue capture
+retains both document diagnostics. Campaign closure keeps its publication-only
+read against the already frozen plan. Stored paths, schemas, canonical bytes
+and freeze-before-publication ordering retain their existing contracts.
+
+Execution passes one `ExecutionClock` to the loop and `ProgressWatch`. Monotonic
+time prices elapsed work; Unix time records observations. The watch owns the
+final stall sample/refund and stall record, while queue probes and containment
+remain with the execution loop. The default clock uses the existing real clock
+functions.
+
+Funding record persistence has one internal writer with an explicit window or
+output binding and a separate rotation flag. Each binding keeps its validator,
+wire fields, retired-record policy and public lock boundary. The state table and
+error ordering are unchanged. The reserve path alone rotates generations.
+
+The branch's [review and PR dispositions](refactor_review_2026-10-14.md) and
+[verification evidence](refactor_evidence_2026-10-14.json) describe the source
+change. Runtime publication remains a separate operation.
