@@ -1,13 +1,9 @@
-"""The used-filesystem floor (#1483): the real guard, on real filesystems.
+"""The used-filesystem floor (#1483): real identity, guards, locks and ledgers.
 
-Nothing in the guard is replaced.  Each test identifies the filesystem its
-``tmp_path`` is really on (a block-device UUID or a ZFS pool GUID), samples
-it with ``fstatvfs`` or ``zfs get``, and acquires through the real
-``ResourceLedger.begin_acquire``, real floor locks and real ledgers.  Where a
-test needs the headroom to be small, it moves the one input the guard
-legitimately reads for that -- the filesystem's grant counter, which is what
-outstanding grants since the last sample look like -- rather than filling
-the disk.
+Admission scenarios control the external capacity sample for their temporary
+filesystem, then spend its headroom through the real grant counter. Sensor
+tests and the live ZFS case retain their own samples. Host disk occupancy
+therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
 
@@ -62,26 +58,31 @@ def _headroom(queue, key: str) -> int:
     return v["free_bytes"] - v["floor_bytes"] - v["charge_bytes"]
 
 
-def _require_headroom(queue, key: str, gib: int) -> None:
-    """Skip, saying so, when the real disk is too close to its floor.
-
-    The guard reads the worker's real filesystem; a test that needs room to
-    grant cannot manufacture it (dl380g10's btrfs home has had under 5 GiB).
-    """
-
-    room = _headroom(queue, key)
-    if room < gib * GIB:
-        pytest.skip(f"the real filesystem has {room / GIB:.1f} GiB above its "
-                    f"floor; this test needs {gib}")
-
-
 def _leave(queue, key: str, gib: int) -> None:
     """Advance the grant counter so exactly ``gib`` GiB of headroom remain."""
 
     directory = ff.fs_dir(queue.root, key)
-    _require_headroom(queue, key, gib)
-    granted = ff._granted(directory) + _headroom(queue, key) - gib * GIB
+    room = _headroom(queue, key)
+    assert room >= gib * GIB, room
+    granted = ff._granted(directory) + room - gib * GIB
     ff._floor_write(directory / "granted.json", {"granted_bytes": granted})
+
+
+@pytest.fixture
+def ample_space(tmp_path, monkeypatch):
+    """Control only the space sensor for this test's temporary filesystem."""
+
+    read_room = ff.filesystem_capacity.local_disk_room
+    sampled = os.statvfs_result((4096, 4096, 64 * GIB // 4096,
+                                48 * GIB // 4096, 48 * GIB // 4096,
+                                1_000_000, 900_000, 900_000, 0, 255))
+
+    def room(path, floor_percent, *, statvfs=None):
+        if Path(path).is_relative_to(tmp_path):
+            return read_room(path, floor_percent, statvfs=lambda _: sampled)
+        return read_room(path, floor_percent, statvfs=statvfs)
+
+    monkeypatch.setattr(ff.filesystem_capacity, "local_disk_room", room)
 
 
 @pytest.fixture
@@ -210,7 +211,7 @@ def test_mode_file_sets_the_fleet_mode_and_env_overrides_it(tmp_path, monkeypatc
 
 # -- register, refresh, admit ---------------------------------------------------------
 
-def test_register_refresh_admit_and_refuse(tmp_path, enforce):
+def test_register_refresh_admit_and_refuse(tmp_path, enforce, ample_space):
     found = _stable(tmp_path)
     queue = _queue(tmp_path)
     member = ("reservations", HOST, "spool_gb")
@@ -240,7 +241,7 @@ def test_register_refresh_admit_and_refuse(tmp_path, enforce):
     assert ledger.acquire("c" * 64, {"mem_gb": 1})
 
 
-def test_release_needs_no_floor_and_refresh_returns_the_headroom(tmp_path, enforce):
+def test_release_needs_no_floor_and_refresh_returns_the_headroom(tmp_path, enforce, ample_space):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -265,7 +266,7 @@ def test_unbound_byte_ledger_refuses_under_enforce_and_passes_under_observe(
     assert "would refuse" in capsys.readouterr().err
 
 
-def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforce):
+def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforce, ample_space):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -281,7 +282,7 @@ def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforc
     assert ledger.acquire("a" * 64, {"spool_gb": 1})
 
 
-def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce):
+def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce, ample_space):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -315,7 +316,7 @@ def test_a_member_cannot_be_bound_to_two_filesystems(tmp_path):
     assert ff._floor_read(ff.fs_dir(queue.root, binding["key"]) / "binding.json")["members"] == []
 
 
-def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce):
+def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce, ample_space):
     """Two ledgers, one disk: one ledger's holdings reduce the other's room."""
 
     _stable(tmp_path)
@@ -387,7 +388,7 @@ def test_zfs_pool_is_keyed_by_guid_sampled_usable_and_admits(enforce):
 
 # -- the four tier/produced-output acquisition sites ------------------------------------
 
-def test_tier_advance_reports_the_floor_as_tier_short(tmp_path, enforce):
+def test_tier_advance_reports_the_floor_as_tier_short(tmp_path, enforce, ample_space):
     """take_tier_advance goes through begin_acquire; the floor is a shortage."""
 
     _stable(tmp_path)
@@ -408,7 +409,7 @@ def test_tier_advance_reports_the_floor_as_tier_short(tmp_path, enforce):
 
 
 def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, ample_space):
     """_reserve_fence_locked's top-up acquire goes through the same gate."""
 
     import test_tier_funding as tf
@@ -431,7 +432,7 @@ def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
     assert queue.reserve_fence(tf.TIER, grant, fields, 2) is True
 
 
-def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, monkeypatch):
+def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, monkeypatch, ample_space):
     """refill_window's acquire returns a typed result under a floor refusal."""
 
     import test_produced_output_restage as restage
@@ -458,7 +459,7 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
 
 # -- used paths and NFS ------------------------------------------------------------------
 
-def test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published(tmp_path):
+def test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published(tmp_path, ample_space):
     found = _stable(tmp_path)
     queue = _queue(tmp_path)
     fresh = ff.check_paths(queue.root, [tmp_path, tmp_path / "x"])
@@ -491,7 +492,7 @@ def test_server_addresses_leave_out_loopback_link_local_and_bridges():
     assert "172.17.0.1" not in ff._host_addresses()
 
 
-def test_nfs_is_attributed_by_server_address_and_charged_conservatively(tmp_path, enforce):
+def test_nfs_is_attributed_by_server_address_and_charged_conservatively(tmp_path, enforce, ample_space):
     nfs = _nfs_path()
     if nfs is None:
         pytest.skip("no readable NFS mount on this worker")
@@ -523,11 +524,10 @@ def _growth_queue(tmp_path):
     result = _register(queue, tmp_path / "shared", filesystem_gib=4,
                        filesystem_ledger="fs-test")
     ledger = pool.ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="fs-test")
-    _require_headroom(queue, result["binding"]["key"], 4)
     return queue, result["binding"], ledger
 
 
-def test_operation_holds_growth_for_the_body_and_releases_on_any_exit(tmp_path, enforce):
+def test_operation_holds_growth_for_the_body_and_releases_on_any_exit(tmp_path, enforce, ample_space):
     queue, binding, ledger = _growth_queue(tmp_path)
     assert {"ledger_root": ff.FILESYSTEM_RESERVATIONS, "ledger": "fs-test",
             "kind": "filesystem_gib"} in binding["members"]
@@ -557,7 +557,7 @@ def _killed_owner(queue_root: str, path: str, ready) -> None:
         time.sleep(600)
 
 
-def test_a_killed_owner_is_reaped_and_a_lease_expiry_is_too(tmp_path, enforce):
+def test_a_killed_owner_is_reaped_and_a_lease_expiry_is_too(tmp_path, enforce, ample_space):
     queue, _binding, ledger = _growth_queue(tmp_path)
     ready = multiprocessing.get_context("fork").Event()
     child = multiprocessing.get_context("fork").Process(
@@ -584,7 +584,7 @@ def test_a_killed_owner_is_reaped_and_a_lease_expiry_is_too(tmp_path, enforce):
 # -- locks: wait, bounded, innermost, no deadlock ------------------------------------------
 
 def test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage(
-        tmp_path, enforce, monkeypatch):
+        tmp_path, enforce, monkeypatch, ample_space):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -637,7 +637,7 @@ def _contend(queue_root: str, tier: str, host: str, rounds: int, errors, wins) -
 
 
 def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
-        tmp_path, enforce):
+        tmp_path, enforce, ample_space):
     """Ledger lock then floor lock everywhere; refresh holds only the floor."""
 
     _stable(tmp_path)
@@ -665,7 +665,7 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     assert queue.tier_ledger(tier).held().get("stage_gib", 0) == 0
 
 
-def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce):
+def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce, ample_space):
     """A caller holding the ledger lock nests begin_acquire (main's contract)."""
 
     _stable(tmp_path)
@@ -719,7 +719,7 @@ def test_host_admission_skips_the_poll_only_under_enforce(tmp_path, monkeypatch)
     assert ff.host_admission(queue.root, [nfs], label="t") is True
 
 
-def test_cli_register_status_check_refresh(tmp_path, capsys, monkeypatch):
+def test_cli_register_status_check_refresh(tmp_path, capsys, monkeypatch, ample_space):
     monkeypatch.delenv(ff.MODE_ENV, raising=False)
     _stable(tmp_path)
     queue = _queue(tmp_path)
@@ -748,9 +748,7 @@ def _pbrun_world(tmp_path, monkeypatch):
     queue = pool.PoolQueue(fleet / "pb-queue")
     queue.ensure_layout()
     (fleet / "cas").mkdir(parents=True)
-    binding = _register(queue, fleet / "cas", filesystem_gib=4,
-                        filesystem_ledger="fs-test")["binding"]
-    _require_headroom(queue, binding["key"], 3)
+    _register(queue, fleet / "cas", filesystem_gib=4, filesystem_ledger="fs-test")
     monkeypatch.setattr(pbrun, "SH", fleet)
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path),
                                       "--filesystem-growth-gib", "2", "--", "true"])
@@ -759,7 +757,7 @@ def _pbrun_world(tmp_path, monkeypatch):
 
 
 def test_pbrun_holds_growth_while_publishing_and_releases_before_waiting(
-        tmp_path, monkeypatch, enforce):
+        tmp_path, monkeypatch, enforce, ample_space):
     pbrun, _queue_, ledger = _pbrun_world(tmp_path, monkeypatch)
     seen = {}
 
@@ -775,7 +773,7 @@ def test_pbrun_holds_growth_while_publishing_and_releases_before_waiting(
 
 
 def test_pbrun_below_the_floor_submits_nothing_and_says_why(
-        tmp_path, monkeypatch, enforce):
+        tmp_path, monkeypatch, enforce, ample_space):
     pbrun, queue, ledger = _pbrun_world(tmp_path, monkeypatch)
     key = ff.bindings(queue.root)[0]["key"]
     _leave(queue, key, 1)
@@ -840,7 +838,7 @@ def test_observe_past_a_busy_lock_admits_without_touching_the_counter(
         holder.wait()
 
 
-def test_a_malformed_owner_record_does_not_stop_the_reaper(tmp_path, enforce):
+def test_a_malformed_owner_record_does_not_stop_the_reaper(tmp_path, enforce, ample_space):
     queue, _binding, ledger = _growth_queue(tmp_path)
     operations = ledger.base / "operations"
     operations.mkdir(parents=True, exist_ok=True)
