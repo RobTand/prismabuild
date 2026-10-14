@@ -1,6 +1,6 @@
 """The v2 phase table is held to the same refusal rule as v1 (#594).
 
-``storage_tiers.manifest_phase_ranges`` turns either manifest schema into the
+``manifest_layout.manifest_phase_ranges`` turns either manifest schema into the
 ranges a movement node names, and the "demand is a quotation from the
 manifest" claim rests on it refusing a phase table that does not describe its
 own manifest.  The v1 branch refuses -- raw subscripts, bools, floats,

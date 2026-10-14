@@ -5,8 +5,8 @@ Two properties, both cheap to check and both mutation-tested here.
 **Derived, never typed.**  A movement node declares the byte range of its
 consumer's read order it makes resident.  Its ``stage_gib`` demand on that tier
 has to be at least the range's own ceiling in GiB, and the range comes out of
-the manifest the consumer already sealed -- ``storage_tiers.manifest_phase_ranges``
-reads the same running byte sum ``prewarm_loop.manifest_phases`` reads.  So the
+the manifest the consumer already sealed -- ``manifest_layout.manifest_phase_ranges``
+reads the same running byte sum ``manifest_layout.manifest_phases`` reads.  So the
 number in the claim record traces back to the read set the action declared, not
 to a habit (``pb_demand_must_be_measured_not_habitual``).
 

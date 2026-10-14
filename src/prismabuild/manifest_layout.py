@@ -97,11 +97,9 @@ def split_range_into_chunks(start_bytes: int, end_bytes: int,
         if cut is None:
             cut = entry_start
         if entry_end - cut > chunk_bytes and entry_start > cut:
-            # The entry would overfill the chunk: close it before the entry.
             chunks.append((cut, entry_start))
             cut = entry_start
         if entry_end - cut > chunk_bytes:
-            # Larger than a chunk on its own: a chunk of its own.
             chunks.append((cut, entry_end))
             cut = entry_end
         reached = entry_end
@@ -268,7 +266,7 @@ def manifest_phase_ranges(manifest: Mapping[str, object]) -> list[dict[str, obje
 
     A v1 table that does not describe this manifest -- a boundary that cuts an
     entry in half, a sum that does not end at ``total_bytes`` -- yields ``[]``,
-    the same refusal ``prewarm_loop.manifest_phases`` makes, because windowing
+    the same refusal ``manifest_phases`` makes, because windowing
     on the wrong boundaries reserves for bytes nobody will read.  The v2 table
     in ``read_plan.phases`` is held to the same rule, against the plan's own
     consumption order: both schemas declare a running byte sum over the
@@ -338,7 +336,7 @@ def manifest_read_entries(
         manifest: Mapping[str, object]) -> list[Mapping[str, object]]:
     """The manifest's entries in the order its action reads them, or ``[]``.
 
-    The order both movers walk (``prewarm_loop.manifest_read_entries``):
+    The order both movers walk through :func:`read_entries`:
     list order for v1, the ``read_plan`` expansion for v2.  A seal cuts
     chunks at these entries' boundaries, so the seal and the movers must
     read one order.  A manifest whose phase table ``manifest_phase_ranges``

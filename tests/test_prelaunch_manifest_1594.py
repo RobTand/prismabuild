@@ -3,7 +3,7 @@
 A phase declares with a literal ``resident_before_launch: true``: on a v1
 ``annotations.phases`` entry, on a v2 ``read_plan.phases`` entry.  Only a
 literal boolean true declares.  Other values refuse.  Non-prefix sets
-refuse in ``storage_tiers.manifest_prelaunch_phases``.
+refuse in ``manifest_layout.manifest_prelaunch_phases``.
 """
 from pathlib import Path
 import sys

@@ -343,8 +343,7 @@ def pool_member_paths(
     ``None`` when the pool cannot be read at all; ``[]`` when it has no data
     leaf.  Auxiliary groups (cache, log, spare, special, dedup) are dropped:
     an L2ARC device is not the queue a mover must stay off.  The same parse
-    ``prewarm_loop.pool_member_devices`` performs, kept behaviourally
-    identical so the role and the movers pace the same disks.
+    ``pool_member_devices`` uses for the storage role and movement nodes.
     """
 
     try:

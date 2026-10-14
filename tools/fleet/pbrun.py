@@ -6676,7 +6676,7 @@ def residency_stage_rows(
         """The sizes of the read-order entries a chunk stages.
 
         Chunks are cut on entry boundaries (#965), so this is exactly the
-        window ``stage_move`` copies (``prewarm_loop.entries_between``).
+        window ``stage_move`` copies (``manifest_layout.entries_between``).
         """
 
         low = bisect.bisect_right(entry_starts, cstart) - 1

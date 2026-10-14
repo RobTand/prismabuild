@@ -9,8 +9,8 @@ whole entries greedily up to the nominal chunk.  An entry larger than the
 chunk is a chunk of its own; an entry larger than the tier's window can
 never be admitted, and refuses by name.
 
-The read order is the manifest's own: ``storage_tiers.manifest_read_entries``
-and ``prewarm_loop.manifest_read_entries`` (which both movers call) must
+The read order is the manifest's own: ``manifest_layout.manifest_read_entries``
+and ``manifest_layout.read_entries`` (which both movers call) must
 agree on it for either schema, or the seal's cuts and the movers' walk
 would describe two different byte orders.
 """

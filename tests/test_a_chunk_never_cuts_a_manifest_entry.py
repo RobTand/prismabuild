@@ -2,7 +2,7 @@
 
 ``storage_tiers.split_range_into_chunks`` cut a phase at fixed byte offsets
 and never saw the manifest's entries.  A mover stages whole entries --
-``prewarm_loop.entries_between`` includes an entry straddling either edge of
+``manifest_layout.entries_between`` includes an entry straddling either edge of
 its range -- so a chunk edge inside an entry handed both neighbouring movers
 more bytes than their tokens reserved, and each refused
 ``residency_overran_reservation`` on every attempt.  Live: 16,308,005 B over
