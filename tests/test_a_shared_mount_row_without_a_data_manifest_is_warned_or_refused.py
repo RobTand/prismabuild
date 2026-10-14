@@ -294,7 +294,7 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
     message = str(refused.value)
     assert "common" in message and "data_manifest" in message, message
     assert not list(queue.dir(pool.READY).glob("*.json"))
-    assert not (tmp_path / "cas" / pbcampaign.DECOMPOSITIONS).exists()
+    assert not (tmp_path / "cas" / dc.DECOMPOSITIONS).exists()
 
 
 def test_require_data_manifest_passes_a_common_half_that_names_its_bytes(

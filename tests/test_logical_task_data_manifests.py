@@ -50,7 +50,7 @@ def test_children_have_only_their_declared_reads_and_all_graphs_freeze_first(tmp
     observations = []
     def publish(child, **kwargs):
         logical = child['params'][dc.LOGICAL_BATCH_PARAM]
-        path = pbcampaign.decomposition_dir(kwargs['cas'], logical['parent_key']) / 'data-plans.json'
+        path = dc.record_dir(kwargs['cas'].root, logical['parent_key']) / 'data-plans.json'
         body = json.loads(path.read_text())
         assert len(body['children']) == 4  # ALL graphs already durable
         observations.append(child['action_key'])
@@ -143,7 +143,7 @@ def test_manifest_deduplicates_identical_reads_but_refuses_conflicts(tmp_path, m
 def test_corrupt_frozen_graph_binding_refuses_before_republishing(tmp_path, monkeypatch):
     fixture, request = setup_request(tmp_path, monkeypatch)
     records, group = decompose(request)
-    path = pbcampaign.decomposition_dir(pb.PrismaBuildCAS(tmp_path / 'cas'), group['plan']['parent_key']) / 'data-plans.json'
+    path = dc.record_dir(tmp_path / 'cas', group['plan']['parent_key']) / 'data-plans.json'
     body = json.loads(path.read_text())
     body['children'][0]['action_key'] = '0' * 64
     path.chmod(0o600)  # Deliberately corrupt this private immutable fixture.

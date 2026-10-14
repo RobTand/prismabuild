@@ -3,8 +3,8 @@
 A coordinator that awaits a decomposed batch runs beside this reporter.
 The reporter polls the native CAS for each awaited child's receipt, verifies
 the receipt, the result blob digest and manifest membership through
-``pool.verify_durable_child_result``, and commits one unit per distinct child
-whose result verifies. A child with several tasks still counts one unit.
+``decomposition.verify_durable_child_result``, and commits one unit per
+distinct child whose result verifies. A child with several tasks still counts one unit.
 
 Children already durable when the reporter starts are a verified baseline
 and count zero. A non-verifying child, queue waits, admission, logs and
@@ -59,36 +59,8 @@ class DurableChildReporter:
             return None
         return request
 
-    def _membership_of(self) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-        from . import decomposition as decomposition_mod
-
-        try:
-            root = self.cas.root
-        except AttributeError:
-            return None, None
-        plan_doc: Mapping[str, Any] | None = None
-        index: Mapping[str, Any] | None = None
-        try:
-            raw_plan = (root / "decompositions" / self.parent_key[:2]
-                        / self.parent_key / "plan.json").read_bytes()
-            plan_doc = decomposition_mod.validate_plan(
-                __import__("json").loads(raw_plan.decode("utf-8")))
-            if (str(plan_doc.get("parent_key")) != self.parent_key
-                    or str(plan_doc.get("plan_key")) != self.plan_key):
-                return None, None
-        except (OSError, ValueError):
-            return None, None
-        try:
-            raw_index = (root / "decompositions" / self.parent_key[:2]
-                         / self.parent_key / "publication.json").read_bytes()
-            index = decomposition_mod.validate_publication_index(
-                __import__("json").loads(raw_index.decode("utf-8")), plan_doc)
-        except (OSError, ValueError):
-            return None, None
-        return plan_doc, index
-
     def _verifies(self, child_key: str) -> dict[str, Any] | None:
-        from . import pool as pool_mod
+        from . import decomposition
 
         request = self._request_of(child_key)
         if request is None:
@@ -102,9 +74,15 @@ class DurableChildReporter:
                 or batch.get("parent_key") != self.parent_key
                 or batch.get("plan_key") != self.plan_key):
             return None
-        plan_doc, index = self._membership_of()
-        if plan_doc is None or index is None:
+        try:
+            membership = decomposition.read_membership(
+                self.cas.root, parent_key=self.parent_key, plan_key=self.plan_key,
+                stop_after_invalid_plan=True)
+        except AttributeError:
             return None
+        if membership["unreadable"]:
+            return None
+        plan_doc, index = membership["plan"], membership["publication"]
         try:
             receipt = self.cas.lookup(request)
         except Exception:  # noqa: BLE001 -- an unreadable CAS reads as absent
@@ -112,7 +90,7 @@ class DurableChildReporter:
         if receipt is None:
             return None
         try:
-            manifest = pool_mod.verify_durable_child_result(
+            manifest = decomposition.verify_durable_child_result(
                 self.cas, request, receipt, child_key=child_key,
                 plan=plan_doc, publication=index)
         except Exception:  # noqa: BLE001 -- tamper reads as not durable

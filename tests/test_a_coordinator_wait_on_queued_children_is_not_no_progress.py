@@ -1410,3 +1410,42 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     assert reporter.newly_durable() == [key]
     assert reporter.units == 1
     assert reporter.newly_durable() == []
+
+
+@pytest.mark.parametrize("refusal", ["missing", "wrong-bound"])
+def test_a_refused_plan_stops_the_reporter_but_keeps_queue_diagnosis(
+        tmp_path, monkeypatch, refusal):
+    cas, plan, children = _batch(tmp_path)
+    state = _controller_state(tmp_path, children)
+    stored = dc.record_dir(cas.root, plan["parent_key"])
+    plan_path = stored / "plan.json"
+    if refusal == "missing":
+        plan_path.unlink()
+    else:
+        other = {key: value for key, value in plan.items() if key != "plan_key"}
+        other["parent_key"] = "f" * 64
+        plan_path.write_bytes(dc.document_bytes(
+            {**other, "plan_key": pb.canonical_sha256(other)}))
+    publication_reads = []
+    original = Path.read_bytes
+
+    def unavailable_publication(path):
+        if path == stored / "publication.json":
+            publication_reads.append(path)
+            raise OSError("publication unavailable")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unavailable_publication)
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"] for child in children],
+        controller_state=state)
+    assert reporter.establish_baseline() == set()
+    assert publication_reads == []
+    verdict = _queue(tmp_path, cas).queued_child_wait_verdict(
+        "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state))
+    assert verdict["exempt"] is False
+    assert "publication.json is unreadable" in verdict["detail"]
+    assert ("plan.json is missing" if refusal == "missing" else
+            "the stored plan names another parent or plan") in verdict["detail"]
+    assert publication_reads == [stored / "publication.json"]

@@ -1086,24 +1086,6 @@ def rows_for(submissions, waited) -> list[dict]:
 # interrupted halfway resumes into the same batches rather than asking the
 # batcher for a second opinion about a roster that has not changed.
 
-DECOMPOSITIONS = "decompositions"
-
-
-def decomposition_dir(cas, parent_key: str) -> Path:
-    """Where one parent's plan and publication index live.
-
-    Beside the CAS's own shards rather than inside them: these are records
-    about actions, like ``cas/requests``, and neither is an action input.
-    ``pb_gc`` sweeps named subtrees -- claims, locks, namespaces, staging --
-    and counts the rest, so a directory it does not know is never removed
-    under a resuming campaign.  It is also never reclaimed: a plan is a few
-    kilobytes per campaign and stays forever, which is the price of being
-    able to resume one.
-    """
-
-    return Path(str(cas.root)) / DECOMPOSITIONS / parent_key[:2] / parent_key
-
-
 def _stored_document(path: Path) -> object | None:
     """What is published at ``path``, or ``None`` if nothing is."""
 
@@ -1139,7 +1121,7 @@ def frozen_plan(request, frozen_common, *, cas) -> dict:
 
     key = dc.parent_key(
         frozen_common, request["roster"], request["batch_policy"])
-    path = decomposition_dir(cas, key) / "plan.json"
+    path = dc.record_dir(cas.root, key) / "plan.json"
     stored = _stored_document(path)
     if stored is None:
         plan = dc.build_plan(request, frozen_common)
@@ -1172,7 +1154,7 @@ def publish_index(index, *, cas, parent_key: str) -> None:
     honest answer is to stop and say so.
     """
 
-    path = decomposition_dir(cas, parent_key) / "publication.json"
+    path = dc.record_dir(cas.root, parent_key) / "publication.json"
     raw = dc.document_bytes(index)
     stored = _stored_document(path)
     if stored is None:
@@ -1267,7 +1249,7 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
     residency registry installation remains inside its ordinary ownership
     transaction, so the tier loop never sees a free-floating ownerless plan.
     """
-    path = decomposition_dir(cas, plan["parent_key"]) / "data-plans.json"
+    path = dc.record_dir(cas.root, plan["parent_key"]) / "data-plans.json"
     stored = _stored_document(path)
     if stored is None:
         policy = request["task_data_manifest"]
@@ -1499,7 +1481,7 @@ def publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
     disagreement is the finding and overwriting would hide it.
     """
 
-    path = decomposition_dir(cas, parent_key) / "group.json"
+    path = dc.record_dir(cas.root, parent_key) / "group.json"
     raw = dc.document_bytes(receipt)
     stored = _stored_document(path)
     if stored is None:
@@ -1537,7 +1519,7 @@ def close_group(group, *, cas) -> int:
                 f"the plan names {len(plan['partitions'])} children, but "
                 f"the group carries {len(children)} sealed actions"
             )
-        index_path = decomposition_dir(cas, plan["parent_key"]) / "publication.json"
+        index_path = dc.record_dir(cas.root, plan["parent_key"]) / "publication.json"
         index = _stored_document(index_path)
         child_keys = [str(child["action_key"]) for child in children]
         if (not isinstance(index, dict)

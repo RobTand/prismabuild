@@ -96,16 +96,16 @@ def _refuse_to_partition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _plan_path(tmp_path: Path, parent_key: str) -> Path:
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    return pbcampaign.decomposition_dir(cas, parent_key) / "plan.json"
+    return dc.record_dir(cas.root, parent_key) / "plan.json"
 
 
 def _index_path(tmp_path: Path, parent_key: str) -> Path:
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    return pbcampaign.decomposition_dir(cas, parent_key) / "publication.json"
+    return dc.record_dir(cas.root, parent_key) / "publication.json"
 
 
 def _published_plan(tmp_path: Path) -> dict:
-    root = tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    root = tmp_path / "cas" / dc.DECOMPOSITIONS
     plans = sorted(root.glob("*/*/plan.json"))
     assert len(plans) == 1, f"expected one plan, found {plans!r}"
     return dc.validate_plan(json.loads(plans[0].read_text(encoding="utf-8")))
@@ -184,7 +184,7 @@ def test_a_tree_that_moved_on_is_a_different_parent_and_leaves_the_old_plan(
         assert done.returncode == 0, done.stderr
     _decompose(request)
 
-    plans = sorted((tmp_path / "cas" / pbcampaign.DECOMPOSITIONS)
+    plans = sorted((tmp_path / "cas" / dc.DECOMPOSITIONS)
                    .glob("*/*/plan.json"))
     assert len(plans) == 2, "a changed tree is a second parent, not an edit"
     assert old_path.read_bytes() == old_bytes, (
@@ -291,7 +291,7 @@ def test_a_plan_no_box_can_run_publishes_no_child(
         _decompose(request)
     assert "no recorded worker can run this action" in str(refusal.value)
 
-    published = tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    published = tmp_path / "cas" / dc.DECOMPOSITIONS
     assert list(published.rglob("plan.json")), "the cut is pure; publish it"
     assert not list(published.rglob("publication.json"))
     assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))

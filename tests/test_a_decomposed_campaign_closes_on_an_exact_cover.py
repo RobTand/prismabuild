@@ -126,7 +126,7 @@ def _serve(queue: pool.PoolQueue, *, limit: int | None = None) -> int:
 
 
 def _group_path(tmp_path: Path, group: dict) -> Path:
-    return (tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    return (tmp_path / "cas" / dc.DECOMPOSITIONS
             / group["plan"]["parent_key"][:2] / group["plan"]["parent_key"]
             / "group.json")
 
@@ -289,7 +289,7 @@ def _manifest(tmp_path: Path, request) -> str:
 
 def _group_receipts(tmp_path: Path) -> list[Path]:
     return sorted(
-        (tmp_path / "cas" / pbcampaign.DECOMPOSITIONS).rglob("group.json"))
+        (tmp_path / "cas" / dc.DECOMPOSITIONS).rglob("group.json"))
 
 
 def _detached_keys(out: str) -> list[str]:
