@@ -217,7 +217,8 @@ def _cycle(queue, stage: Path, ram: Path) -> None:
     tiers = _tiers(stage, ram)
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: dict(tiers))
+                    discover=lambda **_kwargs: dict(tiers),
+                    supply_reader_for=lambda *_args, **_kwargs: None)
 
 
 def _jammed(tmp_path: Path):
@@ -319,8 +320,12 @@ def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
     assert silent == [], (pressure, skipped)
 
 
-def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
+def test_cycles_reclaim_the_stranded_holders(tmp_path: Path, monkeypatch) -> None:
     """A few real cycles give back the orphans and the withdrawn prefix."""
+    def physical_reader(*_args, **_kwargs):
+        raise AssertionError("synthetic tiers sampled physical writable room")
+
+    monkeypatch.setattr(tier_loop, "_supply_reader_for", physical_reader)
     (queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder,
      d_prefix) = _jammed(tmp_path)
     for _ in range(4):
