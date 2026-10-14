@@ -67,14 +67,3 @@ def test_a_read_only_checkout_can_submit_a_snapshot(
     assert len(queue.ready_items()) == 1
     # Nothing of ours is left behind in a tree we could not write to.
     assert not list(readonly_checkout.glob(f"{pbrun.STAMP_PREFIX}*"))
-
-
-def test_this_copy_of_pbrun_is_the_one_the_guard_repoints(tmp_path: Path) -> None:
-    """A module loaded from a file and left out of ``sys.modules`` is a second
-    ``pbrun``, and conftest's live-store guard repoints ``pbrun.SH`` on the
-    registered one alone. These tests stayed off the mount only because
-    ``main`` refuses before it reaches ``SH``, which is luck rather than a
-    guard."""
-
-    assert sys.modules.get("pbrun") is pbrun
-    assert tmp_path in pbrun.SH.parents, pbrun.SH

@@ -28,6 +28,7 @@ from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 import worker_loop  # noqa: E402
+from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 
 CPU = {"cpu": 1}
 
@@ -237,8 +238,6 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
     withdrawn nor touched, the row drains to its natural exact terminal,
     and only then does resign complete. Destructive cancellation stays an
     explicit operator withdraw."""
-    import threading
-
     key = "1" * 64
     host = socket.gethostname()
     owner = _incarnation(monkeypatch, host)
@@ -265,30 +264,10 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
         raise AssertionError(payload)
 
     (parked / "111-s1-999.0").touch()
-    errors: list = []
-    finished = threading.Event()
-
-    def holder_concludes():
-        try:
-            time.sleep(3.0)
-            # No withdrawal may have arrived: graceful resign retains.
-            assert queue.item_path(pool.CLAIMED, key).exists()
-            assert not queue.item_path(pool.WITHDRAWN, key).exists()
-            queue.finish(key, status="executed", detail={},
-                         claim_snapshot=snapshot)
-            finished.set()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    finisher = threading.Thread(target=holder_concludes, daemon=True)
-    finisher.start()
-    try:
+    with finish_after_terminal_probe(monkeypatch, queue, snapshot) as finished:
         out = fm.resign(host, reason="test resign", queue_root=queue.root,
                         gate=gate, broker_call=fake_broker,
                         live=[(111, "s1")], wait_s=40.0)
-    finally:
-        finisher.join(timeout=10.0)
-    assert not errors, errors
     assert finished.is_set()
     assert out["status"] == "resigned", (
         f"phase={out.get('phase')} reason={out.get('reason')} "

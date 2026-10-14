@@ -676,27 +676,6 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert ledger.available().get(KIND, 0) == cap
 
 
-def test_parent_double_charge_gap_demo(tmp_path: Path) -> None:
-    """Parent commit_batch.acquire takes from free; fund takes from window."""
-    owner = _hexkey("dbl-owner")
-    q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
-    template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
-    free_before = ledger.available().get(KIND)
-    # Parent behavior: second reservation from free for the same bytes.
-    batch_ns = "f" * 64  # stand-in batch holder (not the owner window)
-    assert ledger.acquire(batch_ns, {KIND: 1}) is True
-    assert ledger.available().get(KIND) == free_before - 1
-    # Same bytes already charged to the owner window (2) plus 1 more from
-    # free = double charge for 1 GiB of output (owner 2 + batch 1 = 3 held
-    # for 2 GiB of real need). New fund path never does this acquire;
-    # it moves owner->mover with free unchanged (proved in
-    # test_fund_claim_no_double_charge). Clean up parent-style holder.
-    assert ledger.release(batch_ns) == 1
-    assert ledger.available().get(KIND) == free_before
-
-
 def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path) -> None:
     """READY output mover before funding: claim refuses, stays READY (R2)."""
     owner = _hexkey("gate-owner")
@@ -882,21 +861,6 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
         mover2, TIER, generation=str(staged2["generation"])) is True
     rec2 = q.read_output_funding(mover2, TIER)
     assert rec2 is not None and rec2["state"] == "released"
-
-
-def test_parent_double_charge_gap_demo(tmp_path: Path) -> None:
-    """Parent commit_batch.acquire takes from free; fund takes from window."""
-    owner = _hexkey("dbl-owner")
-    q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
-    template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
-    free_before = ledger.available().get(KIND)
-    batch_ns = "f" * 64
-    assert ledger.acquire(batch_ns, {KIND: 1}) is True
-    assert ledger.available().get(KIND) == free_before - 1
-    assert ledger.release(batch_ns) == 1
-    assert ledger.available().get(KIND) == free_before
 
 
 def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:

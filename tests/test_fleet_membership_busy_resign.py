@@ -32,6 +32,7 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import worker_loop  # noqa: E402
+from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 import tier_loop  # noqa: E402
 
@@ -151,8 +152,6 @@ def test_busy_resign_requires_terminal_and_empty_scope(
     with empty scopes. Also proves handled-but-unclaimed attempts stay in
     the proof census (the terminal below lands after the claim file moves).
     """
-    import threading
-
     key = "9" * 64
     _incarnation(monkeypatch)
     snapshot = _publish_claim(queue, key, max_attempts=1, retry_safe=False)
@@ -162,30 +161,13 @@ def test_busy_resign_requires_terminal_and_empty_scope(
     parked.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
 
-    errors: list = []
-    finished = threading.Event()
-
-    def holder_concludes():
-        try:
-            time.sleep(3.0)
-            assert queue.item_path(pool.CLAIMED, key).exists()
-            assert not queue.item_path(pool.WITHDRAWN, key).exists()
-            queue.finish(key, status="executed", detail={},
-                         claim_snapshot=snapshot)
-            finished.set()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    finisher = threading.Thread(target=holder_concludes, daemon=True)
     with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(worker_loop, "PARKED_ROOT", parked):
-        finisher.start()
+         mock.patch.object(worker_loop, "PARKED_ROOT", parked), \
+         finish_after_terminal_probe(monkeypatch, queue, snapshot) as finished:
         out = fm.resign(host, reason="busy resign red",
                         queue_root=queue.root, gate=gate,
                         broker_call=_broker_call(authority),
                         live=[], wait_s=45.0)
-        finisher.join(timeout=10.0)
-    assert not errors, errors
     assert finished.is_set()
     terminals = fm.terminal_of(queue, snapshot) is not None
     assert terminals and out["status"] == "resigned", (
