@@ -48,9 +48,14 @@ deadline. Some kernel waits respond to ``SIGKILL``; others remain blocked, so
 neither signalling nor a thread timeout proves exit. The syscall leg runs in a
 forked child the parent stops waiting for at a deadline, and records
 ``timed_out`` instead of joining it in D state. At most one child is ever
-outstanding: while one is still unreaped the next sample skips the syscall leg and reports
+outstanding: while one is still unreaped the next sample skips the syscall leg
+and reports
 ``wedged``, which is not a degraded reading but the strongest one this module
-produces.  The procfs leg keeps reporting throughout.
+produces. A ``timed_out`` sample whose child is still outstanding and the
+following ``wedged`` record each carry that child's kernel state and wchan,
+read at that sample's own time, so a later reader can tell a genuine mount
+stall from a producer fault without a second manual procfs read. The procfs
+leg keeps reporting throughout.
 
 *Lock-free.*  Nothing here takes a lock, on the mount or off it.  A probe that
 serialises against a wedged peer is a probe that wedges.
@@ -874,9 +879,15 @@ class MountSampler:
         self._reap()
         if self._outstanding_pid is not None:
             since = self._outstanding_since or time.time()
+            # The child is still in the kernel, so its state and wchan are a
+            # live answer to "mount stall or producer fault", read now rather
+            # than reconstructed from a later manual procfs read (#1398).
+            child_state, child_wchan = process_status(self._outstanding_pid)
             return {"status": "wedged",
                     "wedged_for_s": round(time.time() - since, 1),
                     "outstanding_pid": self._outstanding_pid,
+                    "child_state": child_state,
+                    "child_wchan": child_wchan,
                     "detail": "a previous probe has not returned; the syscall "
                               "leg is skipped rather than adding a second "
                               "blocked process"}
@@ -962,12 +973,21 @@ class MountSampler:
         # to a runnable process, far too short to be confused with a mount
         # timeout, and never blocking on a child that may remain in the kernel.
         self._reap_or_remember(pid, started)
-        return {"status": "timed_out",
+        record: dict[str, object] = {"status": "timed_out",
                 "elapsed_s": round(elapsed, 4),
                 "deadline_s": self.deadline_s,
                 "error": payload_error or "",
                 "detail": "the mount did not answer a bounded metadata probe "
                           "within the deadline"}
+        if self._outstanding_pid is not None:
+            # The refusal itself names the cause: a stuck child in an NFS
+            # wchan blames the mount, a runnable child blames the producer.
+            # Read at this sample's own time (#1398).
+            child_state, child_wchan = process_status(self._outstanding_pid)
+            record["outstanding_pid"] = self._outstanding_pid
+            record["child_state"] = child_state
+            record["child_wchan"] = child_wchan
+        return record
 
     def sample(self) -> dict[str, object]:
         """One bounded reading: procfs attribution, then the syscall leg.
@@ -1086,9 +1106,12 @@ def one_line(record: dict[str, object]) -> str:
             f"listdir={probe.get('listdir_ms')}ms "
             f"claim={probe.get('claim_ms')}ms worst={probe.get('worst_ms')}ms")
     elif status == "wedged":
-        parts.append(f"for {probe.get('wedged_for_s')}s")
+        parts.append(f"for {probe.get('wedged_for_s')}s "
+                     f"child={probe.get('child_state')}:{probe.get('child_wchan')}")
     elif status == "timed_out":
         parts.append(f"after {probe.get('deadline_s')}s")
+        if probe.get("outstanding_pid") is not None:
+            parts.append(f"child={probe.get('child_state')}:{probe.get('child_wchan')}")
     if probe.get("error"):
         parts.append(f"error={_diagnostic_text(probe['error'])}")
     recording = record.get("recording") or {}
@@ -1237,13 +1260,21 @@ def _emit(record: dict[str, object], out, update_every: int = 1) -> None:
     # recovery clears old failures. Keep the configured collection interval.
     _declare_charts(update_every, out, (_PROBE_STATE_CHART,))
     recording = record.get("recording") or {}
-    for name, value in (
+    labels = [
         ("probe_status", status),
         ("probe_error", probe.get("error") or "none"),
         ("record_status", recording.get("status") or "unknown"),
         ("record_error", recording.get("error") or "none"),
         ("record_path", recording.get("path") or "unknown"),
-    ):
+    ]
+    if status == "wedged" or (status == "timed_out"
+            and probe.get("outstanding_pid") is not None):
+        # The stuck syscall names the cause: an NFS wchan blames the mount,
+        # a runnable state blames the producer. Older records lack the keys
+        # and read as unknown rather than as healthy.
+        labels.append(("stuck_child",
+                       f"{probe.get('child_state')}:{probe.get('child_wchan')}"))
+    for name, value in labels:
         out.write(f"CLABEL {name} '{_diagnostic_text(value)}' 1\n")
     out.write("CLABEL_COMMIT\n")
     out.write("BEGIN prismabuild.mount_probe_state\n")
