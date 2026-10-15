@@ -1274,13 +1274,15 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             # figure below is what stops any admission reading this box as
             # admittable.
             drain_capacity = dict(last_declared)
+            capabilities = capability_eligibility.OfferCapabilities(
+                images=capability_eligibility.ImageAnswers.from_observed(
+                    observed_images, class_verdict))
 
             def announce_drain(queue=queue, host=host, tags=offered,
                                has_gpu=gpu_capable, capacity=drain_capacity,
                                runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                                timeout_s=args.timeout_s, loops=loops,
-                               addresses=addresses, observed_images=observed_images,
-                               class_verdict=class_verdict, fields=drain_fields):
+                               addresses=addresses, capabilities=capabilities, fields=drain_fields):
                 """The exact parked record this poll offers the queue.
 
                 A closure, not a kwargs dict, so the publisher's child runs
@@ -1296,8 +1298,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                     runtime_commit=runtime_commit, cpu_tiers=cpu_tiers,
                     loops=loops, timeout_ceiling_s=timeout_s,
                     progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
-                    addresses=addresses, observed_images=observed_images,
-                    **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
+                    addresses=addresses, capabilities=capabilities,
                     **fields)
 
             publication = publish_offer(
@@ -1425,15 +1426,17 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # inputs and independent current device identity refresh outside the
         # admission lock. The publisher receives this poll's captured detail.
         observed_detail = scratch_observed_detail(observer, profile_inputs)
+        capabilities = capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                observed_images, class_verdict),
+            interpreters=interpreter_answers, dependencies=dependency_answers)
 
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
-                           observed_images=observed_images, class_verdict=class_verdict,
-                           interpreter_answers=interpreter_answers,
-                           dependency_answers=dependency_answers,
+                           capabilities=capabilities,
                            observed_detail=observed_detail):
             """The exact advisory record this poll offers the queue.
 
@@ -1464,21 +1467,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # and this is whether it would count committed work first (#480).
                 progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
                 addresses=addresses,
-                # Which local image references this box can positively show.
-                # Present-and-empty says it looked and has none; absent says
-                # it could not look.  An image-pinned item reads both as
-                # not-here at claim and as not-placeable here at dispatch.
-                observed_images=observed_images,
-                **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
-                # Which named interpreters this box can positively run
-                # (#1263): the paths this poll's ready items ask about, statted
-                # here.  Absent says it could not answer, and an item naming
-                # an interpreter reads that as unknown, never capable.
-                interpreters=sorted(interpreter_answers.present or ()),
-                interpreters_absent=sorted(interpreter_answers.absent or ()),
-                local_dependency_answers=dependency_answers.local_paths,
-                dependency_files=sorted(dependency_answers.files_present or ()),
-                dependency_files_absent=sorted(dependency_answers.files_absent or ()),
+                capabilities=capabilities,
             )
 
         publication = publish_offer(

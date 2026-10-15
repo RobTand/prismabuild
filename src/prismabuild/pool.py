@@ -6359,13 +6359,7 @@ class PoolQueue:
         timeout_ceiling_s: float | None = None,
         progress_contracts: Sequence[str] | None = None,
         addresses: Sequence[str] | None = None,
-        observed_images: Sequence[str] | None = None,
-        container_class_verdict: Mapping[str, object] | None = None,
-        interpreters: Sequence[str] | None = None,
-        interpreters_absent: Sequence[str] | None = None,
-        local_dependency_answers: Mapping[str, str] | None = None,
-        dependency_files: Sequence[str] | None = None,
-        dependency_files_absent: Sequence[str] | None = None,
+        capabilities: capability_eligibility.OfferCapabilities | None = None,
         state: str | None = None,
         drain_owner: str | None = None,
         drain_reason: str | None = None,
@@ -6497,14 +6491,8 @@ class PoolQueue:
             # storage role that finds no addresses protects every client, as
             # it did before the field existed.
             record["addresses"] = sorted({str(a) for a in addresses})
-        observations = capability_eligibility.OfferCapabilities(
-            images=capability_eligibility.ImageAnswers.from_observed(
-                observed_images, container_class_verdict),
-            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
-                interpreters, interpreters_absent),
-            dependencies=capability_eligibility.DependencyAnswers.from_observed(
-                local_dependency_answers, dependency_files, dependency_files_absent))
-        record.update(observations.offer_fields())
+        if capabilities is not None:
+            record.update(capabilities.offer_fields())
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
