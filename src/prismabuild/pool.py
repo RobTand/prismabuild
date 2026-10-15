@@ -5855,10 +5855,10 @@ class _ClaimScanReads:
         return self._host_verdicts
 
     def movement_authority(self, authority: bool) -> bool:
-        from . import _measurement_reservation as measurement_reservation
         if not self._bootstrap_authority:
             drained = False
             if authority and self.ledger is not None:
+                from . import _measurement_reservation as measurement_reservation
                 try:
                     drained = measurement_reservation.movement_drained(
                         measurement_reservation.CensusReader(self.queue, self.ledger).capture(),
@@ -21279,67 +21279,41 @@ class PoolQueue:
         for item in ready:
             key = str(item.get("action_key", ""))
             measurement_suspended = False
-            held_back = scan.withheld_for is not None and (
-                scan.withheld_kinds is None
-                or self._demands_withheld_kind(item, scan.withheld_kinds))
-            reserving_gang = (self._gang_reservation_priority(item, authority=reads.movement_authority(copy_authority))
-                              if held_back and (scan.withheld_for in scan.measurement_withholds
-                                                or scan.withheld_for in scan.carried_measurement_withholds)
-                              else None)
-            if (reserving_gang is not None
-                    and ready_priority.get(scan.withheld_for, 0) <= reserving_gang):
-                # The reservation wins over a measurement withhold (#1579): a
-                # gang member whose gang reserves its hosts is not held back
-                # behind a waiting measurement of the gang's priority or lower,
-                # or the gang could not even elect the host it reserves.  The
-                # measurement row stays READY and withholds again once the gang
-                # has started.
-                held_back = False
+            takes_kind = (self._demands_withheld_kind(item, scan.withheld_kinds)
+                          if scan.withheld_for is not None and scan.withheld_kinds is not None
+                          else False)
+            held_back = scan.row_held_back(takes_kind=takes_kind)
+            reserving_gang = (self._gang_reservation_priority(
+                item, authority=reads.movement_authority(copy_authority))
+                if held_back and (scan.withheld_for in scan.measurement_withholds
+                                  or scan.withheld_for in scan.carried_measurement_withholds)
+                else None)
+            if reserving_gang is not None:
+                held_back = scan.row_held_back(
+                    takes_kind=takes_kind, reserving_priority=reserving_gang,
+                    withheld_priority=ready_priority.get(scan.withheld_for, 0))
             producer = held_back and self._may_serve_a_producer(item)
-            if held_back and scan.withheld_kinds is None and not producer:
-                # Held back unevaluated behind the whole-box withhold.
-                # Recorded: this host has passed on the row for now, and a
-                # GPU host leaving CPU-only work to it reads that here
-                # (#1262 review).  Buffered once per pass, off the ring.
-                self.record_denial(item, "deferred_behind_withheld_row", {
-                    "withheld_for": scan.withheld_for, "withheld_kinds": None})
+            opening = candidate_policy.row_before_placement(
+                scan, held_back=held_back, producer=producer)
+            if isinstance(opening, candidate_policy.CandidateDenial):
+                self.record_denial(item, opening.reason, opening.evidence)
                 continue
-            if (key and key not in released
-                    and not self._placement_matches(item, tags=tagset, has_gpu=has_gpu)):
-                # Before the key's transition lock (#1085).  Placement reads
-                # only the row and this worker's tags, and a box that can
-                # never place the row taking its lock is what the box that
-                # can met as ``transition_busy`` on every pass.  A released
-                # origin consumer still takes the lock below: failing it is
-                # any box's to do (#954).
-                self.record_denial(item, "placement_mismatch", {
-                    "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
-                    "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
-                })
+            matches = (self._placement_matches(item, tags=tagset, has_gpu=has_gpu)
+                       if key and key not in released else None)
+            next_opening = candidate_policy.row_after_placement(
+                item, opening, order=scan, key=key, released=released, matches=matches,
+                worker_tags=tagset, has_gpu=has_gpu, ready_gpu=ready_gpu, host=host)
+            if next_opening is candidate_policy.RowProbe.GPU_SCOPE:
+                takes_gpu = self._demands_withheld_kind(item, frozenset({"gpu"}))
+                opening = candidate_policy.row_after_gpu_scope(
+                    opening, order=scan, takes_gpu=takes_gpu, ready_gpu=ready_gpu,
+                    total=total)
+            else:
+                opening = next_opening
+            if isinstance(opening, candidate_policy.CandidateDenial):
+                self.record_denial(item, opening.reason, opening.evidence)
                 continue
-            if (ready_gpu is not None and key not in released
-                    and host not in (item.get("tags") or [])
-                    and not item.get("needs_gpu")
-                    and not self._demands_withheld_kind(item, frozenset({"gpu"}))):
-                # Before this row's transition lock: no new locks, passes,
-                # reservations or timeout escape. Hostname tags also encode
-                # --here, so explicitly pinned CPU work keeps its priority.
-                self.record_denial(item, "deferred_for_ready_gpu", {
-                    "gpu_row": ready_gpu.get("action_key"),
-                    "gpu_published_unix": ready_gpu.get("published_unix"),
-                    "capacity_total": total,
-                })
-                continue
-            if held_back and not producer:
-                # Behind an earlier row's GPU-kind withhold, and demanding a
-                # GPU: held back unevaluated, with no pass, as the whole-box
-                # withhold holds every row back.  Recorded, because the
-                # CPU-only rows beside it are admitted and a reader of this
-                # host's denials would otherwise see it wait with no reason.
-                self.record_denial(item, "deferred_behind_withheld_row", {
-                    "withheld_for": scan.withheld_for,
-                    "withheld_kinds": sorted(scan.withheld_kinds or ())})
-                continue
+            held_back = opening.held_back
             if (isinstance(item.get("produced_output_batch"), Mapping)
                     and key
                     and self.fail_dead_input_dependency(item, key,
@@ -21393,9 +21367,9 @@ class PoolQueue:
                         # residency -- so a row that does not fit answers
                         # None on its own.
                         room = None
-                        if ledger is not None and (
-                                key in gpu_first
-                                or (carried is None and not scan.whole_box_held)):
+                        if scan.busy_room_needed(
+                                key, carried=carried, gpu_first=gpu_first,
+                                has_ledger=ledger is not None):
                             # Unlike a ``gpu_first`` row, this one's demand
                             # was never read this pass: a row the loop holding
                             # it will refuse as malformed keeps no room here,
@@ -21413,19 +21387,9 @@ class PoolQueue:
                                     observed_images=observed_images,
                                     container_class_policy=container_class_policy,
                                     container_inventory=container_inventory)
-                        if room is not None:
-                            kept = candidate_policy.KeptRoom(
-                                cast(str, room["action_key"]), cast(Mapping[str, int], room["room"]),
-                                "transition_busy", binds_all=carried is None and not scan.whole_box_held)
-                            scan = scan.keep(kept)
-                        busy_evidence: dict[str, object] = {}
-                        if carried is not None:
-                            busy_evidence["withhold_carried"] = carried
-                        if room is not None:
-                            busy_evidence["gpu_room_kept"] = room["room"]
-                            if kept.binds_all:
-                                busy_evidence["gpu_room_binds_all"] = True
-                        self.record_denial(item, "transition_busy", busy_evidence or None)
+                        denial = candidate_policy.busy_denial(scan, key, carried=carried, room=room)
+                        scan = denial.order_before
+                        self.record_denial(item, denial.reason, denial.evidence)
                     continue
                 if reads.claimed_hint(key):
                     self.record_denial(item, "already_claimed")

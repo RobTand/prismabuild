@@ -1,9 +1,11 @@
 """Pure candidate refusals, scan fairness and ordered room protection."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, replace
+from enum import Enum
 from types import MappingProxyType
+from typing import cast
 
 
 WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
@@ -31,6 +33,23 @@ class ScanOrder:
     @property
     def whole_box_held(self) -> bool:
         return self.withheld_for is not None and self.withheld_kinds is None
+
+    def row_held_back(
+        self, *, takes_kind: bool, reserving_priority: int | None = None,
+        withheld_priority: int = 0,
+    ) -> bool:
+        held_back = self.withheld_for is not None and (
+            self.withheld_kinds is None or takes_kind)
+        if reserving_priority is not None and withheld_priority <= reserving_priority:
+            held_back = False
+        return held_back
+
+    def busy_room_needed(
+        self, key: str, *, carried: Mapping[str, object] | None,
+        gpu_first: Container[str], has_ledger: bool,
+    ) -> bool:
+        return has_ledger and (
+            key in gpu_first or (carried is None and not self.whole_box_held))
 
     def withhold(
         self, key: str, kinds: frozenset[str] | None, *, measurement: bool = False,
@@ -231,3 +250,77 @@ def counted_token_refusal(
     order, room_evidence = order.keep_refused_room(key, asked, reason, free_at_refusal)
     evidence.update(room_evidence)
     return CandidateDenial(reason, evidence, order)
+
+
+@dataclass(frozen=True)
+class RowOpening:
+    held_back: bool
+    producer: bool
+
+
+class RowProbe(Enum):
+    GPU_SCOPE = "gpu_scope"
+
+
+def row_before_placement(
+    order: ScanOrder, *, held_back: bool, producer: bool,
+) -> CandidateDenial | RowOpening:
+    if held_back and order.withheld_kinds is None and not producer:
+        return CandidateDenial("deferred_behind_withheld_row", {
+            "withheld_for": order.withheld_for, "withheld_kinds": None}, order)
+    return RowOpening(held_back, producer)
+
+
+def _row_after_scope(order: ScanOrder, opening: RowOpening) -> CandidateDenial | RowOpening:
+    if opening.held_back and not opening.producer:
+        return CandidateDenial("deferred_behind_withheld_row", {
+            "withheld_for": order.withheld_for,
+            "withheld_kinds": sorted(order.withheld_kinds or ())}, order)
+    return opening
+
+
+def row_after_placement(
+    item: Mapping[str, object], opening: RowOpening, *, order: ScanOrder,
+    key: str, released: Container[str], matches: bool | None,
+    worker_tags: frozenset[str], has_gpu: bool,
+    ready_gpu: Mapping[str, object] | None, host: str,
+) -> CandidateDenial | RowProbe | RowOpening:
+    if key and key not in released and not matches:
+        return CandidateDenial("placement_mismatch", {
+            "worker_tags": sorted(worker_tags), "worker_has_gpu": has_gpu,
+            "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu")}, order)
+    if (ready_gpu is not None and key not in released
+            and host not in (item.get("tags") or []) and not item.get("needs_gpu")):
+        return RowProbe.GPU_SCOPE
+    return _row_after_scope(order, opening)
+
+
+def row_after_gpu_scope(
+    opening: RowOpening, *, order: ScanOrder, takes_gpu: bool,
+    ready_gpu: Mapping[str, object], total: Mapping[str, int],
+) -> CandidateDenial | RowOpening:
+    if not takes_gpu:
+        return CandidateDenial("deferred_for_ready_gpu", {
+            "gpu_row": ready_gpu.get("action_key"),
+            "gpu_published_unix": ready_gpu.get("published_unix"),
+            "capacity_total": total}, order)
+    return _row_after_scope(order, opening)
+
+
+def busy_denial(
+    order: ScanOrder, key: str, *, carried: Mapping[str, object] | None,
+    room: Mapping[str, object] | None,
+) -> CandidateDenial:
+    if room is not None:
+        kept = KeptRoom(
+            cast(str, room["action_key"]), cast(Mapping[str, int], room["room"]),
+            "transition_busy", binds_all=carried is None and not order.whole_box_held)
+        order = order.keep(kept)
+    evidence: dict[str, object] = {}
+    if carried is not None:
+        evidence["withhold_carried"] = carried
+    if room is not None:
+        evidence["gpu_room_kept"] = room["room"]
+        if kept.binds_all:
+            evidence["gpu_room_binds_all"] = True
+    return CandidateDenial("transition_busy", evidence or None, order)
