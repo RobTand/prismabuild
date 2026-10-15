@@ -21,6 +21,7 @@ from prismabuild import _gang, _measurement_reservation as reservation
 from prismabuild import _bounded_reader as reader
 from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
@@ -40,11 +41,13 @@ def _chosen(queue, key):
     return chosen
 
 
-def _claim_row(queue, key, host="sparklina"):
+def _claim_row(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert isinstance(row, dict)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                         has_gpu=True, tags=["gb10", host], ready=[row])
+                         has_gpu=True, tags=["gb10", host], ready=[row],
+                         cpu_sampler=cpu_sampler,
+                         gpu_sampler=gpu_sampler)
     return None if result is None else result["action_key"]
 
 
@@ -143,7 +146,9 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     monkeypatch.setattr(reservation.CensusReader, "_census", counted_census)
     monkeypatch.setattr(reservation, "REFRESH_BUDGET_S", 0.2)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                         has_gpu=True, tags=["gb10", "sparklina"], ready=rows)
+                         has_gpu=True, tags=["gb10", "sparklina"], ready=rows,
+                         cpu_sampler=lambda: cpu_sample(clock, readings),
+                         gpu_sampler=lambda: gpu_sample(sample, readings))
     assert result is None
     assert reached.read_bytes() == b"entered"
     assert len(replies) == 1
@@ -208,14 +213,12 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
         return refreshed
 
     monkeypatch.setattr(reservation.CensusReader, "refresh_elections", observed_refresh)
-    result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                         has_gpu=True, tags=["gb10", "sparklina", _gang.TAG],
-                         ready=rows)
+    result = gclaim("sparklina", ready=rows, advance=None)
     assert len(refreshes) == 1, "the follower must reach election refresh"
     assert refreshes[0]["gang_elections"] == {}
     assert queue.item_path(pool.READY, probe).exists()
     assert result is not None, denial(follower, "sparklina")
-    assert result["action_key"] == follower
+    assert result == follower
     assert set(queue.ledger("sparklina").held_keys()) == {holder, follower}
 
 

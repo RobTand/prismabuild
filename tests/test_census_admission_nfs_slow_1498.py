@@ -25,6 +25,7 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, core, pool
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
 from test_measurement_reservation_backfill_1419 import (
@@ -59,10 +60,12 @@ def _slow_reads(monkeypatch, seconds):
     monkeypatch.setattr(reservation, "_read", slow)
 
 
-def _claim(queue, key):
+def _claim(queue, key, *, cpu_sampler, gpu_sampler):
     candidate = pool._read_json(queue.item_path(pool.READY, key))
     return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                       has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate])
+                       has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
+                       cpu_sampler=cpu_sampler,
+                       gpu_sampler=gpu_sampler)
 
 
 def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
@@ -74,7 +77,9 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     _slow_reads(monkeypatch, 0.02)
 
     started = time.monotonic()
-    assert _claim(queue, ordinary) is None
+    assert _claim(queue, ordinary,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     assert time.monotonic() - started < reservation.READ_BUDGET_S + 5
     refusal = denial(ordinary)
     assert refusal["reason"] == "measurement_census_unavailable"
@@ -92,7 +97,9 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     assert all(queue.item_path(pool.WITHDRAWN, key).exists() for key in orphans)
 
     tick(11)
-    claimed = _claim(queue, ordinary)
+    claimed = _claim(queue, ordinary,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings))
     assert claimed is not None and claimed["action_key"] == ordinary
 
 
@@ -205,7 +212,9 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
     # Scale only the record cap: real bounded census, retirement proof, reader
     # fence, transition locks, admission gate and capacity claim all execute.
     monkeypatch.setattr(reservation, "MAX_RECORDS", len(kept) + 2)
-    assert _claim(queue, ordinary) is None
+    assert _claim(queue, ordinary,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     refusal = denial(ordinary)
     assert refusal["reason"] == "measurement_census_unavailable"
     assert "record cap exceeded" in refusal["evidence"]["unavailable"]
@@ -218,7 +227,9 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
     assert set(census["selections"]) == set(kept)
     assert census["elections"] == {}  # exact endings, not missing authority
     tick(11)
-    claimed = _claim(queue, ordinary)
+    claimed = _claim(queue, ordinary,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings))
     assert claimed is not None and claimed["action_key"] == ordinary
 
 
@@ -233,7 +244,9 @@ def test_swept_census_still_refuses_lower_work_behind_a_live_election(fleet, mon
     _slow_reads(monkeypatch, 0.002)
     lower = publish("lower-behind-election", timeout_s=5)
     _observe_real_sharing_permission(fleet, lower)
-    assert _claim(queue, lower) is None
+    assert _claim(queue, lower,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     refusal = denial(lower)
     assert refusal["reason"] == "deferred_for_measurement_reservation", refusal
     assert refusal["evidence"]["selection"] == reservation.selection(
@@ -264,7 +277,9 @@ def test_a_sibling_census_is_waited_for_not_turned_into_a_denial(
     sibling.start()
     try:
         assert started.wait(timeout=60)
-        claimed = _claim(queue, ordinary)
+        claimed = _claim(queue, ordinary,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings))
     finally:
         sibling.join(timeout=60)
     assert claimed is not None and claimed["action_key"] == ordinary

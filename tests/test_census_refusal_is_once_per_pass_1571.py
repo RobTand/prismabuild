@@ -24,6 +24,7 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
@@ -67,7 +68,9 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     try:
         claimed = queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=records)
+            has_gpu=True, tags=["gb10", "sparklina"], ready=records,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings))
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -98,14 +101,18 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
     try:
         assert queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=[record]) is None
+            has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
 
     claimed = queue.claim(
         capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-        has_gpu=True, tags=["gb10", "sparklina"], ready=[record])
+        has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings))
     assert claimed is not None and claimed["action_key"] == key
 
 

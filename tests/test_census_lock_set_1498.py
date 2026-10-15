@@ -18,6 +18,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import threading
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_measurement_reservation_backfill_1419 import (
     _bounded_measurement_wait, fleet as fleet_fixture,
 )
@@ -58,11 +59,13 @@ def _loops_holding(queue, keys):
             thread.join(timeout=30)
 
 
-def _claim_only(queue, key, host="sparklina"):
+def _claim_only(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
     row = pool._read_json(queue.item_path(pool.READY, key))
     assert isinstance(row, dict)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                         has_gpu=True, tags=["gb10", host], ready=[row])
+                         has_gpu=True, tags=["gb10", host], ready=[row],
+                         cpu_sampler=cpu_sampler,
+                         gpu_sampler=gpu_sampler)
     return None if result is None else result["action_key"]
 
 
@@ -73,7 +76,9 @@ def test_twelve_loops_and_forty_ready_measurements_still_admit(fleet):
     candidate = publish("cpu-proof", priority=0, timeout_s=600, cpu=1, gpu=0, mem_gb=1)
     tick(0.01)
     with _loops_holding(queue, measurements[:OTHER_LOOPS]):
-        result = _claim_only(queue, candidate)
+        result = _claim_only(queue, candidate,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings))
     assert result == candidate, denial(candidate)
     assert queue.ledger().held_keys() == [candidate]
     for key in measurements:
@@ -87,12 +92,16 @@ def test_a_busy_election_on_this_host_still_fences_lower_priority_work(fleet):
     higher = publish("higher-work", priority=1, timeout_s=600, cpu=1, gpu=0, mem_gb=1)
     tick(0.01)
     with _loops_holding(queue, [measurement]):
-        assert _claim_only(queue, lower) is None
+        assert _claim_only(queue, lower,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) is None
         fenced = denial(lower)
         # Conservatively fenced by the elected measurement, not a census refusal.
         assert fenced["reason"] == "deferred_for_measurement_reservation", fenced
         assert fenced["evidence"]["withheld_for"] == measurement
-        assert _claim_only(queue, higher) == higher, denial(higher)
+        assert _claim_only(queue, higher,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) == higher, denial(higher)
     assert set(queue.ledger().held_keys()) == {incumbent, higher}
     assert queue.item_path(pool.READY, lower).exists()
 
@@ -104,6 +113,8 @@ def test_a_busy_election_for_another_host_does_not_block_this_one(fleet, monkeyp
     tick(0.01)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     with _loops_holding(queue, [measurement]):
-        assert _claim_only(queue, other, host="sparky") == other, denial(other, "sparky")
+        assert _claim_only(queue, other, host="sparky",
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) == other, denial(other, "sparky")
     assert queue.ledger("sparky").held_keys() == [other]
     assert queue.ledger("sparklina").held_keys() == [incumbent]
