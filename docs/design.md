@@ -18001,6 +18001,9 @@ refuses a listing. History requalifies detached entries independently and never
 adds candidate-only persistence. Census stage classifications remain hints.
 Mover names captures retain names and paths; fragment and partial candidate
 observations stay fresh on every decision.
+Capture keys and trust observations use the same path spelling as the listing.
+Lexically normalizing a path containing a symlink and `..` can select a different
+directory, so it cannot supply the listing's proof.
 
 Exporter derived values use opaque `DirectoryEvidence` and `EvidenceSet`.
 A scrape view observes each directory once; post-computation checks use fresh

@@ -2136,8 +2136,7 @@ class _StagedPublisher:
         :attr:`_range_lock`; only a fenced listing is stored under it.
         """
 
-        key = os.path.normpath(str(directory))
-        with self._partial_names.acquire(key) as capture:
+        with self._partial_names.acquire(directory) as capture:
             if capture.hit:
                 return capture.value
             try:
