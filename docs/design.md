@@ -1038,6 +1038,32 @@ the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
 
+An old claim's requeue collision with a verified newer READY publication also
+has an exact ending, distinct from an execution verdict. The queue retains
+`prismaquant.prismabuild.publication_superseded.v1` at
+`publication-endings/<key>/<attempt_generation>.json`, with the original
+identity and the actual successor item observed under the key transition
+lock. The decision proves matching key, usable pool-item addressing and
+ordering, valid demand, and finite strictly newer generation. Same-generation
+retries grant no supersession. Malformed, unreadable or uncertain successor
+evidence retains the original claim/tombstone authority and preserves READY.
+The immutable first decision wins on retries even if READY later changes.
+Existing attempt outcomes and their logs remain unchanged; the decision grants
+no execution, receipt, resource release, successor-follow or resubmission claim.
+`PoolQueue.publication_ending` reads one deterministic address, and its public
+`decode_publication_supersession` validates the same proof from bounded-reader
+IPC without queue I/O. Neither scans untyped timestamped dropped records.
+
+A retained finish tombstone is the recovery journal for an interrupted
+collision. Its existing cleanup still checks actual ownership and retains
+uncertainty. Under the same key lock, after cleanup, a verified newer READY
+can conclude the old publication through the same immutable decision before
+the old tombstone is filed and removed. An old exact execution or withdrawal
+ending suppresses supersession. A claimed successor's resources and lease are
+never the old tombstone's to release. No original claim is restored beside a
+newer READY merely to reconstruct an ending, and no synthetic attempt is
+created for an unstarted release.
+
 **A mutable ending carries a bounded tail of a stream, not the stream
 (#1203).** An action that prints megabytes made the terminal row itself the
 bulk: `pbstatus` bounds an ending record at 8 MiB, so one 8.4 MB stdout

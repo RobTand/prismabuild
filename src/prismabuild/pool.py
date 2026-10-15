@@ -113,6 +113,7 @@ from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, NamedTuple, cast
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
+from dataclasses import dataclass
 import contextvars
 import errno
 from enum import Enum
@@ -170,6 +171,7 @@ POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
 POOL_LEASE_SCHEMA_V1 = "prismaquant.prismabuild.pool_lease.v1"
 POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
+PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismaquant.prismabuild.publication_superseded.v1"
 #: What one run cost and how loaded its box was, filed with the outcome.  Issue
 #: #372 Tier 0: metadata about a run, never part of the action it was a run of,
 #: so a receipt that carries it and one from before it are the same action.
@@ -1296,6 +1298,17 @@ class PoolError(pb.PrismaBuildError):
 
 class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
+
+
+@dataclass(frozen=True)
+class PublicationSupersession:
+    """An exact publication ended; its successor supplies no execution verdict."""
+
+    path: Path
+    action_key: str
+    published_unix: float
+    successor_published_unix: float
+    record: Mapping[str, object]
 
 
 def normalize_priority_reason(value: object) -> str | None:
@@ -6198,6 +6211,92 @@ class PoolQueue:
             {"action_key": key, "published_unix": float(published)}
         )
 
+    def publication_ending_path(self, record: Mapping[str, object]) -> Path:
+        """The immutable ending address for an exact publication identity."""
+        generation = self.attempt_generation(record)
+        return self.root / "publication-endings" / str(record["action_key"]) / f"{generation}.json"
+
+    def _successor_generation(
+        self, original: Mapping[str, object], successor: Mapping[str, object],
+    ) -> float:
+        self.attempt_generation(successor)
+        key = str(original["action_key"])
+        try:
+            usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
+                      and self._ready_record_usable(successor, key))
+            self.demand_of(successor)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise PoolContractError("invalid successor publication item") from exc
+        if not usable:
+            raise PoolContractError("invalid successor publication item")
+        generation = float(successor["published_unix"])
+        if generation < float(original["published_unix"]):
+            raise PoolContractError("successor publication precedes its original")
+        return generation
+
+    def decode_publication_supersession(
+        self, path: Path, record: Mapping[str, object],
+    ) -> PublicationSupersession:
+        """Validate disk or IPC evidence without reading another queue record."""
+        if (not isinstance(record, dict)
+                or record.get("schema") != PUBLICATION_SUPERSEDED_SCHEMA_V1
+                or record.get("status") != "superseded"
+                or set(record) != {"schema", "status", "action_key", "published_unix", "successor"}
+                or self.publication_ending_path(record) != Path(path)):
+            raise PoolContractError("invalid exact publication ending")
+        successor = record["successor"]
+        if not isinstance(successor, dict):
+            raise PoolContractError("publication ending has no successor item")
+        generation = float(record["published_unix"])
+        successor_generation = self._successor_generation(record, successor)
+        if successor_generation == generation:
+            raise PoolContractError("same-generation retry is not publication supersession")
+        return PublicationSupersession(
+            Path(path), str(record["action_key"]), generation, successor_generation, record,
+        )
+
+    def publication_ending(
+        self, key: str, *, generation: float,
+    ) -> PublicationSupersession | None:
+        """Read one exact immutable decision; absence never infers a successor."""
+        path = self.publication_ending_path({"action_key": key, "published_unix": generation})
+        try:
+            names = os.listdir(path.parent)
+        except FileNotFoundError:
+            return None
+        if path.name not in names:
+            return None
+        raw = pb._read_regular_file_nofollow(
+            path, where="publication ending", require_readonly=True)
+        record = pb._decode_strict_json(raw, where="publication ending")
+        return self.decode_publication_supersession(path, record)
+
+    def _read_ready_publication(self, key: str) -> dict[str, object]:
+        raw = pb._read_regular_file_nofollow(
+            self.item_path(READY, key), where="successor publication", replaced_leaf=True)
+        record = pb._decode_strict_json(raw, where="successor publication")
+        if not isinstance(record, dict):
+            raise PoolContractError("successor publication must be an object")
+        return record
+
+    def _persist_publication_supersession(
+        self, record: Mapping[str, object], *, successor: Mapping[str, object],
+    ) -> PublicationSupersession:
+        key, generation = str(record["action_key"]), float(record["published_unix"])
+        prior = self.publication_ending(key, generation=generation)
+        if prior is not None:
+            return prior
+        path = self.publication_ending_path(record)
+        payload = {"schema": PUBLICATION_SUPERSEDED_SCHEMA_V1, "status": "superseded",
+                   "action_key": key, "published_unix": generation,
+                   "successor": dict(successor)}
+        self.decode_publication_supersession(path, payload)
+        _publish_immutable(path, pb._canonical_bytes(payload), where="publication ending")
+        published = self.publication_ending(key, generation=generation)
+        if published is None:
+            raise PoolContractError("published exact publication ending is not visible")
+        return published
+
     def attempt_path(self, record: Mapping[str, object], attempt: int) -> Path:
         """Immutable outcome path for one numbered attempt of one generation."""
 
@@ -7812,15 +7911,22 @@ class PoolQueue:
         # the archived execution rather than charging the next attempt slot.
         source = tombstone.with_name(f".{tombstone.name}.tmp")
         try:
-            _write_json_atomic(source, record)
-            try:
-                os.link(source, destination)
-            except FileExistsError:
-                return self._file_superseded(
-                    record, key=action_key, kind=superseded_kind, status="dropped",
-                    reason=superseded_reason,
-                )
-            return destination
+            prior = self.publication_ending(action_key, generation=record["published_unix"])
+            if prior is None:
+                _write_json_atomic(source, record)
+                try:
+                    os.link(source, destination)
+                except FileExistsError:
+                    successor = self._read_ready_publication(action_key)
+                    if self._successor_generation(record, successor) == record["published_unix"]:
+                        return destination
+                    self._persist_publication_supersession(record, successor=successor)
+                else:
+                    return destination
+            return self._file_superseded(
+                record, key=action_key, kind=superseded_kind, status="dropped",
+                reason=superseded_reason,
+            )
         finally:
             source.unlink(missing_ok=True)
 
@@ -24593,7 +24699,7 @@ class PoolQueue:
                             superseded_reason="a newer publication already owns ready "
                                               "after unstarted claim release",
                         )
-                    except OSError:
+                    except (OSError, pb.PrismaBuildError):
                         try:
                             os.link(tombstone, path)
                         except OSError:
@@ -24706,7 +24812,7 @@ class PoolQueue:
                             superseded_reason="a newer publication already owns ready "
                                               "after an earlier claim ended",
                         )
-                except OSError:
+                except (OSError, pb.PrismaBuildError):
                     # Put the claim back rather than leave the key with no record
                     # anywhere.  Link first: the tombstone must not replace a claim
                     # that appeared while this was in flight.
@@ -24859,15 +24965,32 @@ class PoolQueue:
                         continue
                 if now - when <= grace_s:
                     continue
-                record = _read_json(tombstone)
-                live = any(
-                    self.item_path(state, key).exists()
-                    for state in (READY, CLAIMED)
-                )
-                covered = (
-                    self.terminal_outcome_covers(record, action_key=key) is not None
-                    or self.withdrawal_covers(record, action_key=key) is not None
-                )
+                successor = None
+                try:
+                    record = _read_json(tombstone)
+                    live = any(
+                        self.item_path(state, key).exists()
+                        for state in (READY, CLAIMED)
+                    )
+                    covered = (
+                        self.terminal_outcome_covers(record, action_key=key) is not None
+                        or self.withdrawal_covers(record, action_key=key) is not None
+                    )
+                    if record is not None and type(record.get("published_unix")) in (int, float):
+                        generation = record["published_unix"]
+                        decision = self.publication_ending(key, generation=generation)
+                        covered = covered or decision is not None
+                        if (not covered and f"{key}.json" not in os.listdir(claimed)
+                                and f"{key}.json" in os.listdir(self.dir(READY))):
+                            archived = self.archived_generation_outcomes(key, generation=generation)
+                            if archived:
+                                covered = True
+                            else:
+                                candidate = self._read_ready_publication(key)
+                                if self._successor_generation(record, candidate) > generation:
+                                    successor = candidate
+                except (OSError, pb.PrismaBuildError):
+                    continue
                 restorable = record is not None and not live and not covered
                 if restorable and "attempt_history" in record:
                     try:
@@ -24939,6 +25062,11 @@ class PoolQueue:
                                 and lease.get("owner") == record.get("claimed_by")):
                             self.lease_path(key).unlink(missing_ok=True)
                     except (OSError, PoolContractError, pb.CASUnavailableError):
+                        continue
+                if successor is not None:
+                    try:
+                        self._persist_publication_supersession(record, successor=successor)
+                    except (OSError, pb.PrismaBuildError):
                         continue
                 self._file_superseded(
                     record, key=key, kind="finish-tombstone", status="dropped",
