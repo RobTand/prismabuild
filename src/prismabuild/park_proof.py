@@ -106,6 +106,27 @@ def gate_key(gate: dict) -> str:
     return "".join(c if c in _KEY_SAFE else "_" for c in str(value))
 
 
+def parked_markers(parked_root: Path, gate: dict | None) -> list[Path]:
+    """Markers naming exactly this drain epoch (old epochs never count)."""
+    if gate is None:
+        return []
+    key = gate_key(gate)
+    if not parked_root.is_dir():
+        return []
+    try:
+        return sorted(p for p in parked_root.glob(f"*-{key}") if p.is_file())
+    except OSError:
+        return []
+
+
+def expected_markers(census: list[tuple[int, str]], gate: dict | None) -> set[str]:
+    """Full marker names each live loop must post (pid + starttime + epoch)."""
+    if gate is None:
+        return set()
+    key = gate_key(gate)
+    return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
+
+
 def write_park_marker(root: Path, gate: dict) -> Path | None:
     """Record that this process is parked on ``gate``, once, and return the path.
 

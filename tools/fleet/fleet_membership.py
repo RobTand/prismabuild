@@ -64,7 +64,9 @@ sys.path.insert(0, str(SRC_ROOT))
 from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import park_proof, role_session  # noqa: E402
-from prismabuild.park_proof import read_gate  # noqa: E402
+from prismabuild.park_proof import (  # noqa: E402
+    expected_markers, parked_markers, read_gate,
+)
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
 
@@ -421,29 +423,6 @@ def live_loop_census(
         starttime = fields[19] if len(fields) > 19 else "unknown"
         census.append((pid, starttime))
     return census, None
-
-
-def parked_markers(parked_root: Path, gate: dict[str, Any] | None) -> list[Path]:
-    """Markers naming exactly this drain epoch (old epochs never count)."""
-    if gate is None:
-        return []
-    key = gate_label(gate)
-    if not parked_root.is_dir():
-        return []
-    try:
-        return sorted(p for p in parked_root.glob(f"*-{key}") if p.is_file())
-    except OSError:
-        return []
-
-
-def expected_markers(
-    census: list[tuple[int, str]], gate: dict[str, Any] | None
-) -> set[str]:
-    """Full marker names each live loop must post (pid + starttime + epoch)."""
-    if gate is None:
-        return set()
-    key = gate_label(gate)
-    return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
 
 
 def terminal_of(
