@@ -104,7 +104,7 @@ def _real_dispatch(monkeypatch, checkout: Path, extra: list[str],
 
     def execute_admitted_child(command, **kwargs):
         calls.append(command)
-        argv, environment = admitted_child(command)
+        argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
         return actual_popen(argv, cwd=checkout, env=environment, **kwargs)
 
     with monkeypatch.context() as scoped:

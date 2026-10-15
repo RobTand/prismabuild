@@ -29,6 +29,9 @@ def shard(files, rows=(), ran=True, record=True, never_ran=(), missing=()):
     files = list(files)
     rows = list(rows) or [(f + "::test_one", "call", "passed", None, None)
                           for f in files if f not in missing]
+    represented = {row[0].split("::", 1)[0] for row in rows}
+    rows += [(f + "::test_one", "call", "passed", None, None)
+             for f in files if f not in represented and f not in missing]
     selected = list(dict.fromkeys([r[0] for r in rows if r[1] != "collect"] + list(never_ran)))
     counts = {}
     for row in rows:
