@@ -18112,3 +18112,27 @@ observation lifetime, including separate repeated polls within recovery.
 The other claim readers, plain and kept-read adapter closure, queue
 publication, and the remaining liveness and prefix readers are unfinished c05
 work. The documented PoolQueue and SDK read APIs are preserved.
+
+
+### Staged drain policy and counted-note ownership
+
+`drain_policy` reduces the observations captured by `PoolQueue._observe_drain`.
+Preparation preserves the original history coercions. The adapter reads
+available capacity, then only the holders the policy still needs, reducing
+each bound before reading the next holder. The policy returns a verdict and
+explicit ordinary or host/generation-scoped measurement note changes.
+
+The claim driver stages nonempty changes in `_DrainAccounting` before
+canonical measurement election. Pending changes survive election contention.
+Each production `record_pass` receives its key's receipt explicitly. It consumes
+ordinary notes after initial history coercion, then measurement notes after
+ordinary merge and prior episode conversion, preserving the original failure
+and write order. Absent changes carry earlier values, None clears a field,
+and finite numeric changes update it. The current measurement reservation is
+preserved through the counted write.
+
+The existing unreadable-error classes, same-instance uncaught errors,
+unmeasured finalization, clocks, holder-release observations and preemption
+order are retained. Fairness limits and admission authority keep their existing
+owners and defaults. Later candidate composition and claim-driver reduction
+remain unfinished C01 work.

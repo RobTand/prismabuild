@@ -338,3 +338,47 @@ The cc58 completion audit remains fixed at its historical source. Typed role
 receipts, the privileged proof consumer and broader RecordStore work are still
 isolated or unfinished. No final complete-brief or full-current-suite result,
 push, PR state change or deployment is claimed.
+
+
+## Qualified receipt, drain and queue-reader steps
+
+The current accumulation includes typed receipt and role callers through
+`32b79024ec9f`, staged drain policy at `bfc31dd1f1a7`, and mover polling at
+`7160eb7de875`. These extend the source-fixed checkpoints above. The original
+31-card brief and the final current-source suite remain open.
+
+Typed receipt observations require a complete commit/generation pair. Each
+role retains its existing completion boundary. Worker Unknown waits still
+record physical park evidence at both idle receipt boundaries while fencing
+queue work. The public adapter keeps its role-specific drift and maintenance
+behavior. All nine legacy scalar getters and their private alias are removed.
+Independent review closed the missing park, stale caller and contradictory
+documentation findings. The contained-child fixture now checks the exact held
+DONE CPU allocation and containment within the broker and PB parent masks.
+Its full 25 cases and both park-boundary files' seven cases passed.
+
+The 272-file merged receipt qualification at `3f011ff2365a` collected 3,853
+unique cases, with 3,852 passes and one incomplete tier fixture. The complete
+seven-case file passed at fixture-only `32b79024ec9f`, preserving the original
+cycle assertion and requiring an actual moved-runtime diagnosis in its negative
+control. This layered evidence is separate from a final full-current-source
+pass. C17's standard-library role-runner boundary remains unfinished.
+
+Staged drain policy at `16764c8f3de3` passed 1,033 unique cases across 62 files.
+All 998 prior cases remain, with 35 new cases and all 350 pre-existing
+assertions in migrated files retained. Independent review found no actionable
+issue. The integrated owned function ASTs and five other file bytes match the
+qualified source, apart from the already integrated standing type annotation.
+
+Standing Wave S at `a6435dd8660c` passed 602 cases. The expanded mover baseline
+then passed 709 cases at `890c6acb00a0`. Mover Wave M at `817ed28c2ea9` passed
+722, retaining all 709 and adding 13 real file/fault cases. Independent review
+found no actionable issue. All ten production mover polls and every old helper
+caller migrated. The remaining claim readers, queue I/O leaves, publication,
+retained readers, liveness and prefix readers still need their own closure.
+
+Every reported action has checked source, terminal, retained logs and CAS
+receipt/payload, or verified expected receipt absence for a failure. The
+populations overlap. The strict host-proof and root/reader qualifier work
+remain isolated pending actual ARM and paired transport qualification. No
+push, PR state change or deployment is claimed.
