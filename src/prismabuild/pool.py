@@ -5834,6 +5834,28 @@ class _HostClaimRequest:
     scratch_boundary: tuple[float, float, object, object] | None
 
 
+class _ClaimHandled(Enum):
+    REFUSED = "refused"
+
+
+@dataclass(frozen=True)
+class _ClaimGang:
+    declaration: Mapping[str, object] | None
+    record: Mapping[str, object] | None
+    entry: Mapping[str, object] | None
+    api: object
+
+
+@dataclass(frozen=True)
+class _CensusArbitration:
+    measurement_suspended: bool
+    blocker: Mapping[str, object] | None
+    serves_incumbent: bool
+    backfill: list[Mapping[str, object]]
+    backfill_binding: object
+    gang_api: object
+
+
 class _ClaimScanReads:
     def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
                  tags: frozenset[str], has_gpu: bool) -> None:
@@ -21323,6 +21345,175 @@ class PoolQueue:
             dependent_owner=dependent_owner, contract=contract,
             scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary)
 
+    def _arbitrate_claim_census(
+        self, request: _HostClaimRequest, gang_context: _ClaimGang, census, *,
+        ledger: ResourceLedger, total, copy_authority, tagset, has_gpu,
+        placement, measurement_reservation,
+    ) -> _CensusArbitration | _ClaimHandled:
+        item = request.candidate.item
+        dependent_owner = request.dependent_owner
+        reservation_demand = request.candidate.demand.reservation
+        gang = gang_context.declaration
+        gang_record = gang_context.record
+        gang_entry = gang_context.entry
+        _gang = gang_context.api
+        gang_backfill = []
+        backfill_binding = None
+        backfill_eligible = None
+        from . import movement_actions
+        reservation_now = _now()
+        reservation_authority = (
+            copy_authority and measurement_reservation.movement_drained(
+                census, self, tags=tagset, has_gpu=has_gpu, host=ledger.base.name))
+        priority = measurement_reservation.candidate_priority(
+            census, item, host=ledger.base.name, now=reservation_now,
+            authority=reservation_authority,
+            group=gang["group"] if gang is not None else None)
+        # This row's own measurement withhold yields only to a
+        # gang of its priority or higher.
+        reserving_priority = priority.priority
+        measurement_suspended = priority.measurement_suspended
+        reservation_held = reservation_capacity = None
+        if reserving_priority is not None:
+            try:
+                reservation_held = ledger.held()
+                reservation_capacity = total
+            except (OSError, ValueError, PoolContractError):
+                reservation_held = reservation_capacity = None  # fail safe
+        census_blocked = measurement_reservation.measurement_blocker(
+            census, item, priority, host=ledger.base.name)
+        # A dependent of a current incumbent on this host
+        # (its sealed producer holds tokens here) only
+        # shortens that incumbent's life, which is what the
+        # measurement waits for. Holding it back would let
+        # a producer with no declared deadline wait on its
+        # own spool exports forever (#1419 review).
+        # A running elected measurement is not such an
+        # incumbent: its own dependents keep the existing
+        # ``funded_by`` rule below (#982).
+        incumbent = measurement_reservation.candidate_blocker(
+            census_blocked, dependent_owner=dependent_owner,
+            held_keys=(ledger.held_keys()
+                       if isinstance(dependent_owner, str) else None),
+            census=census)
+        serves_incumbent = incumbent.serves_incumbent
+        census_blocked = incumbent.blocker
+        if incumbent.must_defer:
+            self.record_denial(item, "deferred_for_measurement_reservation", {
+                "withheld_for": census_blocked["action_key"],
+                "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
+            return _ClaimHandled.REFUSED
+        # A protected role skips only reservation arithmetic.
+        # Legacy movement rows keep the host on main's fallback
+        # until the complete census proves that they have ended.
+        role_exempt = (bool(census.get("gang_elections"))
+                       and movement_actions.authorized_role(item))
+        gang_blocked = (None if serves_incumbent else
+                        measurement_reservation.gang_blocking(
+                            census, item, host=ledger.base.name,
+                            group=gang["group"] if gang is not None else None,
+                            now=reservation_now, held=reservation_held,
+                            capacity=reservation_capacity,
+                            exempt=role_exempt,
+                            authority=reservation_authority, demand=reservation_demand))
+        while gang_blocked is not None:
+            # A demand shortfall cannot become a loan (#1579).
+            if "reservation" in gang_blocked:
+                break
+            from . import _gang
+            try:
+                if backfill_eligible is None:
+                    backfill_eligible = (item.get("priority") == -10
+                                         and item.get("gang") is None
+                                         and _gang.backfill_enabled())
+                    if backfill_eligible:
+                        backfill_eligible = self._preemption_eligible(item)
+                        if backfill_eligible:
+                            backfill_binding = self._preemption_proof_binding(item)
+                allowed = (backfill_eligible
+                           and _gang.backfill_allowed(self, gang_blocked, _now()))
+            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                    KeyError, TypeError, ValueError):
+                allowed = False
+            if not allowed:
+                break
+            gang_backfill.append(gang_blocked)
+            remaining = dict(census, gang_elections={
+                k: e for k, e in census["gang_elections"].items()
+                if e not in gang_backfill})
+            gang_blocked = measurement_reservation.gang_blocking(
+                remaining, item, host=ledger.base.name, group=None,
+                now=reservation_now, held=reservation_held,
+                capacity=reservation_capacity, exempt=role_exempt,
+                authority=reservation_authority, demand=reservation_demand)
+        if gang_blocked is not None:
+            self.record_denial(item, "deferred_for_gang_reservation", {
+                "withheld_for": gang_blocked["action_key"],
+                "gang_election": gang_blocked})
+            return _ClaimHandled.REFUSED
+        if gang_record is not None:
+            # Elect this host for the member under H: from
+            # here on the census fences it (#1517). One
+            # member per host; the no-clobber election
+            # settles a race between matching hosts.
+            here = socket.gethostname()
+            position = _gang.election_position(
+                census["gang_elections"], gang_record, gang, host=here)
+            if isinstance(position, _gang.RankedBehind):
+                self.record_denial(item, "deferred_for_gang_reservation", {
+                    "withheld_for": position.election["action_key"],
+                    "gang_election": position.election, "ranked_behind": True})
+                return _ClaimHandled.REFUSED
+            mine = position.mine
+            sibling_here = position.sibling_here
+            if position.needs_election:
+                # A member with a resident set elects first
+                # where its copy is: this host waits a
+                # bound moment for a fit resident host,
+                # then elects here anyway (#1733).  Offer
+                # reads only ever buy a bounded wait for a
+                # better placement, never a refusal.
+                hold = None
+                set_id = item.get("resident_set")
+                if isinstance(set_id, str) and set_id:
+                    try:
+                        hold = _gang.resident_hold(
+                            self, gang_record, gang_entry, item, here,
+                            _now(), live=placement.offers(),
+                            prefer_s=RESIDENT_COPY_PREFER_S)
+                    except (OSError, ValueError, PoolContractError,
+                            pb.PrismaBuildError, KeyError, TypeError,
+                            AttributeError):
+                        hold = None
+                if hold is not None:
+                    self.record_denial(item, "deferred_for_resident_copy",
+                                       hold)
+                    return _ClaimHandled.REFUSED
+                # A prelaunch gang elects only whole: defer
+                # while a sibling's verdict is unresolved
+                # (#1594 R3).  One call; the merge keeps it.
+                prelaunch_blocker = self._gang_prelaunch_blocker(
+                    gang_record, gang_entry)
+                if prelaunch_blocker is not None:
+                    self.record_denial(
+                        item, "deferred_for_gang_prelaunch",
+                        prelaunch_blocker)
+                    return _ClaimHandled.REFUSED
+                try:
+                    mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
+                except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                    self.record_denial(item, "gang_contract_invalid",
+                                       {"error": str(exc)})
+                    return _ClaimHandled.REFUSED
+            if _gang.elected_elsewhere(mine, host=here):
+                self.record_denial(item, "gang_member_elected_elsewhere", {
+                    "group": gang["group"], "index": gang["index"],
+                    "election": mine, "sibling_on_this_host": sibling_here})
+                return _ClaimHandled.REFUSED
+        return _CensusArbitration(
+            measurement_suspended, census_blocked, serves_incumbent,
+            gang_backfill, backfill_binding, _gang)
+
     def _claim_pass(
         self,
         *,
@@ -21725,8 +21916,10 @@ class PoolQueue:
                         # the sealed request and the immutable group record
                         # before host admission, as the producer link is.
                         gang = gang_record = gang_entry = None
+                        _gang_api = None
                         if item.get("gang") is not None:
                             from . import _gang
+                            _gang_api = _gang
                             try:
                                 gang = _gang.sealed(item)
                                 gang_record = (_gang.read_group(self, gang["group"])
@@ -21755,9 +21948,6 @@ class PoolQueue:
                                     KeyError, TypeError, ValueError) as exc:
                                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
                                 continue
-                        gang_backfill = []
-                        backfill_binding = None
-                        backfill_eligible = None
                         if gang_record is not None:
                             pending_backfill = self._preempt_gang_backfill(
                                 ledger, gang_record, gang_entry, controller=host_gate)
@@ -21789,170 +21979,20 @@ class PoolQueue:
                             # the runtime it runs: without it nothing the gang waits on
                             # can be told from other work, and the host keeps the fence
                             # against strictly lower priority that it always had.
-                            from . import movement_actions
-                            reservation_now = _now()
-                            reservation_authority = (
-                                copy_authority and measurement_reservation.movement_drained(
-                                    census, self, tags=tagset, has_gpu=has_gpu, host=ledger.base.name))
-                            priority = measurement_reservation.candidate_priority(
-                                census, item, host=ledger.base.name, now=reservation_now,
-                                authority=reservation_authority,
-                                group=gang["group"] if gang is not None else None)
-                            # This row's own measurement withhold yields only to a
-                            # gang of its priority or higher.
-                            reserving_priority = priority.priority
-                            measurement_suspended = priority.measurement_suspended
-                            reservation_held = reservation_capacity = None
-                            if reserving_priority is not None:
-                                try:
-                                    reservation_held = ledger.held()
-                                    reservation_capacity = total
-                                except (OSError, ValueError, PoolContractError):
-                                    reservation_held = reservation_capacity = None  # fail safe
-                            census_blocked = measurement_reservation.measurement_blocker(
-                                census, item, priority, host=ledger.base.name)
-                            # A dependent of a current incumbent on this host
-                            # (its sealed producer holds tokens here) only
-                            # shortens that incumbent's life, which is what the
-                            # measurement waits for. Holding it back would let
-                            # a producer with no declared deadline wait on its
-                            # own spool exports forever (#1419 review).
-                            # A running elected measurement is not such an
-                            # incumbent: its own dependents keep the existing
-                            # ``funded_by`` rule below (#982).
-                            incumbent = measurement_reservation.candidate_blocker(
-                                census_blocked, dependent_owner=dependent_owner,
-                                held_keys=(ledger.held_keys()
-                                           if isinstance(dependent_owner, str) else None),
-                                census=census)
-                            serves_incumbent = incumbent.serves_incumbent
-                            census_blocked = incumbent.blocker
-                            if incumbent.must_defer:
-                                self.record_denial(item, "deferred_for_measurement_reservation", {
-                                    "withheld_for": census_blocked["action_key"],
-                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
+                            arbitration = self._arbitrate_claim_census(
+                                prepared, _ClaimGang(gang, gang_record, gang_entry, _gang_api),
+                                census, ledger=ledger, total=total,
+                                copy_authority=copy_authority, tagset=tagset,
+                                has_gpu=has_gpu, placement=placement,
+                                measurement_reservation=measurement_reservation)
+                            if arbitration is _ClaimHandled.REFUSED:
                                 continue
-                            # A protected role skips only reservation arithmetic.
-                            # Legacy movement rows keep the host on main's fallback
-                            # until the complete census proves that they have ended.
-                            role_exempt = (bool(census.get("gang_elections"))
-                                           and movement_actions.authorized_role(item))
-                            gang_blocked = (None if serves_incumbent else
-                                            measurement_reservation.gang_blocking(
-                                                census, item, host=ledger.base.name,
-                                                group=gang["group"] if gang is not None else None,
-                                                now=reservation_now, held=reservation_held,
-                                                capacity=reservation_capacity,
-                                                exempt=role_exempt,
-                                                authority=reservation_authority, demand=reservation_demand))
-                            while gang_blocked is not None:
-                                # A demand shortfall cannot become a loan (#1579).
-                                if "reservation" in gang_blocked:
-                                    break
-                                from . import _gang
-                                try:
-                                    if backfill_eligible is None:
-                                        backfill_eligible = (item.get("priority") == -10
-                                                             and item.get("gang") is None
-                                                             and _gang.backfill_enabled())
-                                        if backfill_eligible:
-                                            backfill_eligible = self._preemption_eligible(item)
-                                            if backfill_eligible:
-                                                backfill_binding = self._preemption_proof_binding(item)
-                                    allowed = (backfill_eligible
-                                               and _gang.backfill_allowed(self, gang_blocked, _now()))
-                                except (_gang.GangContractError, OSError, pb.PrismaBuildError,
-                                        KeyError, TypeError, ValueError):
-                                    allowed = False
-                                if not allowed:
-                                    break
-                                gang_backfill.append(gang_blocked)
-                                remaining = dict(census, gang_elections={
-                                    k: e for k, e in census["gang_elections"].items()
-                                    if e not in gang_backfill})
-                                gang_blocked = measurement_reservation.gang_blocking(
-                                    remaining, item, host=ledger.base.name, group=None,
-                                    now=reservation_now, held=reservation_held,
-                                    capacity=reservation_capacity, exempt=role_exempt,
-                                    authority=reservation_authority, demand=reservation_demand)
-                            if gang_blocked is not None:
-                                self.record_denial(item, "deferred_for_gang_reservation", {
-                                    "withheld_for": gang_blocked["action_key"],
-                                    "gang_election": gang_blocked})
-                                continue
-                            if gang_record is not None:
-                                # Elect this host for the member under H: from
-                                # here on the census fences it (#1517). One
-                                # member per host; the no-clobber election
-                                # settles a race between matching hosts.
-                                here = socket.gethostname()
-                                standing = {election["index"]: election
-                                            for election in census["gang_elections"].values()
-                                            if election["group"] == gang["group"]}
-                                mine = standing.get(gang["index"])
-                                sibling_here = any(election["host"] == here
-                                                   for index, election in standing.items()
-                                                   if index != gang["index"])
-                                # Only the best-ranked gang on a shared host
-                                # set elects, readies or commits: two gangs
-                                # never each commit a member on a different
-                                # host and wait on each other (#1519 review).
-                                ours = {here, *(election["host"] for election in standing.values())}
-                                my_rank = list(_gang.rank(gang_record))
-                                ahead = sorted(
-                                    (election for election in census["gang_elections"].values()
-                                     if election["group"] != gang["group"] and election["host"] in ours
-                                     and election["rank"] < my_rank),
-                                    key=lambda election: election["rank"])
-                                if ahead:
-                                    self.record_denial(item, "deferred_for_gang_reservation", {
-                                        "withheld_for": ahead[0]["action_key"],
-                                        "gang_election": ahead[0], "ranked_behind": True})
-                                    continue
-                                if mine is None and not sibling_here:
-                                    # A member with a resident set elects first
-                                    # where its copy is: this host waits a
-                                    # bound moment for a fit resident host,
-                                    # then elects here anyway (#1733).  Offer
-                                    # reads only ever buy a bounded wait for a
-                                    # better placement, never a refusal.
-                                    hold = None
-                                    set_id = item.get("resident_set")
-                                    if isinstance(set_id, str) and set_id:
-                                        try:
-                                            hold = _gang.resident_hold(
-                                                self, gang_record, gang_entry, item, here,
-                                                _now(), live=placement.offers(),
-                                                prefer_s=RESIDENT_COPY_PREFER_S)
-                                        except (OSError, ValueError, PoolContractError,
-                                                pb.PrismaBuildError, KeyError, TypeError,
-                                                AttributeError):
-                                            hold = None
-                                    if hold is not None:
-                                        self.record_denial(item, "deferred_for_resident_copy",
-                                                           hold)
-                                        continue
-                                    # A prelaunch gang elects only whole: defer
-                                    # while a sibling's verdict is unresolved
-                                    # (#1594 R3).  One call; the merge keeps it.
-                                    prelaunch_blocker = self._gang_prelaunch_blocker(
-                                        gang_record, gang_entry)
-                                    if prelaunch_blocker is not None:
-                                        self.record_denial(
-                                            item, "deferred_for_gang_prelaunch",
-                                            prelaunch_blocker)
-                                        continue
-                                    try:
-                                        mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
-                                    except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
-                                        self.record_denial(item, "gang_contract_invalid",
-                                                           {"error": str(exc)})
-                                        continue
-                                if mine is None or mine["host"] != here:
-                                    self.record_denial(item, "gang_member_elected_elsewhere", {
-                                        "group": gang["group"], "index": gang["index"],
-                                        "election": mine, "sibling_on_this_host": sibling_here})
-                                    continue
+                            measurement_suspended = arbitration.measurement_suspended
+                            census_blocked = arbitration.blocker
+                            serves_incumbent = arbitration.serves_incumbent
+                            gang_backfill = arbitration.backfill
+                            backfill_binding = arbitration.backfill_binding
+                            _gang = arbitration.gang_api
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
                                 scratch_changed = (

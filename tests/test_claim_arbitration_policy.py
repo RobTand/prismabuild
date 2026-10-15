@@ -1,7 +1,7 @@
 """Literal reservation and gang positions, independent of queue effects."""
 import pytest
 
-from prismabuild import _measurement_reservation as reservation
+from prismabuild import _gang, _measurement_reservation as reservation
 
 
 @pytest.mark.parametrize("authority, expected", [(True, 10), (False, None), (1, None), ("yes", None), (None, None)])
@@ -94,3 +94,65 @@ def test_census_failure_keeps_original_evidence_and_replaces_only_attention():
                       "detail": nested, "census_error": "reader unavailable"}
     assert result["detail"] is nested
     assert verdict == {"why": "old", "withhold": False, "detail": {}}
+
+
+@pytest.mark.parametrize("mine_host, sibling_host, needs", [
+    (None, None, True), ("local", None, False), ("remote", None, False),
+    (None, "local", False), (None, "remote", True), ("remote", "local", False),
+])
+def test_member_position_keeps_standing_and_sibling_fences(mine_host, sibling_host, needs):
+    record = {"group": "ours", "priority": 10,
+              "members": [{"published_unix": 1002}, {"published_unix": 1000}]}
+    elections = {}
+    mine = {"group": "ours", "index": 0, "host": mine_host}
+    if mine_host is not None:
+        elections["mine"] = mine
+    if sibling_host is not None:
+        elections["sibling"] = {"group": "ours", "index": 1, "host": sibling_host}
+    position = _gang.election_position(elections, record, {"group": "ours", "index": 0}, host="local")
+    assert isinstance(position, _gang.ElectionPosition)
+    assert position.mine is (mine if mine_host is not None else None)
+    assert position.sibling_here is (sibling_host == "local")
+    assert position.needs_election is needs
+    assert _gang.elected_elsewhere(position.mine, host="local") is (mine_host != "local")
+
+
+@pytest.mark.parametrize("other_host, rank, wins", [
+    ("local", [-11, 1100, "other"], True),
+    ("local", [-10, 999, "other"], True),
+    ("local", [-10, 1000, "a"], True),
+    ("local", [-10, 1000, "z"], False),
+    ("local", [-9, 900, "other"], False),
+    ("unrelated", [-11, 900, "other"], False),
+    ("peer", [-11, 900, "other"], True),
+])
+def test_only_a_better_gang_on_a_shared_host_ranks_ahead(other_host, rank, wins):
+    record = {"group": "ours", "priority": 10,
+              "members": [{"published_unix": 1002}, {"published_unix": 1000}]}
+    other = {"group": "other", "index": 0, "host": other_host, "rank": rank}
+    elections = {"other": other, "peer": {"group": "ours", "index": 1, "host": "peer"}}
+    position = _gang.election_position(elections, record, {"group": "ours", "index": 0}, host="local")
+    if wins:
+        assert isinstance(position, _gang.RankedBehind)
+        assert position.election is other
+    else:
+        assert position == _gang.ElectionPosition(None, False, True)
+
+
+def test_the_best_rank_wins_even_when_it_arrives_after_a_worse_rank():
+    record = {"group": "ours", "priority": 10, "members": [{"published_unix": 1000}]}
+    worse = {"group": "worse", "index": 0, "host": "local", "rank": [-11, 1000, "worse"]}
+    best = {"group": "best", "index": 0, "host": "local", "rank": [-12, 1200, "best"]}
+    position = _gang.election_position(
+        {"worse": worse, "best": best}, record, {"group": "ours", "index": 0}, host="local")
+    assert position == _gang.RankedBehind(best)
+    assert position.election is best
+
+
+def test_equal_rank_ties_keep_the_original_election_iteration_order():
+    record = {"group": "ours", "priority": 10, "members": [{"published_unix": 1000}]}
+    first = {"group": "first", "index": 0, "host": "local", "rank": [-11, 1000, "tie"]}
+    second = {"group": "second", "index": 0, "host": "local", "rank": [-11, 1000, "tie"]}
+    position = _gang.election_position(
+        {"first": first, "second": second}, record, {"group": "ours", "index": 0}, host="local")
+    assert position.election is first

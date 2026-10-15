@@ -22,6 +22,7 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
@@ -384,6 +385,42 @@ def rank(record: Mapping[str, object]) -> tuple[int, float, str]:
     """
     first = min(float(member["published_unix"]) for member in record["members"])  # type: ignore[union-attr]
     return (-int(record["priority"]), first, str(record["group"]))  # type: ignore[call-overload]
+
+
+@dataclass(frozen=True)
+class RankedBehind:
+    election: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class ElectionPosition:
+    mine: Mapping[str, object] | None
+    sibling_here: bool
+    needs_election: bool
+
+
+def election_position(elections, record, declaration, *, host) -> RankedBehind | ElectionPosition:
+    standing = {election["index"]: election
+                for election in elections.values()
+                if election["group"] == declaration["group"]}
+    mine = standing.get(declaration["index"])
+    sibling_here = any(election["host"] == host
+                       for index, election in standing.items()
+                       if index != declaration["index"])
+    ours = {host, *(election["host"] for election in standing.values())}
+    my_rank = list(rank(record))
+    ahead = sorted(
+        (election for election in elections.values()
+         if election["group"] != declaration["group"] and election["host"] in ours
+         and election["rank"] < my_rank),
+        key=lambda election: election["rank"])
+    if ahead:
+        return RankedBehind(ahead[0])
+    return ElectionPosition(mine, sibling_here, mine is None and not sibling_here)
+
+
+def elected_elsewhere(mine, *, host) -> bool:
+    return mine is None or mine["host"] != host
 
 
 def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
