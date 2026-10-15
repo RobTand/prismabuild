@@ -273,3 +273,57 @@ def test_a_snapshot_read_under_another_placement_still_ages(
     assert [item["action_key"] for item in snapshot] == [older, aged]
     claimed = queue.claim(tags=["here"], owner="worker", ready=snapshot)
     assert claimed is not None and claimed["action_key"] == aged
+
+
+def test_scan_reads_take_the_prior_verdict_on_first_use_and_keep_it_after_a_rename(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.ensure_layout()
+    reads = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=False)
+    item = {"action_key": "a" * 64, "published_unix": 1000.0}
+    queue.record_denial(item, "reservation_unavailable_withholding", {"withhold": {
+        "withhold": True, "mode": "tokens", "withhold_age_s": 1.0}})
+    prior = reads.verdicts()
+    identity = f"{item['action_key']}:1000.0"
+    assert prior[identity]["reason"] == "reservation_unavailable_withholding"
+    assert not reads.claimed_hint(item["action_key"])
+    queue.record_denial(item, "transition_busy")
+    queue.item_path(pool.CLAIMED, item["action_key"]).write_text(json.dumps(item))
+    assert not reads.claimed_hint(item["action_key"])
+    reads.renamed_into_claimed()
+    assert reads.claimed_hint(item["action_key"])
+    assert reads.verdicts()[identity]["reason"] == "reservation_unavailable_withholding"
+    assert queue._host_denial_records()[identity]["reason"] == "transition_busy"
+
+
+def test_a_false_bootstrap_answer_is_retained_and_does_not_probe_later_authority(
+    tmp_path, monkeypatch,
+):
+    from prismabuild import _measurement_reservation as reservation
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    reads = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=False)
+    error = RuntimeError("later census is unavailable")
+
+    def capture(self):
+        raise error
+
+    monkeypatch.setattr(reservation.CensusReader, "capture", capture)
+    assert reads.movement_authority(False) is False
+    assert reads.movement_authority(True) is False
+    fresh = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=False)
+    with pytest.raises(RuntimeError) as caught:
+        fresh.movement_authority(True)
+    assert caught.value is error
+
+
+def test_a_refused_bootstrap_census_leaves_no_claiming_authority(tmp_path, monkeypatch):
+    from prismabuild import _measurement_reservation as reservation
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    reads = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=True)
+
+    def capture(self):
+        raise reservation.CensusUnavailable("reader fence busy")
+
+    monkeypatch.setattr(reservation.CensusReader, "capture", capture)
+    assert reads.movement_authority(True) is False

@@ -5835,6 +5835,55 @@ class _DrainAccounting:
         return _PendingDrainNotes(key, self.ordinary, self.measurement)
 
 
+class _ClaimScanReads:
+    def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
+                 tags: frozenset[str], has_gpu: bool) -> None:
+        self.queue = queue
+        self.ledger = ledger
+        self.tags = tags
+        self.has_gpu = has_gpu
+        self._host_verdicts: Mapping[str, object] | None = None
+        self._bootstrap_authority: list[bool] = []
+        self._claimed_listed: set[str] | None = None
+        self._claimed_marks: list[str] = []
+        self.reader_plans: dict[str, dict[str, object]] = {}
+        self.dead_input_hints: dict[str, KeyStanding] = {}
+
+    def verdicts(self) -> Mapping[str, object]:
+        if self._host_verdicts is None:
+            self._host_verdicts = self.queue._host_denial_records()
+        return self._host_verdicts
+
+    def movement_authority(self, authority: bool) -> bool:
+        from . import _measurement_reservation as measurement_reservation
+        if not self._bootstrap_authority:
+            drained = False
+            if authority and self.ledger is not None:
+                try:
+                    drained = measurement_reservation.movement_drained(
+                        measurement_reservation.CensusReader(self.queue, self.ledger).capture(),
+                        self.queue, tags=self.tags, has_gpu=self.has_gpu,
+                        host=self.ledger.base.name)
+                except measurement_reservation.CensusUnavailable:
+                    pass
+            self._bootstrap_authority.append(drained)
+        return self._bootstrap_authority[0]
+
+    def claimed_hint(self, key: str) -> bool:
+        if self._claimed_listed is None:
+            names = os.listdir(self.queue.dir(CLAIMED))
+            self._claimed_listed = set(names)
+            self._claimed_marks = [
+                name for name in names
+                if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
+        return (f"{key}.json" in self._claimed_listed
+                or _claimed_blocks(self._claimed_marks, key))
+
+    def renamed_into_claimed(self) -> None:
+        self._claimed_listed = None
+        self.reader_plans.clear()
+
+
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
@@ -20265,7 +20314,7 @@ class PoolQueue:
         has_gpu: bool, total: Mapping[str, int], gpu_controller: object | None,
         offers: Callable[[], Sequence[Mapping[str, object]]],
         observed_images: Container[str] | None,
-        verdicts: Callable[[], Mapping[str, object]],
+        reads: _ClaimScanReads,
     ) -> Mapping[str, object] | None:
         """The first READY GPU row eligible for this host's capacity (#1526).
 
@@ -20301,7 +20350,7 @@ class PoolQueue:
                 # capability checks; a GPU row this host cannot run is no veto.
                 if (self._matching_offers({**item, "resources": reservation}, live=[local])
                         and not self._ready_gpu_refused_here(
-                            item, verdicts(), host=socket.gethostname())):
+                            item, reads.verdicts(), host=socket.gethostname())):
                     return item
             except (TypeError, ValueError):
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
@@ -21187,22 +21236,13 @@ class PoolQueue:
         ready = publication_canary.promote(
             self.root, ready, eligible=lambda item: self._placement_matches(
                 item, tags=tagset, has_gpu=has_gpu))
-        # Shared with carried-withhold reads below: one existing, lock-free
-        # host denial snapshot per pass, taken only when a reader needs it.
-        host_verdicts: Mapping[str, object] | None = None
-
-        def verdict_snapshot() -> Mapping[str, object]:
-            nonlocal host_verdicts
-            if host_verdicts is None:
-                host_verdicts = self._host_denial_records()
-            return host_verdicts
-
+        reads = _ClaimScanReads(self, ledger=ledger, tags=tagset, has_gpu=has_gpu)
         # Protect GPU capacity even across priority bands and when a CPU row
         # fits beside it. This is a placement rule, not #1169's scan ordering.
         ready_gpu = self._ready_gpu_for_host(
             ready, tags=tagset, has_gpu=has_gpu, total=total,
             gpu_controller=gpu_controller, offers=placement.offers,
-            observed_images=observed_images, verdicts=verdict_snapshot)
+            observed_images=observed_images, reads=reads)
         host = socket.gethostname()
         scan = candidate_policy.ScanOrder()
         preempted = False
@@ -21215,44 +21255,6 @@ class PoolQueue:
         # prove that a READY prerequisite has ended.
         from . import _measurement_reservation as measurement_reservation, runtime_publication
         copy_authority = runtime_publication.live_authority()
-        bootstrap_authority: list[bool] = []
-
-        def movement_authority() -> bool:
-            # Only bootstrap precedence needs a census before row admission.
-            if not bootstrap_authority:
-                drained = False
-                if copy_authority and ledger is not None:
-                    try:
-                        drained = measurement_reservation.movement_drained(
-                            measurement_reservation.CensusReader(self, ledger).capture(), self,
-                            tags=tagset, has_gpu=has_gpu, host=ledger.base.name)
-                    except measurement_reservation.CensusUnavailable:
-                        pass
-                bootstrap_authority.append(drained)
-            return bootstrap_authority[0]
-
-        #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
-        #: first transition lock the pass takes, not before it, and a
-        #: ``READDIR`` is itself the revalidation a cached negative lookup
-        #: needs (#808), so the listing post-dates every transition that
-        #: finished before the pass reached its first candidate.  It is a
-        #: hint for the rest of the pass, and it only ever denies: anything
-        #: filed since -- a claim record, a tombstone, a late-finish mark --
-        #: is found by the fresh listing each claim takes under its own lock
-        #: just before its rename (:meth:`_claim_blocked_fresh`).  Listed
-        #: again only after a rename of this pass's own changed the directory.
-        claimed_listed: set[str] | None = None
-        claimed_marks: list[str] = []
-        #: Each stage tier's reader plan and reading set, read once for the
-        #: whole pass (#1091 review 1): a cap that binds denies every mover
-        #: row, and re-reading per row cost O(rows x claimed movers).
-        reader_plans: dict[str, dict[str, object]] = {}
-        #: Each owner's generation, read once for the whole pass (#1202
-        #: review finding 5): the dead-input check's hint, so a fleet of
-        #: movers of one producer pays one ``claimed/`` census per pass
-        #: instead of two per mover.  A non-dead hint only skips the check;
-        #: a dead hint still pays for the full proof under the key's lock.
-        dead_input_hints: dict[str, KeyStanding] = {}
         interpreter_host = capability_eligibility.LiveInterpreters()
         dependency_host = capability_eligibility.LiveDependencies()
         image_host = capability_eligibility.LiveImages(
@@ -21280,7 +21282,7 @@ class PoolQueue:
             held_back = scan.withheld_for is not None and (
                 scan.withheld_kinds is None
                 or self._demands_withheld_kind(item, scan.withheld_kinds))
-            reserving_gang = (self._gang_reservation_priority(item, authority=movement_authority())
+            reserving_gang = (self._gang_reservation_priority(item, authority=reads.movement_authority(copy_authority))
                               if held_back and (scan.withheld_for in scan.measurement_withholds
                                                 or scan.withheld_for in scan.carried_measurement_withholds)
                               else None)
@@ -21341,7 +21343,7 @@ class PoolQueue:
             if (isinstance(item.get("produced_output_batch"), Mapping)
                     and key
                     and self.fail_dead_input_dependency(item, key,
-                                                        hints=dead_input_hints,
+                                                        hints=reads.dead_input_hints,
                                                         holds=holds)):
                 # Before the hold and any admission (#1184): the method
                 # serializes its own transition under this key's lock, so a
@@ -21372,7 +21374,7 @@ class PoolQueue:
                         carried = None
                         if not scan.whole_box_held:
                             carried = self._carried_withhold(
-                                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                                reads.verdicts(), item, host=socket.gethostname(), now=_now())
                             scan = scan.carry(key, carried)
                         # A GPU row moved ahead for the free GPU keeps its
                         # room for the rows behind it (#1169): the loop
@@ -21425,14 +21427,7 @@ class PoolQueue:
                                 busy_evidence["gpu_room_binds_all"] = True
                         self.record_denial(item, "transition_busy", busy_evidence or None)
                     continue
-                if claimed_listed is None:
-                    names = os.listdir(self.dir(CLAIMED))
-                    claimed_listed = set(names)
-                    claimed_marks = [
-                        name for name in names
-                        if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
-                if (f"{key}.json" in claimed_listed
-                        or _claimed_blocks(claimed_marks, key)):
+                if reads.claimed_hint(key):
                     self.record_denial(item, "already_claimed")
                     continue
                 if _is_hex64(key) and self._refuse_released_origin_consumer(
@@ -21485,7 +21480,7 @@ class PoolQueue:
                         carried = None
                         if not scan.whole_box_held:
                             carried = self._carried_withhold(
-                                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                                reads.verdicts(), item, host=socket.gethostname(), now=_now())
                             scan = scan.carry(key, carried)
                         if carried is not None:
                             evidence["withhold_carried"] = carried
@@ -21539,7 +21534,7 @@ class PoolQueue:
                     carried = None
                     if not scan.whole_box_held:
                         carried = self._carried_withhold(
-                            verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                            reads.verdicts(), item, host=socket.gethostname(), now=_now())
                         scan = scan.carry(key, carried)
                     self.record_denial(item, "residency_lead_record_unreadable", {
                         "error": str(exc), "leads": leads,
@@ -22320,7 +22315,7 @@ class PoolQueue:
                         # and no more copies read the pool than its measured
                         # knee.  No ``record_pass``, as for a tier shortage.
                         plan_verdict = self.reader_plan_verdict(
-                            item, tier_demand, pass_cache=reader_plans)
+                            item, tier_demand, pass_cache=reads.reader_plans)
                         if plan_verdict is not None and plan_verdict.get("deny"):
                             if ledger is not None and reservation.host_handle is not None:
                                 reservation.abandon(_ClaimExit.HOST_REFUSAL)
@@ -22464,8 +22459,7 @@ class PoolQueue:
                     # tiers' reading sets again (#1091 review 1). The rename
                     # also moves a publication the reused census read, so the
                     # next candidate reads fresh (#1571).
-                    claimed_listed = None
-                    reader_plans.clear()
+                    reads.renamed_into_claimed()
                     pass_census.invalidate()
                     moved_record = _read_json(dst)
                     moved = moved_record or item
