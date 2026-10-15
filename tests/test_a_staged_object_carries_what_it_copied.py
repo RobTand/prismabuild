@@ -23,6 +23,7 @@ from prewarm_fixture import Fleet, StagePool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 
 
 class RecordsXattr:
@@ -66,15 +67,15 @@ def test_a_committed_object_carries_its_sources_identity(
     assert stage.objects() == ["row.pt.pbstage@0+8192"]
     seen = os.stat(source)
     expected = f"{seen.st_size}:{seen.st_mtime_ns}:{seen.st_ino}".encode()
-    assert watcher.calls == [(prewarm_loop.STAGE_SOURCE_XATTR, expected)]
+    assert watcher.calls == [(stage_marks.STAGE_SOURCE_XATTR, expected)]
     assert event["stage"]["object_identity"]["xattr"] == \
-        prewarm_loop.STAGE_SOURCE_XATTR
+        stage_marks.STAGE_SOURCE_XATTR
     if not event["stage"]["identity_unrecorded"]:
         # This filesystem kept it, so a validator can read it back off the
         # object rather than from anything this process still holds.
         staged = stage.mount / "row.pt.pbstage@0+8192"
         assert os.getxattr(str(staged),
-                           prewarm_loop.STAGE_SOURCE_XATTR) == expected
+                           stage_marks.STAGE_SOURCE_XATTR) == expected
 
 
 def test_a_filesystem_that_refuses_the_attribute_still_stages_and_counts_it(
@@ -115,14 +116,17 @@ def test_a_temporary_from_a_process_that_died_is_reaped_once(
     stale.write_bytes(b"\0" * 4096)
     mine = stage.mount / f"row.pt.pbstage@0+2048.{os.getpid()}.1.tmp"
     mine.write_bytes(b"\0" * 2048)
+    padded_pid = stage.mount / f"row.pt.pbstage@0+1024.0{os.getpid()}.1.tmp"
+    padded_pid.write_bytes(b"\0" * 1024)
     other = stage.mount / "somebody-elses.tmp"
     other.write_bytes(b"x")
 
     event = fleet.cycle(fleet.args(stage=True, stage_free_floor_bytes=0))
 
-    assert event["stage"]["reaped_tmp_entries"] == 1
-    assert event["stage"]["reaped_tmp_bytes"] == 4096
+    assert event["stage"]["reaped_tmp_entries"] == 2
+    assert event["stage"]["reaped_tmp_bytes"] == 5120
     assert not stale.exists()
+    assert not padded_pid.exists()
     # A temporary carrying this pid belongs to a copy in flight, and a name
     # this loop's writer never builds is not this loop's to remove.
     assert mine.exists()

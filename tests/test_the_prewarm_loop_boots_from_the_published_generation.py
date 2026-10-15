@@ -68,8 +68,8 @@ try:
 except SystemExit as exit_code:
     if exit_code.code not in (0, None):
         raise
-import prismabuild.core, prismabuild.pool
-for module in (prismabuild.core, prismabuild.pool):
+import prismabuild.core, prismabuild.pool, prismabuild.stage_marks
+for module in (prismabuild.core, prismabuild.pool, prismabuild.stage_marks):
     if not module.__file__.startswith(generation):
         raise SystemExit(f"{module.__name__} came from {module.__file__}")
 if "--mount-map" not in out.getvalue():

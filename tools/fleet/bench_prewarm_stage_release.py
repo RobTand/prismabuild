@@ -34,6 +34,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 
 
 # ---- the arithmetic as it stood before #589 (copied verbatim) -------------
@@ -54,7 +55,7 @@ def old_stage_object_key(entry, mount_prefix):
         return None
     offset = int(entry.get("offset", 0) or 0)
     size = int(entry.get("bytes", 0) or 0)
-    return f"{relative}{prewarm_loop.STAGE_OBJECT_MARK}{offset}+{size}"
+    return f"{relative}{stage_marks.STAGE_OBJECT_MARK}{offset}+{size}"
 
 
 def old_stage_keys_between(entries, mount_prefix, start, end):

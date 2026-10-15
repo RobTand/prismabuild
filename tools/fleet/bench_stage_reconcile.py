@@ -49,7 +49,7 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -102,7 +102,7 @@ def build_stage(queue: pool.PoolQueue, stage: Path, *, files: int,
             with open(path, "wb") as stream:
                 stream.truncate(FILE_BYTES)
             if index < marked:
-                os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+                os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                             f"/mnt/shared/m/{index}@0".encode())
                 counts["marked"] += 1
             else:
