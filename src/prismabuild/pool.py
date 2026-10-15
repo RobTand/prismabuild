@@ -137,6 +137,7 @@ import tempfile
 import time
 import uuid
 
+from . import contracts
 from . import manifest_layout
 from . import core as pb
 from . import progress as pb_progress
@@ -6553,7 +6554,7 @@ class PoolQueue:
             live=self.offers(max_age_s=max_age_s))
         capable = [
             offer for offer in eligible
-            if pb.INTERPRETER_TAG in {
+            if contracts.INTERPRETER_TAG in {
                 str(t) for t in (offer.get("tags") or [])}]
         if not capable:
             return "unknown"
@@ -6597,7 +6598,7 @@ class PoolQueue:
             live=self.offers(max_age_s=max_age_s))
         capable = [
             offer for offer in eligible
-            if dependency_digest.DEPENDENCY_DIGEST_TAG in {
+            if contracts.DEPENDENCY_DIGEST_TAG in {
                 str(t) for t in (offer.get("tags") or [])}]
         if not capable:
             return "unknown_capability"
@@ -7092,10 +7093,10 @@ class PoolQueue:
             # loop from before the field does not offer it, so an old worker
             # never claims an item whose interpreter it cannot even see.
             normalized_tags = normalize_placement_tags(
-                [*normalized_tags, pb.INTERPRETER_TAG])
-        elif pb.INTERPRETER_TAG in normalized_tags:
+                [*normalized_tags, contracts.INTERPRETER_TAG])
+        elif contracts.INTERPRETER_TAG in normalized_tags:
             raise PoolContractError(
-                f"{pb.INTERPRETER_TAG} requires an interpreter; an item may "
+                f"{contracts.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
         if dependencies:
@@ -7109,10 +7110,10 @@ class PoolQueue:
             # dependencies it cannot see must be unclaimable by it, not
             # merely risky to hand it (#1495).
             normalized_tags = normalize_placement_tags(
-                [*normalized_tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
-        elif dependency_digest.DEPENDENCY_DIGEST_TAG in normalized_tags:
+                [*normalized_tags, contracts.DEPENDENCY_DIGEST_TAG])
+        elif contracts.DEPENDENCY_DIGEST_TAG in normalized_tags:
             raise PoolContractError(
-                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} requires "
+                f"{contracts.DEPENDENCY_DIGEST_TAG} requires "
                 "requires_files; an item may not require the "
                 "dependency-digest capability without naming any")
         if image_refs:
@@ -7121,14 +7122,14 @@ class PoolQueue:
             # not offer it is a loop from before the check, which is exactly
             # the worker #714 must not reach.
             normalized_tags = normalize_placement_tags(
-                [*normalized_tags, pb.CONTAINER_IMAGE_TAG])
-        elif pb.CONTAINER_IMAGE_TAG in normalized_tags:
+                [*normalized_tags, contracts.CONTAINER_IMAGE_TAG])
+        elif contracts.CONTAINER_IMAGE_TAG in normalized_tags:
             # One spelling of the declaration: the tag is the capability, and
             # an item carrying it without references is a producer that
             # dropped the sealed requirement.  Refused rather than run
             # unchecked.
             raise PoolContractError(
-                f"{pb.CONTAINER_IMAGE_TAG} requires container_images; an item "
+                f"{contracts.CONTAINER_IMAGE_TAG} requires container_images; an item "
                 "may not require the declared-image capability without "
                 "declaring one")
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
@@ -7876,7 +7877,7 @@ class PoolQueue:
                         or image_inventory.missing(
                             declared_images, {str(entry) for entry in observed_images})):
                     return None
-            elif pb.CONTAINER_IMAGE_TAG in (item.get("tags") or []):  # type: ignore[operator]
+            elif contracts.CONTAINER_IMAGE_TAG in (item.get("tags") or []):  # type: ignore[operator]
                 return None
             if self.residency_verdict(item)["state"] in RESIDENCY_REFUSAL_STATES:
                 return None
@@ -22205,7 +22206,7 @@ class PoolQueue:
                 declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
                 if (not declared_requirements and isinstance(item_tags, list)
-                        and dependency_digest.DEPENDENCY_DIGEST_TAG
+                        and contracts.DEPENDENCY_DIGEST_TAG
                         in item_tags):
                     # A record this pool did not write (publish refuses the
                     # pair) that requires the capability but states no
@@ -22262,7 +22263,7 @@ class PoolQueue:
                         continue
                 declared_images = item.get("container_images")
                 if (not declared_images and isinstance(item_tags, list)
-                        and pb.CONTAINER_IMAGE_TAG in item_tags):
+                        and contracts.CONTAINER_IMAGE_TAG in item_tags):
                     # A record this pool did not write (publish refuses the
                     # pair) that requires the capability but states no
                     # reference.  Fail closed: an unstated requirement is

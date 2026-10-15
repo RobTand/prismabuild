@@ -270,11 +270,12 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     if not image or generation is None:
         return False
     sys.path.insert(0, str(paths["published_src"]))
+    from prismabuild import contracts as _contracts
     from prismabuild import pool as _pool, core as _core
     from prismabuild import publication_canary as _canary
     queue = _pool.PoolQueue(paths["queue_root"])
     base = {
-        "tags": [host, _canary.CAPABILITY, _core.CONTAINER_IMAGE_TAG],
+        "tags": [host, _canary.CAPABILITY, _contracts.CONTAINER_IMAGE_TAG],
         "container_images": [image],
         "needs_gpu": True,
         "resources": {"gpu": 1},

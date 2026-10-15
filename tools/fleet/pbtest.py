@@ -56,6 +56,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
 from prismabuild import dependency_digest  # noqa: E402
 from pbrun import require_gpu_memory_scope  # noqa: E402
@@ -1878,7 +1879,7 @@ def main() -> int:
         if verdict == "unknown_capability":
             sys.stderr.write(
                 f"pbtest: no recorded worker offers the "
-                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"{contracts.DEPENDENCY_DIGEST_TAG} capability, so "
                 f"the fenced shards ({paths}) would wait unclaimed for "
                 "their whole --wait-s; run a worker generation that carries "
                 "the contract first (#1495)\n")

@@ -85,6 +85,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
@@ -2029,13 +2030,13 @@ def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
 
 def progress_required_tags(policy: Mapping[str, object],
                            awaited_batch: Mapping[str, object] | None = None) -> list[str]:
-    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG] + (
-        [pb.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
+    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG] + (
+        [contracts.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
     if awaited_batch is not None:
         # A coordinator that declares an awaited batch needs a worker that
         # credits the wait (#1666): an older worker would ignore the sealed
         # declaration and end a valid queue wait as no_progress.
-        tags = [*tags, pb.QUEUED_CHILD_TAG]
+        tags = [*tags, contracts.QUEUED_CHILD_TAG]
     return tags
 
 
@@ -2048,7 +2049,7 @@ def container_image_required_tags(images: Sequence[str]) -> list[str]:
     offer is what makes that unreachable without a second matcher.
     """
 
-    return [pb.CONTAINER_IMAGE_TAG] if images else []
+    return [contracts.CONTAINER_IMAGE_TAG] if images else []
 
 
 def container_image_refusal(images: Sequence[object]) -> str | None:
@@ -2103,7 +2104,7 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
     without_capacity = {**request, "resources": {}}
     eligible = queue.placeable_hosts(
         {**without_capacity, "tags": [tag for tag in request.get("tags") or []
-                                       if tag != pb.CONTAINER_IMAGE_TAG]},
+                                       if tag != contracts.CONTAINER_IMAGE_TAG]},
         max_age_s=RECORDED_OFFER_MAX_AGE_S)
     if eligible is None:                       # nobody has announced at all
         return ""
@@ -2120,7 +2121,7 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
         line += "; capable but not reporting it: " + ", ".join(not_reporting)
     no_capability = sorted(set(eligible) - capable)
     if no_capability:
-        line += (f"; not offering {pb.CONTAINER_IMAGE_TAG}: "
+        line += (f"; not offering {contracts.CONTAINER_IMAGE_TAG}: "
                  + ", ".join(no_capability))
     return line + "."
 
@@ -2461,7 +2462,7 @@ def progress_contract_notice(
     if not announced:
         if policy.get("cycle"):
             raise SystemExit(
-                f"pbrun: no eligible worker offers {pb.PROGRESS_CYCLE_TAG}; "
+                f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG}; "
                 "cyclic progress support is unknown. Update the fleet's "
                 "published generation and wait for worker adoption.")
         lines.append(
@@ -2482,14 +2483,14 @@ def progress_contract_notice(
         lines.append(
             "pbrun: " + ", ".join(unsupported) + " do not announce "
             f"{pb.PROGRESS_RECORD_SCHEMA_V1}, so this action is not offered "
-            f"to them: it requires the {pb.PROGRESS_TAG} tag they do not "
+            f"to them: it requires the {contracts.PROGRESS_TAG} tag they do not "
             "publish.  It waits for a box that does rather than being killed "
             "by a ceiling it never asked for.")
     watchdog_hosts = set(announced) - set(unsupported)
     helper_intent = {
         **intent,
-        "tags": [*list(intent.get("tags") or []), pb.PROGRESS_TAG,
-                 pb.PROGRESS_HELPER_TAG],
+        "tags": [*list(intent.get("tags") or []), contracts.PROGRESS_TAG,
+                 contracts.PROGRESS_HELPER_TAG],
     }
     helper_hosts = set(queue.placeable_hosts(helper_intent) or [])
     eligible = watchdog_hosts & helper_hosts
@@ -2498,7 +2499,7 @@ def progress_contract_notice(
         raise SystemExit(
             "pbrun: no eligible worker both announces "
             f"{pb.PROGRESS_RECORD_SCHEMA_V1} and offers "
-            f"{pb.PROGRESS_HELPER_TAG}"
+            f"{contracts.PROGRESS_HELPER_TAG}"
             + (f" ({', '.join(helper_missing)} announce the watchdog but do not "
                "offer the helper)" if helper_missing else "")
             + "; this action uses the helper environment. Update the fleet's "
@@ -2508,24 +2509,24 @@ def progress_contract_notice(
         lines.append(
             "pbrun: " + ", ".join(helper_missing) + " announce "
             f"{pb.PROGRESS_RECORD_SCHEMA_V1} but do not offer "
-            f"{pb.PROGRESS_HELPER_TAG}, so this action is not offered to them: "
-            f"it requires {pb.PROGRESS_TAG} and {pb.PROGRESS_HELPER_TAG}. "
+            f"{contracts.PROGRESS_HELPER_TAG}, so this action is not offered to them: "
+            f"it requires {contracts.PROGRESS_TAG} and {contracts.PROGRESS_HELPER_TAG}. "
             "It waits for a helper-capable box rather than starting without "
             "the documented reporting path.")
     if policy.get("cycle"):
         cycle_intent = {**helper_intent, "tags": [
-            *helper_intent["tags"], pb.PROGRESS_CYCLE_TAG]}
+            *helper_intent["tags"], contracts.PROGRESS_CYCLE_TAG]}
         cycle_hosts = set(queue.placeable_hosts(cycle_intent) or [])
         cycle_missing = sorted(eligible - cycle_hosts)
         eligible &= cycle_hosts
         if not eligible:
             raise SystemExit(
-                f"pbrun: no eligible worker offers {pb.PROGRESS_CYCLE_TAG} "
+                f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG} "
                 f"({', '.join(cycle_missing)}); update the fleet's published "
                 "generation before submitting cyclic progress.")
         if cycle_missing:
             lines.append("pbrun: " + ", ".join(cycle_missing)
-                         + f" do not offer {pb.PROGRESS_CYCLE_TAG}; "
+                         + f" do not offer {contracts.PROGRESS_CYCLE_TAG}; "
                          "this cyclic action waits for a capable worker.")
         lines.append(
             "pbrun: cyclic phases: each phase grants its allowance once "
@@ -2534,19 +2535,19 @@ def progress_contract_notice(
         helper_intent = cycle_intent
     if awaited_batch is not None:
         awaited_intent = {**helper_intent, "tags": [
-            *helper_intent["tags"], pb.QUEUED_CHILD_TAG]}
+            *helper_intent["tags"], contracts.QUEUED_CHILD_TAG]}
         awaited_hosts = set(queue.placeable_hosts(awaited_intent) or [])
         awaited_missing = sorted(eligible - awaited_hosts)
         eligible &= awaited_hosts
         if not eligible:
             raise SystemExit(
-                f"pbrun: no eligible worker offers {pb.QUEUED_CHILD_TAG} "
+                f"pbrun: no eligible worker offers {contracts.QUEUED_CHILD_TAG} "
                 f"({', '.join(awaited_missing)}); update the fleet's published "
                 "generation before submitting a coordinator that awaits "
                 "queued children.")
         if awaited_missing:
             lines.append("pbrun: " + ", ".join(awaited_missing)
-                         + f" do not offer {pb.QUEUED_CHILD_TAG}; "
+                         + f" do not offer {contracts.QUEUED_CHILD_TAG}; "
                          "this coordinator waits for a capable worker.")
         lines.append(
             "pbrun: queued-child wait: the worker credits quiet while a "
@@ -6766,7 +6767,7 @@ def residency_stage_rows(
                 # environment the mover reports through.
                 tags=(tags if progress is None
                       else [*tags, *progress_required_tags(progress),
-                            pb.POOL_CONTENTION_TAG]),
+                            contracts.POOL_CONTENTION_TAG]),
                 retry_policy=mover_retry_policy,
                 log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
                 extra_params=(None if progress is None
@@ -6903,10 +6904,10 @@ def residency_stage_rows(
                 # A progress-governed egress is placed only on a worker that
                 # enforces the contract, credits the pool on its own sample,
                 # and never credits the egress's own hold of the stage's
-                # ownership lock as a wait (``core.EGRESS_PROGRESS_TAG``).
+                # ownership lock as a wait (``contracts.EGRESS_PROGRESS_TAG``).
                 tags=(tags if egress_policy is None
                       else [*tags, *progress_required_tags(egress_policy),
-                            pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG]),
+                            contracts.POOL_CONTENTION_TAG, contracts.EGRESS_PROGRESS_TAG]),
                 # The egress's retry policy is a movement node's, as the
                 # mover's is (#950): with the consumer's single attempt, one
                 # transient unlink error left the range's bytes holding their
@@ -7887,7 +7888,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # a loop that cannot hash the row's requirements must not be able to
         # claim the row at all.
         tags = pool.normalize_placement_tags(
-            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
+            [*tags, contracts.DEPENDENCY_DIGEST_TAG])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Other paths retain lazy discovery until submission advice needs it.
@@ -8083,7 +8084,7 @@ def announce_placement(
         # sealed path and the capability tag publish will add, so placeable
         # answers for the row it is about to write.
         intent["interpreter"] = str(params["interpreter"])
-        intent["tags"] = [*tags, pb.INTERPRETER_TAG]
+        intent["tags"] = [*tags, contracts.INTERPRETER_TAG]
     if params.get("local_dependencies"):
         intent["local_dependencies"] = dict(params["local_dependencies"])
     if params.get("requires_files"):
@@ -8094,7 +8095,7 @@ def announce_placement(
             {"path": str(entry["path"])}
             for entry in params["requires_files"]]
         intent["tags"] = pool.normalize_placement_tags(
-            [*tags, dependency_digest.DEPENDENCY_DIGEST_TAG])
+            [*tags, contracts.DEPENDENCY_DIGEST_TAG])
     # Say how wide this action is before saying it was queued.  A pin is a
     # consequence of the checkout path, and nothing used to report it, so a
     # submitter narrowed the fleet to one box without being told.
@@ -8129,8 +8130,8 @@ def announce_placement(
         queue,
         {**intent, "tags": [
             t for t in tags
-            if t not in (pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
-                         pb.QUEUED_CHILD_TAG)
+            if t not in (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.PROGRESS_CYCLE_TAG,
+                         contracts.QUEUED_CHILD_TAG)
         ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,
@@ -8184,7 +8185,7 @@ def announce_placement(
                 if name != "interpreter"}
             probe_intent["tags"] = [
                 tag for tag in probe_intent.get("tags") or []
-                if tag != pb.INTERPRETER_TAG]
+                if tag != contracts.INTERPRETER_TAG]
     # The digest requirements' verdict (#1495), asked where the caller is
     # still watching, in the interpreter's shape (#1266): a fleet that offers
     # no dependency-digest capability is refused -- nothing can ever claim
@@ -8200,7 +8201,7 @@ def announce_placement(
         if verdict == "unknown_capability":
             raise SystemExit(
                 "pbrun: no recorded worker offers the "
-                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"{contracts.DEPENDENCY_DIGEST_TAG} capability, so "
                 f"nothing can ever claim this action's pinned dependencies "
                 f"({paths}); run a worker generation that carries the "
                 "contract before submitting it (#1495)")
@@ -8234,7 +8235,7 @@ def announce_placement(
             without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
         without_capability = {**without_images, "tags": [
             tag for tag in without_images.get("tags") or []
-            if tag != pb.CONTAINER_IMAGE_TAG]}
+            if tag != contracts.CONTAINER_IMAGE_TAG]}
         capability_blocked = (
             bool(intent.get("container_images")) and not image_blocked
             and queue.placeable(without_capability,
@@ -8250,7 +8251,7 @@ def announce_placement(
         elif capability_blocked:
             image_line = (
                 "  container images: " + ", ".join(intent["container_images"])
-                + f" (no eligible worker offers {pb.CONTAINER_IMAGE_TAG})\n")
+                + f" (no eligible worker offers {contracts.CONTAINER_IMAGE_TAG})\n")
         interpreter_line = ""
         if intent.get("interpreter"):
             # Absent is unanimous and final (#1266 review): every capable
@@ -8267,7 +8268,7 @@ def announce_placement(
                          placement_capacity_notice(queue, probe_intent))
         remedy = (
             "Load or pull the image on a box that offers these tags and the "
-            f"{pb.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
+            f"{contracts.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
             "next inventory refresh. An image declaration is a claim-time "
             "requirement, so a box that cannot positively show it will not "
             "run the action."
@@ -8276,7 +8277,7 @@ def announce_placement(
             "offer that can fit them."
         )
         if capability_blocked:
-            remedy = (f"Start a worker offering {pb.CONTAINER_IMAGE_TAG} "
+            remedy = (f"Start a worker offering {contracts.CONTAINER_IMAGE_TAG} "
                       "on an eligible box; its image inventory must then "
                       "report the declared reference.")
         if interpreter_line:
@@ -8316,7 +8317,7 @@ def announce_placement(
                 "  An image requirement is checked against the claiming "
                 "worker's local Docker inventory, and no worker has announced "
                 "one. Start a worker whose loop offers "
-                f"{pb.CONTAINER_IMAGE_TAG}, load the image on a box that "
+                f"{contracts.CONTAINER_IMAGE_TAG}, load the image on a box that "
                 "offers these tags, and resubmit."
             )
         print("pbrun: no worker offers on record; submitting unchecked",

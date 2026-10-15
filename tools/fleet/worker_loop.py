@@ -109,6 +109,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology, dependency_digest,
@@ -1589,22 +1590,22 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
-        tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
-                     pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG,
-                     pb.QUEUED_CHILD_TAG))
+        tags.extend((contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.PROGRESS_CYCLE_TAG,
+                     contracts.POOL_CONTENTION_TAG, contracts.EGRESS_PROGRESS_TAG,
+                     contracts.QUEUED_CHILD_TAG))
         # This loop's code performs the declared-image claim check, so it may
         # take image-pinned work.  A loop from before the check does not offer
         # the tag and therefore cannot claim that work and die inside it
         # (#714).  Docker being absent does not remove the capability: the
         # check then finds presence unknown and refuses, leaving the item
         # ready for a box that can see it.
-        tags.append(pb.CONTAINER_IMAGE_TAG)
+        tags.append(contracts.CONTAINER_IMAGE_TAG)
         # Same fence for a named interpreter (#1263): this loop's claim checks
         # the item's absolute path on this box before it spends an attempt,
         # and its offer answers for the paths READY items name.  A loop from
         # before the field offers neither, so an interpreter-naming item waits
         # for a box that can run it instead of dying with 127 there.
-        tags.append(pb.INTERPRETER_TAG)
+        tags.append(contracts.INTERPRETER_TAG)
         tags.append(local_dependencies.TAG)
         # And for digest-pinned dependencies (#1495): this loop's claim
         # hashes the row's required bytes on this box before it spends an
@@ -1612,7 +1613,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # loop from before the contract offers neither, so a row whose
         # dependencies it would silently ignore waits for a box that can
         # read the requirement instead of dying inside it.
-        tags.append(dependency_digest.DEPENDENCY_DIGEST_TAG)
+        tags.append(contracts.DEPENDENCY_DIGEST_TAG)
         # Code capability only; configured executed profiles and current root
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.

@@ -74,6 +74,7 @@ from collections.abc import Mapping
 
 from . import manifest_layout
 from . import action_result as _action_result
+from . import contracts as _contracts
 from . import core as _core
 from . import local_scratch as _local_scratch
 from . import pool as _pool
@@ -343,7 +344,7 @@ DECOMPOSITION_TAG = "decomposition-v1"
 #: rather than by probing files or attributes.
 CAPABILITIES = frozenset({
     READER_LEASE_TAG,
-    _core.PROGRESS_TAG,
+    _contracts.PROGRESS_TAG,
     DECOMPOSITION_TAG,
     VERIFIED_ACTION_RESULT_TAG,
     NATIVE_PRODUCER_CONTEXT_TAG,
