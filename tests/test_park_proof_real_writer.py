@@ -16,6 +16,7 @@ import pytest
 import fleet_membership
 import supervise
 import upgrade_client
+from prismabuild import park_proof
 
 from client_proof_bridge_fixture import fixed_source_artifact
 from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
@@ -212,3 +213,39 @@ def test_unrelated_missing_and_malformed_receipts_do_not_block_physical_park_pro
         role.post()
         assert _observations(role) == (
             {"drained": True, "unparked": [], "active_scopes": 0}, True)
+
+
+def test_actual_writer_acknowledges_only_the_exact_census_and_current_gate(parked_role):
+    with parked_role() as role:
+        name = role.post()
+        assert name is not None
+        gate = park_proof.read_gate(role.gate)
+        pid, start, _ = role.census[0]
+        def observe(processes, *, after=gate):
+            return park_proof.acknowledgements(
+                processes=processes, markers={name},
+                gate_before=gate, gate_after=after)
+
+        assert observe([(pid, start)]).complete is True
+        replaced = observe([(pid, str(int(start) + 1))])
+        assert replaced.complete is False and replaced.unparked == (pid,)
+        foreign = observe([(pid + 1, start)])
+        assert foreign.complete is False and foreign.unparked == (pid + 1,)
+        unknown = observe([(pid, "unknown")])
+        assert unknown.complete is False and unknown.unknown
+        assert observe([(True, start)]).complete is False
+        assert observe([(pid, start)], after=None).complete is False
+
+
+@pytest.mark.parametrize("pid,start", [("True", "1"), ("0", "1"), ("01", "1"),
+                                       ("1", "unknown"), ("1", "١")])
+def test_member_reader_rejects_malformed_retained_process_names(parked_role, pid, start):
+    with parked_role() as role:
+        name = role.post()
+        assert name is not None
+        marker = role.parked / name
+        inode = marker.stat().st_ino
+        retained = role.parked / f"{pid}-{start}-101.5"
+        marker.rename(retained)
+        assert retained.stat().st_ino == inode
+        assert park_proof.parked_markers(role.parked, park_proof.read_gate(role.gate)) == []
