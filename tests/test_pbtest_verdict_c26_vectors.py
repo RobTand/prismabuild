@@ -33,7 +33,7 @@ def rewrite(row, prefix, change):
 
 @pytest.mark.parametrize('damage', ['summary', 'duplicate', 'foreign', 'never-ran',
     'selection', 'completion-roster', 'completion-duplicate', 'completion-invalid',
-    'reports-invalid', 'collected-invalid', 'returncode-invalid', 'timeout', 'signal'])
+    'reports-invalid', 'collected-invalid', 'returncode-invalid', 'timeout', 'signal', 'outcomes-missing'])
 def test_all_corruptions_leave_unknown_coverage(native, damage):
     owner = pbtest.pbtest_outcomes
     row = copy.deepcopy(native)
@@ -58,6 +58,9 @@ def test_all_corruptions_leave_unknown_coverage(native, damage):
         rewrite(row, owner.PREFIX, lambda r: r.update(reports=[[]]))
     elif damage == 'collected-invalid':
         rewrite(row, owner.PREFIX, lambda r: r.update(collected=[None]))
+    elif damage == 'outcomes-missing':
+        row['output'] = '\n'.join(line for line in row['output'].splitlines() if not line.startswith(owner.PREFIX))
+        rewrite(row, owner.COMPLETION_PREFIX, lambda r: r.update(duplicate_teardown=True))
     elif damage == 'returncode-invalid':
         row['returncode'] = False
     elif damage == 'timeout':
@@ -67,6 +70,8 @@ def test_all_corruptions_leave_unknown_coverage(native, damage):
     verdict = owner.judge_shards([row], requested_files=native['files'])
     assert not verdict['green'] and verdict['problems']
     assert verdict['unobserved_files'] == native['files']
+    if damage == 'outcomes-missing':
+        assert any(p['message'] == 'duplicate teardown reports' for p in verdict['problems'])
 
 
 def test_absent_historical_completion_remains_valid(native):

@@ -1902,6 +1902,14 @@ automatically collect arbitrary plugin reports into the CAS; verify their
 payloads separately. Use a new directory per invocation when retaining
 different runs. File discovery and partitioning remain PB's responsibility.
 
+With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
+It counts completed submission clients, not passing tests or verified receipts.
+The final list report remains authoritative. Mergeq binds the companion to each
+launch UUID, entrypoint and generation; it does not count human shard lines or
+classify runtime refusal from prose. A refused interpreter can leave a typed
+terminal companion without a final report. A missing/malformed report otherwise
+leaves the independently requested file population unobserved.
+
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
 — the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.

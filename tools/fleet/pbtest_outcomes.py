@@ -599,27 +599,27 @@ def _judge_row(row, index):
         verdict["failing_nodes"].extend(n + " (never ran)" for n in rec["never_ran"])
         for message in rec["problems"]:
             problem("reconciliation", message)
-        complete = verdict["completion"]
-        if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
-            for message in complete["problems"]:
-                if message == "no selected test execution" and (record.get("collect_only") or not verdict["collected"]):
-                    continue
-                if (record.get("collect_only") and complete.get("collect_only")
-                        and message in ("selected tests have no completed teardown", "selected tests have no observed outcome")
-                        and not complete["teardown_finished"] and not complete["outcome_nodeids"]):
-                    continue
-                if failed and complete.get("collection_errors") and message in (
-                        "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
-                    continue
-                problem("completion", message)
-            if "collected" in complete:
-                if sorted(complete["collected"]) != sorted(verdict["collected"]):
-                    problem("completion_population", "completion and final selected populations differ")
-                final_nodes = {r[0] for r in (*record.get("reports", []), *record.get("uncounted", [])) if r[1] != "collect"}
-                if final_nodes != set(complete["outcome_nodeids"]):
-                    problem("completion_outcomes", "completion and final outcome populations differ")
         verdict["coverage"] = ("collection_only" if record.get("collect_only") else
                                "executed" if verdict["collected"] else "excluded")
+    complete = verdict["completion"]
+    if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
+        for message in complete["problems"]:
+            if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
+                continue
+            if ((record or {}).get("collect_only") and complete.get("collect_only")
+                    and message in ("selected tests have no completed teardown", "selected tests have no observed outcome")
+                    and not complete["teardown_finished"] and not complete["outcome_nodeids"]):
+                continue
+            if verdict["failing_nodes"] and complete.get("collection_errors") and message in (
+                    "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
+                continue
+            problem("completion", message)
+        if record is not None and "collected" in complete:
+            if sorted(complete["collected"]) != sorted(verdict["collected"]):
+                problem("completion_population", "completion and final selected populations differ")
+            final_nodes = {r[0] for r in (*record.get("reports", []), *record.get("uncounted", [])) if r[1] != "collect"}
+            if final_nodes != set(complete["outcome_nodeids"]):
+                problem("completion_outcomes", "completion and final outcome populations differ")
     if row.get("timed_out"):
         problem("client_timeout", "shard client timed out")
     if row["returncode"]:
