@@ -26,7 +26,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from typing import NamedTuple
 import uuid
@@ -59,7 +58,7 @@ class ActorContext(NamedTuple):
 
 @contextmanager
 def credentials(uid, gid):
-    if os.getuid() != 0 or threading.active_count() != 1:
+    if os.getuid() != 0 or len(list(Path("/proc/self/task").iterdir())) != 1:
         raise RuntimeError("credential scopes require a single-threaded container root actor")
     previous = os.geteuid(), os.getegid(), os.getgroups()
     try:
