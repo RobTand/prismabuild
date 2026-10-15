@@ -12839,9 +12839,10 @@ class PoolQueue:
             if gpu_need and gpu_sample is not None:
                 gpu_facts = GpuSampleFacts(gpu_sample)
                 foreign_state = gpu_facts.foreign
-                stamp = gpu_facts.timestamp
-                gpu_clear = (foreign_state is ForeignProcesses.CLEAR and stamp is not None
-                             and stamp.exact_type and stamp.within(now, gpu_admission.MAX_SAMPLE_AGE_S))
+                sample_timestamp = gpu_facts.timestamp
+                gpu_clear = (foreign_state is ForeignProcesses.CLEAR and sample_timestamp is not None
+                             and sample_timestamp.exact_type
+                             and sample_timestamp.within(now, gpu_admission.MAX_SAMPLE_AGE_S))
                 if foreign_state is ForeignProcesses.PRESENT:
                     foreign = True
             gpu_first = (mode != "gpu" and bool(gpu_need)
