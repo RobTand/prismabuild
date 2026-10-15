@@ -50,21 +50,34 @@ def _close_gate(boundary):
     boundary.gate.write_text(json.dumps({"draining": True, "changed_unix": 101.5}))
 
 
-def _run_role(main, log):
+def _run_role(main, log, release_receiver=None, release_event=None):
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.default_int_handler)
+    if release_receiver is not None:
+        def release_reader():
+            try:
+                if release_receiver.recv_bytes():
+                    release_event.set()
+            except EOFError:
+                pass
+        threading.Thread(target=release_reader, daemon=True).start()
     with log.open("w") as stream, redirect_stdout(stream), redirect_stderr(stream):
         raise SystemExit(main())
 
 
 def _finish(process, release=None):
-    if release is not None:
-        release.set()
+    if release is not None and process.is_alive():
+        try:
+            release.send_bytes(b"release")
+        except (BrokenPipeError, OSError):
+            pass
     process.join(3)
     if process.is_alive():
         process.kill()
         process.join(3)
     process.close()
+    if release is not None:
+        release.close()
 
 
 def _metrics_request(port, errors):
@@ -83,7 +96,9 @@ def _metrics_request(port, errors):
 @pytest.mark.parametrize("release_before_deadline", [True, False])
 def test_metrics_sigterm_waits_for_real_handlers_before_park(
         boundary, monkeypatch, release_before_deadline):
-    entered, release, ready = (CONTEXT.Event() for _ in range(3))
+    entered, ready = CONTEXT.Event(), CONTEXT.Event()
+    release = threading.Event()
+    receiver, sender = CONTEXT.Pipe(duplex=False)
     errors = []
     port = CONTEXT.Value("i", 0)
     server_type = pbmetrics.ThreadingHTTPServer
@@ -104,8 +119,9 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
     monkeypatch.setattr(pbmetrics, "SHUTDOWN_GRACE_S", 0.5, raising=False)
     argv = ["--queue-root", str(boundary.root / "queue"), "--port", "9469"]
     process = CONTEXT.Process(target=_run_role,
-        args=(lambda: pbmetrics.main(argv), boundary.root / "metrics.log"))
+        args=(lambda: pbmetrics.main(argv), boundary.root / "metrics.log", receiver, release))
     process.start()
+    receiver.close()
     request = None
     try:
         assert ready.wait(5), "metrics never bound the test port"
@@ -118,7 +134,7 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         assert process.is_alive(), "SIGTERM exited before the handler completed"
         assert list(boundary.parked.iterdir()) == [], "in-flight handler earned a marker"
         if release_before_deadline:
-            release.set()
+            sender.send_bytes(b"release")
         process.join(5)
         assert process.exitcode == 0, (boundary.root / "metrics.log").read_text()
         markers = list(boundary.parked.iterdir())
@@ -129,7 +145,7 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         if release_before_deadline:
             assert errors == []
     finally:
-        _finish(process, release)
+        _finish(process, sender)
         if request is not None and request.ident is not None:
             request.join(3)
 
@@ -140,7 +156,8 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
     key = fleet.action("cancelled", [fleet.file("row.pt", prewarm_loop.BLOCK * 2)])
     stage = StagePool(boundary.root / "stage")
     stage.install(monkeypatch)
-    entered, release = CONTEXT.Event(), CONTEXT.Event()
+    entered, release = CONTEXT.Event(), threading.Event()
+    receiver, sender = CONTEXT.Pipe(duplex=False)
     write = prewarm_loop.StageObject.write
 
     def blocked_write(sink, data):
@@ -155,8 +172,9 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
     monkeypatch.setattr(prewarm_loop, "require_storage_pacing", lambda _: None)
     monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
     process = CONTEXT.Process(target=_run_role,
-        args=(lambda: prewarm_loop.main([]), boundary.root / "prewarm.log"))
+        args=(lambda: prewarm_loop.main([]), boundary.root / "prewarm.log", receiver, release))
     process.start()
+    receiver.close()
     try:
         assert entered.wait(5), (boundary.root / "prewarm.log").read_text()
         assert len(stage.objects()) == 1, "real partial sink was not created"
@@ -165,7 +183,7 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
         process.join(0.15)
         assert process.is_alive(), "SIGTERM unwound the reader before sink cleanup"
         assert list(boundary.parked.iterdir()) == []
-        release.set()
+        sender.send_bytes(b"release")
         process.join(5)
         assert process.exitcode == 0, (boundary.root / "prewarm.log").read_text()
         assert stage.objects() == [], "partial stage object survived stop"
@@ -178,7 +196,7 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
         assert event["stage"]["aborted_bytes"] == prewarm_loop.BLOCK
         assert len(list(boundary.parked.iterdir())) == 1
     finally:
-        _finish(process, release)
+        _finish(process, sender)
 
 
 @pytest.mark.parametrize("once", [True, False])
