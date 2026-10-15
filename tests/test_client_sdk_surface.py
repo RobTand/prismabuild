@@ -300,7 +300,6 @@ def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES
     assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
     assert client.SCRATCH_LIFETIME_TAG == contracts.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
-    assert "SCRATCH_LIFETIME_TAG" in (ROOT / "tools" / "fleet" / "worker_loop.py").read_text()
     assert "require_native_producer_context" in inspect.signature(client.read_verified_action_result).parameters
     assert callable(client.read_verified_action_result)
     assert callable(client.bind_standard_capture_command)

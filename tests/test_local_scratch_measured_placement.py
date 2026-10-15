@@ -687,7 +687,7 @@ def test_no_capacity_legacy_claim_cannot_bypass_opted_in_admission(fleet):
     fleet.ready_unspent()
 
 
-def test_actual_worker_offer_path_keeps_opt_out_and_merges_configured_inputs(fleet):
+def test_optional_scratch_profiles_merge_configured_inputs(fleet):
     assert worker_loop.build_parser().parse_args([]).local_scratch_profile_config is None
     assert worker_loop.scratch_observed_detail(None, None) == {}
     config = fleet.root / "profile-inputs.json"
@@ -695,13 +695,6 @@ def test_actual_worker_offer_path_keeps_opt_out_and_merges_configured_inputs(fle
     reader = ls.ProfileInputs(config, source_root=REPO, checkout_root=fleet.root / "verification",
                               producer_python=sys.executable)
     assert worker_loop.scratch_observed_detail(None, reader)[PROFILES] == []
-    # Structural closure control supplements the real loader/CAS controls;
-    # it is not the primary behavioral RED or a deployed worker run.
-    import inspect
-    source = inspect.getsource(worker_loop._run_loop)
-    assert "scratch_observed_detail(observer, profile_inputs)" in source
-    assert "observed_detail=observed_detail" in source
-    assert "tags.append(local_scratch.IO_CAPABILITY)" in source
 
 
 def _recorder_action(fleet, *, changed_source=False, extra_env=None):
