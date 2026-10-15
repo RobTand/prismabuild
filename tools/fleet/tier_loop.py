@@ -55,7 +55,7 @@ from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import park_proof, pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
@@ -11615,7 +11615,7 @@ def _serve_cycles(args, stop_requested) -> int:
                 # Retain the failure record, but never label an interrupted
                 # composite cycle as an acknowledged natural boundary.
                 return 75
-            epoch = runtime_gate._gate_key(gate)
+            epoch = park_proof.gate_key(gate)
             if parked_epoch != epoch:
                 print(json.dumps({"event": "tier-maintenance-park", "unix": time.time(),
                                   "host": host, "epoch": epoch}), flush=True)

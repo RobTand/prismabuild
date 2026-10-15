@@ -63,7 +63,7 @@ sys.path.insert(0, str(SRC_ROOT))
 
 from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
-from prismabuild import role_session  # noqa: E402
+from prismabuild import park_proof, role_session  # noqa: E402
 from prismabuild.park_proof import read_gate  # noqa: E402
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
@@ -98,7 +98,7 @@ def gate_key(gate: dict[str, Any] | None) -> str:
     """Filename-safe drain identity shared with the loop's park markers."""
     if gate is None:
         return "open"
-    return role_session._gate_key(gate)
+    return park_proof.gate_key(gate)
 
 
 def local_host() -> str:

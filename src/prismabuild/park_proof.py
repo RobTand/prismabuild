@@ -87,7 +87,7 @@ def _proc_starttime(pid: int) -> str:
     return fields[19] if len(fields) > 19 else "unknown"
 
 
-def _gate_key(gate: dict) -> str:
+def gate_key(gate: dict) -> str:
     """This drain's identity, as the broker already stamps it.
 
     ``maintenance_begin`` stamps a new drain with a fresh ``changed_unix``
@@ -119,7 +119,7 @@ def write_park_marker(root: Path, gate: dict) -> Path | None:
     """
 
     marker = root / (f"{os.getpid()}-{_proc_starttime(os.getpid())}"
-                            f"-{_gate_key(gate)}")
+                            f"-{gate_key(gate)}")
     try:
         os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
     except FileExistsError:
