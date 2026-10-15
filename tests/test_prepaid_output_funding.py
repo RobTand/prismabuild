@@ -273,12 +273,20 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     assert ledger.available().get(KIND) == total0
 
 
-def test_reject_stale_bindings(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("defect", "refusal"), [
+    pytest.param("nonce", "stale-superseded-owner", id="nonce"),
+    pytest.param("publication", "mover-publication-mismatch", id="publication"),
+    pytest.param("template", "template-mismatch", id="template"),
+    pytest.param("token_names", "token-names-unknown", id="token-names"),
+])
+def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
     owner = _hexkey("rej-owner")
     mover = _hexkey("rej-mover")
     q = _queue(tmp_path)
+    ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, control, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -290,42 +298,68 @@ def test_reject_stale_bindings(tmp_path: Path) -> None:
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
 
-    # Stale owner (tamper live nonce) refuses.
     live_path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(live_path)
+    live = pool.read_queue_record(live_path)
     assert isinstance(live, dict)
-    live["resource_scope"] = dict(live["resource_scope"], nonce="0" * 32)
-    pool._write_json_atomic(live_path, live)
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner, mover_key=mover,
-                              instance=inst, template=template, batch_id="b1",
-                              descriptors=descs)
-    assert out.get("ok") is False
-    assert out.get("refusal") in ("stale-superseded-owner", "owner-not-running",
-                                  "unknown-retain: owner-claim-control"), out
-    # Restore live owner.
-    _broker_control(q, owner)
-    # Re-bind instance to the NEW nonce/scope (new attempt owns the key now);
-    # old instance is stale-superseded by construction.
-    # Mover-pub mismatch refuses.
-    other_mover = _hexkey("rej-other")
-    _publish_mover(q, other_mover, "1" * 64, total)
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner,
-                              mover_key=other_mover, instance=inst,
-                              template=template, batch_id="b1",
-                              descriptors=descs)
-    assert out.get("ok") is False, out
-    # Template mismatch refuses.
-    bad_template = _template(str(tmp_path / "other"))
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner, mover_key=mover,
-                              instance=inst, template=bad_template,
-                              batch_id="b1", descriptors=descs)
-    assert out.get("ok") is False, out
-    # Token names unknown refuses.
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner, mover_key=mover,
-                              instance=inst, template=template, batch_id="b1",
-                              descriptors=descs,
-                              token_names=[f"{KIND}-9999"])
-    assert out.get("ok") is False, out
+    control = dict(live["resource_scope"])
+    candidate_mover, candidate_template, token_names = mover, template, None
+    try:
+        if defect == "nonce":
+            # Damage only the live attempt identity; retain the real scope.
+            assert control["nonce"] != "0" * 32
+            live["resource_scope"] = dict(control, nonce="0" * 32)
+            pool._write_json_atomic(live_path, live)
+        elif defect == "publication":
+            candidate_mover = _hexkey("rej-other")
+            _publish_mover(q, candidate_mover, "1" * 64, total)
+        elif defect == "template":
+            candidate_template = _template(str(tmp_path / "other"))
+        else:
+            # Lost-intent crash prefix: READY and prewrite survived, but the
+            # reserved funding record did not. Exercise fresh token selection.
+            q.funding_output_path(mover, TIER).unlink()
+            token_names = [f"{KIND}-9999"]
+
+        before = q.read_output_funding(mover, TIER)
+        assert ledger.holder_tokens(owner) == {KIND: 2}
+        assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+        assert ledger.available() == {KIND: 2}
+        assert ledger.capacity() == {KIND: 4}
+        out = q.fund_output_batch(
+            tier_id=TIER, owner_key=owner, mover_key=candidate_mover,
+            instance=inst, template=candidate_template, batch_id="b1",
+            descriptors=descs, token_names=token_names)
+        assert out.get("ok") is False, out
+        assert out.get("refusal") == refusal, out
+        assert q.read_output_funding(mover, TIER) == before
+        if defect == "token_names":
+            assert before is None
+        if defect == "publication":
+            assert q.read_output_funding(candidate_mover, TIER) is None
+            assert ledger.holder_tokens(candidate_mover).get(KIND, 0) == 0
+        assert ledger.holder_tokens(owner) == {KIND: 2}
+        assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+        assert ledger.available() == {KIND: 2}
+        assert ledger.capacity() == {KIND: 4}
+    finally:
+        if defect == "nonce":
+            live["resource_scope"] = control
+            pool._write_json_atomic(live_path, live)
+
+    # Each defect has its own real successful control with the bound owner,
+    # template and published mover. Lost intent is rebuilt by normal funding.
+    funded = q.fund_output_batch(
+        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+        template=template, batch_id="b1", descriptors=descs)
+    assert funded.get("ok") is True, funded
+    assert funded["moved"] == 1, funded
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["state"] == "transferring"
+    assert rec["generation"] == funded["generation"]
+    assert ledger.holder_tokens(owner) == {KIND: 1}
+    assert ledger.holder_tokens(mover) == {KIND: 1}
+    assert ledger.available() == {KIND: 2}
+    assert ledger.capacity() == {KIND: 4}
 
 
 def test_transfer_tokens_exact_subset(tmp_path: Path) -> None:
