@@ -376,6 +376,13 @@ def manifest_read_bytes(manifest: dict) -> int:
     return int(manifest["total_bytes"])
 
 
+def phase_index(phase_names: Iterable[object], phase_name: str | None) -> int | None:
+    """The first position matching a reported phase, or ``None`` if unknown."""
+
+    return next((index for index, name in enumerate(phase_names)
+                 if name == phase_name), None)
+
+
 def consumed_through(phases: list[dict[str, object]], phase_name: str) -> int:
     """Bytes an action reporting ``phase_name`` has finished reading.
 
@@ -385,12 +392,9 @@ def consumed_through(phases: list[dict[str, object]], phase_name: str) -> int:
     A name this manifest does not carry releases nothing.
     """
 
-    consumed = 0
-    for phase in phases:
-        if phase["name"] == phase_name:
-            return consumed
-        consumed = int(phase["cumulative_bytes"])
-    return 0
+    index = phase_index((phase["name"] for phase in phases), phase_name)
+    return 0 if index is None or index == 0 else int(
+        phases[index - 1]["cumulative_bytes"])
 
 
 def window_target(phases: list[dict[str, object]], entries: list[dict[str, object]],

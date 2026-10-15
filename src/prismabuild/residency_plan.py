@@ -87,6 +87,7 @@ import re
 import time
 
 from . import core as pb
+from . import manifest_layout
 from . import pool as _pool
 from . import residency_map
 from . import storage_tiers
@@ -2506,14 +2507,15 @@ def remaining(plan: Mapping[str, object],
 
     The phase its progress names is *included*: counting it as finished would
     take back a window the consumer is still inside, which is the rule
-    ``prewarm_loop.consumed_through`` keeps.  A name the plan does not carry --
+    ``manifest_layout.consumed_through`` keeps.  A name the plan does not carry --
     no progress yet, or a phase from another plan -- reads as the beginning,
     because a consumer that has not said where it is has not passed anything.
     """
 
     phases = list(plan["phases"])                                # type: ignore[arg-type]
-    names = [str(phase["name"]) for phase in phases]
-    return phases[names.index(accepted_phase) if accepted_phase in names else 0:]
+    index = manifest_layout.phase_index(
+        (str(phase["name"]) for phase in phases), accepted_phase)
+    return phases[0 if index is None else index:]
 
 
 def accepted(plan: Mapping[str, object], accepted_phase: str | None) -> bool:
@@ -2531,7 +2533,8 @@ def accepted(plan: Mapping[str, object], accepted_phase: str | None) -> bool:
         return False
     phases = plan["phases"]
     assert isinstance(phases, list)
-    return any(str(phase["name"]) == accepted_phase for phase in phases)
+    return manifest_layout.phase_index(
+        (str(phase["name"]) for phase in phases), accepted_phase) is not None
 
 
 def runahead_step_gib(plan: Mapping[str, object],
@@ -3030,7 +3033,7 @@ def window(plan: Mapping[str, object], *, accepted_phase: str | None,
     ``accepted_phase`` is the phase the consumer's progress record says it is
     reading *now*, so the phases before it are finished with and may be
     evicted; counting the named phase itself would take back a window the
-    consumer is still inside, the same rule ``prewarm_loop.consumed_through``
+    consumer is still inside, the same rule ``manifest_layout.consumed_through``
     keeps.  ``published`` names the movers already queued, claimed or terminal
     **and still holding their tokens**; ``staged`` those whose bytes are on the
     tier now.
