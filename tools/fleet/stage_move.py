@@ -4190,7 +4190,9 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     fence = kept_reads.version_fence()
     try:
         with open(path, "rb") as stream:
-            version = kept_reads.keepable_version(os.fstat(stream.fileno()), fence)
+            descriptor = stream.fileno()
+            version = kept_reads.keepable_version(
+                os.fstat(descriptor), fence, descriptor=descriptor)
             document = validate(json.load(stream))
     except (OSError, ValueError):
         return None
@@ -4219,7 +4221,9 @@ def _reread_own_document(path: Path,
 
     fence = kept_reads.version_fence()
     with open(path, "rb") as stream:
-        version = kept_reads.keepable_version(os.fstat(stream.fileno()), fence)
+        descriptor = stream.fileno()
+        version = kept_reads.keepable_version(
+            os.fstat(descriptor), fence, descriptor=descriptor)
         if prior is not None and prior[0] == version:
             return prior[1]
         return validate(json.load(stream))
