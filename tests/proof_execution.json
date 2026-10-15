@@ -53,42 +53,62 @@
       "ast_sha256": "dd104759e9ecd52df3950266361ae4bf172f95fd9f3e3694f46309eae975b6a2"
     }
   },
+  "artifact_corpus": {
+    "path": "tests/fixtures/proof-readers.tar.gz",
+    "format": "ustar+gzip",
+    "bytes": 92405,
+    "sha256": "02f96d28e3ec6f0ffeec18634868ec7fef88c895d814888415e6cae6123eef3e",
+    "raw_source_bytes": 376155,
+    "raw_source_lines": 7692
+  },
   "artifacts": [
     {
       "name": "prebridge-upgrader.py",
       "revision": "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf",
       "path": "tools/fleet/upgrade_client.py",
-      "sha256": "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9"
+      "sha256": "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9",
+      "bytes": 87764,
+      "source_lines": 1773
     },
     {
       "name": "protocol-one-upgrader.py",
       "revision": "f834a061b448e2bbfed686e5ef00ca21f6b2b65c",
       "path": "tools/fleet/upgrade_client.py",
-      "sha256": "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e"
+      "sha256": "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e",
+      "bytes": 88812,
+      "source_lines": 1792
     },
     {
       "name": "protocol-two-upgrader.py",
       "revision": "79c6a3669a60b1edf4d66e40e576bd59e438e914",
       "path": "tools/fleet/upgrade_client.py",
-      "sha256": "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d"
+      "sha256": "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d",
+      "bytes": 92723,
+      "source_lines": 1877
     },
     {
       "name": "latest-proof-upgrader.py",
       "revision": "b36ceb258b20f0710c48d7fe7fefbe9ff2d0179a",
       "path": "tools/fleet/upgrade_client.py",
-      "sha256": "1a331460abc28eddcc5c36d9a6f724872d7159e8ea157af5b6caf9828f5f2f0a"
+      "sha256": "1a331460abc28eddcc5c36d9a6f724872d7159e8ea157af5b6caf9828f5f2f0a",
+      "bytes": 92883,
+      "source_lines": 1879
     },
     {
       "name": "strict-proof.py",
       "revision": "52b803d3bf637c6e3d45a87abacf13020c15cf22",
       "path": "src/prismabuild/park_proof.py",
-      "sha256": "772fa28b24b3d0cc6ad2edca803b63ae5965c0ee85f30c56cc113e214aabf68d"
+      "sha256": "772fa28b24b3d0cc6ad2edca803b63ae5965c0ee85f30c56cc113e214aabf68d",
+      "bytes": 9003,
+      "source_lines": 242
     },
     {
       "name": "legacy-proof.py",
       "revision": "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf",
       "path": "src/prismabuild/park_proof.py",
-      "sha256": "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7"
+      "sha256": "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7",
+      "bytes": 4970,
+      "source_lines": 129
     }
   ]
 }

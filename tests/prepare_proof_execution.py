@@ -4,8 +4,10 @@ import ast
 import base64
 import csv
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
+import tarfile
 
 
 def sha(data):
@@ -109,10 +111,7 @@ def inspect_population(root):
     return profile, facts
 
 
-def copy_unchanged(source, target, expected):
-    data = source.read_bytes()
-    if sha(data) != expected:
-        raise ValueError(f"pinned source differs: {source}")
+def stage_bytes(data, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.read_bytes() != data:
         raise ValueError(f"staged input differs: {target}")
@@ -120,11 +119,31 @@ def copy_unchanged(source, target, expected):
 
 
 def prepare_inputs(root, profile, artifact_source, site_packages):
-    # An explicit immutable byte directory is required. Original author Git
-    # objects need not survive cherry-picks, so preparation never reads Git.
+    if artifact_source is not None:
+        sources = {entry["name"]: (artifact_source / entry["name"]).read_bytes()
+                   for entry in profile["artifacts"]}
+    else:
+        corpus = profile["artifact_corpus"]
+        data = (root / corpus["path"]).read_bytes()
+        if len(data) != corpus["bytes"] or sha(data) != corpus["sha256"]:
+            raise ValueError("bundled historical source archive differs")
+        declared = {entry["name"]: entry for entry in profile["artifacts"]}
+        with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive:
+            members = archive.getmembers()
+            if (len(members) != len(declared) or {member.name for member in members} != set(declared)
+                    or any(not member.isfile() or member.size != declared[member.name]["bytes"]
+                           for member in members)):
+                raise ValueError("bundled historical source members differ")
+            sources = {}
+            for name, entry in declared.items():
+                with archive.extractfile(name) as stream:
+                    sources[name] = stream.read(entry["bytes"] + 1)
     for entry in profile["artifacts"]:
-        copy_unchanged(artifact_source / entry["name"],
-                       root / "qualification_artifacts" / entry["name"], entry["sha256"])
+        data = sources[entry["name"]]
+        if len(data) != entry["bytes"] or sha(data) != entry["sha256"]:
+            raise ValueError(f"historical source bytes differ: {entry['name']}")
+    for entry in profile["artifacts"]:
+        stage_bytes(sources[entry["name"]], root / "qualification_artifacts" / entry["name"])
     tooling = profile["root"]["tooling"]
     expected_files = set()
     target = root / "qualification_deps"
@@ -147,7 +166,7 @@ def prepare_inputs(root, profile, artifact_source, site_packages):
                     assert algorithm == "sha256" and actual == expected, relative
                 if expected_size:
                     assert len(data) == int(expected_size), relative
-                copy_unchanged(source, target / path, sha(data))
+                stage_bytes(data, target / path)
                 expected_files.add(relative)
     files = {str(p.relative_to(target)): sha(p.read_bytes())
              for p in sorted(target.rglob("*")) if p.is_file()}
@@ -160,16 +179,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", required=True, type=Path)
     parser.add_argument("--paths", choices=("root", "native-family", "native-suite"))
-    parser.add_argument("--prepare-from", type=Path, help="explicit directory of pinned historical byte artifacts")
+    parser.add_argument("--prepare", action="store_true", help="stage bundled source artifacts and pinned test tooling")
+    parser.add_argument("--prepare-from", help="use only this explicit directory of pinned historical byte artifacts")
     parser.add_argument("--site-packages", type=Path)
     args = parser.parse_args()
     root = args.checkout.resolve()
     profile, facts = inspect_population(root)
-    if args.paths and args.prepare_from:
+    if args.prepare_from is not None and not args.prepare_from:
+        parser.error("supplied historical source directory is empty")
+    prepare = args.prepare or args.prepare_from is not None
+    if args.paths and prepare:
         parser.error("file-list output and input preparation are separate source operations")
-    if args.prepare_from:
+    if prepare:
         site = args.site_packages or Path(profile["root"]["tooling"]["site_packages"])
-        prepare_inputs(root, profile, args.prepare_from.resolve(), site)
+        source = Path(args.prepare_from).resolve() if args.prepare_from is not None else None
+        prepare_inputs(root, profile, source, site)
     if args.paths:
         key = {"root": "root_files", "native-family": "native_family_files", "native-suite": "native_suite_files"}[args.paths]
         print("\n".join(facts[key]))

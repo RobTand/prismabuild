@@ -1,12 +1,14 @@
 """Private publication and fresh installed-reader process fixtures."""
 import hashlib
 from contextlib import contextmanager
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import select
 import subprocess
 import sys
+import tarfile
 from types import SimpleNamespace
 import uuid
 
@@ -257,13 +259,35 @@ def _sha(data):
 
 
 def fixed_source_artifact(name, revision, path, expected_sha256):
+    profile = json.loads((ROOT / "tests/proof_execution.json").read_bytes())
+    declared = {entry["name"]: entry for entry in profile["artifacts"]}
+    entry = declared[name]
+    if (revision, path, expected_sha256) != (entry["revision"], entry["path"], entry["sha256"]):
+        raise ValueError(f"historical source request differs from declaration: {name}")
     staged = os.environ.get("PRISMABUILD_PROOF_ARTIFACT_ROOT")
-    if staged:
-        data = (Path(staged) / name).read_bytes()
+    if staged is not None:
+        if not staged:
+            raise ValueError("supplied historical source directory is empty")
+        sources = {key: (Path(staged) / key).read_bytes() for key in declared}
     else:
-        data = subprocess.check_output(["git", "show", f"{revision}:{path}"], cwd=ROOT)
-    assert _sha(data) == expected_sha256
-    return data
+        corpus = profile["artifact_corpus"]
+        data = (ROOT / corpus["path"]).read_bytes()
+        if len(data) != corpus["bytes"] or _sha(data) != corpus["sha256"]:
+            raise ValueError("bundled historical source archive differs")
+        with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive:
+            members = archive.getmembers()
+            if (len(members) != len(declared) or {member.name for member in members} != set(declared)
+                    or any(not member.isfile() or member.size != declared[member.name]["bytes"]
+                           for member in members)):
+                raise ValueError("bundled historical source members differ")
+            sources = {}
+            for key, entry in declared.items():
+                with archive.extractfile(key) as stream:
+                    sources[key] = stream.read(entry["bytes"] + 1)
+    for key, entry in declared.items():
+        if len(sources[key]) != entry["bytes"] or _sha(sources[key]) != entry["sha256"]:
+            raise ValueError(f"historical source bytes differ: {key}")
+    return sources[name]
 
 
 def make_publication(tmp_path):
