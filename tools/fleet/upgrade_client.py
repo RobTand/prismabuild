@@ -381,6 +381,25 @@ class InstalledParkProof(NamedTuple):
     module: ModuleType
 
 
+
+class HostParkObservation(NamedTuple):
+    proof: InstalledParkProof
+    gate: dict | None
+    census: list
+    markers: set[str]
+    acknowledgements: object
+
+    def as_host_evidence(self, active_scopes):
+        acknowledgements = self.acknowledgements
+        return {
+            'drained': (acknowledgements.complete
+                        and type(active_scopes) is int and active_scopes == 0),
+            'unparked': list(acknowledgements.unparked),
+            'active_scopes': active_scopes,
+            **({'evidence_errors': list(acknowledgements.unknown)}
+               if acknowledgements.unknown else {}),
+        }
+
 def load_installed_park_proof(install: Path) -> InstalledParkProof:
     """Compile only the coherent root-trusted sibling bytes captured this call."""
     path = trusted(install) / 'park_proof.py'
@@ -1174,41 +1193,30 @@ class Upgrader:
             return False
         return True
 
-    def parked(self):
-        try:
-            return {entry.name for entry in self.parked_root.iterdir()}
-        except OSError:
-            return set()
+    def observe_host_park(self) -> HostParkObservation:
+        """One installed rule owner and bracketed physical facts, without receipts."""
+        proof = load_installed_park_proof(self.install)
+        api = proof.module
+        before = api.read_gate(self.gate)
+        census = self.procs()
+        markers = {path.name for path in api.parked_markers(self.parked_root, before)}
+        after = api.read_gate(self.gate)
+        acknowledgements = api.acknowledgements(
+            processes=serving(census, api.HOST_QUIESCENT), markers=markers,
+            gate_before=before, gate_after=after)
+        return HostParkObservation(proof, before, census, markers, acknowledgements)
 
     def drain_evidence(self, status, *, rollout=False):
-        """What this box can still admit, given the drain `status` reports.
-
-        Observation only. Nothing here opens or closes a drain, and nothing
-        here decides anything: it puts the answer where a person and, later, a
-        rollout coordinator can read it.
-
-        An admitting box owes no proof, and the census costs a walk of /proc,
-        so a box that is not draining is not asked.
-        """
+        """Physical quiescence plus the broker's independent zero-scope fact."""
         if status.get('draining') is not True:
             return {}
-        changed = gate_changed_unix(self.gate)
         try:
-            census = self.procs()
-            markers = self.parked()
+            observation = self.observe_host_park()
         except (OSError, ValueError) as error:
             return {'drained': False, 'unparked': [],
                     'active_scopes': status.get('active_scopes'),
-                    'evidence_errors': [f'process census incomplete: {error}']}
-        if changed is None or gate_changed_unix(self.gate) != changed:
-            return {'drained': False, 'unparked': [],
-                    'active_scopes': status.get('active_scopes'),
-                    'evidence_errors': ['maintenance gate missing or changed during census']}
-        names = (SERVING_NAMES | {'prewarm_loop.py'}) if rollout else SERVING_NAMES
-        settled, unparked = drained(census, markers, changed,
-                                    status.get('active_scopes'), names)
-        return {'drained': settled, 'unparked': unparked,
-                'active_scopes': status.get('active_scopes')}
+                    'evidence_errors': [f'host park observation unavailable: {error}']}
+        return observation.as_host_evidence(status.get('active_scopes'))
 
     def _local_rollout(self):
         try:
@@ -1272,33 +1280,37 @@ class Upgrader:
         return existing
 
     def rotation_evidence(self, status, generation):
-        """Fresh proof that every local admission process uses one generation."""
+        """Fresh physical proof plus the existing versioned-role requirements."""
         if (status.get('health') is not True or status.get('draining') is not True
                 or type(status.get('active_scopes')) is not int
                 or status.get('active_scopes') != 0 or not self.loaded_matches(status)):
             return {'rotated': False, 'rotation_errors': ['broker proof is incomplete']}
-        changed = gate_changed_unix(self.gate)
-        if changed is None:
-            return {'rotated': False, 'rotation_errors': ['maintenance gate identity is unknown']}
         try:
-            census = self.procs()
-            markers = self.parked()
+            observation = self.observe_host_park()
         except (OSError, ValueError) as exc:
             return {'rotated': False,
-                    'rotation_errors': [f'process census incomplete: {exc}']}
+                    'rotation_errors': [f'host park observation unavailable: {exc}']}
+        api = observation.proof.module
+        drain = api.drain_identity(observation.gate)
+        if isinstance(drain, api.ProofUnknown):
+            return {'rotated': False, 'rotation_errors': [drain.reason]}
         expected_root = Path(self.config['generation_store']) / generation
         roles = {'worker_loop.py': 'worker', 'worker.py': 'one-shot-worker',
                  'supervise.py': 'supervisor', 'prewarm_loop.py': 'prewarmer'}
         observed = []
-        errors = []
+        errors = list(observation.acknowledgements.unknown)
         counts = {role: 0 for role in roles.values()}
-        for pid, starttime, argv in census:
+        for pid, starttime, argv in observation.census:
             named = [(PurePosixPath(part).name, part) for part in argv
                      if PurePosixPath(part).name in roles]
             if not named:
                 continue
             if len(named) != 1:
                 errors.append(f'pid {pid} has ambiguous admission argv')
+                continue
+            process = api.process_identity(pid, starttime)
+            if isinstance(process, api.ProofUnknown):
+                errors.append(process.reason)
                 continue
             basename, part = named[0]
             path = Path(part)
@@ -1312,8 +1324,8 @@ class Upgrader:
             if not path.is_absolute() or '..' in relative.parts or relative.name != basename:
                 errors.append(f'pid {pid} {role} has an untrusted generation path')
                 continue
-            parked = park_marker_name(pid, starttime, changed) in markers
-            if role in {'worker', 'one-shot-worker', 'prewarmer'} and not parked:
+            parked = api.park_marker_filename(process, drain) in observation.markers
+            if role in {'worker', 'one-shot-worker', 'prewarmer'} and pid in observation.acknowledgements.unparked:
                 errors.append(f'pid {pid} {role} is not parked on this drain')
             observed.append({'pid': pid, 'starttime': starttime, 'role': role,
                              'path': part, 'parked': parked})
@@ -1321,10 +1333,10 @@ class Upgrader:
             errors.append('expected exactly one versioned supervisor')
         if counts['worker'] < 1:
             errors.append('no versioned worker loops were observed')
-        if gate_changed_unix(self.gate) != changed:
+        if api.drain_identity(api.read_gate(self.gate)) != drain:
             errors.append('maintenance gate changed during rotation census')
         return {'rotated': not errors, 'generation': generation,
-                'gate_changed_unix': changed, 'processes': observed,
+                'gate_changed_unix': observation.gate['changed_unix'], 'processes': observed,
                 **({'rotation_errors': errors} if errors else {})}
 
     def _refresh_epoch(self, snapshot):
