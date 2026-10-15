@@ -173,17 +173,26 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     host = socket.gethostname()
     # main owns process signals. Run it in a process, as the supervisor does,
     # so withdrawal exercises the real SIGTERM handler as well as the queue.
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    (tmp_path / "maintenance.json").write_text(json.dumps({"draining": False}))
     bootstrap = tmp_path / "run_worker.py"
     bootstrap.write_text(f"""
 import sys
+from functools import partial
 from pathlib import Path
 sys.path.insert(0, {str(WORKER_LOOP.parents[2] / 'src')!r})
 sys.path.insert(0, {str(WORKER_LOOP.parent)!r})
 import worker_loop as wl
 from prismabuild import role_session
 wl.SH = Path({str(tmp_path)!r})
-role_session.loaded_runtime_commit = lambda: 'deadbeef'
-role_session.published_commit = lambda: 'deadbeef'
+wl.PUBLICATION_LOCK_ROOT = wl.SH / "offer-locks"
+wl.container_images.InventoryCache = partial(
+    wl.container_images.InventoryCache, root=wl.SH / "images")
+role_session.GENERATION_VERSION = wl.SH / "loaded.json"
+role_session.RUNTIME_VERSION = wl.SH / "published.json"
+role_session.MAINTENANCE_GATE = wl.SH / "maintenance.json"
+role_session.PARKED_ROOT = wl.SH / "parked"
 raise SystemExit(wl.main())
 """)
     cpu_slots = cpu_slots_that_fit()

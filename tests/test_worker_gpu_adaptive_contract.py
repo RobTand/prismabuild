@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from functools import partial
 from pathlib import Path
 import sys
 import time
@@ -203,18 +204,28 @@ def _worker():
     return module
 
 
-def _run_worker(argv, *, ready, sample=None):
+def _run_worker(tmp_path, argv, *, ready, sample=None):
     worker = _worker()
     queue = _Queue(ready=ready)
+    queue.root = tmp_path / "pb-queue"
     sleeps = []
-    with mock.patch.object(worker.pool, "PoolQueue", return_value=queue), \
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
+    with mock.patch.object(worker, "SH", tmp_path), \
+         mock.patch.object(worker.pool, "PoolQueue", return_value=queue), \
          mock.patch.object(worker.socket, "gethostname", return_value="testbox"), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
          mock.patch.object(worker, "inherited_cpus", return_value=4), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "maintenance_requested", return_value=False), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=sample,
                            create=True), \
          mock.patch.object(worker.box_capacity, "ipv4_addresses",
@@ -225,9 +236,9 @@ def _run_worker(argv, *, ready, sample=None):
     return queue, sleeps
 
 
-def test_worker_default_has_no_implicit_four_gpu_capacity():
+def test_worker_default_has_no_implicit_four_gpu_capacity(tmp_path):
     queue, _ = _run_worker(
-        ["--once", "--assume-idle", "--all-cores"], ready=0,
+        tmp_path, ["--once", "--assume-idle", "--all-cores"], ready=0,
     )
 
     assert queue.announcements[-1]["has_gpu"] is False
@@ -236,9 +247,9 @@ def test_worker_default_has_no_implicit_four_gpu_capacity():
     assert contracts.PROGRESS_HELPER_TAG in queue.announcements[-1]["tags"]
 
 
-def test_worker_autodetects_one_physical_gpu_from_the_trusted_snapshot():
+def test_worker_autodetects_one_physical_gpu_from_the_trusted_snapshot(tmp_path):
     queue, _ = _run_worker(
-        ["--once", "--gpu", "--all-cores"], ready=0, sample=_sample(),
+        tmp_path, ["--once", "--gpu", "--all-cores"], ready=0, sample=_sample(),
     )
 
     assert queue.announcements[-1]["has_gpu"] is True
@@ -246,8 +257,9 @@ def test_worker_autodetects_one_physical_gpu_from_the_trusted_snapshot():
     assert queue.announcements[-1]["observed_capacity"]["gpu"] == 1
 
 
-def test_worker_rechecks_a_nonempty_queue_at_one_second_cadence():
+def test_worker_rechecks_a_nonempty_queue_at_one_second_cadence(tmp_path):
     queue, sleeps = _run_worker(
+        tmp_path,
         ["--assume-idle", "--all-cores", "--max-idle", "2", "--poll-s", "15"],
         ready=1,
     )
@@ -256,8 +268,9 @@ def test_worker_rechecks_a_nonempty_queue_at_one_second_cadence():
     assert queue.census_calls == 2
 
 
-def test_worker_backs_off_to_configured_cadence_when_queue_is_empty():
+def test_worker_backs_off_to_configured_cadence_when_queue_is_empty(tmp_path):
     queue, sleeps = _run_worker(
+        tmp_path,
         ["--assume-idle", "--all-cores", "--max-idle", "2", "--poll-s", "15"],
         ready=0,
     )

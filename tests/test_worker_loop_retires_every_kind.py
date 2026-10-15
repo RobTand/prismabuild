@@ -19,6 +19,8 @@ sparklina OOM, reached without any agent doing anything wrong.
 from __future__ import annotations
 
 import importlib.util
+import json
+from functools import partial
 from pathlib import Path
 import socket
 import sys
@@ -85,10 +87,19 @@ def _run(tmp_path: Path, argv: list[str]):
     """
 
     wl = _worker_loop()
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(wl, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(wl.container_images, "InventoryCache", partial(
+             wl.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(wl.box_capacity, "trusted_gpu_sample",
                            side_effect=_gpu_sample), \
          mock.patch.object(sys, "argv",
@@ -184,10 +195,19 @@ def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
     _drifted(tmp_path, host, {"gpu": 4, "mem_gb": 96})
 
     wl = _worker_loop()
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(wl, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(wl.container_images, "InventoryCache", partial(
+             wl.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(box_capacity.CapacityObserver, "offer",
                            side_effect=lambda declared, _held, **_kw: dict(declared)), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \
