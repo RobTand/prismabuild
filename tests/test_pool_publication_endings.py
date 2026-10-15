@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import immutable_files
 from prismabuild import core as pb, pool
 from test_pool_requeue_preserves_newer_generation import (
     DEMAND, ENDINGS, KEY, _end_claim, _publish, clock, queue,
@@ -55,7 +56,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
 def test_interrupted_collision_keeps_first_persisted_successor(queue, clock, monkeypatch, persisted):
     original, first = _collision(queue, clock)
     address = queue.publication_ending_path(original)
-    publish = pb._atomic_publish
+    publish = immutable_files.publish_immutable
 
     def unavailable(path, raw, *args, **kwargs):
         if path == address:
@@ -65,7 +66,7 @@ def test_interrupted_collision_keeps_first_persisted_successor(queue, clock, mon
         return publish(path, raw, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pb, "_atomic_publish", unavailable)
+        patch.setattr(immutable_files, "publish_immutable", unavailable)
         with pytest.raises(OSError, match="decision write uncertain"):
             _end_claim(queue, original, "finish_retry", clock)
     attempt = queue.attempt_path(original, 1)

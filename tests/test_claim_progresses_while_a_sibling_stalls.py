@@ -44,6 +44,7 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from prismabuild import immutable_files
 from prismabuild import adaptive_cpu, pool
 
 #: Two preferred CPUs, so both items are seated on the preferred tier and
@@ -209,7 +210,7 @@ def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
 
 
 def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
-    original = pool.pb._atomic_publish
+    original = immutable_files.publish_immutable
     initialized = []
 
     def checked_publish(path, *args, **kwargs):
@@ -218,7 +219,7 @@ def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
             initialized.append(path)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(pool.pb, '_atomic_publish', checked_publish)
+    monkeypatch.setattr(immutable_files, 'publish_immutable', checked_publish)
     assert _claim(rig) is not None
     assert len(initialized) == 1
     assert json.loads(initialized[0].read_text()) == TIERS

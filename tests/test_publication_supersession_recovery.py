@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import immutable_files
 from prismabuild import core as pb, pool
 import pbrun
 
@@ -112,7 +113,7 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
     original, first_successor = _collision(queue, clock)
     generation = original["published_unix"]
     decision = _decision_path(queue, generation)
-    real_publish = pb._atomic_publish
+    real_publish = immutable_files.publish_immutable
 
     def uncertain_publish(path, raw, *args, **kwargs):
         if Path(path) == decision:
@@ -123,7 +124,7 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
 
     refused = False
     with monkeypatch.context() as patch:
-        patch.setattr(pb, "_atomic_publish", uncertain_publish)
+        patch.setattr(immutable_files, "publish_immutable", uncertain_publish)
         try:
             _end_claim(queue, original, "finish_retry", clock)
         except OSError as exc:

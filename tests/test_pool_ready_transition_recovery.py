@@ -8,6 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from prismabuild import immutable_files
 from prismabuild import pool
 
 KEY = 'a' * 64
@@ -65,7 +66,7 @@ def test_a_taken_valid_record_is_recovered_after_interruption(tmp_path, monkeypa
 def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monkeypatch):
     q, ready, _ = queue_and_record(tmp_path)
     ready.write_text(json.dumps({'action_key': KEY}))
-    real_publish = pool.pb._atomic_publish
+    real_publish = immutable_files.publish_immutable
 
     def publish(path, *args, **kwargs):
         if Path(path) == q.item_path(pool.FAILED, KEY):
@@ -73,7 +74,7 @@ def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monk
         return real_publish(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool.pb, '_atomic_publish', publish)
+        patch.setattr(immutable_files, 'publish_immutable', publish)
         with pytest.raises(OSError):
             q.quarantine_orphans()
     later = pool._now() + pool.LEASE_TIMEOUT_S * 2

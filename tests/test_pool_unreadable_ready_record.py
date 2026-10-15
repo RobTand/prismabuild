@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from prismabuild import immutable_files
 from prismabuild import pool  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -210,7 +211,7 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
     outcome = {"action_key": KEY_INVALID, "status": "worker_failed",
                "published_unix": 1.0}
     real_write = pool._write_json_atomic
-    real_publish = pool.pb._atomic_publish
+    real_publish = immutable_files.publish_immutable
 
     def race_write(path: Path, payload: object) -> object:
         if path == destination:
@@ -223,6 +224,6 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
         return real_publish(path, payload)
 
     monkeypatch.setattr(pool, "_write_json_atomic", race_write)
-    monkeypatch.setattr(pool.pb, "_atomic_publish", race_publish)
+    monkeypatch.setattr(immutable_files, "publish_immutable", race_publish)
     assert queue.quarantine_orphans() == [KEY_INVALID]
     assert json.loads(destination.read_text()) == outcome

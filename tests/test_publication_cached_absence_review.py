@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import immutable_files
 from prismabuild import core as pb, pool
 
 from test_pool_requeue_preserves_newer_generation import (
@@ -20,7 +21,7 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
     original, ready, successor = _collision(queue, clock)
     ready_bytes = ready.read_bytes()
     address = queue.publication_ending_path(original)
-    atomic_publish = pb._atomic_publish
+    atomic_publish = immutable_files.publish_immutable
 
     def unavailable(path, raw, *args, **kwargs):
         if Path(path) == address:
@@ -28,7 +29,7 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
         return atomic_publish(path, raw, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pb, "_atomic_publish", unavailable)
+        patch.setattr(immutable_files, "publish_immutable", unavailable)
         with pytest.raises(OSError, match="decision write unavailable"):
             _end_claim(queue, original, "finish_retry", clock)
     marks = list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
