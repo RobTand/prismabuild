@@ -5797,8 +5797,13 @@ scratch fits require measured capacity for every demanded kind;
 preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
-This extraction retains the timer rules' raw-capacity queries. Reusing the
-first advisory observation deliberately changes observation timing: a peer
+Both timer rules consult capacity remaining after earlier CPU-host or scratch
+yields in the pass. They do not charge capacity for their own yields.
+This avoids a second timer wait after another rule has already left a peer
+as much work as it fits; timer-only yields can still name more rows than the
+peer fits. These are advisory placement decisions, not peer reservations.
+
+Reusing the first advisory observation deliberately changes observation timing: a peer
 ledger or offer replacement after that read is ordinarily observed on the
 next claim pass, rather than on a later timer-rule read in this pass. The
 retained-base replay compares fixed observations and an explicit scratch

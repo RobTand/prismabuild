@@ -20244,7 +20244,7 @@ class PoolQueue:
             peer = placement.peer(host, offer)
             if peer is None:
                 continue
-            capacity = peer.raw
+            capacity = peer.remaining
             if capacity.fits_or_ledger(demand):
                 return {"host": host, "free_preferred": capacity.free_preferred,
                         "available": capacity.available,
@@ -20350,7 +20350,7 @@ class PoolQueue:
             peer = placement.peer(remote_host, offer)
             if peer is None:
                 continue
-            capacity = peer.raw
+            capacity = peer.remaining
             if capacity.fits_measured(demand):
                 return {"host": remote_host, "local_load": load,
                         "remote_load": remote_load, "gpu_job": gpu_job,
