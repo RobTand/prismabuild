@@ -7391,12 +7391,12 @@ class PoolQueue:
             # 2026-09-21 Stage A cycle, ordered by timing and refused by
             # nothing.
             #
-            # The check is exact rather than advisory: ``claim``, ``finish``,
-            # ``withdraw`` and the reapers all take this key's transition
-            # lock, which this method already holds, so nothing can move the
-            # key between the reads below and the write at the end.  The
-            # automatic republishers already look before they publish; what
-            # they could not do outside this lock is look atomically.
+            # The key lock serializes this check with other publishers,
+            # ``claim``, ``withdraw`` and the reapers. Ordinary ``finish``
+            # does not hold it across outcome publication: it owns an exact
+            # claim tombstone and its requeues link without replacing READY.
+            # These reads describe the addressed READY/CLAIMED rows, not an
+            # atomic snapshot of the entire finish transition.
             #
             # Not the default, and not a rule about the key.  An explicit
             # submission that lands on a live key is publishing a NEW
@@ -7638,19 +7638,11 @@ class PoolQueue:
     ) -> Path:
         """Turn a concluded claim back into a ready item; say where it goes.
 
-        Three producers write into ``ready``: ``publish`` above, ``finish``'s
-        retry branch and ``reap_stale``'s.  The two requeues each spelled the
-        shape out for themselves and had drifted apart -- one stamped the
-        outcome schema onto a queue item, the other left ``action_key`` to
-        whatever the claim happened to carry -- so one directory held records
-        a consumer could tell apart by which writer produced them.  Teaching
-        the readers to accept both is the fix that drifts again; one writer is
-        the fix that cannot.
-
-        The rules are the ones ``publish`` already keeps.  ``schema`` says what
-        kind of record this is, and a record in ``ready`` is an item, not an
-        outcome.  The filename is the identity, because every consumer
-        addresses an item by key.  Nothing claim-scoped survives.
+        Retries, unstarted releases and maintenance deferrals share the item
+        shape that ``publish`` writes. ``schema`` says what kind of record
+        this is, and a record in ``ready`` is an item, not an outcome. The
+        filename is the identity, because every consumer addresses an item
+        by key. Nothing claim-scoped survives.
 
         What does survive is the item's own history: ``attempts`` is what the
         next try is counted against, and ``status``, ``detail`` and
@@ -7670,15 +7662,21 @@ class PoolQueue:
     ) -> Path:
         """Publish a requeue without replacing another publication's READY row."""
         destination = self.item_path(READY, action_key)
-        _write_json_atomic(tombstone, record)
+        # Recovery must see the original claim's attempt count so it adopts
+        # the archived execution rather than charging the next attempt slot.
+        source = tombstone.with_name(f".{tombstone.name}.tmp")
         try:
-            os.link(tombstone, destination)
-        except FileExistsError:
-            return self._file_superseded(
-                record, key=action_key, kind=superseded_kind, status="dropped",
-                reason=superseded_reason,
-            )
-        return destination
+            _write_json_atomic(source, record)
+            try:
+                os.link(source, destination)
+            except FileExistsError:
+                return self._file_superseded(
+                    record, key=action_key, kind=superseded_kind, status="dropped",
+                    reason=superseded_reason,
+                )
+            return destination
+        finally:
+            source.unlink(missing_ok=True)
 
     # -- consumer -------------------------------------------------------
 
@@ -24655,7 +24653,7 @@ class PoolQueue:
                         record.get("unstarted_releases", 0) or 0) + 1
                     destination = self._shape_as_ready_item(record, action_key=key)
                     tombstone, mine = self._entomb_claim(key, expect=read_claim)
-                    if not mine:
+                    if not mine or tombstone is None:
                         # A retry is live under this key and owns everything the
                         # branch below would have taken.  Nothing has been written
                         # outside the superseded filing, which is evidence rather
@@ -24665,21 +24663,23 @@ class PoolQueue:
                     self._release_reservation(
                         key, host=holder if isinstance(holder, str) else socket.gethostname())
                     try:
-                        _write_json_atomic(destination, record)
+                        published = self._publish_requeued_claim(
+                            record, action_key=key, tombstone=tombstone,
+                            superseded_kind="unstarted-requeue",
+                            superseded_reason="a newer publication already owns ready "
+                                              "after unstarted claim release",
+                        )
                     except OSError:
-                        if tombstone is not None:
-                            try:
-                                os.link(tombstone, path)
-                            except OSError:
-                                pass
-                            else:
-                                tombstone.unlink(missing_ok=True)
+                        try:
+                            os.link(tombstone, path)
+                        except OSError:
+                            pass
+                        else:
+                            tombstone.unlink(missing_ok=True)
                         continue
-                    if tombstone is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        tombstone.unlink(missing_ok=True)
-                    requeued.append(key)
+                    tombstone.unlink(missing_ok=True)
+                    if published == destination:
+                        requeued.append(key)
                     continue
                 attempts = prior_attempts + 1
                 limit = int(record.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
@@ -24747,7 +24747,7 @@ class PoolQueue:
                 # so a worker that claimed the requeue inside that window had its
                 # claim and lease deleted by this reaper.
                 tombstone, mine = self._entomb_claim(key, expect=read_claim)
-                if not mine:
+                if not mine or tombstone is None:
                     # A retry is live under this key: its claim, lease and
                     # reservation are its own.  This loop has written nothing
                     # outside the attempt archive, which is immutable and
@@ -24773,24 +24773,29 @@ class PoolQueue:
                     keep_tier=(adopted.get("output_retry_stopped") is True
                                and self.pin_holds_tier_tokens(record, key)))
                 try:
-                    _write_json_atomic(destination, record)
+                    if disposition in {DONE, FAILED}:
+                        _write_json_atomic(destination, record)
+                    else:
+                        destination = self._publish_requeued_claim(
+                            record, action_key=key, tombstone=tombstone,
+                            superseded_kind="retry-superseded",
+                            superseded_reason="a newer publication already owns ready "
+                                              "after an earlier claim ended",
+                        )
                 except OSError:
                     # Put the claim back rather than leave the key with no record
                     # anywhere.  Link first: the tombstone must not replace a claim
                     # that appeared while this was in flight.
-                    if tombstone is not None:
-                        try:
-                            os.link(tombstone, path)
-                        except OSError:
-                            pass
-                        else:
-                            tombstone.unlink(missing_ok=True)
+                    try:
+                        os.link(tombstone, path)
+                    except OSError:
+                        pass
+                    else:
+                        tombstone.unlink(missing_ok=True)
                     continue
-                if tombstone is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    tombstone.unlink(missing_ok=True)
-                requeued.append(key)
+                tombstone.unlink(missing_ok=True)
+                if disposition in {DONE, FAILED} or destination == self.item_path(READY, key):
+                    requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
         self.sweep_finish_tombstones()
@@ -27020,7 +27025,15 @@ class PoolQueue:
                    if disposition in {DONE, FAILED} else None)
         if retired is not None:
             record["supersedes_terminal"] = retired[1]
-        _write_json_atomic(dst, record)
+        if disposition in {DONE, FAILED}:
+            _write_json_atomic(dst, record)
+        else:
+            dst = self._publish_requeued_claim(
+                record, action_key=action_key, tombstone=tombstone,
+                superseded_kind="retry-superseded",
+                superseded_reason="a newer publication already owns ready "
+                                  "after an earlier claim ended",
+            )
         if retired is not None:
             with suppress(FileNotFoundError):
                 retired[0].unlink()
@@ -27065,8 +27078,9 @@ class PoolQueue:
         reverse -- the earlier record stayed beside the new one and the key
         read as both (#1117).  Only a readable record of a different
         generation (``published_unix``) is archived; a same-generation pair
-        is not this method's to judge.  Called under the key's transition
-        lock, before the new terminal is written.
+        is not this method's to judge. Called by ``finish`` after it owns the
+        exact claim's tombstone, before the new terminal is written. Ordinary
+        ``finish`` does not hold the key's transition lock across this call.
 
         The record is copied whole to ``withdrawn/superseded/``, a name no
         terminal-state lookup reads.  Returns its live path, which the caller

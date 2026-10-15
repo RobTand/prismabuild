@@ -17724,3 +17724,42 @@ error ordering are unchanged. The reserve path alone rotates generations.
 The branch's [review and PR dispositions](refactor_review_2026-10-14.md) and
 [verification evidence](refactor_evidence_2026-10-14.json) describe the source
 change. Runtime publication remains a separate operation.
+
+### Requeue publication preserves a replacement generation
+
+Ordinary publication may queue a new generation while an older claim still
+owns the key's claim slot. A retry or unstarted release of that older claim
+must preserve an existing READY publication. Finish, stale-lease recovery,
+unstarted-claim recovery and broker deferral share one publication owner. It
+stages the shaped item beside the original claim tombstone, then hard-links
+it into READY without replacement. A collision files the old generation under
+`withdrawn/superseded/`. Charged retries retain their immutable attempt links;
+unstarted releases keep their uncharged accounting and release evidence.
+Maintenance deferral keeps its existing drop reason. Finish returns the
+superseded evidence path on collision, and recovery does not report that drop
+as a requeue of the old generation.
+The generic superseded record keeps `status="dropped"`; its filename kind
+`retry-superseded` names a concluded charged retry, while `unstarted-requeue`
+names a released uncharged claim displaced by an existing READY publication.
+
+The original tombstone retains the exact claim and prior attempt count until
+publication or collision filing succeeds. Recovery can therefore adopt the
+same immutable attempt after an interrupted publication without charging the
+next slot. Failed links or collision filings retain that recovery authority.
+The temporary shaped copy carries no claim authority; the publication helper
+removes it in its `finally` block.
+Ordinary finish does not hold the key transition lock across outcome filing;
+its existing exact-claim and tombstone guards protect cleanup. No broader
+locking, identity schema, admission rule or retry budget changes here.
+
+Superseded evidence is not a terminal verdict. An exact-generation G1 waiter
+does not read generic superseded drops, and an intermediate `requeued` attempt
+does not give the archive reader a terminal outcome. After G2 succeeds, that
+waiter still returns no ending for G1; ordinary republication does not authorize
+following G2. This existing maintenance-deferral limitation remains. G2's exact
+waiter reads G2's own ending, and the older generation's evidence stays retained.
+
+The test-only source parent reproduced three READY-generation losses in PB
+action `c28bdd67aea92a51224aaa57d295f080b588e6d95d6d235062eca3226065b5ea`.
+Source-bound verification of this fix remains pending. This component change
+does not promote staged-read deployment or workload-proof axes.

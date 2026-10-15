@@ -1,12 +1,14 @@
 """An older claim's retry cannot replace a newer publication of the same key."""
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 
 import pytest
 
 from prismabuild import pool
+import pbrun
 
 
 KEY = "f" * 64
@@ -79,6 +81,40 @@ def test_requeue_preserves_newer_ready_publication(
     assert not queue.item_path(pool.CLAIMED, KEY).exists()
     assert not queue.lease_path(KEY).exists()
     assert queue.ledger().held() == {}
+    filed = [json.loads(path.read_bytes())
+             for path in queue.superseded_dir().glob(f"{KEY}.*.json")]
+    retired = [record for record in filed if record.get("status") == "dropped"]
+    assert len(retired) == 1
+    assert retired[0]["published_unix"] == claim["published_unix"]
+    charged = ending in {"finish_retry", "reap_lease_lost"}
+    assert retired[0]["attempts"] == int(charged)
+    old_outcomes = queue.attempt_outcomes(retired[0])
+    assert len(old_outcomes) == int(charged)
+    if ending == "defer_unstarted":
+        assert retired[0]["reason"] == (
+            "a newer publication already owns ready after maintenance deferral"
+        )
+
+    successor = queue.claim(owner="new-publication", capacity=DEMAND)
+    assert successor is not None
+    assert successor["published_unix"] == newer["published_unix"]
+    assert successor["attempts"] == 0
+    terminal = json.loads(queue.finish(
+        KEY, status="executed", claim_snapshot=successor,
+    ).read_bytes())
+    assert terminal["published_unix"] == newer["published_unix"]
+    assert terminal["attempts"] == 1
+    assert [outcome["status"] for outcome in queue.attempt_outcomes(terminal)] == ["executed"]
+    assert queue.attempt_outcomes(retired[0]) == old_outcomes
+    assert not queue.attempt_path(claim, 2).exists()
+    assert queue.ledger().held() == {}
+    landed, watched = pbrun.outcome_poll(queue, KEY, newer["published_unix"])
+    assert landed is not None and landed[1]["status"] == "executed"
+    assert watched == newer["published_unix"]
+    # A superseded drop is retained evidence, not the old generation's verdict.
+    assert pbrun.outcome_poll(queue, KEY, claim["published_unix"]) == (
+        None, claim["published_unix"],
+    )
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -121,3 +157,81 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
     assert successor["attempts"] == int(charged)
     assert not pool._same_claim(successor, claim)
     assert queue.ledger().held() == DEMAND
+
+
+@pytest.mark.parametrize("ending", ENDINGS)
+@pytest.mark.parametrize("failure", ("link", "collision_filing"))
+def test_requeue_publication_error_retains_original_claim_for_recovery(
+    queue: pool.PoolQueue, clock: list[float], ending: str, failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publish(queue)
+    claim = queue.claim(owner="first-claim", capacity=DEMAND)
+    assert claim is not None
+    original_bytes = queue.item_path(pool.CLAIMED, KEY).read_bytes()
+    ready = queue.item_path(pool.READY, KEY)
+    if failure == "collision_filing":
+        clock[0] += 1
+        _publish(queue, priority=7)
+        newer_bytes = ready.read_bytes()
+
+    link = pool.os.link
+    file_superseded = queue._file_superseded
+
+    def failing_link(source, destination, *args, **kwargs):
+        if destination == ready:
+            raise OSError(errno.EIO, "requeue link unavailable")
+        return link(source, destination, *args, **kwargs)
+
+    def failing_filing(record, **stamps):
+        if stamps["kind"] in {"retry-superseded", "unstarted-requeue", "maintenance-deferred"}:
+            raise OSError(errno.EIO, "requeue collision filing unavailable")
+        return file_superseded(record, **stamps)
+
+    with monkeypatch.context() as patch:
+        if failure == "link":
+            patch.setattr(pool.os, "link", failing_link)
+        else:
+            patch.setattr(queue, "_file_superseded", failing_filing)
+        if ending.startswith("reap_"):
+            _end_claim(queue, claim, ending, clock)
+        else:
+            with pytest.raises(OSError, match="unavailable"):
+                _end_claim(queue, claim, ending, clock)
+
+    retained = [
+        *queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}"),
+        *queue.dir(pool.CLAIMED).glob(f"{KEY}.json"),
+    ]
+    assert len(retained) == 1
+    assert retained[0].read_bytes() == original_bytes
+    assert not queue.lease_path(KEY).exists()
+    assert queue.ledger().held() == {}
+    if failure == "collision_filing":
+        assert ready.read_bytes() == newer_bytes
+    else:
+        assert not ready.exists()
+
+    clock[0] += max(pool.LEASE_TIMEOUT_S, pool.HEARTBEAT_S) + 1
+    # A retained tombstone restores the claim on one poll, then concludes it.
+    queue.reap_stale()
+    queue.reap_stale()
+
+    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not list(queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}"))
+    assert queue.ledger().held() == {}
+    charged = ending in {"finish_retry", "reap_lease_lost"}
+    assert queue.attempt_path(claim, 1).exists() == charged
+    assert not queue.attempt_path(claim, 2).exists()
+    if failure == "collision_filing":
+        assert ready.read_bytes() == newer_bytes
+    else:
+        requeued = json.loads(ready.read_bytes())
+        assert requeued["published_unix"] == claim["published_unix"]
+        assert requeued["attempts"] == int(charged)
+        outcomes = queue.attempt_outcomes(requeued)
+        assert len(outcomes) == int(charged)
+        if charged:
+            assert outcomes[0]["status"] == (
+                "failed" if ending == "finish_retry" else "lease_lost"
+            )

@@ -55,17 +55,16 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
-    original_write = pool._write_json_atomic
+    original_publish = queue._publish_requeued_claim
     observed: dict[str, object] = {}
 
-    def write(path: Path, value: object) -> None:
-        original_write(path, value)
-        if path == queue.item_path(pool.READY, KEY_A):
-            # Another poll sees the retry the moment it is published.
-            observed["retry"] = queue.claim(
-                owner="attempt-2", capacity={"cpu": 1})
+    def publish(*args, **kwargs):
+        result = original_publish(*args, **kwargs)
+        # Poll after the real publication, before its caller removes the owner.
+        observed["retry"] = queue.claim(owner="attempt-2", capacity={"cpu": 1})
+        return result
 
-    with mock.patch.object(pool, "_write_json_atomic", write):
+    with mock.patch.object(queue, "_publish_requeued_claim", publish):
         result = queue.finish(
             KEY_A, status="failed", detail={"returncode": 1},
             claim_snapshot=first,
@@ -97,16 +96,15 @@ def test_reap_stale_does_not_delete_the_retrys_claim_or_lease(
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
-    original_write = pool._write_json_atomic
+    original_publish = queue._publish_requeued_claim
     observed: dict[str, object] = {}
 
-    def write(path: Path, value: object) -> None:
-        original_write(path, value)
-        if path == queue.item_path(pool.READY, KEY_A):
-            observed["retry"] = queue.claim(
-                owner="attempt-2", capacity={"cpu": 1})
+    def publish(*args, **kwargs):
+        result = original_publish(*args, **kwargs)
+        observed["retry"] = queue.claim(owner="attempt-2", capacity={"cpu": 1})
+        return result
 
-    with mock.patch.object(pool, "_write_json_atomic", write):
+    with mock.patch.object(queue, "_publish_requeued_claim", publish):
         assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
     assert observed["retry"] is None, "cleanup retains ownership until its tombstone is removed"
@@ -132,14 +130,10 @@ def test_a_finisher_interrupted_mid_publish_is_recovered(
     class Interrupted(Exception):
         pass
 
-    original_write = pool._write_json_atomic
+    def interrupted_publish(*args, **kwargs):
+        raise Interrupted
 
-    def write(path: Path, value: object) -> None:
-        if path == queue.item_path(pool.READY, KEY_A):
-            raise Interrupted
-        original_write(path, value)
-
-    with mock.patch.object(pool, "_write_json_atomic", write):
+    with mock.patch.object(queue, "_publish_requeued_claim", interrupted_publish):
         with pytest.raises(Interrupted):
             queue.finish(
                 KEY_A, status="failed", detail={"returncode": 1},
@@ -185,8 +179,8 @@ def test_a_redundant_tombstone_is_filed_and_never_restored(
     _publish(queue, max_attempts=2, retry_safe=True)
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
-    tombstone = queue._entomb_claim(KEY_A)
-    assert tombstone is not None
+    tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
+    assert mine and tombstone is not None
 
     # A submitter, finding the key nowhere, publishes it again.
     queue.item_path(pool.READY, KEY_A).unlink(missing_ok=True)
@@ -215,7 +209,8 @@ def test_a_tombstone_is_invisible_to_every_reader_of_claimed(
     _publish(queue)
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
-    assert queue._entomb_claim(KEY_A) is not None
+    tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
+    assert mine and tombstone is not None
 
     # The lease sweep reads claimed/ by its own glob and does not see a claim
     # beside the lease, so it treats the lease as widowed. That is the correct
