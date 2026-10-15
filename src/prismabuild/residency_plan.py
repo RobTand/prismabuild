@@ -208,7 +208,7 @@ def build_plan(*, consumer_action_key: str, tier_id: str, stage_root: str,
     its mover and its egress node will be published with.  The ranges are not
     invented here and must not be: a boundary that cut a manifest entry would
     hand a mover more bytes than its tokens reserved, and
-    ``storage_tiers.manifest_phase_ranges`` already refuses a phase table that
+    ``manifest_layout.manifest_phase_ranges`` already refuses a phase table that
     does not describe its own manifest.
 
     ``ram_tier_id`` names the tier the phases' ``ram_mover_row`` entries

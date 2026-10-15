@@ -7281,7 +7281,7 @@ Known limits:
 
 A movement node declares the half-open byte range of its consumer's read order
 it makes resident. The range comes out of the manifest the action already
-sealed — `storage_tiers.manifest_phase_ranges` reads the same running byte sum
+sealed — `manifest_layout.manifest_phase_ranges` reads the same running byte sum
 for v1 `annotations.phases` and v2 `read_plan.phases` that the prewarm role
 reads, through one shared refusal rule for both tables (#594): a missing,
 empty, repeated or non-string name, a non-integer cumulative, a step back, an
@@ -11170,7 +11170,7 @@ the manifest summary, as a v2 submission does.
 **Residency.** The placed manifest is an ordinary v2 plan, so the window
 stages its phases in plan order: the head, then the batch, then each replay
 window, whose own mover stages the head's entries again
-(`prewarm_loop.manifest_read_entries`, `entries_between`).
+(`manifest_layout.read_entries`, `manifest_layout.entries_between`).
 
 Limits:
 

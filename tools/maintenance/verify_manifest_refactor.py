@@ -73,6 +73,8 @@ def observed(function, *args, **kwargs):
 
 def capture(root: Path) -> list[dict]:
     sys.path[:0] = [str(root / "src"), str(root / "tools/fleet")]
+    from prismabuild import residency_plan
+
     if (root / "src/prismabuild/manifest_layout.py").exists():
         from prismabuild import manifest_layout as shared
         phased = shared
@@ -82,13 +84,16 @@ def capture(root: Path) -> list[dict]:
         from prismabuild import storage_tiers as phased
         import prewarm_loop as timeline
         read_entries = timeline.manifest_read_entries
-    for function in (phased.manifest_read_entries, timeline.manifest_phases, read_entries):
+    for function in (phased.manifest_read_entries, timeline.manifest_phases,
+                     read_entries, residency_plan.remaining, residency_plan.accepted):
         if not Path(function.__code__.co_filename).resolve().is_relative_to(root.resolve()):
             raise RuntimeError(f"comparison imported outside its checkout: {function}")
     results = []
     for manifest in corpus():
         phases = timeline.manifest_phases(manifest)
         entries = read_entries(manifest)
+        plan = {"phases": phases}
+        accepted_names = (None, "", "p0", "p1", "p3", "missing")
         results.append({
             "entries": entries,
             "phased_entries": observed(phased.manifest_read_entries, manifest),
@@ -108,6 +113,10 @@ def capture(root: Path) -> list[dict]:
                                 entry_bytes=[e["bytes"] for e in entries],
                                 window_bytes=window)
                        for size in (1, 7, 100) for window in (None, 4, 100)],
+            "remaining": [observed(residency_plan.remaining, plan, name)
+                          for name in accepted_names],
+            "accepted": [observed(residency_plan.accepted, plan, name)
+                         for name in accepted_names],
         })
     return results
 
@@ -140,7 +149,7 @@ def main() -> None:
                        enumerate(zip(*results, strict=True))
                        for key in before if before[key] != after[key]]
         raise SystemExit(f"manifest behavior changed: {differences}")
-    operations = len(results[0]) * (6 + 4 + 12 + 4 + 9)
+    operations = len(results[0]) * (6 + 4 + 12 + 4 + 9 + 6 + 6)
     print(json.dumps({"base": args.base, "manifests": len(results[0]),
                       "operation_results": operations, "equivalent": True}))
 
