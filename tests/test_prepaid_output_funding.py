@@ -32,6 +32,7 @@ from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from fleet_fixture import broker, damage, outputs, queue  # noqa: F401
+from output_producer_fixture import Outputs
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -172,64 +173,6 @@ def _ref(inst: dict, template: dict, batch_id: str, descs: list) -> dict:
         descriptors=descs, tier_id=TIER)
 
 
-def _file_batch(q: pool.PoolQueue, inst: dict, template: dict,
-                batch_id: str, descs: list[dict], mover: str) -> dict:
-    """Test-only commit filing (no ledger acquire; funding already moved).
-
-    Mirrors `commit_batch`'s durable filing (commitments entry + batch file)
-    without its second reservation from free, simulating the future 744
-    writer commit step (which will reference the pool funding generation).
-    Uses only existing produced-output validators + R4 loader-compatible
-    shapes; never touches the private `_funding_dir` intent.
-    """
-    import json as _json
-    manifest = po.output_manifest_sha256(descs)
-    total = sum(int(d["bytes"]) for d in descs)
-    classes = {"payload": 0, "checkpoint": 0, "temp": 0}
-    for d in descs:
-        classes[str(d["artifact_class"])] += int(d["bytes"])
-    ns = po.batch_namespace(inst, batch_id, manifest)
-    cpath = po._commitments_path(q.root, inst)
-    try:
-        commitments = po._read_commitments(cpath)
-    except po.ProducedOutputError:
-        commitments = {"batches": {}, "admission": None}
-    batches = dict(commitments.get("batches", {}))
-    batches[batch_id] = {
-        "manifest_digest": manifest,
-        "batch_namespace": ns,
-        "tier": TIER,
-        "mover_key": mover,
-        "class_bytes": dict(classes),
-        "retired": False,
-        "origin_reclaimed": False,
-    }
-    po._write_commitments(cpath, {"batches": batches,
-                                  "admission": commitments.get("admission")})
-    batch_dir = (Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                 / po.instance_namespace(inst))
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    record = {
-        "schema": po.BATCH_SCHEMA_V1,
-        "batch_id": batch_id,
-        "batch_namespace": ns,
-        "manifest_schema": po.BATCH_MANIFEST_SCHEMA_V1,
-        "manifest_digest": manifest,
-        "tier": TIER,
-        "mover_key": mover,
-        "class_bytes": dict(classes),
-        "total_bytes": total,
-        "entry_count": len(descs),
-        "entries": [dict(d) for d in descs],
-        "template_id": str(template["template_id"]),
-        "template_sha256": po.template_sha256(template),
-        "owner_action_key": str(inst["owner_action_key"]),
-        "owner_attempt": dict(inst["owner_attempt"]),
-        "unix": 1.0,
-    }
-    (batch_dir / f"{batch_id}.json").write_text(
-        _json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-    return record
 
 
 def _moved_nothing(q: pool.PoolQueue, mover: str) -> None:
@@ -252,14 +195,15 @@ def _moved_nothing(q: pool.PoolQueue, mover: str) -> None:
         "complete": False, "refusal": "residency_moved_nothing"})
 
 
-def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
+def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     """Window 2 -> fund 1 (free/total unchanged) -> commit -> claim once."""
     owner = _hexkey("prepaid-owner")
     mover = _hexkey("prepaid-mover")
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
     free0 = ledger.available().get(KIND)
     total0 = ledger.capacity().get(KIND)
@@ -297,7 +241,9 @@ def test_fund_claim_no_double_charge(tmp_path: Path) -> None:
     assert rec is not None and rec["state"] == "transferring"
 
     # Commit (filed batch, no second reservation), then claim consumes once.
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     got = q.claim(tags=[], owner="w-mover")
     # Owner window 2 + mover 1 demand: claim must take the funded mover
     # (mover row exists, owner already claimed). Poll until mover claimed
@@ -410,13 +356,14 @@ def test_transfer_tokens_exact_subset(tmp_path: Path) -> None:
     assert sum(ledger.capacity().values()) == total_before
 
 
-def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path) -> None:
+def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker) -> None:
     """Producer finishes before mover claims: cover recovers via DONE proof."""
     owner = _hexkey("fb-owner")
     mover = _hexkey("fb-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -433,7 +380,9 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path) -> None
                                  descriptors=descs)
     assert funded.get("ok") is True, funded
     # Commit before owner finish (future writer order: fund -> commit).
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     # Producer finishes BEFORE mover claims (normal finish path).
     q.finish(owner, status="executed")
     assert pool._read_json(q.item_path(pool.DONE, owner)) is not None
@@ -551,14 +500,15 @@ def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
 
 
 def test_fault_intent_transfer_claim_recover_via_finish_reaper(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, broker) -> None:
     """Inject at every boundary; normal finish/reaper resolves once."""
     owner = _hexkey("flt-owner")
     mover = _hexkey("flt-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -645,7 +595,9 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
 
     # Commit before claim (R2: cover requires filed commit, never prewrite).
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
 
     # 3) Claim record write fails -> unwind keeps fence, retry consumes once.
     real_claim_write = pool._write_json_atomic
@@ -718,14 +670,15 @@ def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path) -> None:
 
 
 def test_crash_after_ready_recovers_via_drive_commit_claim(
-        tmp_path: Path) -> None:
+        tmp_path: Path, broker) -> None:
     """Stage -> publish -> crash before drive/commit: recovery claims once."""
     owner = _hexkey("cr-owner")
     mover = _hexkey("cr-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -755,7 +708,9 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     assert driven.get("ok") is True, driven
     assert ledger.holder_tokens(owner).get(KIND, 0) == 1
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     got = q.claim(owner="w-cr")
     assert got is not None and got["action_key"] == mover, got
     rec = q.read_output_funding(mover, TIER)
@@ -814,13 +769,14 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path) -> None:
     assert ledger.available().get(KIND, 0) == cap
 
 
-def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
+def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     """Release retains on FAILED/receipt/lease; true not-started releases."""
     owner = _hexkey("nrel-owner")
     mover = _hexkey("nrel-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -837,7 +793,9 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     assert funded.get("ok") is True, funded
     gen = str(funded["generation"])
     # Commit so the mover is claimable (R2 gate), then claim => CLAIMED.
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     # Simulate mover started then failed with a partial receipt: file a
     # FAILED terminal + move receipt with staged bytes + lease.
     q.claim(owner="w-nrel")
@@ -871,14 +829,15 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path) -> None:
     assert rec2 is not None and rec2["state"] == "released"
 
 
-def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
+def test_required_absent_intent_gets_no_free_credit(tmp_path: Path, broker) -> None:
     """Deleted required intent (filed commit names mover, no intent file)."""
     owner = _hexkey("abs-owner")
     mover = _hexkey("abs-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -893,7 +852,9 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     # Delete the required intent file: mover is still required-output via the
     # filed commit signal. Claim must defer, never pay again from free.
     q.funding_output_path(mover, TIER).unlink()
@@ -921,14 +882,15 @@ def test_required_corrupt_intent_gets_no_free_credit(queue, outputs, damage) -> 
     assert ledger.available().get(KIND) == free_before
 
 
-def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
+def test_consumed_record_gets_no_free_credit(tmp_path: Path, broker) -> None:
     """Consumed output credit never falls through to fresh acquisition."""
     owner = _hexkey("con-owner")
     mover = _hexkey("con-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -943,7 +905,9 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path) -> None:
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     got = q.claim(owner="w-con")
     assert got is not None and got["action_key"] == mover, got
     q.finish(mover, status="executed")
@@ -1293,14 +1257,15 @@ def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path) -> N
     assert ledger.available().get(KIND) == free_before
 
 
-def test_claim_corrupt_projection_refuses(tmp_path: Path) -> None:
+def test_claim_corrupt_projection_refuses(tmp_path: Path, broker) -> None:
     """Tampered sealed projection + valid funding => refuse, no fresh (R4)."""
     owner = _hexkey("cp-owner")
     mover = _hexkey("cp-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1315,7 +1280,9 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path) -> None:
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     # Tamper the sealed projection in place (corrupt authority).
     ready_path = q.item_path(pool.READY, mover)
     row = pool._read_json(ready_path)
@@ -1524,20 +1491,20 @@ def test_transfer_tokens_concurrent_exclusion(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _real_cas_chain(tmp_path: Path, tag: str, *, squatter_seed: str = "rcq"):
+def _real_cas_chain(tmp_path: Path, tag: str, broker, *, squatter_seed: str = "rcq"):
     """Real sealed request -> stage -> publish (derived) -> fund -> batch.
 
     Returns everything the R7 claim tests assert on. The request is REAL
     (content-addressed key, real CAS publication), the projection is DERIVED
     from it at publish (never a kwarg), funding is an exact transfer of the
-    owner's existing window, and the batch is filed through the loader-
-    compatible commit shapes (`_file_batch`).
+    owner's existing window, and the batch is filed by the production commit_batch writer.
     """
     owner = _hexkey(f"{tag}-owner")
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1560,7 +1527,9 @@ def _real_cas_chain(tmp_path: Path, tag: str, *, squatter_seed: str = "rcq"):
                                  template=template, batch_id="b1",
                                  descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     return {"q": q, "ledger": ledger, "owner": owner, "mover": mover,
             "ref": ref, "cas": cas, "inst": inst, "template": template,
             "descs": descs, "squatter": _hexkey(f"{squatter_seed}-{tag}")}
@@ -1574,7 +1543,7 @@ def _exhaust_free(ledger, key: str) -> None:
     assert ledger.available().get(KIND, 0) == 0
 
 
-def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path) -> None:
+def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path, broker) -> None:
     """TRUE real-CAS flow claims through the prepaid cover (R7 RED).
 
     Sealed reference -> stage intent -> publish (derived projection) ->
@@ -1585,7 +1554,7 @@ def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path) -> None:
     matcher that demands the namespace from either carrier rejects every
     real production funding record and this flow never claims.
     """
-    chain = _real_cas_chain(tmp_path, "rc7")
+    chain = _real_cas_chain(tmp_path, "rc7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     _exhaust_free(ledger, chain["squatter"])
     free0 = ledger.available().get(KIND, 0)
@@ -1605,7 +1574,7 @@ def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path) -> None:
 
 
 def test_filed_request_without_ref_invented_projection_never_covers(
-        tmp_path: Path) -> None:
+        tmp_path: Path, broker) -> None:
     """Ref-less filed request + invented mutable projection => no cover (R7 RED).
 
     A successful mutable cover must not bypass immutable request agreement:
@@ -1619,7 +1588,8 @@ def test_filed_request_without_ref_invented_projection_never_covers(
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1649,7 +1619,9 @@ def test_filed_request_without_ref_invented_projection_never_covers(
                                  template=template, batch_id="b1",
                                  descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
+    committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
+                                tier=TIER, mover_key=mover)
+    assert committed.get("ok") is True, committed
     _exhaust_free(ledger, _hexkey(f"{tag}-squatter"))
     free0 = ledger.available().get(KIND, 0)
     claimed = q.claim(owner=f"w-{tag}-mover")
@@ -1661,14 +1633,14 @@ def test_filed_request_without_ref_invented_projection_never_covers(
 
 
 def test_filed_request_corrupt_after_funding_never_claims(
-        tmp_path: Path) -> None:
+        tmp_path: Path, broker) -> None:
     """Valid chain, then unreadable request bytes: unknown never covers (R7).
 
     The immutable request going unreadable after funding must defer the
     claim at admission (and at the renamed re-check), never execute on
     unknown evidence and never fall back to fresh acquisition.
     """
-    chain = _real_cas_chain(tmp_path, "cr7")
+    chain = _real_cas_chain(tmp_path, "cr7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     request_path = (chain["cas"].root / "requests" / mover[:2]
                     / f"{mover}.json")
@@ -1684,14 +1656,14 @@ def test_filed_request_corrupt_after_funding_never_claims(
     assert rec is not None and rec["state"] == "transferring"
 
 
-def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path) -> None:
+def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path, broker) -> None:
     """Mutable projection swapped to another batch => no cover, no fresh (R7).
 
     The row's projection must agree with the immutable request ref; a
     contradictory projection with otherwise-valid funding defers instead of
     covering or paying fresh.
     """
-    chain = _real_cas_chain(tmp_path, "cx7")
+    chain = _real_cas_chain(tmp_path, "cx7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     other = dict(chain["ref"], batch_id="b2")
     ready_path = q.item_path(pool.READY, mover)
@@ -1706,14 +1678,14 @@ def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path) -> None:
     assert ledger.available().get(KIND, 0) == free0
 
 
-def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path) -> None:
+def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) -> None:
     """Projection lost while funding survives: the request still rules (R7).
 
     Ref-loss of the mutable projection alone (funding record and filed batch
     intact) must defer on the immutable requirement; the funding file never
     silently becomes legacy fresh credit.
     """
-    chain = _real_cas_chain(tmp_path, "pl7")
+    chain = _real_cas_chain(tmp_path, "pl7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     ready_path = q.item_path(pool.READY, mover)
     row = pool._read_json(ready_path)
