@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -24,13 +26,22 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 def shard(files, rows=(), ran=True, record=True, never_ran=(), missing=()):
-    out = "== 1 passed in 1.0s =="
-    if record:
-        out += "\n" + pbtest_outcomes.PREFIX + json.dumps(
-            {"schema": pbtest_outcomes.SCHEMA, "reports": [list(r) for r in rows]})
-    return {"files": list(files), "ran": ran, "output": out, "receipt_path": "/r/x",
-            "action_key": "k-" + files[0],
-            "reconciliation": {"never_ran": list(never_ran), "missing_files": list(missing)}}
+    files = list(files)
+    rows = list(rows) or [(f + "::test_one", "call", "passed", None, None)
+                          for f in files if f not in missing]
+    selected = list(dict.fromkeys([r[0] for r in rows if r[1] != "collect"] + list(never_ran)))
+    counts = {}
+    for row in rows:
+        counts[row[2]] = counts.get(row[2], 0) + 1
+    summary = ", ".join(f"{n} {category}" for category, n in counts.items()) or "no tests ran"
+    out = summary + " in 1.0s" if ran else ""
+    if record and ran:
+        out += "\n" + pbtest_outcomes.PREFIX + json.dumps({"schema": pbtest_outcomes.SCHEMA,
+            "rootdir_relative": ".", "collect_only": False, "collected": selected,
+            "deselected": [], "collect_seen": [], "reports": [list(row) for row in rows], "uncounted": []})
+    return {"files": files, "ran": ran, "output": out, "receipt_path": "/r/x",
+            "returncode": 1 if not ran or any(r[2] in ("failed", "error") for r in rows) else 0,
+            "timed_out": False, "action_key": "k-" + files[0]}
 
 
 def test_a_report_reduces_to_failing_node_ids_and_unobserved_files():
@@ -46,10 +57,11 @@ def test_a_report_reduces_to_failing_node_ids_and_unobserved_files():
         shard(["tests/test_d.py"], record=False),
         shard(["tests/test_e.py"], missing=["tests/test_e.py"]),
     ]
-    result = mq.reduce_report(report, pbtest_outcomes)
+    result = mq.reduce_report(report, pbtest_outcomes,
+                              requested_files=[f for row in report for f in row["files"]])
     assert result.failed == {"tests/test_a.py::t_bad", "tests/test_a.py::t_err",
                              "tests/test_a.py::t_lost (never ran)", "tests/test_b.py"}
-    assert result.inconclusive == ["tests/test_c.py", "tests/test_d.py", "tests/test_e.py"]
+    assert result.inconclusive == ["tests/test_a.py", "tests/test_c.py", "tests/test_d.py", "tests/test_e.py"]
     assert mq.files_of(result.failed) == ["tests/test_a.py", "tests/test_b.py"]
     assert result.actions == ["k-tests/test_a.py", "k-tests/test_b.py", "k-tests/test_c.py",
                               "k-tests/test_d.py", "k-tests/test_e.py"]
@@ -460,31 +472,78 @@ def test_a_merge_github_keeps_refusing_leaves_the_queue_after_max_attempts(tmp_p
 
 
 PIN_REFUSAL = ("pbtest: dependency pin refused before pytest: "
-               "tools/resolve_prismabuild_dev_pin.py: expected commit=" + "a" * 40
-               + "; distribution=prismabuild installed commit=" + "b" * 40)
+               "tools/resolve_fleetfixture_dev_pin.py: expected commit=" + "a" * 40
+               + "; distribution=fleetfixture installed commit=" + "b" * 40
+               + "; require a non-editable Git install at the reviewed commit "
+                 "(local-directory installs do not record a Git commit)")
 
 
-def refused_process(monkeypatch, launches, message=PIN_REFUSAL, report=None):
+_COORDINATOR_REFUSAL = r"""
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location('native_refused_pbtest', sys.argv[1])
+pbtest = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pbtest)
+from prismabuild import capability_eligibility, contracts
+pbtest.pbrun.SH = pathlib.Path(sys.argv[2]) / 'fleet'
+missing = '/no/native-mergeq/python'
+pbtest.fleet_queue().announce(host='fixture', tags=[contracts.INTERPRETER_TAG], has_gpu=False,
+    capacity={'cpu': 1, 'mem_gb': 8}, timeout_ceiling_s=300,
+    capabilities=capability_eligibility.OfferCapabilities(
+        interpreters=capability_eligibility.InterpreterAnswers.from_observed([], [missing])))
+sys.argv = ['pbtest.py', '--checkout', sys.argv[2], '--python', missing,
+    '--threads-per-shard', '1', '--shards', '1', '--timeout-s', '60', '--json', sys.argv[3], 'tests']
+raise SystemExit(pbtest.main())
+"""
+
+
+def refused_process(monkeypatch, launches, message=PIN_REFUSAL, report=...):
     original = mq.subprocess.Popen
-
+    native = None
+    temporary = Path(tempfile.mkdtemp(prefix='mergeq-refusal-'))
+    if message == PIN_REFUSAL:
+        from test_pbtest_dependency_pins import fixture_checkout, pbtest
+        checkout, _ = fixture_checkout(temporary)
+        done = subprocess.run([*pbtest.shard_entry(sys.executable, checkout), '-q', 'tests'],
+            cwd=checkout, env={**os.environ, 'PYTHONPATH': 'src'}, capture_output=True, text=True, timeout=30)
+        assert done.returncode == 1 and not (checkout / 'pytest-ran').exists()
+        native = done.stdout + done.stderr
+        decision = next(json.loads(line[len(pbtest_outcomes.PREFLIGHT_PREFIX):])
+                        for line in native.splitlines() if line.startswith(pbtest_outcomes.PREFLIGHT_PREFIX))
+        assert decision['runtime_refusal']['message'] == PIN_REFUSAL
     class Refused:
-        def __init__(self, command, *, stdout, **kwargs):
+        def __init__(self, command, *, stdout, env, **kwargs):
             launches.append(command)
-            stdout.write(message + "\n")
+            destination = Path(command[command.index('--json') + 1])
+            if message.startswith('pbtest: every recorded worker'):
+                from test_pbtest_dependency_pins import fixture_checkout
+                checkout, _ = fixture_checkout(temporary)
+                done = subprocess.run([sys.executable, '-c', _COORDINATOR_REFUSAL,
+                    str(FLEET / 'pbtest.py'), str(checkout), str(destination)],
+                    env=env, capture_output=True, text=True, timeout=30)
+                assert done.returncode == 2 and not destination.exists()
+                captured = done.stdout + done.stderr
+                self.returncode = 2
+            else:
+                captured = native if native is not None else message
+                rows = report
+                if rows is ...:
+                    files = [arg for arg in command[2:] if arg.endswith('.py') and not arg.startswith('/')]
+                    rows = [shard(files, ran=False)]
+                if rows is not None:
+                    if native is not None:
+                        rows[0]['output'] = native
+                    destination.write_text(json.dumps(rows))
+                self.returncode = 1
+            stdout.write(captured + "\n")
             stdout.flush()
-            if report is not None:
-                Path(command[command.index("--json") + 1]).write_text(json.dumps(report))
-            self.pid, self.returncode = 4242, 1
-
+            self.pid = 4242
         def poll(self):
             return self.returncode
-
     def launch(command, **kwargs):
-        if command[0] == "git":
+        if command[0] == 'git' or command[0] == sys.executable and command[1] == '-c':
             return original(command, **kwargs)
         return Refused(command, **kwargs)
-
-    monkeypatch.setattr(mq.subprocess, "Popen", launch)
+    monkeypatch.setattr(mq.subprocess, 'Popen', launch)
 
 
 def test_pin_runtime_refusal_is_not_retried_as_an_unobserved_test(tmp_path, monkeypatch):
