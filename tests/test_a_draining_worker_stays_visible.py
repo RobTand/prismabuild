@@ -68,7 +68,7 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value,
     monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
     monkeypatch.setattr(role_session, "published_commit", lambda: "test")
     monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
-    monkeypatch.setattr(role_session, "published_generation", lambda: "test")
+    monkeypatch.setattr(role_session, "published_generation_name", lambda: "test")
     monkeypatch.setattr(role_session, "generation_drift",
                         lambda loaded_commit=None, loaded_generation=None: None)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)

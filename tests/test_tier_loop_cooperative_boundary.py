@@ -32,7 +32,7 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "loaded_runtime_commit", lambda: "fixed")
     monkeypatch.setattr(runtime, "published_commit", lambda: "fixed")
     monkeypatch.setattr(runtime, "loaded_generation", lambda: "fixed")
-    monkeypatch.setattr(runtime, "published_generation", lambda: "fixed")
+    monkeypatch.setattr(runtime, "published_generation_name", lambda: "fixed")
     args = SimpleNamespace(pool_root=str(tmp_path / "queue"), source_pool=None,
                            interval_s=1.0, once=True)
     events = []

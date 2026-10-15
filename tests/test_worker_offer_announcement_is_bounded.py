@@ -48,7 +48,7 @@ def test_blocked_offer_returns_without_admission(tmp_path):
                  patch.object(role_session, 'loaded_runtime_commit', return_value='fixed'), \
                  patch.object(role_session, 'published_commit', return_value='fixed'), \
                  patch.object(role_session, 'loaded_generation', return_value='fixed'), \
-                 patch.object(role_session, 'published_generation', return_value='fixed'), \
+                 patch.object(role_session, 'published_generation_name', return_value='fixed'), \
                  patch.object(worker.cpu_topology, 'inherited_tiers', return_value=None), \
                  patch.object(sys, 'argv', argv):
                 result = {'returncode': worker._run_loop(lambda: False)}
