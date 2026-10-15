@@ -185,7 +185,7 @@ def _observe_trust_loss(warm, loss):
     # Bare versions have not changed; the refusal must be about current trust.
     for path, version in warm["files"].items():
         assert stage_release._path_version(path) == version
-        bare, trusted = stage_release._fenced_path_version(path, kept_reads.version_fence())
+        bare, trusted = stage_release._fenced_path_version(path, kept_reads.filesystem_trust.file_fence())
         assert bare == version
         if loss.startswith("file-") or loss in ("watch-error", "namespace-change"):
             assert trusted is None
@@ -193,7 +193,7 @@ def _observe_trust_loss(warm, loss):
             assert trusted == version  # dir-only loss leaves file proof intact
     for path, version in warm["directories"].items():
         assert stage_release._directory_version(path) == version
-        current = kept_reads.current_directory_version(Path(path))
+        current = kept_reads.filesystem_trust.directory_current(Path(path))
         if loss.startswith("dir-") or loss in ("watch-error", "namespace-change"):
             assert current is None
         else:
@@ -280,7 +280,7 @@ def test_paused_exact_fdinfo_io_does_not_block_unrelated_direct_lookup(kernel, m
 
     def fallback():
         try:
-            results["fallback"] = kept_reads.keepable_version(
+            results["fallback"] = kept_reads.filesystem_trust.file_version(
                 info, kernel.now, path=kernel.record)
         except BaseException as exc:
             errors.append(exc)

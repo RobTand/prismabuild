@@ -1,10 +1,10 @@
 """A warm listing is kept while its filesystem is trusted, and not after (#1208).
 
 ``kept_reads.DirectoryRecords`` keeps a directory's listing and its parsed
-records under a stamp taken by ``kept_reads.trusted_directory_stamp``.  The
+records under a stamp taken by ``kept_reads.filesystem_trust.directory_before``.  The
 stamp's argument rests on the directory's times coming from this kernel's
 clock, and every read compares the remembered stamp with
-``kept_reads.current_directory_version``.  That comparison must re-check the
+``kept_reads.filesystem_trust.directory_current``.  That comparison must re-check the
 filesystem's trust too: a mount can change under a kept listing, and the
 stamp's argument leaves with it.  Without the re-check a warm cache reuses
 records the filesystem no longer answers for, and a checkpoint whose header
@@ -85,19 +85,19 @@ def test_the_current_version_is_refused_once_trust_leaves(
         kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "zfs")
-    assert kept_reads.current_directory_version(directory) is not None
+    assert kept_reads.filesystem_trust.directory_current(directory) is not None
 
     monkeypatch.setattr(
         kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "nfs4")
-    assert kept_reads.current_directory_version(directory) is None
+    assert kept_reads.filesystem_trust.directory_current(directory) is None
 
     monkeypatch.setattr(
         kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: None)
-    assert kept_reads.current_directory_version(directory) is None
+    assert kept_reads.filesystem_trust.directory_current(directory) is None
 
 
 def test_a_warm_listing_is_read_again_when_its_trust_leaves(

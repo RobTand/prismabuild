@@ -6,7 +6,7 @@ unlinked and another created under the same name in one coarse clock tick
 (1 ms on the Sparks) can be given the freed inode number, and with the same
 size all five fields match: the old record would be served until the file
 changed again.  The directory stamp already refuses a version not strictly
-before a clock read taken first (``kept_reads.trusted_directory_stamp``);
+before a clock read taken first (``kept_reads.filesystem_trust.directory_before``);
 these tests hold each kept file version to the same rule.
 
 The tick is modelled, not raced: the coarse clock is pinned to the file's

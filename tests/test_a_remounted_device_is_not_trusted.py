@@ -1,6 +1,6 @@
 """A device number remounted as another filesystem is judged again (#992).
 
-``kept_reads.trusted_directory_stamp`` trusts a directory's stamp only on a
+``kept_reads.filesystem_trust.directory_before`` trusts a directory's stamp only on a
 filesystem whose directory times come from this kernel's clock, and it finds
 the type by the device's ``major:minor`` in ``/proc/self/mountinfo``.  The
 answer used to be remembered per device for the life of the process.
@@ -90,11 +90,11 @@ def _settled_directory(tmp_path: Path, monkeypatch) -> Path:
 def test_a_device_remounted_as_another_type_is_not_trusted(
         table: _MountTable, tmp_path: Path, monkeypatch) -> None:
     directory = _settled_directory(tmp_path, monkeypatch)
-    assert kept_reads.trusted_directory_stamp(directory) is not None
+    assert kept_reads.filesystem_trust.directory_before(directory) is not None
     # The same device number, now an NFS mount: the kernel signals the
     # change, and the next stamp is judged on the table as it now reads.
     table.remount(_table(os.stat(tmp_path).st_dev, "nfs4"))
-    assert kept_reads.trusted_directory_stamp(directory) is None
+    assert kept_reads.filesystem_trust.directory_before(directory) is None
 
 
 def test_an_unchanged_table_is_not_read_again(
@@ -102,9 +102,9 @@ def test_an_unchanged_table_is_not_read_again(
     """Without the signal the remembered type stands: no read per stamp."""
 
     directory = _settled_directory(tmp_path, monkeypatch)
-    assert kept_reads.trusted_directory_stamp(directory) is not None
+    assert kept_reads.filesystem_trust.directory_before(directory) is not None
     table.text = _table(os.stat(tmp_path).st_dev, "nfs4")
-    assert kept_reads.trusted_directory_stamp(directory) is not None
+    assert kept_reads.filesystem_trust.directory_before(directory) is not None
 
 
 def test_the_kernel_signal_is_read_without_raising() -> None:

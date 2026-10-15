@@ -95,9 +95,9 @@ def test_nsfs_row_is_classified_but_never_local_clock_evidence(kernel):
     observations._read(reader, kernel)
     observations._read(reader, kernel)
     assert observations._counts(reader) == (2, 0, 2)
-    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
-    assert kept_reads.current_directory_version(kernel.directory) is None
-    assert kept_reads.keepable_version(
+    assert kept_reads.filesystem_trust.directory_before(kernel.directory) is None
+    assert kept_reads.filesystem_trust.directory_current(kernel.directory) is None
+    assert kept_reads.filesystem_trust.file_version(
         os.stat(kernel.record), kernel.now, path=kernel.record) is None
 
 
@@ -137,8 +137,8 @@ def test_nsfs_exception_cannot_accept_malformed_or_ambiguous_table(kernel, inval
     second = observations._read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
     assert observations._counts(reader) == (2, 0, 2)
-    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
-    assert kept_reads.current_directory_version(kernel.directory) is None
+    assert kept_reads.filesystem_trust.directory_before(kernel.directory) is None
+    assert kept_reads.filesystem_trust.directory_current(kernel.directory) is None
 
 
 @pytest.mark.parametrize("loss", ["nfs4", "unknown", "watch-error", "namespace-change"])

@@ -416,8 +416,8 @@ def test_inference_refusals_do_not_keep_records(kernel, refusal):
     second = _read(reader, kernel)
     assert first == second == [(kernel.record, {"v": 1})]
     assert _counts(reader) == (2, 0, 2)
-    assert kept_reads.trusted_directory_stamp(kernel.directory) is None
-    assert kept_reads.current_directory_version(kernel.directory) is None
+    assert kept_reads.filesystem_trust.directory_before(kernel.directory) is None
+    assert kept_reads.filesystem_trust.directory_current(kernel.directory) is None
 
 
 @pytest.mark.parametrize("fstype", ["nfs4", "fuse.fixture"])
@@ -473,10 +473,10 @@ def test_same_tick_record_is_not_kept(kernel, direct_match):
 def test_symlink_is_not_a_trusted_directory(kernel):
     link = kernel.directory.parent / "link"
     link.symlink_to(kernel.directory, target_is_directory=True)
-    assert kept_reads.trusted_directory_stamp(link) is None
-    assert kept_reads.current_directory_version(link) is None
-    assert kept_reads.trusted_directory_stamp(kernel.record) is None
-    assert kept_reads.current_directory_version(kernel.record) is None
+    assert kept_reads.filesystem_trust.directory_before(link) is None
+    assert kept_reads.filesystem_trust.directory_current(link) is None
+    assert kept_reads.filesystem_trust.directory_before(kernel.record) is None
+    assert kept_reads.filesystem_trust.directory_current(kernel.record) is None
 
 
 def test_parse_refusal_never_becomes_a_kept_listing(kernel):
@@ -548,17 +548,17 @@ def test_contradictory_device_types_cannot_fall_back_to_local(kernel):
 
 def test_file_fallback_requires_matching_live_descriptor_or_path(kernel):
     info = os.stat(kernel.record)
-    assert kept_reads.keepable_version(info, kernel.now) is None
-    assert kept_reads.keepable_version(info, kernel.now, path=kernel.directory) is None
+    assert kept_reads.filesystem_trust.file_version(info, kernel.now) is None
+    assert kept_reads.filesystem_trust.file_version(info, kernel.now, path=kernel.directory) is None
     descriptor = os.open(kernel.record, os.O_PATH | os.O_CLOEXEC)
     wrong = os.open(kernel.directory, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         version = kept_reads.metadata_version(info)
-        assert kept_reads.keepable_version(
+        assert kept_reads.filesystem_trust.file_version(
             info, kernel.now, descriptor=descriptor) == version
-        assert kept_reads.keepable_version(
+        assert kept_reads.filesystem_trust.file_version(
             info, kernel.now, descriptor=wrong) is None
-        assert kept_reads.keepable_version(
+        assert kept_reads.filesystem_trust.file_version(
             info, kernel.now, descriptor=descriptor, path=kernel.directory) is None
         assert os.fstat(descriptor).st_ino == info.st_ino  # caller still owns FD
     finally:
@@ -567,23 +567,22 @@ def test_file_fallback_requires_matching_live_descriptor_or_path(kernel):
 
 
 def test_inferred_directory_type_is_not_an_alias_for_another_descriptor(kernel):
-    assert kept_reads.trusted_directory_stamp(kernel.directory) is not None
+    assert kept_reads.filesystem_trust.directory_before(kernel.directory) is not None
     # The next exact descriptor selects the nonlocal row of the same table.
     kernel.mount_id = 77
     info = os.stat(kernel.record)
-    assert kept_reads.keepable_version(info, kernel.now, path=kernel.record) is None
+    assert kept_reads.filesystem_trust.file_version(info, kernel.now, path=kernel.record) is None
 
 
 def test_listing_local_boolean_cannot_survive_a_watch_trust_loss(kernel):
     kernel.table_device = OBSERVED_DEVICE
-    local = {OBSERVED_DEVICE: True}
     info = os.stat(kernel.record)
-    assert kept_reads.keepable_version(
-        info, kernel.now, local=local, path=kernel.record) is not None
+    assert kept_reads.filesystem_trust.file_version(
+        info, kernel.now, path=kernel.record) is not None
     kernel.fstype = "nfs4"
     kernel.generation += 1
-    assert kept_reads.keepable_version(
-        info, kernel.now, local=local, path=kernel.record) is None
+    assert kept_reads.filesystem_trust.file_version(
+        info, kernel.now, path=kernel.record) is None
 
 
 @pytest.mark.parametrize("direct_match", [True, False])
