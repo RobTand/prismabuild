@@ -16,7 +16,31 @@ The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
 `36cebfbcc189`, based on `6073c9d36555`. Newer source is named below.
 
-The accumulation at `09a4dd3f6c151f18f63a78f567c410a57755d6c9` includes the
+The current code checkpoint is `8dacf78510df19bdb746f581b5b30a49e630625c`.
+It combines C01 qualification/pre-host preparation, the complete C11 capture
+owner and C25 decomposition record operations. Its full configured suite passed
+14,819 cases with 24 unchanged capability/opt-in skips across 1,005 complete
+files and 14,843 unique cases. Six auxiliary subtests passed separately. Every
+source, terminal, complete-log and CAS receipt/payload chain was verified.
+All twelve actual snapshot bundles contain the exact 1,431 tracked source
+entries, modes and object identities; their only extra is the generated closure.
+The independently derived case roster matches exactly, including the three
+previously approved decomposition repairs. All 378 expanded public-claim files
+ran, covering 6,296 cases with no failures.
+
+The earlier combined `5ee56bb83bb887749b2d47128566f18002f5911f` run remains
+failed: 14,817 passed, 24 skipped and two architecture checks failed. The
+correction removes a directory helper with no production callers, moves its
+two test callers to native filesystem observations and uses the digest owner
+in the source-audit tool. No allowlist was widened. Two clock-settling helpers
+also use the existing logical fence over actual filesystem observations.
+All 113 assertions and 27 templates in the three edited test modules remain.
+The focused 50-file correction gate passed all 845 cases with exact node
+retention; independent review found no issue. Evidence is under
+`integrated-claim-capture-decomposition/` and `test-cleanup-completion/` in the
+refactor evidence directory. This checkpoint does not complete the full brief.
+
+The earlier checkpoint at `09a4dd3f6c151f18f63a78f567c410a57755d6c9` includes the
 ordinary installed package boundary and arbitration test cleanup. The package
 exports its actual progress objects eagerly, loads its two broad module exports
 on request, and keeps role receipt, drift, lock and park operations on their
@@ -66,20 +90,27 @@ large-workload performance or measured flake-rate claim. Rerunnable source and
 node audits, actual mutation diffs and evidence are under
 `/home/rob/tmp/prismabuild-refactor-mailbox-20261015/arbitration-shape/`.
 
-C01 T-qualification remains isolated at `503fb73a059ecd20a96af83c543b06a88df154d0`:
-all 3,268 cases across 159 full files passed, retaining all 3,204 Unit A nodes
-plus 64. All nine pre-H characterization cases subsequently passed at
-`d71bcf04d52b85bb4a846c3f20f576c984fb6fe9`; their protocol move is in progress.
-The decomposition null-result preservation control passed at
-`34a92654f3d936e393c28d175f03f97c82f971c2`, alongside exactly the eleven earlier
-intended call failures. C11's expanded 47-file baseline at
-`75dc5fc42d3cb4d6f5547af46f661ab16e85eea4` contains 812 passes and five observed
-consumer assertion failures. These cover current trust loss, failed scan or
-acquisition, an older capture replacing a newer capture, and a late result
-surviving invalidation. Its older-reader abort control passes. The shared
-capture implementation and final decomposition reader remain unqualified.
-These checkpoints do not change the frozen 93424 requirement assessment or
-close the complete brief.
+C01's complete A-D preparation wave passed 3,271 cases across 159 full files
+at `ad487a863417cc74bdb78ba3eb7f7bbda5126d61`, then joined the full checkpoint.
+Independent review found an incomplete public-caller roster; the expanded
+378-file actual run above closes that coverage omission. Census arbitration,
+host-result composition, tiers/rename, publication and the small structural
+driver remain separate implementation waves.
+
+Corrected C11 passed all 837 cases across 49 complete files at
+`82dd995cea1a419dd347e36a830a42d785562985`. Its five old consumer REDs became
+green. Independent review also exposed a path-proof/scan mismatch; an actual
+symlink/.. consumer control reproduced it, and capture now proves the original
+scanned path. Ledger tests now observe actual census recovery and EIO behavior
+instead of inspecting the former cache dictionary.
+
+Complete C25 passed all 1,155 cases across 38 complete files at
+`b7e9aab72a99cb80ef373a32e5f831f0978c29e7`. Native result controls preserve
+the old receipted-null distinction between campaign and bound query, alongside
+bounded reads, publication binding and first-writer behavior. Both complete
+waves have independent reviews and joined the full checkpoint. Their
+[source follow-up assessment](refactor_completion_followup_8d_2026-10-15.md)
+does not rewrite the frozen 93424 audit or claim the other cards complete.
 
 ## Agreed engineering choices
 
