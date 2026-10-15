@@ -35,6 +35,11 @@ LOSSES = ("file-nfs4", "file-unknown", "dir-nfs4", "dir-unknown",
           "watch-error", "namespace-change")
 
 
+def _observed_directory_identity(path):
+    info = os.lstat(path)
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+
+
 class _CheckpointKernelFacts(observations._KernelFacts):
     """Distinct file/dir mounts, each bound to explicitly registered objects.
 
@@ -168,7 +173,7 @@ def warm_checkpoint(fleet, monkeypatch):
         assert (index.stale_skipped, index.stale_censused) == (1, 1)
         files = {str(path): stage_release._path_version(path)
                  for path in (fragment, material)}
-        directories = {name: stage_release._directory_version(name) for name in parents}
+        directories = {name: _observed_directory_identity(name) for name in parents}
         assert all(version is not None for version in (*files.values(), *directories.values()))
         yield {
             "kernel": facts, "key": key, "fragment": fragment, "material": material,
@@ -192,7 +197,7 @@ def _observe_trust_loss(warm, loss):
         else:
             assert trusted == version  # dir-only loss leaves file proof intact
     for path, version in warm["directories"].items():
-        assert stage_release._directory_version(path) == version
+        assert _observed_directory_identity(path) == version
         current = kept_reads.filesystem_trust.directory_current(Path(path))
         if loss.startswith("dir-") or loss in ("watch-error", "namespace-change"):
             assert current is None

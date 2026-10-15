@@ -2631,26 +2631,6 @@ def _fenced_path_version(path: Path | str, fence: int | None,
         info, fence, path=path, follow_symlinks=False)
 
 
-def _directory_version(path: Path | str) -> tuple[int, int, int, int] | None:
-    """Change evidence for one immediate parent directory, or ``None``.
-
-    ``lstat`` says what the name is, so a symlink or anything else is never a
-    directory the skip cache may stand on.  Device and inode catch a
-    replacement of the directory itself (an ancestor rename resolves to a
-    fresh inode), mtime catches a rename into or out of it, and ctime catches
-    a metadata replacement that leaves mtime alone.
-    """
-
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return None
-    if not statmod.S_ISDIR(info.st_mode):
-        return None
-    return (info.st_dev, info.st_ino, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
-
-
 def _skip_checkpoint_key(queue: pool.PoolQueue, root: Path, stage: Path,
                          tier_id: str, consumer_action_key: str,
                          mover_action_key: str) -> tuple:

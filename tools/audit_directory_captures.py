@@ -6,11 +6,14 @@ import argparse
 import ast
 import collections
 import csv
-import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from prismabuild.digest_primitives import raw_sha256
 
 
 def main():
@@ -178,7 +181,7 @@ def main():
     table('all-paths.tsv', ['path', 'role', 'bytes', 'sha256'], [
         (name, 'test' if name in test_files else 'test-helper' if name in tests else
          'production-support' if name in code else 'asset-config', len(blobs[name]),
-         hashlib.sha256(blobs[name]).hexdigest()) for name in paths])
+         raw_sha256(blobs[name])) for name in paths])
     table('test-import-literal-closure.tsv', ['from', 'to', 'kind', 'line', 'literal'],
           sorted(row for row in reasons if row[0] in tests or row[0] in configs))
     table('loader-sites.tsv', ['path', 'line', 'called', 'expression'],
@@ -218,7 +221,7 @@ def main():
                'old_templates_preserved': sum(row[-1] == 'preserved' for row in assertions),
                'new_templates': sum(row[-1] == 'added' for row in assertions),
                'closure_files': len(paths), 'failures': failures,
-               'execution': 'Git, text, AST only. No project/test imports or runtime checks.'}
+               'execution': 'Git, text and AST inspection with the shared digest profile. No tests or project runtime checks.'}
     (args.out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
     return int(bool(failures))
