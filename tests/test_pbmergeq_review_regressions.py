@@ -122,7 +122,10 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
     launched = []
 
     class Completed:
-        pid, returncode = 4242, 1
+        pid = 4242
+
+        def __init__(self, returncode):
+            self.returncode = returncode
 
         def poll(self):
             return self.returncode
@@ -147,7 +150,7 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
         report.write_text(json.dumps(rows))
         kwargs["stdout"].write(rows[0]["output"] + "\n")
         kwargs["stdout"].flush()
-        return Completed()
+        return Completed(rows[0]["returncode"])
 
     monkeypatch.setattr(mq.subprocess, "Popen", launch)
     batch = queue.run_batch(entries(1, 2, 3))
