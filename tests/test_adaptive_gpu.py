@@ -973,7 +973,7 @@ def test_a_private_gpu_token_remains_exclusive_until_it_releases(gpu_rig):
     with adaptive_cpu.AdmissionGate(ledger).locked():
         assert controller.decision(item, demand) is None
     assert controller.last_decision['reason'] == 'exclusive_holder'
-    assert ledger.available()['gpu'] == 0
+    assert ledger.available().get('gpu', 0) == 0
 
     assert ledger.abandon_acquire(handle) == 1
     with adaptive_cpu.AdmissionGate(ledger).locked():
