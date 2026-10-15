@@ -2,12 +2,94 @@
 import json
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
-_KEY_SAFE = frozenset("0123456789abcdefghijklmnopqrstuvwxyz"
-                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ._")
 _DRAIN_OWNER_LIMIT = 200
 _DRAIN_REASON_LIMIT = 1000
+HOST_QUIESCENT = frozenset({"worker_loop.py", "worker.py", "prewarm_loop.py"})
+MEMBER_LOOPS = frozenset({"worker_loop.py"})
+
+
+@dataclass(frozen=True)
+class DrainIdentity:
+    key: str
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    starttime: str
+
+
+@dataclass(frozen=True)
+class ProofUnknown:
+    reason: str
+
+
+@dataclass(frozen=True)
+class ParkAcknowledgements:
+    unparked: tuple[int, ...] = ()
+    unknown: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.unparked and not self.unknown
+
+
+def drain_identity(gate: object) -> DrainIdentity | ProofUnknown:
+    """Parse a closed drain into its exact, injective marker key."""
+    if not isinstance(gate, dict) or gate.get("draining") is not True:
+        return ProofUnknown("maintenance gate is not explicitly closed")
+    stamp = gate.get("changed_unix")
+    if type(stamp) not in (int, float):
+        return ProofUnknown("maintenance gate has no numeric drain identity")
+    try:
+        finite = math.isfinite(stamp)
+    except OverflowError:
+        finite = False
+    if not finite:
+        return ProofUnknown("maintenance gate drain identity is not finite")
+    key = str(stamp).replace("e-", "em").replace("e+", "ep")
+    if key.startswith("-"):
+        key = "_" + key[1:]
+    return DrainIdentity(key)
+
+
+def process_identity(pid: object, starttime: object) -> ProcessIdentity | ProofUnknown:
+    """Parse PID and Linux start ticks without coercing unknown evidence."""
+    if type(pid) is not int or pid <= 0:
+        return ProofUnknown("process PID is not a positive integer")
+    if (not isinstance(starttime, str) or not starttime
+            or not starttime.isascii() or not starttime.isdecimal()):
+        return ProofUnknown("process start ticks are not ASCII decimal digits")
+    return ProcessIdentity(pid, starttime)
+
+
+def marker_name(process: ProcessIdentity, drain: DrainIdentity) -> str:
+    return f"{process.pid}-{process.starttime}-{drain.key}"
+
+
+def acknowledgements(*, processes: list[tuple[int, str]], markers: set[str],
+                     gate_before: object, gate_after: object) -> ParkAcknowledgements:
+    """A selected census acknowledges only a known, unchanged physical drain."""
+    before = drain_identity(gate_before)
+    after = drain_identity(gate_after)
+    if isinstance(before, ProofUnknown):
+        return ParkAcknowledgements(unknown=(before.reason,))
+    if isinstance(after, ProofUnknown):
+        return ParkAcknowledgements(unknown=(after.reason,))
+    if before != after:
+        return ParkAcknowledgements(unknown=("maintenance gate changed during census",))
+    unparked = []
+    unknown = []
+    for pid, starttime in processes:
+        process = process_identity(pid, starttime)
+        if isinstance(process, ProofUnknown):
+            unknown.append(process.reason)
+        elif marker_name(process, before) not in markers:
+            unparked.append(process.pid)
+    return ParkAcknowledgements(tuple(unparked), tuple(unknown))
 
 
 
@@ -87,44 +169,48 @@ def process_starttime(pid: int) -> str:
     return fields[19] if len(fields) > 19 else "unknown"
 
 
-def gate_key(gate: dict) -> str:
-    """This drain's identity, as the broker already stamps it.
-
-    ``maintenance_begin`` stamps a new drain with a fresh ``changed_unix``
-    and preserves it while that drain remains held, so the field names
-    this drain and not the last one, and a reader matching on it reads a marker
-    left by an earlier drain as what it is. ``reason`` is descriptive text,
-    not the identity of a drain.
-
-    A gate with no identity gets a key no reader matches, which leaves the host
-    reading as not drained.
-    """
-
-    value = gate.get("changed_unix") if isinstance(gate, dict) else None
-    if value is None:
-        return "unknown"
-    return "".join(c if c in _KEY_SAFE else "_" for c in str(value))
+def gate_key(gate: object) -> str:
+    """The display key for this drain; ``unknown`` is never proof identity."""
+    identity = drain_identity(gate)
+    return identity.key if isinstance(identity, DrainIdentity) else "unknown"
 
 
 def parked_markers(parked_root: Path, gate: dict | None) -> list[Path]:
     """Markers naming exactly this drain epoch (old epochs never count)."""
-    if gate is None:
+    drain = drain_identity(gate)
+    if isinstance(drain, ProofUnknown):
         return []
-    key = gate_key(gate)
     if not parked_root.is_dir():
         return []
+    accepted = []
     try:
-        return sorted(p for p in parked_root.glob(f"*-{key}") if p.is_file())
+        for path in parked_root.glob(f"*-{drain.key}"):
+            fields = path.name.split("-", 2)
+            if (len(fields) != 3 or not fields[0].isascii()
+                    or not fields[0].isdecimal()):
+                continue
+            process = process_identity(int(fields[0]), fields[1])
+            if (isinstance(process, ProcessIdentity)
+                    and marker_name(process, drain) == path.name and path.is_file()):
+                accepted.append(path)
     except OSError:
         return []
+    return sorted(accepted)
 
 
-def expected_markers(census: list[tuple[int, str]], gate: dict | None) -> set[str]:
+def expected_markers(census: list[tuple[int, str]],
+                     gate: dict | None) -> set[str] | ProofUnknown:
     """Full marker names each live loop must post (pid + starttime + epoch)."""
-    if gate is None:
-        return set()
-    key = gate_key(gate)
-    return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
+    drain = drain_identity(gate)
+    if isinstance(drain, ProofUnknown):
+        return drain
+    expected = set()
+    for pid, starttime in census:
+        process = process_identity(pid, starttime)
+        if isinstance(process, ProofUnknown):
+            return process
+        expected.add(marker_name(process, drain))
+    return expected
 
 
 def write_park_marker(root: Path, gate: dict) -> Path | None:
@@ -139,8 +225,14 @@ def write_park_marker(root: Path, gate: dict) -> Path | None:
     pid and the drain, and the create is exclusive.
     """
 
-    marker = root / (f"{os.getpid()}-{process_starttime(os.getpid())}"
-                            f"-{gate_key(gate)}")
+    drain = drain_identity(gate)
+    if isinstance(drain, ProofUnknown):
+        return None
+    pid = os.getpid()
+    process = process_identity(pid, process_starttime(pid))
+    if isinstance(process, ProofUnknown):
+        return None
+    marker = root / marker_name(process, drain)
     try:
         os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
     except FileExistsError:

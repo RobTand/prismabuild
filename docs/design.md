@@ -4775,9 +4775,22 @@ that same Event to its readers. Worker loops remain multi-instance. Storage,
 tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
 `generation_receipt` owns receipt parsing and identity comparison, while the
-stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
-behavior and the roles required by each drain observer remain unchanged by
-this ownership change.
+stdlib-only `park_proof` owns gate parsing, marker bytes and physical park
+acceptance. A known drain requires an explicitly closed gate and finite
+numeric `changed_unix`, excluding booleans. Its exact filename key is the
+identity, so integer `1` and float `1.0` remain distinct. Ordinary decimal
+bytes remain unchanged, including the leading-minus underscore and `-0.0`.
+Scientific exponent minus and plus encode as `m` and `p`; ambiguous legacy
+exponent keys never acknowledge a drain. Process proof requires a positive
+integer PID and ASCII decimal start ticks, including zero. Unknown or changed
+required facts never certify an empty census. Receipt availability is not a
+physical proof input. Unknown receipt authorization remains a separate change.
+The named current profiles are `HOST_QUIESCENT` for `worker_loop.py`,
+`worker.py`, and `prewarm_loop.py`, and `MEMBER_LOOPS` for ownership-proved
+`worker_loop.py` processes. Membership retains its terminal, handoff, reader,
+supervisor and two-round census requirements. Root host acceptance still uses
+the installed updater reader until its separately qualified reader bridge and
+consumer migration; strict package proof does not claim that migration.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
 Production callers read generation identities through `loaded_generation()`
