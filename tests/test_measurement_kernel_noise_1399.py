@@ -15,11 +15,12 @@ from pathlib import Path
 import pytest
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import adaptive_cpu, control_cpu
 
 # Expose the existing fixture without copying its sealed-action/GPU setup.
 fleet = fleet_fixture
-REAL_SAMPLE = adaptive_cpu.Controller.sample
 REAL_CENSUS = adaptive_cpu.Controller._foreign_pids
 PF_KTHREAD = 0x00200000  # Linux include/linux/sched.h, not a PID/name heuristic.
 TOTAL = 203
@@ -115,7 +116,6 @@ def kernel_rig(fleet, tmp_path, monkeypatch):
     proc = ProcInterval(tmp_path / "proc", tmp_path / "runtime")
     # Restore the CPU implementations overridden by the reusable fleet
     # fixture; bind the actual collector's existing public input parameters.
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", REAL_SAMPLE)
     monkeypatch.setattr(adaptive_cpu.Controller, "_foreign_pids", REAL_CENSUS)
     monkeypatch.setattr(adaptive_cpu, "control_plane_counters", partial(
         control_cpu.control_plane_counters, proc_root=proc.root,
@@ -156,7 +156,8 @@ def kernel_rig(fleet, tmp_path, monkeypatch):
 
     def claim():
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                             has_gpu=True, tags=["gb10", "sparklina"])
+                             has_gpu=True, tags=["gb10", "sparklina"],
+                             gpu_sampler=lambda: fleet_gpu_sample(gpu_sample, readings))
         return None if result is None else result["action_key"]
 
     return queue, proc, controller, publish, step, claim, denial
