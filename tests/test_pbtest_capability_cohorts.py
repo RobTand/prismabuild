@@ -31,9 +31,10 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 MARKED = (
     "import pytest\n\n"

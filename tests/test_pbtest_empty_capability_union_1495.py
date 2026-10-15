@@ -27,9 +27,10 @@ import pbrun  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
+from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 SCHEMA = "prismabuild.pbtest_capabilities.v1"
 MARKED = (

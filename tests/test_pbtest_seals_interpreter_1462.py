@@ -10,6 +10,7 @@ import pytest
 
 from test_pbtest import pbtest
 from test_pbrun_detach import _checkout, pbrun
+from prismabuild import contracts
 from prismabuild import core as pb, pool
 from pbtest_shard_output import ShardProcess, shard_output_for
 
@@ -48,7 +49,7 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
 def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     work, command = _generated(root, monkeypatch, extra=extra, python=python)
     queue = pool.PoolQueue(root / 'pb-queue')
-    queue.announce(host='qualified', tags=['x86', pb.INTERPRETER_TAG],
+    queue.announce(host='qualified', tags=['x86', contracts.INTERPRETER_TAG],
                    interpreters=[python], has_gpu=False,
                    capacity={'cpu': 8, 'mem_gb': 16}, timeout_ceiling_s=300)
     with monkeypatch.context() as scoped:
@@ -69,7 +70,7 @@ def test_generated_request_and_published_row_bind_the_same_interpreter(tmp_path,
     assert action['params']['command'][0] == sys.executable
     assert action['params']['interpreter'] == sys.executable
     assert row['interpreter'] == sys.executable
-    assert pb.INTERPRETER_TAG in row['tags']
+    assert contracts.INTERPRETER_TAG in row['tags']
     assert action['params']['placement']['required_tags'] == []
 
 
@@ -95,9 +96,9 @@ def test_untagged_generated_row_matches_all_and_only_capable_architectures(tmp_p
                                                                        monkeypatch):
     _, row, queue = _sealed(tmp_path, monkeypatch)
     for host, tags, answers in [
-            ('arm', [pb.INTERPRETER_TAG, 'gb10'], [sys.executable]),
-            ('x86', [pb.INTERPRETER_TAG, 'x86'], [sys.executable]),
-            ('missing', [pb.INTERPRETER_TAG], []),
+            ('arm', [contracts.INTERPRETER_TAG, 'gb10'], [sys.executable]),
+            ('x86', [contracts.INTERPRETER_TAG, 'x86'], [sys.executable]),
+            ('missing', [contracts.INTERPRETER_TAG], []),
             ('legacy', [], None)]:
         queue.announce(host=host, tags=tags, interpreters=answers,
                        has_gpu=False, capacity={'cpu': 8, 'mem_gb': 16})
@@ -107,11 +108,11 @@ def test_untagged_generated_row_matches_all_and_only_capable_architectures(tmp_p
 def test_explicit_architecture_constraint_survives_the_interpreter_requirement(tmp_path,
                                                                             monkeypatch):
     action, row, queue = _sealed(tmp_path, monkeypatch, extra=('--tag', 'x86'))
-    queue.announce(host='arm', tags=[pb.INTERPRETER_TAG, 'gb10'],
+    queue.announce(host='arm', tags=[contracts.INTERPRETER_TAG, 'gb10'],
                    interpreters=[sys.executable], has_gpu=False,
                    capacity={'cpu': 8, 'mem_gb': 16})
     assert action['params']['placement']['required_tags'] == ['x86']
-    assert row['tags'] == [pb.INTERPRETER_TAG, 'x86']
+    assert row['tags'] == [contracts.INTERPRETER_TAG, 'x86']
     assert queue.placeable_hosts(row) == ['qualified']
 
 
@@ -136,7 +137,7 @@ def test_preflight_prices_the_same_cpu_demand_as_the_generated_request(tmp_path,
 def test_published_request_keeps_the_existing_three_state_path_verdict(
         tmp_path, monkeypatch, answers, absent, verdict):
     _, row, queue = _sealed(tmp_path, monkeypatch)
-    queue.announce(host='qualified', tags=[pb.INTERPRETER_TAG],
+    queue.announce(host='qualified', tags=[contracts.INTERPRETER_TAG],
                    interpreters=answers, has_gpu=False,
                    capacity={'cpu': 8, 'mem_gb': 16})
     path = queue.root / 'workers/qualified.json'
@@ -161,7 +162,7 @@ def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, mon
     _, row, queue = _sealed(tmp_path, monkeypatch, python=str(interpreter))
     interpreter.unlink()
     assert queue.claim(capacity={'cpu': 8, 'mem_gb': 16},
-                       tags=[pb.INTERPRETER_TAG]) is None
+                       tags=[contracts.INTERPRETER_TAG]) is None
     from test_interpreter_placement import _denials
     denial = _denials(queue)[-1]
     assert denial['reason'] == 'interpreter_not_present'

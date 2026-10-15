@@ -20,10 +20,11 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 4, "mem_gb": 16}
 
 

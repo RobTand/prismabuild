@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb, pool, progress  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -617,9 +618,9 @@ def _fleet(tmp_path, boxes, *, helper_hosts=None):
     for host, contracts in boxes.items():
         tags = ["cpu", host, "x86"]
         if contracts and pb.PROGRESS_RECORD_SCHEMA_V1 in contracts:
-            tags.append(pb.PROGRESS_TAG)
+            tags.append(contracts.PROGRESS_TAG)
             if host in helper_hosts:
-                tags.append(pb.PROGRESS_HELPER_TAG)
+                tags.append(contracts.PROGRESS_HELPER_TAG)
         queue.announce(host=host, tags=tags, has_gpu=False,
                        capacity={"gpu": 0, "mem_gb": 60, "cpu": 80},
                        timeout_ceiling_s=7200.0, progress_contracts=contracts)
@@ -667,7 +668,7 @@ def test_a_mixed_fleet_is_narrowed_rather_than_refused(tmp_path):
     said = pbrun.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900))
     assert "sparky do not announce" in said
-    assert f"requires the {pb.PROGRESS_TAG} tag" in said
+    assert f"requires the {contracts.PROGRESS_TAG} tag" in said
     assert "waits for a box that does" in said
 
 
@@ -690,7 +691,7 @@ def test_notice_names_v1_workers_withheld_for_the_helper_and_uses_only_new_ceili
     said = pbrun.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900))
     assert "watchdog-only announce" in said
-    assert pb.PROGRESS_HELPER_TAG in said
+    assert contracts.PROGRESS_HELPER_TAG in said
     assert "limits startup grace to 60s" not in said
 
 
@@ -751,13 +752,13 @@ def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
-                  tags=["x86", pb.PROGRESS_TAG],
+                  tags=["x86", contracts.PROGRESS_TAG],
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
 
     previous_generation = ["x86", "dl380g10", "cpu"]
     assert queue.claim(tags=previous_generation) is None
-    claimed = queue.claim(tags=[*previous_generation, pb.PROGRESS_TAG])
+    claimed = queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG])
     assert claimed is not None
     assert claimed["action_key"] == action["action_key"]
 
@@ -808,7 +809,7 @@ def test_a_progress_submission_seals_the_capability_it_needs(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(
         host="sparky",
-        tags=["sparky", "gb10", pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+        tags=["sparky", "gb10", contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
         has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         timeout_ceiling_s=7200.0,
@@ -823,8 +824,8 @@ def test_a_progress_submission_seals_the_capability_it_needs(
     captured = capsys.readouterr()
     line = _one_json_line(captured)
     item = json.loads(Path(line["submission"]).read_text(encoding="utf-8"))
-    assert pb.PROGRESS_TAG in item["tags"]
-    assert pb.PROGRESS_HELPER_TAG in item["tags"]
+    assert contracts.PROGRESS_TAG in item["tags"]
+    assert contracts.PROGRESS_HELPER_TAG in item["tags"]
     assert "at most 2700s of quiet in total" in captured.err
 
     # And the sealed request carries the policy the receipt will name -- read
