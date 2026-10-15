@@ -106,7 +106,7 @@ def _gate_key(gate: dict) -> str:
     return "".join(c if c in _KEY_SAFE else "_" for c in str(value))
 
 
-def post_marker(root: Path, gate: dict) -> Path | None:
+def write_park_marker(root: Path, gate: dict) -> Path | None:
     """Record that this process is parked on ``gate``, once, and return the path.
 
     Best effort by contract, and the direction of the failure is the point: a

@@ -201,7 +201,7 @@ def read_maintenance_gate() -> dict | None:
 
 
 def post_park_marker(gate: dict) -> Path | None:
-    return park_proof.post_marker(PARKED_ROOT, gate)
+    return park_proof.write_park_marker(PARKED_ROOT, gate)
 
 
 

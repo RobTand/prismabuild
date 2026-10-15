@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 
-def read(path: Path) -> dict:
+def read_receipt(path: Path) -> dict:
     """The parsed receipt at ``path``, or ``{}`` when it cannot be read.
 
     One read serves both identities a receipt carries -- the commit and the
@@ -22,11 +22,11 @@ def read(path: Path) -> dict:
 
 
 def commit_at(path: Path) -> str:
-    return str(read(path).get("commit") or "")
+    return str(read_receipt(path).get("commit") or "")
 
 
 def generation_at(path: Path) -> str:
-    return str(read(path).get("generation") or "")
+    return str(read_receipt(path).get("generation") or "")
 
 
 def drift(*, loaded_commit: str, loaded_generation: str,
