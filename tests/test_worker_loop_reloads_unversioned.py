@@ -60,9 +60,8 @@ def _run(tmp_path: Path, receipts: list[dict], capsys) -> str:
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(role_session, "loaded_runtime_commit",
                            return_value=str(receipts[0].get("commit") or "")), \
-         mock.patch.object(role_session, "_generation_at",
-                           side_effect=lambda _path: str(
-                               receipts[0].get("generation") or "")), \
+         mock.patch.object(role_session, "loaded_generation",
+                           return_value=str(receipts[0].get("generation") or "")), \
          mock.patch.object(sys, "argv",
                            ["worker_loop.py", "--once", "--gpu-slots", "0",
                             "--mem-gb", "8", "--class", "x86", "--all-cores",
@@ -105,7 +104,7 @@ def test_a_stale_loop_reloads_before_touching_the_queue(
          mock.patch.object(role_session, "RUNTIME_VERSION", live), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(role_session, "loaded_runtime_commit", return_value="old-runtime"), \
-         mock.patch.object(role_session, "_generation_at", return_value=""), \
+         mock.patch.object(role_session, "loaded_generation", return_value=""), \
          mock.patch.object(wl.pool, "PoolQueue", return_value=UntouchableQueue()), \
          mock.patch.object(
              sys,

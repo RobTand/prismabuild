@@ -2678,7 +2678,7 @@ def _serve_requests(args: argparse.Namespace, *, refused: int,
     from prismabuild import role_session
 
     loaded_commit = role_session.loaded_runtime_commit()
-    loaded_generation = role_session._generation_at(role_session.GENERATION_VERSION)
+    loaded_generation = role_session.loaded_generation()
 
     class CompletingServer(ThreadingHTTPServer):
         def __init__(self, *args, **kwargs):
