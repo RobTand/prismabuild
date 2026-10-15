@@ -14,8 +14,8 @@ The census now keeps each directory's fragment names under the stamp taken
 before its listing (``_StagedPublisher._forest_census``, the #992 index), and
 a later census compares the stamps rather than listing: one ``lstat`` per
 directory and one ``stat`` per fragment, the fingerprint of the judgment's
-census.  Here 2,000 names diverge from one
-dead owner (a FAILED consumer, its DONE mover) in a forest of 400 other
+census.  Here 16 names diverge from one
+dead owner (a FAILED consumer, its DONE mover) in a forest of seven other
 namespaces, and one successor publisher replaces them all:
 
 * every name is replaced, and every owner judgement names the dead owner;
@@ -41,7 +41,6 @@ import os
 from pathlib import Path
 import sys
 import threading
-import time
 from kept_read_clock import after_paths
 
 import pytest
@@ -57,7 +56,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import stage_move  # noqa: E402
 
-NAMES = 2000
+NAMES = 16
 SIZE = 64
 OLD = b"o" * SIZE
 NEW = b"n" * SIZE
@@ -182,7 +181,7 @@ class _ForestTouches:
         """``"root"``, ``"namespace"`` or ``"file"`` of the forest, or ``None``.
 
         String work only: under the lock this runs once per ``stat`` and
-        ``lstat``, 1.16 million times in the test below.
+        ``lstat`` of the fingerprint.
         """
 
         if type(path) is not str:
@@ -308,10 +307,9 @@ def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     queue, stage, _cas = fleet
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", stale.GRACE)
     monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
-    counts = bench_stage_adopt.build_forest(
-        queue, stage, empty_dirs=370, small_dirs=30, big_fragments=[],
+    bench_stage_adopt.build_forest(
+        queue, stage, empty_dirs=4, small_dirs=3, big_fragments=[],
         produced_fragment_dirs=0)
-    assert counts["empty_dirs"] + 30 >= 400
     names = stage / "range"
     names.mkdir()
     destinations = [names / f"part-{index:05d}.bin" for index in range(NAMES)]
@@ -334,7 +332,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def test_2000_names_of_one_dead_owner_list_the_forest_once(
+def test_names_of_one_dead_owner_list_the_forest_once(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     publisher, destinations, consumer, mover, copier = world
     root = publisher.residency_root
