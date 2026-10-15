@@ -1046,12 +1046,14 @@ def _live_roster() -> dict | None:
     return None
 
 
-def _candidate_roster() -> dict:
+def _candidate_roster(expected_sha256: str) -> dict:
     """The roster this publication would publish, or refuse."""
 
     try:
-        document = json.loads(
-            (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
+        raw = (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise ValueError("bytes differ from publication manifest")
+        document = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
     if not isinstance(document, dict):
@@ -1065,11 +1067,12 @@ def _candidate_roster() -> dict:
     return document
 
 
-def _roster_option_record(args) -> dict[str, object] | None:
+def _roster_option_record(args, candidate: dict | None) -> dict[str, object] | None:
     """Refuse a candidate that drops a live ``--`` option name (#1664).
 
     The check runs inside the publication lock, before anything is
-    staged, and reads the sealed live generation the pointer names.
+    staged, and reads the sealed live generation the pointer names. The
+    candidate is the already captured, manifest-verified publication roster.
     An explicit override names who removes the option and why; both
     are recorded in the receipt with the dropped names.  A bootstrap
     with no live generation, or a live generation without a roster,
@@ -1079,7 +1082,9 @@ def _roster_option_record(args) -> dict[str, object] | None:
     live = _live_roster()
     if live is None:
         return None
-    dropped = _dropped_roster_options(live, _candidate_roster())
+    if candidate is None:
+        raise SystemExit("candidate roster is absent from publication manifest")
+    dropped = _dropped_roster_options(live, candidate)
     if not dropped:
         return None
     by = args.drop_roster_option_by
@@ -2247,8 +2252,9 @@ def _run_publication(args) -> int:
         )
 
     published = _publication_manifest()
-    if "tools/fleet/fleet_boxes.json" in published:
-        _candidate_roster()
+    roster_sha256 = published.get("tools/fleet/fleet_boxes.json")
+    candidate = (_candidate_roster(roster_sha256)
+                 if roster_sha256 is not None else None)
     problems = _unshipped_imports(published)
     if problems:
         raise SystemExit(
@@ -2280,7 +2286,7 @@ def _run_publication(args) -> int:
     # The last refusals before anything is written: the gates read the
     # fleet's records, and an earlier refusal is cheaper to hear first.
     shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)
-    roster_override = _roster_option_record(args)
+    roster_override = _roster_option_record(args, candidate)
     if args.rollout == "rolling":
         print(f"rollout rolling: {rollout_reason}")
     print(_shape_gate_line(shape_gate),

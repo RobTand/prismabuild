@@ -17841,6 +17841,18 @@ presence validation remain caller policy, as do canonical lookup and recorder
 ambiguity handling. This source change does not activate a runtime or qualify
 barrier lifecycle behavior.
 
+Fresh publication captures candidate roster bytes once and checks their SHA-256
+against the initial publication manifest before decoding UTF-8 JSON. Alias and
+option-preservation gates use that same parsed candidate. A live option gate
+refuses a candidate absent from the manifest; bootstrap without a roster keeps
+its existing behavior. Staged-file hashes, source-manifest rechecks and commit
+identity checks remain in force.
+
+The historical attestation preflight still obtains membership through its own
+`_roster_entries` read. A separate change must pass the captured roster through
+that preflight before its membership can be claimed to match the publication
+manifest. Per-generation alias checks do not establish that binding.
+
 `decomposition.py` owns decomposition addressing, membership capture and durable
 child verification. Reporter capture stops after an invalid plan; queue capture
 retains both document diagnostics. Campaign closure keeps its publication-only
