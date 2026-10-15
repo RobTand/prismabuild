@@ -48,31 +48,7 @@ MAINTENANCE_UNOWNED = 'unattributed'
 #: states whether a drain is open but not when it opened, and the marker names
 #: a parked loop leaves are keyed on when.
 MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
-#: What can still claim or prewarm work from the shared queue on this box, matched on the
-#: basename of any argv element.
-#:
-#: Not on a generation-store prefix. A supervised loop carries the resolved
-#: generation path, because the supervisor resolves it before spawning, but
-#: `worker.py` is run by hand -- from the stable symlink, or from a checkout --
-#: and it reaches the same live queue regardless, because the queue root is
-#: written into the file. A prefix match would see every supervised loop and
-#: miss every one-shot, which is the one this agent most needs to see.
-#:
-#: A basename match has false positives: an editor, a grep, a test named after
-#: the file. Each one leaves this box reading as still admitting, and something
-#: waiting on the drain keeps waiting, which is the direction to be wrong in.
-SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py', 'prewarm_loop.py'})
-#: Mirrors park_proof._KEY_SAFE. The two modules cannot import each other --
-#: the loop runs unprivileged out of a published generation, this runs as root
-#: out of the install directory -- so the spelling is asserted between them by
-#: test rather than shared.
-_KEY_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyz'
-                      'ABCDEFGHIJKLMNOPQRSTUVWXYZ._')
-#: Hostnames legitimately carry hyphens (`gx10-6b77`), and a marker name in the
-#: rollout tree is parsed on dots, so a hyphen costs nothing there. That is the
-#: whole reason this is a different set from the park marker's, which is parsed
-#: on hyphens and must not contain one.
-_NAME_SAFE = _KEY_SAFE | frozenset('-')
+_NAME_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-')
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
@@ -581,16 +557,6 @@ def sanitized(value, safe):
     return ''.join(c if c in safe else '_' for c in str(value))
 
 
-def park_marker_name(pid, starttime, changed_unix):
-    """The name a loop parked on `changed_unix` writes for itself.
-
-    The start time is field 22 of the process's stat, so a marker left by a pid
-    that has since been reused names the earlier process and not this one.
-    """
-    key = 'unknown' if changed_unix is None else sanitized(changed_unix, _KEY_SAFE)
-    return f'{pid}-{starttime}-{key}'
-
-
 def proc_census(root='/proc'):
     """Every live process as (pid, starttime, argv), from one snapshot.
 
@@ -640,37 +606,14 @@ def proc_census(root='/proc'):
     return census
 
 
-def serving(census, names=SERVING_NAMES):
-    """The (pid, starttime) of everything in `census` that could claim work."""
+def serving(census, names):
+    """Select the explicit profile by argv basename, including checkout one-shots.
+
+    Matching a generation prefix would miss an operator's unversioned worker.
+    Conservative basename false positives keep the host waiting for proof.
+    """
     return [(pid, starttime) for pid, starttime, argv in census
             if any(PurePosixPath(part).name in names for part in argv)]
-
-
-def drained(census, markers, changed_unix, active_scopes, names=SERVING_NAMES):
-    """Whether this box has stopped admitting, and which processes have not.
-
-    Two conditions, and neither is a clock. Every claimant and storage reader has
-    left a park marker for this drain, and the broker holds no active scope.
-
-    A loop holding a claim is inside serve_once, not at the top of its poll
-    where the marker is written, so a marker for every serving process already
-    means no loop here holds one. Reading the shared queue would add nothing
-    and would spend the resource this whole design conserves.
-
-    `worker.py` writes no marker at all, so a live one-shot leaves this box
-    un-drained whatever else is true, which is what stops it claiming under a
-    generation the fleet is halfway through leaving.
-
-    The storage role records the same marker after its active cycle finishes.
-    Legacy readers without that boundary stay unparked until they exit. This
-    observation does not gate ordinary client convergence, which waits for
-    broker scopes independently of these process markers.
-    """
-    unparked = [pid for pid, starttime in serving(census, names)
-                if changed_unix is None
-                or park_marker_name(pid, starttime, changed_unix) not in markers]
-    return (changed_unix is not None and not unparked
-            and type(active_scopes) is int and active_scopes == 0), unparked
 
 
 def rollout_root(config):

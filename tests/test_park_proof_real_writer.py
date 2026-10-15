@@ -217,6 +217,13 @@ def test_unrelated_missing_and_malformed_receipts_do_not_block_physical_park_pro
             {"drained": True, "unparked": [], "active_scopes": 0}, True)
 
 
+def test_work_already_running_holds_the_drain_open(parked_role):
+    with parked_role() as role:
+        role.post()
+        assert role.client.drain_evidence({"draining": True, "active_scopes": 1}) == {
+            "drained": False, "unparked": [], "active_scopes": 1}
+
+
 def test_actual_writer_acknowledges_only_the_exact_census_and_current_gate(parked_role):
     with parked_role() as role:
         name = role.post()
