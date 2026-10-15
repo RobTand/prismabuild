@@ -4899,7 +4899,10 @@ boundary imposes no commit grammar or additional receipt schema.
 `Unknown(loaded, published)`. Drift requires two complete identities; an
 unavailable observation proves neither agreement nor movement. Each decision
 carries its evidence. Roles retain their own refusal, wait and retirement
-policies. Scalar API deletion remains part of the closed fixture caller wave.
+policies. Roles consume typed observations and decisions at work boundaries.
+Scalar receipt getters and comparison APIs are absent. `role_session` still
+imports `adaptive_cpu` and `core`; removing those dependencies is a separate
+change.
 
 The worker observes the loaded receipt beside its imported source and the
 published receipt through `role_session.loaded_runtime` and `published_runtime`.
