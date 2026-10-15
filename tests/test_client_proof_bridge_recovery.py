@@ -5,8 +5,9 @@ import subprocess
 import pytest
 
 from client_proof_bridge_fixture import (
-    BROKER_LOADED, CAPABLE_BRIDGE_SHA256, PREBRIDGE, PREBRIDGE_UPDATER_SHA256,
-    ROOT, _fresh, _sha, capable_publication, member_bytes, publication, reader_process,
+    BROKER_LOADED, PREBRIDGE, PREBRIDGE_UPDATER_SHA256,
+    ROOT, _fresh, _sha, capable_publication, capable_reader_artifact, member_bytes,
+    publication, reader_process,
 )
 
 
@@ -29,9 +30,12 @@ def _interrupt(publication, cut):
 
 
 @pytest.mark.parametrize("changed", ["previous", "candidate"])
-def test_capability_digest_and_backup_bind_the_same_captured_bytes(capable_publication, changed):
+def test_capability_digest_and_backup_bind_the_same_captured_bytes(
+        capable_publication, capable_reader_artifact, changed):
     generation, install, state, _, backend_path, _ = capable_publication
+    previous_sha256 = capable_reader_artifact[2]
     before = member_bytes(install)
+    assert _sha(before["upgrade_client.py"]) == previous_sha256
     candidate = (generation / "tools/upgrade_client.py").read_bytes()
     incapable = subprocess.check_output(
         ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
@@ -56,13 +60,13 @@ def test_capability_digest_and_backup_bind_the_same_captured_bytes(capable_publi
         journal = json.loads((state / "transaction.json").read_text())
         assert journal["previous"]["park_proof.py"] is None
         assert not (state / "previous/park_proof.py").exists()
-        assert journal["previous"]["upgrade_client.py"] == CAPABLE_BRIDGE_SHA256
+        assert journal["previous"]["upgrade_client.py"] == previous_sha256
         assert (state / "previous/upgrade_client.py").read_bytes() == before["upgrade_client.py"]
         assert journal["desired"]["files"]["upgrade_client.py"] == _sha(candidate)
         assert (state / "staged/upgrade_client.py").read_bytes() == candidate
         if changed == "previous":
             assert json.loads(observation.read_text()) == {
-                "captured_sha256": CAPABLE_BRIDGE_SHA256,
+                "captured_sha256": previous_sha256,
                 "replacement_sha256": PREBRIDGE_UPDATER_SHA256}
             assert (install / "upgrade_client.py").read_bytes() == incapable
         else:

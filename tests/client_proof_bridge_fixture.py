@@ -18,8 +18,10 @@ PREBRIDGE = "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf"
 PREBRIDGE_UPDATER_SHA256 = "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9"
 PROTOCOL_ONE_UPDATER = "f834a061b448e2bbfed686e5ef00ca21f6b2b65c"
 PROTOCOL_ONE_UPDATER_SHA256 = "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e"
-CAPABLE_BRIDGE = "79c6a3669a60b1edf4d66e40e576bd59e438e914"
-CAPABLE_BRIDGE_SHA256 = "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d"
+RETAINED_BRIDGE = "79c6a3669a60b1edf4d66e40e576bd59e438e914"
+RETAINED_BRIDGE_SHA256 = "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d"
+CAPABLE_BRIDGE = "b36ceb258b20f0710c48d7fe7fefbe9ff2d0179a"
+CAPABLE_BRIDGE_SHA256 = "1a331460abc28eddcc5c36d9a6f724872d7159e8ea157af5b6caf9828f5f2f0a"
 CLIENT_SOURCES = {
     "resource_broker.py": ("tools/resource_broker.py", "tools/fleet/resource_broker.py"),
     "resource_payload.py": ("tools/resource_payload.py", "tools/fleet/resource_payload.py"),
@@ -304,12 +306,22 @@ def _fresh(publication, mode="run"):
     return final["test_outcome"]
 
 
+@pytest.fixture(params=[
+    pytest.param(("latest-proof-upgrader.py", CAPABLE_BRIDGE, CAPABLE_BRIDGE_SHA256),
+                 id="latest-b36"),
+    pytest.param(("protocol-two-upgrader.py", RETAINED_BRIDGE, RETAINED_BRIDGE_SHA256),
+                 id="retained-79"),
+])
+def capable_reader_artifact(request):
+    return request.param
+
+
 @pytest.fixture
-def capable_publication(publication):
+def capable_publication(publication, capable_reader_artifact):
     _, install, _, _, _, _ = publication
+    artifact, revision, expected_sha256 = capable_reader_artifact
     code = fixed_source_artifact(
-        "protocol-two-upgrader.py", CAPABLE_BRIDGE, "tools/fleet/upgrade_client.py",
-        CAPABLE_BRIDGE_SHA256)
+        artifact, revision, "tools/fleet/upgrade_client.py", expected_sha256)
     (install / "upgrade_client.py").write_bytes(code)
     return publication
 
