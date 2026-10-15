@@ -2,7 +2,10 @@
 
 Base: `6073c9d36555`, the fetched `origin/main`. The input is the
 [root architecture review](../prismabuild-architecture-review-2026-10-13.html).
-All 31 candidates and all 18 open pull requests were checked against source.
+The original inventory checked all 31 candidates and 18 open pull requests
+against source. The later cleanup PRs are recorded below. Current engineering
+agreements and qualified source units are in the
+[resolution record](refactor_resolution_2026-10-15.md).
 
 Completion correction: this branch is a verified first phase. Nine candidates
 received code changes, with several implemented only in part. The revised
@@ -154,6 +157,11 @@ closed or merged during this work.
 | [1750](https://github.com/RobTand/prismabuild/pull/1750) | Keep decision hold | Pending D38 audit policy requires the recorded human decision. A refactor cannot enact it. |
 | [1683](https://github.com/RobTand/prismabuild/pull/1683) | Keep acceptance hold | Lifetime/phase fences remain opt-in and UNKNOWN until their exact acceptance and deployment requirements pass. |
 | [1325](https://github.com/RobTand/prismabuild/pull/1325), [1326](https://github.com/RobTand/prismabuild/pull/1326) | Keep Phase 0 A/B hold | 1752 explicitly withdrew GO. Its partial proxy evidence does not authorize paced-export or output-window defaults. |
+| [1812](https://github.com/RobTand/prismabuild/pull/1812) | Keep separate ownership cleanup | Audited head `329de45487492abb3abeb7a64463cb50a70f9242` adds bounded cleanup of owned temporary trees and worker logs. Land once through its own PR after exact-head qualification, then rebase dependent work. Preserve Claude's ownership of its cleanup functions during this refactor. |
+| [1813](https://github.com/RobTand/prismabuild/pull/1813) | Keep automatic-reaping policy hold | Audited head `d1eca358bc4dde5ecd5bb6dbeecd90f5db55dd7b` includes 1812's four commits. Its unique commit adds automatic dead-worker checkout reaping and reverses the earlier explicit no-reaper rule. Keep that product decision separate; do not apply the stack twice. |
+
+All 20 reviewed PRs are linked to this thread. The cleanup PR bodies' test claims
+are recorded claims, not independent refactor qualification. No PR state changed.
 
 ## Verification and decision trail
 
