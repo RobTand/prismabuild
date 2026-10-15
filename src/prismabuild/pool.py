@@ -24803,6 +24803,32 @@ class PoolQueue:
         self.quarantine_orphans()
         return requeued
 
+    def _sweep_orphan_requeue_staging(self, claimed: Path, *, grace_s: float) -> None:
+        """Unlink only aged staging siblings whose exact tombstone is gone."""
+        for source in _glob(claimed, ".*.tombstone.tmp"):
+            # The hostname is verbatim writer text, not a validated host tag.
+            matched = re.fullmatch(
+                r"\.([0-9a-f]{64})\.(?:0|-?[1-9][0-9]*)\.[^\x00/]*\."
+                r"[1-9][0-9]*\.[0-9a-f]{8}\.tombstone\.tmp",
+                source.name,
+            )
+            if matched is None:
+                continue
+            with self._transition_locked(matched[1], blocking=False) as acquired:
+                if not acquired:
+                    continue
+                try:
+                    entry = source.lstat()
+                    if not stat.S_ISREG(entry.st_mode) or _now() - entry.st_mtime <= grace_s:
+                        continue
+                    # List under the key lock: a cached negative stat cannot
+                    # authorize removing a live publisher's staging source.
+                    if source.name[1:-len(".tmp")] in os.listdir(claimed):
+                        continue
+                    source.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
     def sweep_finish_tombstones(
         self, *, grace_s: float = LEASE_TIMEOUT_S
     ) -> list[str]:
@@ -24857,12 +24883,17 @@ class PoolQueue:
         Exact-scope late finishes use a separate suffix. They are already
         awaiting cleanup, never restored as claims, and retried immediately
         on their owning host under the same key lock.
+
+        A killed requeue publisher can also leave its hidden staging sibling.
+        Aged regular siblings are removed only after their exact tombstone is
+        gone. This cleanup does not add keys to the recovered-claim result.
         """
 
         swept: list[str] = []
         claimed = self.dir(CLAIMED)
         if not claimed.is_dir():
             return swept
+        self._sweep_orphan_requeue_staging(claimed, grace_s=grace_s)
         now = _now()
         for tombstone in sorted([*claimed.glob(f"*{TOMBSTONE_SUFFIX}"),
                                  *claimed.glob(f"*{LATE_FINISH_SUFFIX}")]):

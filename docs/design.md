@@ -17748,6 +17748,16 @@ same immutable attempt after an interrupted publication without charging the
 next slot. Failed links or collision filings retain that recovery authority.
 The temporary shaped copy carries no claim authority; the publication helper
 removes it in its `finally` block.
+After a process crash, the tombstone sweep also removes an aged regular staging
+sibling whose exact original tombstone is absent from a fresh directory listing
+under the key's nonblocking transition lock. The filename must match the writer's
+key, integer timestamp, verbatim hostname, positive PID and eight-hex UUID suffix
+recipe. File mtime governs staging freshness independently of the earlier
+entomb timestamp. Fresh sources, present tombstones, malformed names and
+nonregular entries remain untouched; unknown file or owner observations retain
+the source. This unlink removes only the staging directory entry, preserving
+any READY hardlink, successor claim, lease, tokens and immutable history. It
+does not add a key to the tombstone sweep's recovered-claim result.
 Ordinary finish does not hold the key transition lock across outcome filing;
 its existing exact-claim and tombstone guards protect cleanup. No broader
 locking, identity schema, admission rule or retry budget changes here.

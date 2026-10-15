@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import json
 import os
 from pathlib import Path
@@ -25,12 +26,19 @@ from pathlib import Path
 import signal
 import sys
 from prismabuild import pool
+from unittest import mock
 
 queue = pool.PoolQueue(sys.argv[1])
 key = sys.argv[2]
 pool._now = lambda: float(sys.argv[3])
 ready = queue.item_path(pool.READY, key)
 link = os.link
+if sys.argv[4]:
+    entomb = queue._entomb_claim
+    def named_entomb(*args, **kwargs):
+        with mock.patch.object(pool.socket, "gethostname", return_value=sys.argv[4]):
+            return entomb(*args, **kwargs)
+    queue._entomb_claim = named_entomb
 
 def crash_after_link(source, destination, *args, **kwargs):
     result = link(source, destination, *args, **kwargs)
@@ -58,7 +66,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 def _crashed_requeue(
-    queue: pool.PoolQueue, clock: list[float],
+    queue: pool.PoolQueue, clock: list[float], *, hostname: str = "",
 ) -> tuple[Path, Path]:
     queue.publish(
         action_key=KEY, cas_root=queue.root / "cas",
@@ -68,7 +76,7 @@ def _crashed_requeue(
     claim = queue.claim(owner="crashing-worker", capacity=DEMAND)
     assert claim is not None
     child = subprocess.run(
-        [sys.executable, "-c", CRASH_AFTER_LINK, str(queue.root), KEY, str(clock[0])],
+        [sys.executable, "-c", CRASH_AFTER_LINK, str(queue.root), KEY, str(clock[0]), hostname],
         capture_output=True, text=True, timeout=20,
     )
     assert child.returncode == -signal.SIGKILL, (child.returncode, child.stdout, child.stderr)
@@ -200,3 +208,49 @@ def test_staging_cleanup_ignores_unrelated_names_and_nonregular_entries(
     assert all(path.read_bytes() == b"unrelated" for path in files)
     assert symbolic.is_symlink() and target.read_bytes() == b"retained target"
     assert directory.is_dir()
+
+
+def test_staging_cleanup_accepts_the_writers_verbatim_hostname(
+    queue: pool.PoolQueue, clock: list[float],
+) -> None:
+    stage, tombstone = _crashed_requeue(queue, clock, hostname="rack.lab_host-1@zone café")
+    _recover_owner_while_staging_is_fresh(queue, clock, stage, tombstone)
+    clock[0] += GRACE + 1
+
+    queue.sweep_finish_tombstones()
+
+    assert not stage.exists()
+
+
+@pytest.mark.parametrize("unavailable", ("lstat", "owner_listing"))
+def test_staging_cleanup_retains_unknown_file_or_owner_observation(
+    queue: pool.PoolQueue, clock: list[float], monkeypatch: pytest.MonkeyPatch,
+    unavailable: str,
+) -> None:
+    stage, tombstone = _crashed_requeue(queue, clock)
+    _recover_owner_while_staging_is_fresh(queue, clock, stage, tombstone)
+    clock[0] += GRACE + 1
+    original = stage.read_bytes()
+    lstat = Path.lstat
+    listdir = os.listdir
+
+    def unavailable_lstat(path, *args, **kwargs):
+        if path == stage:
+            raise OSError(errno.ESTALE, "staging metadata unavailable")
+        return lstat(path, *args, **kwargs)
+
+    def unavailable_listing(directory):
+        if directory == queue.dir(pool.CLAIMED):
+            raise OSError(errno.ESTALE, "owner listing unavailable")
+        return listdir(directory)
+
+    with monkeypatch.context() as patch:
+        if unavailable == "lstat":
+            patch.setattr(Path, "lstat", unavailable_lstat)
+        else:
+            patch.setattr(os, "listdir", unavailable_listing)
+        queue.sweep_finish_tombstones()
+        assert stage.read_bytes() == original
+
+    queue.sweep_finish_tombstones()
+    assert not stage.exists()
