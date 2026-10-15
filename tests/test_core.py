@@ -18,7 +18,82 @@ from types import SimpleNamespace
 
 import pytest
 
-from prismabuild import core as pb
+from prismabuild import core as pb, immutable_files
+
+
+def test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link(tmp_path):
+    source = Path(pb.__file__).parent
+    bundles = []
+    for generation in ("first", "second"):
+        bundle = tmp_path / generation
+        bundle.mkdir()
+        for name in ("core.py", "digest_primitives.py", "immutable_files.py"):
+            raw = (source / name).read_bytes()
+            if name == "immutable_files.py":
+                raw += f"\n# {generation} generation\n".encode()
+            (bundle / name).write_bytes(raw)
+        bundles.append(bundle)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_file = tmp_path / "action.json"
+    action_file.write_text(json.dumps(action))
+    program = r'''
+import copy
+import json
+from pathlib import Path
+import runpy
+import sys
+
+first = runpy.run_path(str(Path(sys.argv[1]) / "core.py"))
+first_owner = first["immutable_files"]
+second = runpy.run_path(str(Path(sys.argv[2]) / "core.py"))
+owner = second["immutable_files"]
+expected = Path(sys.argv[2]) / "immutable_files.py"
+assert owner is not first_owner
+assert Path(owner.__file__) == expected
+assert Path(owner.publish_immutable.__code__.co_filename) == expected
+assert first["CASTamperError"] is first_owner.CASTamperError
+assert first_owner.PrismaBuildError is first["PrismaBuildError"]
+assert second["CASTamperError"] is owner.CASTamperError
+assert owner.PrismaBuildError is second["PrismaBuildError"]
+action = json.loads(Path(sys.argv[3]).read_text())
+cas_root, checkout = Path(sys.argv[4]), Path(sys.argv[5])
+cas = second["PrismaBuildCAS"](cas_root)
+attestation = second["preflight_action"](
+    action, cas_root=cas_root, checkout_root=checkout)
+assert attestation["runtime"]["immutable_files"]["path"] == str(expected)
+result = Path(sys.argv[4]).parent / "candidate.bin"
+result.write_bytes(b"candidate")
+omitted = copy.deepcopy(attestation)
+omitted["runtime"].pop("immutable_files")
+omitted["runtime"]["runtime_sha256"] = second["canonical_sha256"](
+    {k: v for k, v in omitted["runtime"].items() if k != "runtime_sha256"})
+omitted["attestation_sha256"] = second["canonical_sha256"](
+    {k: v for k, v in omitted.items() if k != "attestation_sha256"})
+try:
+    cas.publish_result(action, result, attestation=omitted)
+except second["LocalActionError"] as exc:
+    assert "immutable files differs from module import identity" in str(exc)
+else:
+    raise AssertionError("current Core published without its immutable member")
+def change_owner():
+    expected.write_bytes(expected.read_bytes() + b"\n# changed at precommit\n")
+try:
+    cas.publish_result(action, result, attestation=attestation,
+                       precommit_verify=change_owner)
+except second["LocalActionError"] as exc:
+    assert "immutable files changed after module import" in str(exc)
+else:
+    raise AssertionError("changed executed source reached the receipt link")
+assert cas.lookup(action) is None
+'''
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", program,
+         str(bundles[0]), str(bundles[1]), str(action_file),
+         str(tmp_path / "cas"), str(checkout)],
+        capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, (done.stdout, done.stderr)
 
 
 @pytest.fixture(autouse=True)
@@ -2483,7 +2558,7 @@ def test_atomic_publish_fifo_swap_never_performs_blocking_readback_open(
     monkeypatch.setattr(pb.os, "link", swapping_link)
     monkeypatch.setattr(pb.os, "open", guarded_open)
     with pytest.raises(pb.CASTamperError, match="changed before readback"):
-        pb._atomic_publish(path, b"immutable\n")
+        immutable_files.publish_immutable(path, b"immutable\n")
 
 
 @pytest.mark.parametrize(
@@ -2833,10 +2908,10 @@ import os
 from pathlib import Path
 import signal
 import sys
-from prismabuild import core as pb
+from prismabuild import core as pb, immutable_files
 
 action = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-real_atomic_publish = pb._atomic_publish
+real_atomic_publish = immutable_files.publish_immutable
 
 def kill_after_receipt_staging(path, raw, *, prelink_verify=None):
     if "/actions/v3/" in str(path):
@@ -2847,7 +2922,7 @@ def kill_after_receipt_staging(path, raw, *, prelink_verify=None):
         return real_atomic_publish(path, raw, prelink_verify=kill_at_prelink)
     return real_atomic_publish(path, raw, prelink_verify=prelink_verify)
 
-pb._atomic_publish = kill_after_receipt_staging
+immutable_files.publish_immutable = kill_after_receipt_staging
 pb.run_local_action(
     action,
     cas_root=Path(sys.argv[2]),
@@ -3317,7 +3392,7 @@ def test_local_worker_rechecks_closure_at_receipt_link(
     checkout.mkdir()
     action = _action(checkout)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    original_publish = pb._atomic_publish
+    original_publish = immutable_files.publish_immutable
 
     def publish_after_receipt_staging(
         path: Path,
@@ -3340,7 +3415,7 @@ def test_local_worker_rechecks_closure_at_receipt_link(
             prelink_verify=mutate_then_verify,
         )
 
-    monkeypatch.setattr(pb, "_atomic_publish", publish_after_receipt_staging)
+    monkeypatch.setattr(immutable_files, "publish_immutable", publish_after_receipt_staging)
     with pytest.raises(pb.ActionContractError, match="live code closure differs"):
         pb.run_local_action(
             action,

@@ -64,6 +64,23 @@ except ImportError:  # Isolated -I -S execution binds the sibling owner directly
     )
     del _digest_util, _spec
 
+if __package__:
+    from . import immutable_files
+    if Path(immutable_files.__file__).resolve() != Path(__file__).resolve().with_name("immutable_files.py"):
+        raise ActionContractError("PrismaBuild immutable file owner is not the Core sibling")
+else:
+    import importlib.util as _immutable_util
+    _immutable_spec = _immutable_util.spec_from_file_location(
+        "immutable_files", str(Path(__file__).resolve().with_name("immutable_files.py")))
+    immutable_files = _immutable_util.module_from_spec(_immutable_spec)
+    sys.modules["immutable_files"] = immutable_files
+    _immutable_spec.loader.exec_module(immutable_files)
+    del _immutable_util, _immutable_spec
+
+CASTamperError = immutable_files.CASTamperError
+CASUnavailableError = immutable_files.CASUnavailableError
+
+
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
 ACTION_SCHEMA_V2 = "prismaquant.prismabuild.action.v2"
 CODE_CLOSURE_SCHEMA_V1 = "prismaquant.prismabuild.code_closure.v1"
@@ -502,10 +519,6 @@ def _declared_distributions(toolchain: Mapping[str, object]) -> list[str]:
 
 
 
-class CASTamperError(PrismaBuildError):
-    """An existing content-addressed entry failed verification."""
-
-
 class ReplacedRecordError(CASTamperError):
     """A replace-only record exhausted its reads without stable bytes.
 
@@ -516,10 +529,6 @@ class ReplacedRecordError(CASTamperError):
     ``ProgressWatch`` treats it as a poll that observed nothing (#1159);
     the tier announcement reader retries it.
     """
-
-
-class CASUnavailableError(PrismaBuildError):
-    """The content-addressed store could not be read reliably."""
 
 
 class CASConflictError(PrismaBuildError):
@@ -999,6 +1008,9 @@ _LOADED_WORKER_CORE_IDENTITY = _identify_runtime_source(
 _LOADED_WORKER_DIGEST_IDENTITY = _identify_runtime_source(
     Path(digest_primitives.__file__).resolve(), where="PrismaBuild worker digest primitives"
 )
+_LOADED_WORKER_IMMUTABLE_IDENTITY = _identify_runtime_source(
+    Path(immutable_files.__file__).resolve(), where="PrismaBuild worker immutable files"
+)
 
 
 def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
@@ -1047,6 +1059,11 @@ def _worker_runtime_identity(
     _verify_runtime_source_unchanged(
         digest_owner, where="PrismaBuild worker digest primitives",
         changed_message="PrismaBuild worker digest primitives changed after module import")
+    immutable_owner = _normalize_runtime_source(
+        _LOADED_WORKER_IMMUTABLE_IDENTITY, where="loaded PrismaBuild worker immutable files")
+    _verify_runtime_source_unchanged(
+        immutable_owner, where="PrismaBuild worker immutable files",
+        changed_message="PrismaBuild worker immutable files changed after module import")
     launcher = (
         None
         if worker_launcher_identity is None
@@ -1068,6 +1085,7 @@ def _worker_runtime_identity(
         "launch_kind": "in_process" if launcher is None else "script",
         "core": core,
         "digest_primitives": digest_owner,
+        "immutable_files": immutable_owner,
         "launcher": launcher,
     }
     return {**body, "runtime_sha256": canonical_sha256(body)}
@@ -1150,6 +1168,15 @@ def _verify_worker_runtime_unchanged(runtime: object) -> None:
         _verify_runtime_source_unchanged(
             digest_owner, where="PrismaBuild worker digest primitives",
             changed_message="PrismaBuild worker digest primitives changed after module import")
+    immutable_owner = expected.get("immutable_files")
+    loaded_immutable = _normalize_runtime_source(
+        _LOADED_WORKER_IMMUTABLE_IDENTITY, where="loaded PrismaBuild worker immutable files")
+    if immutable_owner != loaded_immutable:
+        raise LocalActionError(
+            "attested PrismaBuild worker immutable files differs from module import identity")
+    _verify_runtime_source_unchanged(
+        loaded_immutable, where="PrismaBuild worker immutable files",
+        changed_message="PrismaBuild worker immutable files changed after module import")
     launcher = expected["launcher"]
     if isinstance(launcher, Mapping):
         _verify_runtime_source_unchanged(
@@ -3062,215 +3089,11 @@ def _validate_scope_labels(
         )
 
 
-def _atomic_publish(
-    path: Path,
-    raw: bytes,
-    *,
-    prelink_verify: Callable[[], None] | None = None,
-    where: str | None = None,
-    create_parent: bool = True,
-) -> bool:
-    """Publish immutable bytes relative to a held no-follow parent FD.
-
-    ``where`` names the publication for the directory-identity asserts and
-    for OSError mapping.  ``None`` keeps this module's historical spellings
-    (``"publication path"`` / ``"publication directory"``) and lets OSError
-    propagate raw, which the pool/core/slurm_lane callers rely on.  A string
-    threads the caller's name through instead and maps OSError to
-    CASUnavailableError -- exactly the contract slurm's retired
-    ``_atomic_publish_nofollow`` offered its two callers.
-
-    ``create_parent`` selects the historical parent-open mode.  ``True`` is
-    this module's mkdir walk; ``False`` skips creation because the caller
-    pre-ensured its parents -- slurm's mode, where auto-creating CAS
-    structure would mask a wiped mount.  One owner, two named parameters,
-    each preserving one side's history.
-
-    The directory diagnostics now come from this module's helpers on every
-    path: same exception types at every fail-closed point, but the message
-    text follows core's spellings (slurm's local _open/_assert helpers,
-    which differ in more than messages, stay in place for a follow-on
-    slice -- see issue #1295).
-    """
-
-    path = _absolute_nofollow_path(
-        path, where="publication path" if where is None else where
-    )
-    directory_fd = _open_directory_nofollow(
-        path.parent,
-        where="publication directory" if where is None else where,
-        create=create_parent,
-    )
-    temporary_name: str | None = None
-    try:
-        descriptor, temporary_raw = tempfile.mkstemp(
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            dir=f"/proc/self/fd/{directory_fd}",
-        )
-        temporary_name = Path(temporary_raw).name
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fchmod(handle.fileno(), 0o444)
-            os.fsync(handle.fileno())
-            temporary_identity = os.fstat(handle.fileno())
-        if prelink_verify is not None:
-            prelink_verify()
-        try:
-            os.link(
-                temporary_name,
-                path.name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            won = True
-        except FileExistsError:
-            won = False
-        os.fsync(directory_fd)
-        if won:
-            try:
-                published_identity = os.stat(
-                    path.name, dir_fd=directory_fd, follow_symlinks=False
-                )
-            except OSError as exc:
-                raise CASTamperError(
-                    f"published file changed before readback: {path}"
-                ) from exc
-            if (
-                not stat.S_ISREG(published_identity.st_mode)
-                or (
-                    temporary_identity.st_dev,
-                    temporary_identity.st_ino,
-                )
-                != (
-                    published_identity.st_dev,
-                    published_identity.st_ino,
-                )
-            ):
-                raise CASTamperError(
-                    f"published file changed before readback: {path}"
-                )
-        _assert_directory_identity(
-            directory_fd,
-            path.parent,
-            where="publication directory" if where is None else where,
-        )
-        return won
-    except OSError as exc:
-        if where is None:
-            raise
-        raise CASUnavailableError(
-            f"cannot publish {where}: {path}: {exc}"
-        ) from exc
-    finally:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-        os.close(directory_fd)
-
-
-def _absolute_nofollow_path(path: Path, *, where: str) -> Path:
-    """Return an absolute lexical path that cannot walk through ``..``."""
-
-    candidate = path if path.is_absolute() else Path.cwd() / path
-    if ".." in candidate.parts:
-        raise ActionContractError(f"{where} must not contain parent traversal")
-    return candidate
-
-
-#: The audit event a no-follow descent raises with the absolute directory it is
-#: about to walk.  The descent opens ``/`` and then one ``dir_fd``-relative
-#: component at a time, and CPython's ``open`` audit event carries no
-#: ``dir_fd``, so without this no audit hook can tell which directory the walk
-#: reaches.  ``tests/conftest.py`` refuses it under the fleet's live store
-#: (#1019).  With no audit hook installed, ``sys.audit`` returns at once.
-NOFOLLOW_DIRECTORY_AUDIT_EVENT = "prismabuild.open_directory_nofollow"
-
-
-def _open_directory_nofollow(
-    path: Path,
-    *,
-    where: str,
-    create: bool = False,
-    mode: int = 0o755,
-) -> int:
-    """Open/create an absolute directory using only mkdirat/openat operations."""
-
-    path = _absolute_nofollow_path(path, where=where)
-    sys.audit(NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path.anchor, flags)
-    except OSError as exc:
-        raise CASUnavailableError(f"cannot open {where} filesystem root: {exc}") from exc
-    try:
-        for part in path.parts[1:]:
-            created = False
-            if create:
-                try:
-                    os.mkdir(part, mode=mode, dir_fd=descriptor)
-                    created = True
-                except FileExistsError:
-                    pass
-                except OSError as exc:
-                    raise CASUnavailableError(
-                        f"cannot create {where} component {part!r}: {exc}"
-                    ) from exc
-            try:
-                child = os.open(part, flags, dir_fd=descriptor)
-            except FileNotFoundError:
-                raise
-            except OSError as exc:
-                if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
-                    raise CASTamperError(
-                        f"{where} ancestor is not a real directory: {path}"
-                    ) from exc
-                raise CASUnavailableError(
-                    f"cannot open {where} component {part!r}: {exc}"
-                ) from exc
-            try:
-                if created:
-                    os.fchmod(child, mode)
-                    os.fsync(child)
-                    os.fsync(descriptor)
-            except OSError as exc:
-                os.close(child)
-                raise CASUnavailableError(
-                    f"cannot durably create {where} component {part!r}: {exc}"
-                ) from exc
-            os.close(descriptor)
-            descriptor = child
-        return descriptor
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-def _assert_directory_identity(descriptor: int, path: Path, *, where: str) -> None:
-    """Fail if the held directory is no longer the configured pathname."""
-
-    try:
-        current = _open_directory_nofollow(path, where=where)
-    except FileNotFoundError as exc:
-        raise CASTamperError(f"{where} disappeared during operation: {path}") from exc
-    try:
-        held = os.fstat(descriptor)
-        observed = os.fstat(current)
-        if (held.st_dev, held.st_ino) != (observed.st_dev, observed.st_ino):
-            raise CASTamperError(f"{where} changed during operation: {path}")
-    finally:
-        os.close(current)
-
-
 def _open_regular_nofollow(path: Path, *, where: str) -> tuple[int, int]:
     """Open a regular-file candidate relative to its held no-follow parent."""
 
-    path = _absolute_nofollow_path(path, where=where)
-    parent_fd = _open_directory_nofollow(path.parent, where=f"{where} parent")
+    path = immutable_files.absolute_nofollow_path(path, where=where)
+    parent_fd = immutable_files.open_directory_nofollow(path.parent, where=f"{where} parent")
     try:
         candidate = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -3464,7 +3287,7 @@ def _read_stable_regular_file_nofollow(
                     )
                 _assert_regular_identity(
                     descriptor, parent_fd, path, where=where, replaced=replaced)
-                _assert_directory_identity(
+                immutable_files.assert_directory_identity(
                     parent_fd, path.parent, where=f"{where} parent"
                 )
                 if replaced and after.st_nlink == 0:
@@ -3487,7 +3310,7 @@ def _read_stable_regular_file_nofollow(
                 )
             _assert_regular_identity(
                 descriptor, parent_fd, path, where=where, replaced=replaced)
-            _assert_directory_identity(
+            immutable_files.assert_directory_identity(
                 parent_fd, path.parent, where=f"{where} parent"
             )
             return b"".join(chunks)
@@ -3542,7 +3365,7 @@ def _file_identity_nofollow(
                         f"{where} changed substantively while it was read: {path}"
                     )
                 _assert_regular_identity(descriptor, parent_fd, path, where=where)
-                _assert_directory_identity(
+                immutable_files.assert_directory_identity(
                     parent_fd, path.parent, where=f"{where} parent"
                 )
                 if attempt + 1 < _STABLE_FILE_READ_ATTEMPTS:
@@ -3552,7 +3375,7 @@ def _file_identity_nofollow(
                     f"{_STABLE_FILE_READ_ATTEMPTS} fresh reads: {path}"
                 )
             _assert_regular_identity(descriptor, parent_fd, path, where=where)
-            _assert_directory_identity(
+            immutable_files.assert_directory_identity(
                 parent_fd, path.parent, where=f"{where} parent"
             )
             return observed_digest, size, before.st_mode
@@ -3566,7 +3389,7 @@ def _unlink_nofollow(path: Path, *, where: str) -> None:
     """Unlink a leaf only through its current no-follow parent directory."""
 
     try:
-        directory_fd = _open_directory_nofollow(path.parent, where=f"{where} parent")
+        directory_fd = immutable_files.open_directory_nofollow(path.parent, where=f"{where} parent")
     except FileNotFoundError:
         return
     try:
@@ -3575,7 +3398,7 @@ def _unlink_nofollow(path: Path, *, where: str) -> None:
         except FileNotFoundError:
             return
         os.fsync(directory_fd)
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             directory_fd, path.parent, where=f"{where} parent"
         )
     finally:
@@ -3598,7 +3421,7 @@ def _private_staging_directory(staging_directory: Path):
     sweeper never sees the interval between creating and locking the marker.
     """
 
-    parent_fd = _open_directory_nofollow(
+    parent_fd = immutable_files.open_directory_nofollow(
         staging_directory, where="CAS staging directory", create=True
     )
     name = ".ingest." + os.urandom(16).hex()
@@ -3621,10 +3444,10 @@ def _private_staging_directory(staging_directory: Path):
         os.rename(name, published_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         name = published_name
         private = staging_directory / name
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             parent_fd, staging_directory, where="CAS staging directory"
         )
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             private_fd, private, where="CAS private staging directory"
         )
         yield private
@@ -3666,10 +3489,10 @@ def _private_staging_directory(staging_directory: Path):
 def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, int]:
     """Take a stable regular-file snapshot into the CAS filesystem."""
 
-    staging_directory = _absolute_nofollow_path(
+    staging_directory = immutable_files.absolute_nofollow_path(
         staging_directory, where="CAS staging directory"
     )
-    staging_fd = _open_directory_nofollow(
+    staging_fd = immutable_files.open_directory_nofollow(
         staging_directory, where="CAS staging directory", create=True
     )
     flags = (
@@ -3732,7 +3555,7 @@ def _copy_to_staging(source: Path, staging_directory: Path) -> tuple[Path, str, 
             after.st_ctime_ns,
         ):
             raise LocalActionError(f"result changed while it was copied: {source}")
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             staging_fd, staging_directory, where="CAS staging directory"
         )
         return temporary, digest.hexdigest(), size
@@ -3776,10 +3599,10 @@ def _stage_bytes(raw: bytes, staging_directory: Path) -> tuple[Path, str, int]:
     publishes must be the same kind of inode either way.
     """
 
-    staging_directory = _absolute_nofollow_path(
+    staging_directory = immutable_files.absolute_nofollow_path(
         staging_directory, where="CAS staging directory"
     )
-    staging_fd = _open_directory_nofollow(
+    staging_fd = immutable_files.open_directory_nofollow(
         staging_directory, where="CAS staging directory", create=True
     )
     descriptor = -1
@@ -3797,7 +3620,7 @@ def _stage_bytes(raw: bytes, staging_directory: Path) -> tuple[Path, str, int]:
             destination.flush()
             os.fchmod(destination.fileno(), 0o444)
             os.fsync(destination.fileno())
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             staging_fd, staging_directory, where="CAS staging directory"
         )
         return (staging_directory / temporary_name,
@@ -4348,7 +4171,7 @@ class PrismaBuildCAS:
         """Open a real CAS shard directory without following CAS symlinks."""
 
         shard = self.root / "blobs" / digest[:2]
-        descriptor = _open_directory_nofollow(
+        descriptor = immutable_files.open_directory_nofollow(
             shard,
             where="CAS input directory",
             create=True,
@@ -4371,7 +4194,7 @@ class PrismaBuildCAS:
         digest = str(contract["sha256"])
         blob_path, directory_fd = self._open_input_blob_shard(digest)
         try:
-            source_fd = _open_directory_nofollow(
+            source_fd = immutable_files.open_directory_nofollow(
                 staging.parent, where="CAS staging directory"
             )
         except BaseException:
@@ -4454,10 +4277,10 @@ class PrismaBuildCAS:
                     )
                 finally:
                     os.close(published_fd)
-            _assert_directory_identity(
+            immutable_files.assert_directory_identity(
                 source_fd, staging.parent, where="CAS staging directory"
             )
-            _assert_directory_identity(
+            immutable_files.assert_directory_identity(
                 directory_fd, blob_path.parent, where="CAS blob directory"
             )
         finally:
@@ -4576,7 +4399,7 @@ class PrismaBuildCAS:
         key = str(normalized["action_key"])
         path = self.root / "requests" / key[:2] / f"{key}.json"
         raw = _canonical_file_bytes(normalized)
-        won = _atomic_publish(path, raw)
+        won = immutable_files.publish_immutable(path, raw)
         if not won:
             observed = _read_regular_file_nofollow(
                 path,
@@ -4918,12 +4741,12 @@ class PrismaBuildCAS:
             def verify_publication_provenance() -> None:
                 # Action-specific closure/executable checks may be relatively
                 # slow.  Run them first so the runtime recheck is the final
-                # userspace operation before _atomic_publish calls os.link.
+                # userspace operation before immutable_files.publish_immutable calls os.link.
                 if precommit_verify is not None:
                     precommit_verify()
                 _verify_worker_runtime_unchanged(producer["runtime"])
 
-            won = _atomic_publish(
+            won = immutable_files.publish_immutable(
                 receipt_path,
                 _canonical_file_bytes(candidate),
                 prelink_verify=verify_publication_provenance,
@@ -4958,7 +4781,7 @@ class PrismaBuildCAS:
                 execution_path = self._execution_receipt_path(
                     str(candidate["receipt_sha256"])
                 )
-                _atomic_publish(
+                immutable_files.publish_immutable(
                     execution_path, _canonical_file_bytes(candidate),
                     prelink_verify=verify_publication_provenance,
                 )
@@ -5355,7 +5178,7 @@ def _validate_initial_miss_ready(
 
 
 def _rendezvous_directory_entries(path: Path, *, where: str) -> set[str]:
-    descriptor = _open_directory_nofollow(path, where=where)
+    descriptor = immutable_files.open_directory_nofollow(path, where=where)
     try:
         try:
             names: list[str] = []
@@ -5379,7 +5202,7 @@ def _rendezvous_directory_entries(path: Path, *, where: str) -> set[str]:
             raise InitialMissRendezvousError(
                 f"{where} returned a non-text directory entry"
             )
-        _assert_directory_identity(descriptor, path, where=where)
+        immutable_files.assert_directory_identity(descriptor, path, where=where)
         return set(names)
     finally:
         os.close(descriptor)
@@ -5480,7 +5303,7 @@ def _publish_initial_miss_record(
             )
         _verify_worker_runtime_unchanged(runtime)
 
-    if not _atomic_publish(
+    if not immutable_files.publish_immutable(
         path,
         _canonical_file_bytes(record),
         prelink_verify=verify_absence_and_runtime,
@@ -5620,7 +5443,7 @@ def _run_initial_miss_rendezvous(
         (namespace / "arrivals", "initial-miss rendezvous arrival directory"),
         (namespace / "ready", "initial-miss rendezvous ready directory"),
     ):
-        descriptor = _open_directory_nofollow(directory, where=where, create=True)
+        descriptor = immutable_files.open_directory_nofollow(directory, where=where, create=True)
         os.close(descriptor)
     if _rendezvous_directory_entries(
         namespace, where="initial-miss rendezvous namespace"
@@ -7526,7 +7349,7 @@ def _ensure_local_result_claim(
     body = _local_result_claim_body(action, checkout)
     claim = {**body, "claim_sha256": canonical_sha256(body)}
     path = _local_result_claim_path(cas, action, checkout)
-    won = _atomic_publish(path, _canonical_file_bytes(claim))
+    won = immutable_files.publish_immutable(path, _canonical_file_bytes(claim))
     observed = _load_local_result_claim(cas, action, checkout)
     if observed is None:
         raise CASTamperError("local result claim vanished after publication")
@@ -7549,7 +7372,7 @@ def _reap_local_result_staging(
     )
     directory = cas.root / ".staging" / "local-results" / namespace
     try:
-        directory_fd = _open_directory_nofollow(
+        directory_fd = immutable_files.open_directory_nofollow(
             directory, where="local result staging directory"
         )
     except FileNotFoundError:
@@ -7596,7 +7419,7 @@ def _reap_local_result_staging(
                 ) from exc
         if names:
             os.fsync(directory_fd)
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             directory_fd,
             directory,
             where="local result staging directory",
@@ -7717,7 +7540,7 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
     identity = _output_lock_name(output)
     directory = cas.root / ".worker-locks"
     path = directory / identity
-    directory_fd = _open_directory_nofollow(
+    directory_fd = immutable_files.open_directory_nofollow(
         directory, where="local action lock directory", create=True
     )
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -7731,7 +7554,7 @@ def _local_output_lock(cas: PrismaBuildCAS, checkout: Path, output: Path):
             raise LocalActionError(
                 f"local action lock is not a regular file: {path}"
             )
-        _assert_directory_identity(
+        immutable_files.assert_directory_identity(
             directory_fd, directory, where="local action lock directory"
         )
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -8237,7 +8060,7 @@ def _read_json_mapping(path: Path, *, where: str) -> Mapping[str, object]:
 def _atomic_write_new_json(path: Path, value: Mapping[str, object]) -> None:
     if path.exists() or path.is_symlink():
         raise ActionContractError(f"output already exists: {path}")
-    if not _atomic_publish(path, json.dumps(
+    if not immutable_files.publish_immutable(path, json.dumps(
         value,
         indent=2,
         sort_keys=True,

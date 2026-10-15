@@ -127,6 +127,9 @@ def test_local_scratch_bootstrap_binds_one_fixed_sibling_core_without_package_im
     assert core_globals["__package__"] == ""
     owner = core_globals["digest_primitives"]
     assert Path(owner.__file__) == REPO / "src/prismabuild/digest_primitives.py"
+    immutable_owner = core_globals["immutable_files"]
+    assert Path(immutable_owner.__file__) == REPO / "src/prismabuild/immutable_files.py"
+    assert immutable_owner.PrismaBuildError is core_globals["PrismaBuildError"]
     body = {"unicode": "λ", "value": 1.0}
     assert owner._canonical_bytes(body) + b"\n" == pb._canonical_file_bytes(body)
     assert owner.canonical_sha256(body) == pb.canonical_sha256(body)
@@ -137,7 +140,8 @@ def test_local_scratch_bootstrap_binds_one_fixed_sibling_core_without_package_im
 def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_root=REPO):
     assert ls.PRODUCER_FILES == (ls.RECORDER, "src/prismabuild/local_scratch.py",
                                  "src/prismabuild/core.py",
-                                 "src/prismabuild/digest_primitives.py")
+                                 "src/prismabuild/digest_primitives.py",
+                                 "src/prismabuild/immutable_files.py")
     stamp_files = action["code_closure"]["files"]
     assert len(stamp_files) == 1
     assert Path(stamp_files[0]["path"]).name.startswith(pb.PBRUN_STAMP_PREFIX)
