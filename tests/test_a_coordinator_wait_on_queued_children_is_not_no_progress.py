@@ -15,6 +15,8 @@ baseline and count zero. A child with several tasks still counts one.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import json
 import sys
 import time
@@ -1213,8 +1215,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
             ceiling_s=None, awaited_batch=awaited),
         started=90.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=100.0)
     first = watch.queued_child_wait
     assert first["exempt"] is False
     assert first["missing"] == [children[1]["action_key"]], first
@@ -1222,8 +1225,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[1]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=110.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=110.0)
     second = watch.queued_child_wait
     assert second["exempt"] is False
     assert "since_monotonic" not in second
@@ -1231,8 +1235,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
     assert entries[children[1]["action_key"]]["evidence"] == "baseline"
     assert watch.queued_child_wait_exempt_s == 0.0
     assert watch.stall_deadline() == 150.0
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=120.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=120.0)
     assert watch.queued_child_wait["exempt"] is True
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
@@ -1263,9 +1268,13 @@ def test_recovery_requires_two_valid_endpoints(
     watch = pool.ProgressWatch(
         tmp_path / "progress.json", "t" * 32, policy, started=90.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=100.0)
     assert watch.queued_child_wait["exempt"] is False
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=110.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=110.0)
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
 
@@ -1284,18 +1293,24 @@ def test_recovery_requires_two_valid_endpoints(
     path.unlink()
     if refusal != "missing-row":
         path.write_bytes(b"not JSON")
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=120.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=120.0)
     assert watch.queued_child_wait["exempt"] is False
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
 
     path.write_bytes(original)
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=130.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=130.0)
     assert watch.queued_child_wait["exempt"] is False
     assert "since_monotonic" not in watch.queued_child_wait
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=140.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=140.0)
     assert watch.queued_child_wait["exempt"] is True
     assert watch.queued_child_wait_exempt_s == 20.0
     assert watch.stall_deadline() == 170.0
@@ -1349,7 +1364,9 @@ def test_bad_optional_fields_refuse_and_name_the_field(
         ceiling_s=None, awaited_batch=_awaited(plan, state))
     watch = pool.ProgressWatch(tmp_path / "progress.json", "t" * 32, policy, started=0.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=100.0)
     assert watch.queued_child_wait["exempt"] is False
     assert name in watch.queued_child_wait["reason"]
     assert watch.queued_child_wait_exempt_s == 0.0

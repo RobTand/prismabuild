@@ -1765,6 +1765,19 @@ class ExecutionClock(NamedTuple):
     unix: Callable[[], float]
 
 
+class WaitEvidenceSources(NamedTuple):
+    staged_wait: Callable[[Mapping[str, object] | None, float], Mapping[str, object] | None]
+    export_wait: Callable[[Mapping[str, object] | None, float], Mapping[str, object] | None]
+    reader_plan: Callable[[], Mapping[str, object] | None]
+    queued_children: Callable[[Mapping[str, object] | None], dict[str, object] | None]
+
+
+class StallCheck(NamedTuple):
+    expired: bool
+    checkpoint_s: float
+    checked_monotonic: float
+
+
 class ProgressWatch:
     """Accept semantic advancement from one launch, and refuse everything else.
 
@@ -1967,13 +1980,73 @@ class ProgressWatch:
         }
         return True
 
-    def recheck_stall(self) -> tuple[bool, float, float]:
-        """Sample at the stall boundary and refund only this read's duration."""
+    def check_stall(self, sources: WaitEvidenceSources) -> StallCheck | None:
+        if not self.clock.monotonic() >= self.stall_deadline():
+            return None
         started = self.clock.monotonic()
         advanced = self.sample(now=started)
         spent = self.clock.monotonic() - started
         self.shift(spent)
-        return advanced, spent, self.clock.monotonic()
+        checked = self.clock.monotonic()
+        if advanced:
+            return StallCheck(False, spent, checked)
+        spent += self._wait_checkpoint(
+            lambda: sources.staged_wait(self.staged_wait, self.grace_s),
+            self.exempt_staged_wait, error_key="movers")
+        if not self.clock.monotonic() >= self.stall_deadline():
+            return StallCheck(False, spent, checked)
+        spent += self._wait_checkpoint(
+            lambda: sources.export_wait(self.export_wait, self.grace_s),
+            self.exempt_export_wait, error_key="exports")
+        if not self.clock.monotonic() >= self.stall_deadline():
+            return StallCheck(False, spent, checked)
+        spent += self._wait_checkpoint(sources.reader_plan, self.exempt_reader_plan)
+        if not self.clock.monotonic() >= self.stall_deadline():
+            return StallCheck(False, spent, checked)
+        queued_started = self.clock.monotonic()
+        self.sample_queued_child_wait(sources.queued_children, now=queued_started)
+        queued_spent = self.clock.monotonic() - queued_started
+        self.shift(queued_spent)
+        spent += queued_spent
+        return StallCheck(self.clock.monotonic() >= self.stall_deadline(), spent, checked)
+
+    def _wait_checkpoint(
+            self, read: Callable[[], Mapping[str, object] | None], credit, *,
+            error_key: str | None = None) -> float:
+        started = self.clock.monotonic()
+        try:
+            verdict = read()
+        except (OSError, ValueError, PoolContractError) as exc:
+            verdict = {"exempt": False}
+            if error_key is not None:
+                verdict[error_key] = []
+            verdict["reason"] = f"unreadable: {exc!r}"
+        if verdict is not None:
+            now_unix = self.clock.unix()
+            since = float(verdict.get("since_unix") or now_unix)
+            credit(verdict, now=started,
+                   since_monotonic=started - max(0.0, now_unix - since))
+        spent = self.clock.monotonic() - started
+        self.shift(spent)
+        return spent
+
+    def sample_queued_child_wait(
+            self, read: Callable[[Mapping[str, object] | None], dict[str, object] | None], *,
+            now: float) -> None:
+        verdict = read(self.queued_child_wait)
+        if verdict is None:
+            return
+        verdict["sample_monotonic"] = float(now)
+        if verdict.get("exempt") and isinstance(
+                verdict.get("since_monotonic"), (int, float)):
+            try:
+                self.exempt_queued_child_wait(
+                    verdict, now=float(now),
+                    since_monotonic=float(verdict["since_monotonic"]))
+            except (TypeError, ValueError, OverflowError):
+                self.queued_child_wait = dict(verdict)
+        else:
+            self.queued_child_wait = dict(verdict)
 
     def stall_record(self, *, now: float,
                      contention: PoolContentionProbe | None) -> dict[str, object]:
@@ -11624,31 +11697,18 @@ class PoolQueue:
                 pb.CASTamperError, pb.CASUnavailableError):
             return False
 
-    def _sample_queued_child_wait(
-            self, item: Mapping[str, object], key: str, watch: "ProgressWatch",
-            progress: "ProgressPolicy | None", *, now: float) -> None:
-        """Sample the awaited set on the heartbeat cadence, and credit it (#1666).
-
-        Judges the interval since the last look, credits an eligible one
-        through the shared _credit mark, and stores the verdict as the
-        next look's prior. A first sighting is a baseline and earns no
-        credit; a child live at both ends carries and credits only this
-        interval's span, from the prior sample's monotonic start. A
-        blocked interval earns nothing and is never refunded later: the
-        shared mark and the monotonic start bound every credit. A child
-        that ends keeps the credit its verified intervals earned; the
-        rung below judges only the interval since the last sample.
-        """
-
+    def queued_child_wait_evidence(
+            self, item: Mapping[str, object], key: str, progress: ProgressPolicy | None,
+            prior: Mapping[str, object] | None) -> dict[str, object] | None:
         if progress is None or progress.awaited_batch is None:
             return
         try:
             retained = None
-            if isinstance(watch.queued_child_wait, Mapping):
+            if isinstance(prior, Mapping):
                 retained = {
                     str(entry.get("key")): (
                         dict(entry) if isinstance(entry, Mapping) else {})
-                    for entry in watch.queued_child_wait.get("children") or ()  # type: ignore[union-attr]
+                    for entry in prior.get("children") or ()  # type: ignore[union-attr]
                     if isinstance(entry, Mapping)
                     and _is_hex64(entry.get("key"))}
             custody_read = self._awaited_controller_custody(
@@ -11661,29 +11721,14 @@ class PoolQueue:
                 admitted=self._awaited_child_submissions(
                     item, awaited=progress.awaited_batch,
                     retained=retained, custody_read=custody_read),
-                prior=watch.queued_child_wait,
+                prior=prior,
                 now=_now())
             if custody_read[0] is None:
                 verdict.update({"exempt": False, "reason": custody_read[1]})
         except (OSError, ValueError, PoolContractError) as exc:
             verdict = {"exempt": False, "children": [],
                        "reason": f"unreadable: {exc!r}"}
-        verdict["sample_monotonic"] = float(now)
-        # The sample and the credit: an eligible interval credits now,
-        # through the shared mark, bounded by the prior sample's start.
-        # Exempt or not, this verdict becomes the rung's prior, so a
-        # child live at both ends carries and a blocked gap never
-        # refunds. The shared _credit mark still grants no double credit.
-        if verdict.get("exempt") and isinstance(
-                verdict.get("since_monotonic"), (int, float)):
-            try:
-                watch.exempt_queued_child_wait(
-                    verdict, now=float(now),
-                    since_monotonic=float(verdict["since_monotonic"]))  # type: ignore[arg-type]
-            except (TypeError, ValueError, OverflowError):
-                watch.queued_child_wait = dict(verdict)
-        else:
-            watch.queued_child_wait = dict(verdict)
+        return verdict
 
     def _export_landed_bytes(self, request: Mapping[str, object], cas_root: object
                              ) -> tuple[int | None, int | None, str]:
@@ -28493,6 +28538,15 @@ class PoolQueue:
                 or progress.pool_contention is None
                 else PoolContentionProbe(progress.pool_contention,
                                          now=checkpoint_started))
+            wait_sources = WaitEvidenceSources(
+                staged_wait=lambda prior, window: self.staged_wait_verdict(
+                    key, progress_path, token=progress_token, prior=prior, window_s=window),
+                export_wait=lambda prior, window: self.export_wait_verdict(
+                    key, progress_path, token=progress_token, cas_root=item.get("cas_root"),
+                    prior=prior, window_s=window),
+                reader_plan=lambda: self.reader_plan_stand_aside(item),
+                queued_children=lambda prior: self.queued_child_wait_evidence(
+                    item, key, progress, prior))
             gate_held_since: list[float | None] = [None]
 
             def credit_contention(now: float) -> None:
@@ -28743,9 +28797,8 @@ class PoolQueue:
                         # Without this the rung samples only at the deadline,
                         # when the first look can never carry and the credit
                         # never engages.
-                        self._sample_queued_child_wait(
-                            item, key, watch, progress,
-                            now=checkpoint_started)
+                        watch.sample_queued_child_wait(
+                            wait_sources.queued_children, now=checkpoint_started)
                         next_progress_poll = clock.monotonic() + heartbeat_s
                     if clock.monotonic() >= next_heartbeat:
                         self.write_lease(
@@ -28832,119 +28885,13 @@ class PoolQueue:
                             # worker and whether the worker exited within it.
                             outcome["profile_settle"] = settled
                         return ending(outcome)
-                    if (watch is not None
-                            and clock.monotonic() >= watch.stall_deadline()):
-                        # One more read before ending it.  The boundary is
-                        # exactly where a reporter that publishes every few
-                        # seconds lands, and a record already on disk is
-                        # advancement whether or not a poll had reached it.
-                        advanced, spent, checked = watch.recheck_stall()
-                        next_progress_poll = checked + heartbeat_s
-                        if deadline is not None:
-                            deadline += spent
-                        if not advanced:
-                            # A consumer blocked on its own staged range, whose
-                            # mover is still coming, is waiting on a dependency
-                            # rather than stuck (#989).  Checked here, at the
-                            # rung only, so a working action pays nothing.
-                            exempt_checkpoint = clock.monotonic()
-                            try:
-                                # The previous verdict carries the evidence
-                                # it saw, and the phase grace is the window
-                                # a whole absence of evidence is judged over
-                                # (#1022 review, items 1 and 5).
-                                verdict = self.staged_wait_verdict(
-                                    key, progress_path, token=progress_token,
-                                    prior=watch.staged_wait,
-                                    window_s=watch.grace_s)
-                            except (OSError, ValueError, PoolContractError) as exc:
-                                verdict = {"exempt": False, "movers": [],
-                                           "reason": f"unreadable: {exc!r}"}
-                            if verdict is not None:
-                                now_unix = clock.unix()
-                                since = float(verdict.get("since_unix") or now_unix)
-                                watch.exempt_staged_wait(
-                                    verdict, now=exempt_checkpoint,
-                                    since_monotonic=exempt_checkpoint
-                                    - max(0.0, now_unix - since))
-                            spent = clock.monotonic() - exempt_checkpoint
-                            watch.shift(spent)
+                    if watch is not None:
+                        stall = watch.check_stall(wait_sources)
+                        if stall is not None:
+                            next_progress_poll = stall.checked_monotonic + heartbeat_s
                             if deadline is not None:
-                                deadline += spent
-                        if (not advanced
-                                and clock.monotonic() >= watch.stall_deadline()):
-                            # An owner blocked on its own produced-output
-                            # exports, one of which shows progress, is
-                            # waiting on its own work rather than stuck
-                            # (#1035).  At the rung only, like the staged
-                            # wait, and credited through the same mark.
-                            export_checkpoint = clock.monotonic()
-                            try:
-                                exports = self.export_wait_verdict(
-                                    key, progress_path, token=progress_token,
-                                    cas_root=item.get("cas_root"),
-                                    prior=watch.export_wait,
-                                    window_s=watch.grace_s)
-                            except (OSError, ValueError, PoolContractError) as exc:
-                                exports = {"exempt": False, "exports": [],
-                                           "reason": f"unreadable: {exc!r}"}
-                            if exports is not None:
-                                now_unix = clock.unix()
-                                since = float(exports.get("since_unix") or now_unix)
-                                watch.exempt_export_wait(
-                                    exports, now=export_checkpoint,
-                                    since_monotonic=export_checkpoint
-                                    - max(0.0, now_unix - since))
-                            spent = clock.monotonic() - export_checkpoint
-                            watch.shift(spent)
-                            if deadline is not None:
-                                deadline += spent
-                        if (not advanced
-                                and clock.monotonic() >= watch.stall_deadline()):
-                            # A stage mover standing aside for a copy a
-                            # claimed consumer is blocked on lands nothing on
-                            # purpose (#1091 review 1).  Judged from the tier
-                            # record and the waited copy's claim as this
-                            # worker reads them, never from the mover, and
-                            # at the rung only, so a working mover pays
-                            # nothing.
-                            aside_checkpoint = clock.monotonic()
-                            try:
-                                aside = self.reader_plan_stand_aside(item)
-                            except (OSError, ValueError, PoolContractError) as exc:
-                                aside = {"exempt": False,
-                                         "reason": f"unreadable: {exc!r}"}
-                            if aside is not None:
-                                now_unix = clock.unix()
-                                since = float(aside.get("since_unix") or now_unix)
-                                watch.exempt_reader_plan(
-                                    aside, now=aside_checkpoint,
-                                    since_monotonic=aside_checkpoint
-                                    - max(0.0, now_unix - since))
-                            spent = clock.monotonic() - aside_checkpoint
-                            watch.shift(spent)
-                            if deadline is not None:
-                                deadline += spent
-                        if (not advanced
-                                and clock.monotonic() >= watch.stall_deadline()):
-                            # A coordinator waiting on its declared queued
-                            # children, one of which is ready or claimed, is
-                            # waiting on admission rather than stuck (#1666).
-                            # The heartbeat cadence already credited each
-                            # eligible sample interval; the rung judges only
-                            # the interval since the last sample, bounded by
-                            # its monotonic start, and credited through the
-                            # same mark. A blocked gap never refunds, and a
-                            # child that ended keeps its earned credit.
-                            queued_checkpoint = clock.monotonic()
-                            self._sample_queued_child_wait(
-                                item, key, watch, progress, now=queued_checkpoint)
-                            spent = clock.monotonic() - queued_checkpoint
-                            watch.shift(spent)
-                            if deadline is not None:
-                                deadline += spent
-                        if (not advanced
-                                and clock.monotonic() >= watch.stall_deadline()):
+                                deadline += stall.checkpoint_s
+                        if stall is not None and stall.expired:
                             # Same three grace budgets, same precedence: this
                             # rung is reached only when containment,
                             # withdrawal and the requested deadline all had
