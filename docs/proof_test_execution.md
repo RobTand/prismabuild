@@ -1,10 +1,18 @@
 # Physical proof test execution
 
 `tests/proof_execution.json` declares the actual-root proof population and its
-resources. Seven root files contain 104 cases. Three relevant native files
-contain 78 cases, including the 40 pure identity predicates. Their family union
-is 182 cases. The six process-identity cases live in the root real-writer module;
+resources. Ten root files contain 145 cases. Five relevant native files
+contain 104 cases, including the 40 pure identity predicates and native role and
+census controls. Their declared family union is 249 cases. The six process-identity cases live in the root real-writer module;
 their function, parametrization and assertion syntax is pinned in the metadata.
+
+Rollout participant and host drain actors require the actual trusted installed
+leaf and run in the root population. The storage boundary consumer has moved
+from the native role module into the root real-writer module; its behavioral
+body is unchanged. Native process census and role controls remain unprivileged.
+Thirteen obsolete legacy formatter/predicate cases were removed where the strict
+owner, real-writer and actual unknown-gate histories already cover their facts.
+The active-scope control now observes an actual parked child.
 
 Run actual ownership and permission observations in a private root container.
 Keep ordinary permission tests in the unprivileged worker context. No test skips
@@ -61,7 +69,7 @@ bytes, so a historical fixture does not substitute for a later production fix.
 ## Submit the actual-root population
 
 The tracked adapter accepts only the declared root files and defaults to all
-seven. It verifies the pinned inputs and local image, preserves the admitted
+ten. It verifies the pinned inputs and local image, preserves the admitted
 affinity inside Docker, and asserts actual UID/GID 0. All writes remain in the
 container-private filesystem. Source, tooling and artifacts are read-only.
 

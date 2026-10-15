@@ -4399,6 +4399,22 @@ prewarm processes parked on the current drain. Its executing and installed updat
 hashes must match the intent. Existing actions finish naturally; this protocol
 does not interrupt or requeue them.
 
+The host's physical proof rules are loaded lazily from its root-trusted installed
+`park_proof.py` sibling. A single no-follow regular FD supplies bounded coherent
+bytes and uid/gid/mode; the updater hashes and compiles those exact bytes in a
+fresh temporary module. Its actual strict API owns `HOST_QUIESCENT`, finite
+injective drain identity, process identity and acknowledgements. No package,
+shared-runtime, bytecode or module-cache fallback can authorize a drain. Missing
+or unsafe code and unknown gates cannot certify even an empty selected census.
+Gate observations bracket the census and regular marker reads; a rollout checks
+the same captured owner's exact key again after epoch refresh before posting.
+The positive rollout wire timestamp restriction remains separate from the
+finite physical identity domain. Rotation keeps its additional generation-path,
+versioned-supervisor and worker requirements; resign keeps its distinct checks.
+Ordinary owned zero-scope client repair remains independent of physical proof or
+receipt MATCH, including when the installed proof leaf itself requires repair.
+This is source contract work, not deployment or whole-fleet qualification.
+
 The epoch records and `repo` pointer publish atomically but are read separately.
 If a valid pointer move falls between an updater's desired-receipt read and its
 next epoch refresh, the updater keeps its durable drain and retries with a fresh

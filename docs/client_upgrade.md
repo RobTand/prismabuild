@@ -259,9 +259,27 @@ administrative replacement of installed files during a transaction is outside
 this guarantee. Such changes must take the same lock or wait for the timer
 transaction to finish.
 
-This bridge does not import or consume proof code. Strict host acceptance and a
-lazy trusted installed-sibling loader require a separate qualified consumer
-wave. Ordinary zero-scope repair remains independent of successful physical
-proof or receipt MATCH. Another named holder and active rollout epochs retain
-their existing limits. Bridge qualification also requires deterministic
-captured-byte replacement and fresh-process journal/copy/recovery histories.
+The retained bridges do not import or consume proof code. The strict consumer
+loads only the root-trusted installed `park_proof.py` sibling when physical
+proof is requested. One no-follow regular FD supplies bounded coherent bytes
+and uid/gid/mode. The updater hashes and compiles those same bytes in a fresh
+module, requires its actual strict API, and removes temporary module registration.
+It does not consult import caches, bytecode, the shared runtime or package code.
+Missing, unsafe or incapable proof code yields unknown evidence, including with
+an empty selected census.
+
+Host drain and rotation use the installed owner's `HOST_QUIESCENT` profile,
+exact gate keys and regular markers. Rotation retains its additional generation
+paths, supervisor and worker requirements. A rollout rechecks the same captured
+owner's drain identity after epoch refresh and before posting `drained`; its
+existing positive numeric wire restriction remains additional to finite physical
+identity. No future profile membership or reader-window default is selected.
+
+Ordinary zero-scope repair remains independent of successful physical proof or
+receipt MATCH. The loader is lazy: construction, current-member checks and
+transaction recovery do not require a trusted proof leaf. Another named holder
+and active rollout epochs retain their existing limits. Bridge qualification
+requires deterministic captured-byte replacement and fresh-process journal/copy/
+recovery histories. The private two-host transport qualifier still needs its
+actual-root/local-install and unprivileged shared-reader execution route proved;
+its fake broker and process census do not establish physical-fleet quiescence.
