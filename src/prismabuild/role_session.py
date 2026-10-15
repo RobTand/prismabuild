@@ -232,7 +232,7 @@ def loaded_generation() -> str:
     return generation_receipt.generation_at(GENERATION_VERSION)
 
 
-def published_generation() -> str:
+def published_generation_name() -> str:
     """The generation at the live runtime boundary, or empty when unknown."""
 
     return generation_receipt.generation_at(RUNTIME_VERSION)
@@ -288,4 +288,4 @@ def generation_drift(*, loaded_commit: str,
     return generation_receipt.drift(
         loaded_commit=loaded_commit, loaded_generation=loaded_generation,
         published_commit=published_commit(),
-        published_generation=published_generation())
+        published_generation=published_generation_name())

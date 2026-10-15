@@ -46,7 +46,7 @@ def main(argv=None):
             with runtime_gate.role_singleton(Path(__file__)):
                 while not stop.is_set():
                     published = runtime_gate.published_commit()
-                    published_generation = runtime_gate.published_generation()
+                    published_generation = runtime_gate.published_generation_name()
                     if generation_receipt.drift(
                             loaded_commit=loaded,
                             loaded_generation=loaded_generation,

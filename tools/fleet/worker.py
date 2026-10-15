@@ -41,7 +41,7 @@ def refusal() -> str:
     if role_session.maintenance_requested():
         return "resource broker draining for maintenance; admission paused"
     loaded = role_session.loaded_generation()
-    live = role_session.published_generation()
+    live = role_session.published_generation_name()
     if loaded and live and loaded != live:
         return f"runtime moved {loaded} -> {live}; rerun from the live generation"
     return ""

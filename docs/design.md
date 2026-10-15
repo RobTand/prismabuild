@@ -4779,7 +4779,7 @@ stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
 Production callers read generation identities through `loaded_generation()`
-and `published_generation()`, alongside the commit readers.
+and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.
