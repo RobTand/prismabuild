@@ -349,6 +349,32 @@ def test_campaign_accepts_retained_publication_formatting(
 # The cover does not close
 # --------------------------------------------------------------------------
 
+def test_a_receipted_json_null_keeps_the_missing_child_verdict(
+    tmp_path: Path, fleet, capsys,
+) -> None:
+    work, queue = fleet
+    producer = _producer_rewriting_result('b"null\\n"')
+    _, group = _decompose(_small_request(work, producer))
+    assert len(group["children"]) == 1
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    child = group["children"][0]
+    receipt = cas.lookup(child)
+    assert receipt is not None
+    assert cas.result_path(receipt, child).read_bytes() == b"null\n"
+
+    with pytest.raises(dc.MissingChildResult) as missing:
+        dc.complete_group(group["request"], group["plan"], group["children"], cas=cas)
+    assert (missing.value.ordinal, missing.value.count) == (0, 1)
+    capsys.readouterr()
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert capsys.readouterr().err == (
+        "pbcampaign: no group receipt: child 0 of 1 has no receipt\n")
+    assert not _group_path(tmp_path, group).exists()
+    assert cas.lookup(child) == receipt
+
+
 def test_a_child_without_a_receipt_is_never_a_group_success(
     tmp_path: Path, fleet, capsys,
 ) -> None:
