@@ -17711,6 +17711,10 @@ Worker `--tag` accepts placement tags and the `cpu` host fact. It refuses
 registry-owned code tags and `runtime-generation:` companions before announcing.
 The loaded code and its enablement own those offers. The source and published
 fleet rosters contained no such manual tags when inspected for this change.
+Submission retains its existing refusal details and appends the registry's
+remedies for missing code contracts. Progress advice removes the requirements
+derived from its validated policy when asking which otherwise eligible workers
+support that policy; its required tags and remedies come from the same rows.
 Availability eligibility and the complete shared submission owner also remain
 separate work. Source changes establish no new deployed capability or
 staged-read workload proof.

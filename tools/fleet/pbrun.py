@@ -2440,7 +2440,8 @@ def progress_contract_notice(
             raise SystemExit(
                 f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG}; "
                 "cyclic progress support is unknown. Update the fleet's "
-                "published generation and wait for worker adoption.")
+                "published generation and wait for worker adoption.\n"
+                + "\n".join(contracts.contract_remedies([contracts.PROGRESS_CYCLE_TAG])))
         lines.append(
             "pbrun: no worker offers on record; whether any box honours the "
             "contract is unknown.")
@@ -2454,7 +2455,8 @@ def progress_contract_notice(
             f"{pb.PROGRESS_RECORD_SCHEMA_V1} ({', '.join(unsupported)}), so "
             "this action would be admitted under the progress contract and "
             "then killed by a whole-run ceiling it never asked for.  Update "
-            "the fleet's published generation, or submit with --timeout-s.")
+            "the fleet's published generation, or submit with --timeout-s.\n"
+            + "\n".join(contracts.contract_remedies([contracts.PROGRESS_TAG])))
     if unsupported:
         lines.append(
             "pbrun: " + ", ".join(unsupported) + " do not announce "
@@ -2480,7 +2482,8 @@ def progress_contract_notice(
                "offer the helper)" if helper_missing else "")
             + "; this action uses the helper environment. Update the fleet's "
             "published generation, or submit an action that does not declare "
-            "progress phases.")
+            "progress phases.\n"
+            + "\n".join(contracts.contract_remedies([contracts.PROGRESS_HELPER_TAG])))
     if helper_missing:
         lines.append(
             "pbrun: " + ", ".join(helper_missing) + " announce "
@@ -2499,7 +2502,8 @@ def progress_contract_notice(
             raise SystemExit(
                 f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG} "
                 f"({', '.join(cycle_missing)}); update the fleet's published "
-                "generation before submitting cyclic progress.")
+                "generation before submitting cyclic progress.\n"
+                + "\n".join(contracts.contract_remedies([contracts.PROGRESS_CYCLE_TAG])))
         if cycle_missing:
             lines.append("pbrun: " + ", ".join(cycle_missing)
                          + f" do not offer {contracts.PROGRESS_CYCLE_TAG}; "
@@ -2520,7 +2524,8 @@ def progress_contract_notice(
                 f"pbrun: no eligible worker offers {contracts.QUEUED_CHILD_TAG} "
                 f"({', '.join(awaited_missing)}); update the fleet's published "
                 "generation before submitting a coordinator that awaits "
-                "queued children.")
+                "queued children.\n"
+                + "\n".join(contracts.contract_remedies([contracts.QUEUED_CHILD_TAG])))
         if awaited_missing:
             lines.append("pbrun: " + ", ".join(awaited_missing)
                          + f" do not offer {contracts.QUEUED_CHILD_TAG}; "
@@ -8074,12 +8079,15 @@ def announce_placement(
     # never typed.  Asked of the boxes eligible on every OTHER tag, which is
     # also the honest question: of the boxes that could run this work, which
     # can keep its stall policy?
+    progress_tags = contracts.declared_contract_tags(contracts.Publication(
+        progress=progress_policy,
+        awaited_batch=progress_policy is not None
+            and getattr(args, "awaited_batch", None) is not None))
     progress_notice = progress_contract_notice(
         queue,
         {**intent, "tags": [
             t for t in tags
-            if t not in (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.PROGRESS_CYCLE_TAG,
-                         contracts.QUEUED_CHILD_TAG)
+            if t not in progress_tags
         ]},
         policy=progress_policy,
         requested_timeout_s=args.timeout_s,
@@ -8152,7 +8160,8 @@ def announce_placement(
                 f"{contracts.DEPENDENCY_DIGEST_TAG} capability, so "
                 f"nothing can ever claim this action's pinned dependencies "
                 f"({paths}); run a worker generation that carries the "
-                "contract before submitting it (#1495)")
+                "contract before submitting it (#1495)\n"
+                + "\n".join(contracts.contract_remedies([contracts.DEPENDENCY_DIGEST_TAG])))
         if verdict == "absent":
             raise SystemExit(
                 "pbrun: every recorded worker that could claim this action "
@@ -8236,6 +8245,13 @@ def announce_placement(
                 "these tags, let its worker's next poll answer for the path, "
                 "and resubmit; submitting anyway would only queue a command "
                 "that dies with 127 on the first box to claim it.")
+        recorded_tags = queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        missing_code_tags = set(tags) - set(recorded_tags)
+        if capability_blocked:
+            missing_code_tags.add(contracts.CONTAINER_IMAGE_TAG)
+        guidance = contracts.contract_remedies(missing_code_tags)
+        if guidance:
+            remedy += "\n" + "\n".join(guidance)
         raise SystemExit(
             f"pbrun: no recorded worker can run this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
@@ -8244,7 +8260,7 @@ def announce_placement(
             f"  demand:        {demand}\n"
             f"{capacity_line}"
             f"  offered on record: "
-            f"{queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)}\n"
+            f"{recorded_tags}\n"
             f"{remedy}"
         )
     producer_room_refusal = producer_allowance_room_refusal(queue, action)

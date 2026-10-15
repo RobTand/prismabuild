@@ -6,7 +6,7 @@ existing owners. These rows perform no observation or I/O.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 
@@ -107,3 +107,9 @@ def offered_contract_tags(worker: WorkerFacts) -> tuple[str, ...]:
         if row.offered(worker):
             tags.extend((row.tag, *row.companions(worker)))
     return tuple(tags)
+
+
+def contract_remedies(tags: Iterable[str]) -> tuple[str, ...]:
+    required = set(tags)
+    return tuple(dict.fromkeys(row.remedy for row in CONTRACTS
+                               if row.tag in required and row.remedy))
