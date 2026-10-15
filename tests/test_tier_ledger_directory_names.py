@@ -11,6 +11,8 @@ import time
 
 import pytest
 
+from kept_read_clock import after_paths
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
@@ -25,9 +27,9 @@ OTHER = "b" * 64
 KIND = "stage_gib"
 
 
-def _settle() -> None:
-    # Only executed inside an admitted test action, never on the coordinator.
-    time.sleep(0.05)
+def _settle(held: pool.ResourceLedger, monkeypatch: pytest.MonkeyPatch) -> None:
+    after_paths(monkeypatch, held.base,
+                *(path for path in held.base.rglob("*") if path.is_dir()))
 
 
 def _names(reader: kept_reads.DirectoryRecords):
@@ -47,7 +49,7 @@ def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ledger = queue.tier_ledger(TIER)
     ledger.ensure_capacity({KIND: 4})
     assert ledger.acquire(MOVER, {KIND: 1})
-    _settle()
+    _settle(ledger, monkeypatch)
     return queue, ledger, kept_reads.DirectoryRecords()
 
 
@@ -63,7 +65,7 @@ def test_a_token_glob_does_not_materialize_unmatched_paths(ledger, monkeypatch):
     _queue, held, reader = ledger
     for ordinal in range(64):
         (held.free_dir / f"unrelated-{ordinal:04d}.tmp").touch()
-    _settle()
+    _settle(held, monkeypatch)
     pattern = f"{KIND}-*"
     directory = held.free_dir
     expected = sorted(directory.glob(pattern))
@@ -83,11 +85,11 @@ def test_a_token_glob_does_not_materialize_unmatched_paths(ledger, monkeypatch):
 
 
 @pytest.mark.parametrize("pattern", ["*", "stage_gib-*", "*.tmp", "[a-m]*", "missing-*"])
-def test_cached_token_selection_keeps_legacy_order(ledger, pattern):
+def test_cached_token_selection_keeps_legacy_order(ledger, pattern, monkeypatch):
     _queue, held, reader = ledger
     for name in ("aux-10.tmp", "aux-2.tmp", ".hidden.tmp", "AUX-1.tmp", "é.tmp"):
         (held.free_dir / name).touch()
-    _settle()
+    _settle(held, monkeypatch)
     expected = sorted(held.free_dir.glob(pattern))
     with pool.tier_ledger_names_from(_names(reader)):
         assert held._census_glob(held.free_dir, pattern) == expected
@@ -103,7 +105,7 @@ def test_cached_token_selection_keeps_legacy_order(ledger, pattern):
     ("unlink", (3, 2, 1)),
     ("rename-holder", (4, 3, 0)),
 ])
-def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected):
+def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, monkeypatch):
     _queue, held, reader = ledger
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
@@ -125,7 +127,7 @@ def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected):
         else:
             os.rename(held.held_dir / MOVER, held.held_dir / OTHER)
         assert _view(held) == expected
-        _settle()
+        _settle(held, monkeypatch)
         assert _view(held) == expected
         listed = reader.listed
         assert _view(held) == expected
@@ -193,7 +195,7 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
         held.ensure_capacity({KIND: 4})
-        _settle()
+        _settle(held, monkeypatch)
         held.ensure_capacity({KIND: 4})
         before = {p.name for p in held.free_dir.iterdir()}
         directory = {"free": held.free_dir, "held": held.held_dir,
@@ -234,7 +236,12 @@ def test_a_missing_required_directory_is_not_a_cached_empty(ledger):
         missing = held.minted_dir / "missing"
         with pytest.raises(FileNotFoundError):
             held._census_scan(missing)
-        assert str(missing) not in reader._names
+        missing.mkdir()
+        token = missing / f"{KIND}-0004"
+        token.touch()
+        assert held._census_scan(missing) == [token]
+        token.unlink()
+        missing.rmdir()
         assert pool.held_names_visible(held, OTHER) == set()
         assert reader.names(missing, select=lambda _name: True) == frozenset()
 
@@ -278,7 +285,7 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
         dead.touch()
     elif failure == "child":
         dead.mkdir()
-    _settle()
+    _settle(held, monkeypatch)
     monkeypatch.setattr(
         kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
@@ -295,7 +302,13 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
     with pool.tier_ledger_names_from(_names(reader)):
         with pytest.raises(OSError):
             held._census_scan(dead, optional=True)
-        assert str(dead) not in reader._names
+        monkeypatch.setattr(os, "listdir", real)
+        if failure == "non-directory":
+            dead.unlink()
+        dead.mkdir(exist_ok=True)
+        token = dead / f"{KIND}-0004"
+        token.touch()
+        assert held._census_scan(dead, optional=True) == [token]
 
 
 def test_a_replaced_holder_directory_does_not_keep_its_old_names(ledger):
@@ -331,8 +344,18 @@ def test_a_failed_cycle_resets_scope_and_forgets_unused_directories(ledger, monk
     queue, held, _reader = ledger
     receipts = tier_loop.ReceiptCache()
     unused = held.minted_dir
-    receipts.ledger_records.names(unused, select=lambda _name: True)
-    assert str(unused) in receipts.ledger_records._names
+    expected = sorted(unused.iterdir())
+    real = os.listdir
+
+    def unreadable(path):
+        if os.fspath(path) == str(unused):
+            raise OSError(errno.EIO, "unused census unreadable", str(unused))
+        return real(path)
+
+    with pool.tier_ledger_names_from(_names(receipts.ledger_records)):
+        assert held._census_scan(unused) == expected
+        monkeypatch.setattr(os, "listdir", unreadable)
+        assert held._census_scan(unused) == expected
 
     def fail(*args, **kwargs):
         assert _view(held) == (4, 3, 1)
@@ -343,6 +366,8 @@ def test_a_failed_cycle_resets_scope_and_forgets_unused_directories(ledger, monk
         tier_loop.cycle(queue, host="test-host", source_pool="test-pool",
                         receipts=receipts)
     assert pool._TIER_LEDGER_NAMES.get() is None
-    assert str(unused) not in receipts.ledger_records._names
+    with pool.tier_ledger_names_from(_names(receipts.ledger_records)):
+        with pytest.raises(OSError, match="unused census unreadable"):
+            held._census_scan(unused)
     assert tier_loop.LAST_CYCLE["completed"] is False
     assert tier_loop.LAST_CYCLE["reads"]["ledger_listed"] > 0
