@@ -11,6 +11,7 @@ import sys
 import time
 
 from prismabuild import adaptive_cpu, pool, produced_output as po
+from prismabuild.record_store import RecordStore
 from prewarm_fixture import Fleet
 from test_a_dead_producers_held_mover_is_retired import (
     _World, _about, _isolated, _tier_census, IDLE, KIND, REPO, RETIRED_EVENT,
@@ -250,13 +251,13 @@ def test_one_claim_pass_reads_each_owner_state_once(tmp_path, monkeypatch):
     mover2 = str(res["mover_key"])
 
     calls = []
-    real = po._key_generation
+    real = RecordStore.standing
 
-    def counting(queue, key):
+    def counting(store, key):
         calls.append(key)
-        return real(queue, key)
+        return real(store, key)
 
-    monkeypatch.setattr(po, "_key_generation", counting)
+    monkeypatch.setattr(RecordStore, "standing", counting)
     # One prewarm pass scans every READY row: both movers' checks share one
     # owner-state read.
     _warm(world, tmp_path)

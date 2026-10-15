@@ -265,6 +265,51 @@ def test_every_declared_consumer_must_succeed(tmp_path: Path) -> None:
     assert not path.exists()
 
 
+def test_a_consumer_claimed_between_directory_reads_keeps_its_origin(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    template = _template(tmp_path / "canonical")
+    queue = _queue(tmp_path)
+    instance, path, committed = _commit(queue, template, "claim-during-read")
+    consumer = fx._hexkey("reader-claimed-during-read")
+    po.declare_origin_consumer(queue, committed["ref"],
+                               consumer_action_key=consumer)
+    _publish_consumer(queue, consumer)
+    _run_consumer(queue, consumer, "executed")
+    done = queue.item_path(pool.DONE, consumer)
+    previous_ending = done.read_bytes()
+    _publish_consumer(queue, consumer)
+    assert done.read_bytes() == previous_ending
+    ready = queue.item_path(pool.READY, consumer)
+    payload = path.read_bytes()
+    charge = _charged(queue, instance)
+    real_read = Path.read_bytes
+    claims = []
+    armed = True
+
+    def claim_before_reading_ready(record_path: Path) -> bytes:
+        nonlocal armed
+        if record_path == ready and armed:
+            armed = False
+            claimed = queue.claim(owner="w-consumer")
+            assert claimed is not None and claimed["action_key"] == consumer
+            claims.append(claimed)
+        return real_read(record_path)
+
+    monkeypatch.setattr(Path, "read_bytes", claim_before_reading_ready)
+    events = po.origin_retirement_tick(queue)
+
+    assert len(claims) == 1, "the READY-to-CLAIMED move never occurred"
+    assert queue.item_path(pool.CLAIMED, consumer).exists()
+    assert not any(event["event"] == po.ORIGIN_RETIRED_EVENT for event in events)
+    assert path.read_bytes() == payload
+    assert _charged(queue, instance) == charge
+
+    queue.finish(consumer, status="executed")
+    events = po.origin_retirement_tick(queue)
+    assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
+    assert not path.exists() and _charged(queue, instance) == 0
+
+
 def test_a_claim_in_transition_holds_and_a_widowed_lease_does_not(
         tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")

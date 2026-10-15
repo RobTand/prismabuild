@@ -5,7 +5,7 @@ snapshot of what it read (`_TickReads`).  Two paths re-read it:
 
 1. The #914 retirement asked `_producer_attempt_state` for every due
    consumed batch that no consumer declared, and that reads the owner key
-   (`_key_generation`, itself two directory walks) afresh each time.  A
+   (`RecordStore.standing`, itself two directory walks) afresh each time. A
    running producer that commits consumed batches ahead of their consumers
    cost one owner-key read per batch per cycle, a round trip each on NFS.
 2. The #949 sweep of an ended attempt's prewrites and the #914 retirement of
@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import kept_reads, pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import RecordStore  # noqa: E402
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template)
@@ -68,15 +69,16 @@ class _Reads:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.counts: collections.Counter = collections.Counter()
-        for name, which in (("_key_generation", 1), ("_read_commitments", 0),
-                            ("_read_prewrite", 0)):
-            real = getattr(po, name)
+        for owner, name, which in ((RecordStore, "standing", 1),
+                                   (po, "_read_commitments", 0),
+                                   (po, "_read_prewrite", 0)):
+            real = getattr(owner, name)
 
             def counted(*args, _real=real, _name=name, _which=which, **kw):
                 self.counts[(_name, str(args[_which]))] += 1
                 return _real(*args, **kw)
 
-            monkeypatch.setattr(po, name, counted)
+            monkeypatch.setattr(owner, name, counted)
 
     def of(self, name: str, subject: object) -> int:
         return self.counts[(name, str(subject))]
@@ -115,12 +117,12 @@ def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
 
     assert po.origin_retirement_tick(queue) == []
 
-    assert reads.of("_key_generation", owner) == 1
+    assert reads.of("standing", owner) == 1
     assert all(path.exists() for path in paths), "a live producer keeps them"
     # The next cycle reads it again: a snapshot is one cycle's.
     reads.reset()
     assert po.origin_retirement_tick(queue) == []
-    assert reads.of("_key_generation", owner) == 1
+    assert reads.of("standing", owner) == 1
 
 
 def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
@@ -155,8 +157,8 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
         po.ORIGIN_RETIRED_EVENT, "output-prewrite-orphaned"])
     assert not handoff.exists() and planned.exists()
     # Each owner key once.
-    assert reads.of("_key_generation", ended["owner_action_key"]) == 1
-    assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
+    assert reads.of("standing", ended["owner_action_key"]) == 1
+    assert reads.of("standing", sibling["owner_action_key"]) == 1
     # Each sibling record once where the host can vouch for its version:
     # the tick's scan parse is reused (`_TickReads.batches`, #992).  On a
     # filesystem that cannot (a network mount), that parse is not kept
@@ -171,6 +173,6 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # The next cycle reads each again, once.
     reads.reset()
     po.origin_retirement_tick(queue)
-    assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
+    assert reads.of("standing", sibling["owner_action_key"]) == 1
     assert reads.of("_read_commitments",
                     sibling_scope / "commitments.json") == expected

@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import RecordStore  # noqa: E402
 import pbmcp  # noqa: E402
 import pbstatus  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
@@ -413,12 +414,12 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
 
     reads: list[str] = []
     scans: list[str] = []
-    key_generation = po._key_generation
+    standing = RecordStore.standing
     # The other attempts' paths are read through one tick's reads (#1053),
     # once per instance whose prewrites are decided.
     path_owners = po._TickReads.path_owners
-    monkeypatch.setattr(po, "_key_generation", lambda q, key: (
-        reads.append(key), key_generation(q, key))[1])
+    monkeypatch.setattr(RecordStore, "standing", lambda store, key: (
+        reads.append(key), standing(store, key))[1])
     monkeypatch.setattr(po._TickReads, "path_owners", lambda *args: (
         scans.append(_nonce(args[1])), path_owners(*args))[1])
 

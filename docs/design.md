@@ -18012,3 +18012,30 @@ The test-only source parent reproduced three READY-generation losses in PB
 action `c28bdd67aea92a51224aaa57d295f080b588e6d95d6d235062eca3226065b5ea`.
 Source-bound verification of this fix remains pending. This component change
 does not promote staged-read deployment or workload-proof axes.
+
+### Queue-key standing read owner
+
+`record_store.RecordStore(root).standing(key)` owns the queue-key observation
+used by produced-output retirement, attempt checks, action edges, deferred
+release, and produced-holder classification. It returns `Present[QueueRow]`,
+`Present[Moving]`, `Absent`, or `Unknown` with a reason. Produced-output keeps
+its consumer-success, attempt-identity, containment, and write-authorization
+policy. The retirement tick and dead-input claim pass retain their existing
+per-owner memo lifetimes.
+
+Standing makes two plain observations and requires the state and record
+contents to agree. Each observation reads claimed before ready, then checks
+claimed sidecar names for tombstones or late finishes. Intent and lease names
+alone do not establish a transition. Without a live row or transition, the
+latest `published_unix` among done, failed, and withdrawn answers for the key.
+A missing, boolean, or nonnumeric stamp, an equal newest stamp, an unreadable
+record, or an unreadable sidecar listing leaves the answer unknown. The
+existing bare float conversion remains unchanged, including its overflow and
+non-finite-number behavior.
+
+These reads acquire no lock, impose no deadline, and do not refresh cached
+missing names. They use the existing `pool.read_queue_record` transport, whose
+empty-file and I/O behavior is unchanged. Queue names and record bytes are
+unchanged. Mover polling, the other claim readers, plain and kept-read adapter
+closure, queue publication, and the remaining liveness and prefix readers are
+unfinished c05 work. The documented PoolQueue and SDK read APIs are preserved.
