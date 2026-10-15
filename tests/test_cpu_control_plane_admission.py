@@ -21,14 +21,14 @@ def test_23_small_actions_pass_busy_first_free_cpu(tmp_path, monkeypatch):
     ledger.ensure_capacity({'cpu': 80, 'mem_gb': 96})
     assert ledger.acquire('holder', {'cpu': 11})
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda _: sample(range(80), {**dict.fromkeys(range(11), 1.), 11: .17}))
+    cpu_sampler = lambda: sample(range(80), {**dict.fromkeys(range(11), 1.), 11: .17})
     allocations = []
     for i in range(23):
         key = f'{i + 1:064x}'
         q.publish(action_key=key, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
                   worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
-        claim = q.claim(capacity={'cpu': 80, 'mem_gb': 96}, cpu_tiers=tiers, adaptive_cpu=True)
+        claim = q.claim(capacity={'cpu': 80, 'mem_gb': 96}, cpu_tiers=tiers, adaptive_cpu=True,
+            cpu_sampler=cpu_sampler)
         assert claim is not None, f'one busy free CPU stranded action {i}'
         allocations += claim['cpu_allocation']['preferred']
         assert claim['cpu_allocation']['fallback'] == []
@@ -91,11 +91,12 @@ def test_control_accounting_preserves_remaining_foreign_work(tmp_path, monkeypat
     observed = sample([11, 12], {11: .17})
     observed['foreign_per_cpu_busy'] = {'11': foreign, '12': 0.}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda _: observed)
+    cpu_sampler = lambda: observed
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
     claim = q.claim(capacity={'cpu': 2, 'mem_gb': 2},
-                    cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True)
+                    cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True,
+                    cpu_sampler=cpu_sampler)
     if expected is None:
         assert claim is None
     else:
@@ -148,10 +149,11 @@ def test_skip_busy_uses_ordinal_mapping_and_preferred_tier(tmp_path, monkeypatch
     q = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [8, 10], 'fallback': [2, 4]}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda _: sample([8, 10, 2, 4], busy))
+    cpu_sampler = lambda: sample([8, 10, 2, 4], busy)
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
-    claim = q.claim(capacity={'cpu': 4, 'mem_gb': 1}, cpu_tiers=tiers, adaptive_cpu=True)
+    claim = q.claim(capacity={'cpu': 4, 'mem_gb': 1}, cpu_tiers=tiers, adaptive_cpu=True,
+        cpu_sampler=cpu_sampler)
     if expected is None:
         assert claim is None
     else:
@@ -166,11 +168,12 @@ def test_control_attribution_never_discounts_raw_saturation_or_isolation(tmp_pat
     observed = sample([11, 12], busy)
     observed['foreign_per_cpu_busy'] = {'11': 0., '12': 0.}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda _: ('shape', measurement))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda _: observed)
+    cpu_sampler = lambda: observed
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': need, 'mem_gb': 1})
     assert q.claim(capacity={'cpu': 2, 'mem_gb': 1},
-                   cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True) is None
+                   cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True,
+                   cpu_sampler=cpu_sampler) is None
 
 
 def test_control_interval_uses_inner_tick_bounds():

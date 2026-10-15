@@ -22,15 +22,15 @@ def _queue(tmp_path):
 
 
 def _idle_cpu(monkeypatch):
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+    return lambda: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': 0., 'psi_some': 0.})
+        'busy_cpus': 0., 'psi_some': 0.}
 
 
 def _reserved_cpu(tmp_path, monkeypatch):
     queue, ledger = _queue(tmp_path)
-    _idle_cpu(monkeypatch)
-    controller = adaptive_cpu.Controller(ledger, TIERS)
+    cpu_sampler = _idle_cpu(monkeypatch)
+    controller = adaptive_cpu.Controller(ledger, TIERS, sampler=cpu_sampler)
     with controller.locked():
         metadata = controller.decision({'action_key': KEY}, {'cpu': 1},
                                        identity=('shape', False))
@@ -102,7 +102,7 @@ def test_cpu_allocation_errors_stay_strict_but_supplied_empty_metadata_skips_the
 def test_claim_commit_distinguishes_absent_metadata_from_a_present_empty_record(
         tmp_path, monkeypatch, damage):
     queue, ledger = _queue(tmp_path)
-    _idle_cpu(monkeypatch)
+    cpu_sampler = _idle_cpu(monkeypatch)
     queue.publish(action_key=KEY, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py', resources={'cpu': 1})
     original = pool.ResourceLedger.commit_acquire
@@ -116,7 +116,7 @@ def test_claim_commit_distinguishes_absent_metadata_from_a_present_empty_record(
                 marker.write_bytes(b'' if damage == 'empty_bytes' else b'{}')
         return filed
     monkeypatch.setattr(pool.ResourceLedger, 'commit_acquire', damage_committed_record)
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     if damage == 'empty_object':
         assert claimed is not None
         assert claimed['cpu_allocation'] == {'preferred': [8], 'fallback': []}

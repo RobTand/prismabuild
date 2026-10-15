@@ -158,13 +158,13 @@ def test_publisher_launch_failure_does_not_override_claim_result(tmp_path, monke
     queue = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [0], 'fallback': []}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {})
+    cpu_sampler = lambda: {}
     monkeypatch.setattr(adaptive_snapshot.subprocess, 'Popen',
                         lambda *a, **kw: (_ for _ in ()).throw(OSError('no interpreter')))
     key = 'a' * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py', resources={'cpu': 1})
-    claimed = queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True)
+    claimed = queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed['action_key'] == key
     assert queue.ledger().held_keys() == [key]
 
