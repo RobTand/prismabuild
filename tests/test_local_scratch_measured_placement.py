@@ -104,8 +104,6 @@ class ScratchFleet:
         self.host = SLOW
         monkeypatch.setattr(socket, "gethostname", lambda: self.host)
         self.cpu_fault = self.gpu_fault = None
-        monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda _: self.cpu_sample())
-        monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda _: self.gpu_sample())
         self.work = _checkout(root)
         self.scratch = str(root / "scratch")
         Path(self.scratch).mkdir()
@@ -213,10 +211,12 @@ class ScratchFleet:
         self.key = self.action["action_key"]
         return self.key
 
-    def claim(self, host):
+    def claim(self, host, *, gpu_sampler=None):
         self.host = host
         return self.queue.claim(owner=f"worker-{host}", capacity=CAPACITY, cpu_tiers=self.tiers,
-                                adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY])
+                                adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY],
+                                cpu_sampler=self.cpu_sample,
+                                gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
 
     def ready_unspent(self):
         item = _record(self.queue.item_path(pool.READY, self.key))
@@ -683,7 +683,9 @@ def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, 
 def test_no_capacity_legacy_claim_cannot_bypass_opted_in_admission(fleet):
     fleet.publish()
     fleet.host = FAST
-    assert fleet.queue.claim(tags=["gb10", CAPABILITY], has_gpu=True) is None
+    assert fleet.queue.claim(tags=["gb10", CAPABILITY], has_gpu=True,
+        cpu_sampler=fleet.cpu_sample,
+        gpu_sampler=fleet.gpu_sample) is None
     fleet.ready_unspent()
 
 
@@ -1079,7 +1081,9 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
 
     claimed = fleet.queue.claim(owner="generation-race-control", capacity=CAPACITY,
                                 cpu_tiers=fleet.tiers, adaptive_cpu=True, has_gpu=True,
-                                tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate)
+                                tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate,
+                                cpu_sampler=fleet.cpu_sample,
+                                gpu_sampler=fleet.gpu_sample)
     assert replacements, "fixture did not reach the actual pre-rename gate"
     if claimed is not None:
         assert claimed["published_unix"] == replacements[0]["published_unix"]
@@ -1105,9 +1109,9 @@ def test_refusal_sample_total_age_cannot_authorize_measured_pass_on(fleet, monke
             sample["sampled_unix"] -= 4.9
         return sample
 
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda _: aging_gpu_observation())
+    gpu_sampler = lambda: aging_gpu_observation()
     fleet.gpu_fault = "foreign"
-    assert fleet.claim(FAST) is None
+    assert fleet.claim(FAST, gpu_sampler=gpu_sampler) is None
     fleet.mirror_real_denial(FAST, "adaptive_gpu_refused")
     denial = fleet.denial(FAST)
     sampled = denial["evidence"]["decision"]["sample"]["sampled_unix"]
@@ -1121,6 +1125,6 @@ def test_refusal_sample_total_age_cannot_authorize_measured_pass_on(fleet, monke
     assert fleet.queue.ledger(FAST).available() == CAPACITY
     assert 0 < fleet.clock[0] - denial["denied_unix"] < adaptive_gpu.MAX_SAMPLE_AGE_S
     assert fleet.clock[0] - sampled > adaptive_gpu.MAX_SAMPLE_AGE_S
-    claimed = fleet.claim(SLOW)
+    claimed = fleet.claim(SLOW, gpu_sampler=gpu_sampler)
     assert claimed is None, "individually fresh ages improperly admitted a currently stale refusal sample"
     assert not fleet.queue.ledger(SLOW).held_keys()

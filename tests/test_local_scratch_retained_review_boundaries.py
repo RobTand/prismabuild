@@ -189,8 +189,8 @@ def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monke
             sample[unknown_field] = False
         return sample
 
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda _: gpu_observation())
-    assert fleet.claim(FAST) is None
+    gpu_sampler = lambda: gpu_observation()
+    assert fleet.claim(FAST, gpu_sampler=gpu_sampler) is None
     fleet.mirror_real_denial(FAST, "adaptive_gpu_refused")
     denial = fleet.denial(FAST)
     decision = denial["evidence"]["decision"]
@@ -211,7 +211,7 @@ def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monke
     # refusal: its genuine old diagnostic is now the unknown-authority trap.
     invalid[0] = False
     assert gpu_observation()["complete"] is True and gpu_observation()["attributed"] is True
-    claimed = fleet.claim(SLOW)
+    claimed = fleet.claim(SLOW, gpu_sampler=gpu_sampler)
     assert claimed is None, "unknown GPU observation was treated as measured policy pass-on"
     assert _record(fleet.queue.item_path(pool.READY, fleet.key)) == current
     assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
@@ -221,7 +221,7 @@ def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monke
         assert not fleet.queue.ledger(host).held_keys()
         assert fleet.queue.ledger(host).available() == CAPACITY
     assert fleet.denial(FAST) == denial  # SLOW inspection did not reevaluate FAST
-    fleet.receipt(fleet.claim(FAST), FAST)
+    fleet.receipt(fleet.claim(FAST, gpu_sampler=gpu_sampler), FAST)
     fleet.queue.finish(fleet.key, status="executed", detail={})
     assert fleet.queue.ledger(FAST).available() == CAPACITY
 
