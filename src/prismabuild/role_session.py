@@ -1,7 +1,6 @@
 """Shared role operations; serving loops own their completion policies."""
 from contextlib import contextmanager
 import fcntl
-import hashlib
 import os
 from pathlib import Path
 import signal
@@ -14,6 +13,7 @@ from . import adaptive_cpu, core as pb, generation_receipt, park_proof
 from .generation_receipt import (commit_at as _commit_at,
                                  generation_at as _generation_at)
 from .park_proof import _gate_key, _proc_starttime, drain_offer_fields
+from .digest_primitives import raw_sha256
 
 GENERATION_VERSION = Path(__file__).resolve().parents[2] / "RUNTIME_VERSION.json"
 RUNTIME_VERSION = Path("/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")
@@ -254,7 +254,7 @@ def record_generation_drift(drift: dict, *, actor: str,
         "detail": dict(detail or {}),
     }
     raw = pb._canonical_bytes(record) + b"\n"
-    digest = hashlib.sha256(raw).hexdigest()[:8]
+    digest = raw_sha256(raw)[:8]
     path = (Path(queue_root) / GENERATION_DRIFT_DIR
             / (f"{int(record['unix'] * 1000):013d}-{record['host']}"
                f"-{record['pid']}-{digest}.json"))

@@ -64,6 +64,7 @@ sys.path.insert(0, str(SRC_ROOT))
 from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import role_session  # noqa: E402
+from prismabuild.park_proof import read_gate  # noqa: E402
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
 
@@ -84,19 +85,6 @@ def gate_paths(gate: Path | str | None = None) -> tuple[Path, Path]:
         return role_session.MAINTENANCE_GATE, role_session.PARKED_ROOT
     gate_path = Path(gate)
     return gate_path, gate_path.parent / "rollout" / "parked"
-
-
-def read_gate(gate_path: Path) -> dict[str, Any] | None:
-    """Open gate (None) or the drain in force; unreadable parses as draining."""
-    try:
-        value = json.loads(gate_path.read_text())
-    except FileNotFoundError:
-        return {"draining": True, "reason": "maintenance gate not initialized"}
-    except (OSError, ValueError):
-        return {"draining": True}
-    if not isinstance(value, dict):
-        return {"draining": True}
-    return None if value.get("draining") is False else value
 
 
 def gate_epoch(gate: dict[str, Any] | None) -> Any:

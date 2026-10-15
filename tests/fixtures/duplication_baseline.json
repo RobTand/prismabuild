@@ -2,6 +2,10 @@
  "must_differ": [],
  "near_duplicates": [
   [
+   "src/prismabuild/park_proof.py::_proc_starttime",
+   "tools/fleet/resource_broker.py::_proc_starttime"
+  ],
+  [
    "src/prismabuild/produced_output.py::_broker_scope_id",
    "tools/fleet/resource_broker.py::scope_id"
   ],
@@ -10,20 +14,12 @@
    "tools/fleet/resource_broker.py::_supervisor_owner_parts"
   ],
   [
-   "tools/fleet/fleet_membership.py::read_gate",
-   "tools/fleet/worker_loop.py::read_maintenance_gate"
-  ],
-  [
    "tools/fleet/pbcanary_legs/leg3.py::_returncode",
    "tools/fleet/pbcanary_legs/leg4.py::_returncode"
   ],
   [
    "tools/fleet/ram_promote.py::main",
    "tools/fleet/stage_move.py::main"
-  ],
-  [
-   "tools/fleet/resource_broker.py::_proc_starttime",
-   "tools/fleet/worker_loop.py::_proc_starttime"
   ],
   [
    "tools/fleet/stage_move.py::own_action_key",
@@ -127,7 +123,6 @@
   "hashlib:tools/fleet/stage_move.py::_StagedPublisher._content_proof",
   "hashlib:tools/fleet/supervise.py::_sha256",
   "hashlib:tools/fleet/upgrade_client.py::digest",
-  "hashlib:tools/fleet/worker_loop.py::record_generation_drift",
   "hashlib:tools/prismabuild_worker.py::_capture_launched_source",
   "sorted-json:src/prismabuild/action_edges.py::_canonical",
   "sorted-json:src/prismabuild/adaptive_cpu.py::action_identity",
@@ -483,8 +478,8 @@
    "src/prismabuild/slurm.py"
   ],
   "_proc_starttime": [
-   "tools/fleet/resource_broker.py",
-   "tools/fleet/worker_loop.py"
+   "src/prismabuild/park_proof.py",
+   "tools/fleet/resource_broker.py"
   ],
   "_read": [
    "src/prismabuild/action_edges.py",
@@ -638,8 +633,8 @@
    "tools/fleet/ram_promote.py"
   ],
   "published_commit": [
-   "tools/fleet/pbrun.py",
-   "tools/fleet/worker_loop.py"
+   "src/prismabuild/role_session.py",
+   "tools/fleet/pbrun.py"
   ],
   "reconcile": [
    "src/prismabuild/pool_reconcile.py",
