@@ -17,8 +17,15 @@ def _denial(queue, key):
 def _publish_cpu(queue):
     key = 'f' * 64
     queue.publish(action_key=key, cas_root='/cas', checkout_root='/co', worker_script='/w.py',
-                  resources={'cpu': 8, 'mem_gb': 4}, priority=-10)
+                  resources={'cpu': 8, 'mem_gb': 4}, priority=-10,
+                  tags=[pool.socket.gethostname()])
     return key
+
+
+def _claim_here(queue, capacity):
+    return queue.claim(tags=[pool.socket.gethostname()], capacity=capacity,
+                       cpu_tiers={'preferred': list(range(8)), 'fallback': []},
+                       adaptive_cpu=True, has_gpu=True)
 
 
 def _offer(sample, capacity):
@@ -66,21 +73,25 @@ def test_a_busy_row_keeps_room_on_evidence_that_cannot_admit_it(gpu_rig):
     gpu = publish(1)
     cpu = _publish_cpu(queue)
     with queue._transition_locked(gpu), ThreadPoolExecutor(max_workers=1) as executor:
-        assert executor.submit(claim).result(timeout=5) is None
+        assert executor.submit(_claim_here, queue, capacity).result(timeout=5) is None
+    busy = _denial(queue, gpu)
+    assert busy['reason'] == 'transition_busy'
+    assert busy['evidence']['gpu_room_kept'] == {'cpu': 1, 'mem_gb': 1, 'gpu': 1}
+    assert busy['evidence']['gpu_room_binds_all'] is True
     deferred = _denial(queue, cpu)
     assert deferred['reason'] == 'deferred_for_ready_gpu_row'
     assert deferred['evidence']['gpu_row'] == gpu[:12]
     assert not queue.ledger().held_keys()
     assert queue.ledger().available() == capacity
 
-    claimed = claim()
+    claimed = _claim_here(queue, capacity)
     assert claimed['action_key'] == cpu
     assert _denial(queue, gpu)['evidence']['decision']['reason'] == 'sample_invalid_or_stale'
     assert queue.ledger().holder_tokens(cpu) == {'cpu': 8, 'mem_gb': 4}
     assert queue.item_path(pool.READY, gpu).exists()
     queue.finish(cpu, status='executed', detail={})
     sample['complete'] = True
-    assert claim()['action_key'] == gpu
+    assert _claim_here(queue, capacity)['action_key'] == gpu
     queue.finish(gpu, status='executed', detail={})
     assert queue.ledger().available() == capacity
 
@@ -108,7 +119,10 @@ def test_unknown_room_evidence_allows_the_later_cpu_row(gpu_rig, fault):
     else:
         sample['foreign_processes'] = [{'pid': 42}]
     with queue._transition_locked(gpu), ThreadPoolExecutor(max_workers=1) as executor:
-        claimed = executor.submit(claim).result(timeout=5)
+        claimed = executor.submit(_claim_here, queue, capacity).result(timeout=5)
+    busy = _denial(queue, gpu)
+    assert busy['reason'] == 'transition_busy'
+    assert 'gpu_room_kept' not in (busy.get('evidence') or {})
     assert claimed['action_key'] == cpu
     assert queue.item_path(pool.READY, gpu).exists()
     assert queue.ledger().held_keys() == [cpu]
