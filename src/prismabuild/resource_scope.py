@@ -583,6 +583,9 @@ class ResourceScope:
         digest_owner_rel = "src/prismabuild/digest_primitives.py"
         if digest_owner_rel in files:
             self._verified_member(root, digest_owner_rel, files)
+        immutable_owner_rel = "src/prismabuild/immutable_files.py"
+        if immutable_owner_rel in files:
+            self._verified_member(root, immutable_owner_rel, files)
         for proxy_rel in _PROXY_CANDIDATES:
             if proxy_rel not in files:
                 continue  # this layout does not carry that spelling

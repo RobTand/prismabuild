@@ -738,6 +738,11 @@ def _native_fixture(base: Path, monkeypatch):
     core_file.parent.mkdir(parents=True)
     core_file.write_bytes(Path(pb.__file__).read_bytes())
     core_file.chmod(0o444)
+    immutable_file = generation / "src/prismabuild/immutable_files.py"
+    immutable_file.write_bytes((REPOSITORY / "src/prismabuild/immutable_files.py").read_bytes())
+    immutable_file.chmod(0o444)
+    monkeypatch.setattr(pb, "_LOADED_WORKER_IMMUTABLE_IDENTITY",
+                        pb._identify_runtime_source(immutable_file, where="private fixture immutable owner"))
     launcher_file = generation / "tools/prismabuild_worker.py"
     launcher_file.parent.mkdir()
     launcher_file.write_bytes((REPOSITORY / "tools/prismabuild_worker.py").read_bytes())
@@ -1038,3 +1043,28 @@ def test_native_immutable_argv_binds_proxy_scope_secret_affinity_launcher_reques
     _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
     with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)
+
+
+def test_native_runtime_rechecks_the_immutable_owner_after_its_first_read(
+        tmp_path, monkeypatch):
+    from prismabuild import action_result
+
+    action, queue, record, receipt, _proof = _native_fixture(tmp_path, monkeypatch)
+    source = Path(receipt["producer"]["runtime"]["immutable_files"]["path"])
+    original = action_result._read_bounded
+    reads = []
+
+    def read_and_change_owner(path, **kwargs):
+        raw = original(path, **kwargs)
+        if Path(path) == source:
+            reads.append(Path(path))
+            if len(reads) == 1:
+                source.chmod(0o644)
+                source.write_bytes(b"changed after the first native proof pass\n")
+                source.chmod(0o444)
+        return raw
+
+    monkeypatch.setattr(action_result, "_read_bounded", read_and_change_owner)
+    with pytest.raises(client.ActionResultError, match="runtime source differs"):
+        _native_read(action, queue, record)
+    assert reads == [source, source]

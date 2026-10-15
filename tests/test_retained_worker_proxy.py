@@ -85,6 +85,8 @@ def _published_generation(store: Path, name: str, *,
         add("src/prismabuild/core.py", _CHECKOUT / "src/prismabuild/core.py")
         add("src/prismabuild/digest_primitives.py",
             _CHECKOUT / "src/prismabuild/digest_primitives.py")
+        add("src/prismabuild/immutable_files.py",
+            _CHECKOUT / "src/prismabuild/immutable_files.py")
     else:
         rel = "src/prismabuild/core.py"
         original = subprocess.run(
@@ -499,3 +501,19 @@ def test_authority_chain_matches_within_generation(
     # refused, never fed.
     with pytest.raises(core_b.ActionContractError):
         core_b._residency_environment(action, {})
+
+
+def test_receipt_listed_immutable_owner_tamper_refuses_before_proxy_launch(
+        fleet_store, tmp_path, monkeypatch) -> None:
+    gen = _published_generation(fleet_store, "gen-immutable-owner-tamper")
+    owner = gen / "src/prismabuild/immutable_files.py"
+    owner.chmod(0o644)
+    owner.write_bytes(owner.read_bytes() + b"\n# changed after publication\n")
+    owner.chmod(0o444)
+    worker = str(gen / "tools/prismabuild_worker.py")
+    queue, item = _retained_item(tmp_path, worker)
+    seen: list = []
+    _contained_harness(monkeypatch, tmp_path, queue, item, seen)
+    with pytest.raises(OSError, match="retained runtime hash mismatch: src/prismabuild/immutable_files.py"):
+        queue.execute(item, containment=True)
+    assert seen == [], "a tampered immutable owner must refuse before proxy launch"

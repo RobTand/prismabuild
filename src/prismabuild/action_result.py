@@ -453,7 +453,13 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
         nonce=nonce, token=scope["token"])
     if native_argv != expected:
         raise ActionResultError("immutable native launch argv differs from selected broker control or request")
-    for source in (core, launcher):
+    runtime_sources = [core, launcher]
+    if "immutable_files" in runtime:
+        immutable_owner = runtime["immutable_files"]
+        if Path(immutable_owner["path"]) != root / "src/prismabuild/immutable_files.py":
+            raise ActionResultError("native producer immutable owner differs from attested helper root")
+        runtime_sources.append(immutable_owner)
+    for source in runtime_sources:
         path = Path(source["path"])
         try:
             canonical = path.resolve(strict=True)
