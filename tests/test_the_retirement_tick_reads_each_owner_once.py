@@ -101,7 +101,7 @@ def _version_keepable(path: Path) -> bool:
     """Whether this host can vouch for a version of this file (#1045)."""
 
     fence = kept_reads.version_fence()
-    return kept_reads.keepable_version(path.stat(), fence) is not None
+    return kept_reads.keepable_version(path.stat(), fence, path=path) is not None
 
 
 def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
