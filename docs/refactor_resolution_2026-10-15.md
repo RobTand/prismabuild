@@ -350,6 +350,37 @@ and the corresponding node-retention artifact preserve these checks.
 This combined population covers those units; the complete brief and final
 suite over all changes remain open.
 
+## Claim captures and file-version context
+
+Produced-output declaration, binding, live-owner, nonce, launch-context and
+release operations now ask `RecordStore.claimed` or `queued` at their original
+read positions. The questions retain plain missing/empty behavior and the exact
+captured error. Each operation retains its existing error and identity policy.
+The SDK's distinct empty-record behavior remains separate. The closed wave at
+`747c580abe7e6f468453c2036b319091189552be` passed 924 tests with three recorded
+skips across 57 files. All 920 baseline cases remain, with seven new file/fault
+cases. Root and independent source review found no additional issue. The wave
+is integrated through `bb549e09acd87d80842ce9f7112bbae08c616482`.
+
+One skipped memoization test concealed a missing file-context argument. Giving
+its trust check the actual path and replacing a fixed sleep with the shared
+logical clock exposed six commitment reads where one was required. The same
+missing context prevented stage resume from reusing a qualified parse when its
+local device lacked a direct mount-table match. That new scenario failed while
+29 controls passed. The callers now supply the actual path or still-open
+descriptor to the existing trust owner. The unknown-mount control denies the
+descriptor mount-ID observation too, preserving its unavailable-evidence case.
+All 133 assertions in the three changed test files remain. The complete
+five-file correction passed 96 tests at
+`c7473f0a3f8c073608eb0a33abe93f01dd1ba018` and is integrated through
+`234091f524ba84659ff820cf1df93a7e6547fbf3`.
+
+The combined 60-file run at that integrated source passed 1,012 tests, with two
+NFS-only skips and no failures. The former memoization skip is an actual pass.
+Both full source, terminal, retained-log and CAS receipt/payload chains are
+verified. The `merged-claims-file-context-verified` artifacts retain the result.
+The wider queue-store closure, filesystem trust port and full brief remain open.
+
 
 ## Qualified receipt, drain and queue-reader steps
 
