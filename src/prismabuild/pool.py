@@ -6202,13 +6202,16 @@ class PoolQueue:
         published = record.get("published_unix")
         if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
             raise PoolContractError("attempt history requires a full action key")
-        if (
-            type(published) not in (int, float)
-            or not math.isfinite(float(published))
-        ):
+        if type(published) not in (int, float):
+            raise PoolContractError("attempt history requires published_unix")
+        try:
+            generation = float(published)
+        except OverflowError as exc:
+            raise PoolContractError("attempt history requires finite published_unix") from exc
+        if not math.isfinite(generation):
             raise PoolContractError("attempt history requires published_unix")
         return pb.canonical_sha256(
-            {"action_key": key, "published_unix": float(published)}
+            {"action_key": key, "published_unix": generation}
         )
 
     def publication_ending_path(self, record: Mapping[str, object]) -> Path:
@@ -6224,10 +6227,12 @@ class PoolQueue:
         try:
             usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
                       and self._ready_record_usable(successor, key))
-            self.demand_of(successor)
+            host_demand, tier_demand = storage_tiers.split_demand(self.demand_of(successor))
+            for tier_id in tier_demand:
+                self._check_tier_id(tier_id)
         except (TypeError, ValueError, OverflowError) as exc:
             raise PoolContractError("invalid successor publication item") from exc
-        if not usable:
+        if not usable or not host_demand:
             raise PoolContractError("invalid successor publication item")
         generation = float(successor["published_unix"])
         if generation < float(original["published_unix"]):
@@ -24987,7 +24992,9 @@ class PoolQueue:
                                 covered = True
                             else:
                                 candidate = self._read_ready_publication(key)
-                                if self._successor_generation(record, candidate) > generation:
+                                candidate_generation = self._successor_generation(record, candidate)
+                                live = True
+                                if candidate_generation > generation:
                                     successor = candidate
                 except (OSError, pb.PrismaBuildError):
                     continue

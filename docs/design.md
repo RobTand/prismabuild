@@ -1044,7 +1044,11 @@ has an exact ending, distinct from an execution verdict. The queue retains
 `publication-endings/<key>/<attempt_generation>.json`, with the original
 identity and the actual successor item observed under the key transition
 lock. The decision proves matching key, usable pool-item addressing and
-ordering, valid demand, and finite strictly newer generation. Same-generation
+ordering, valid tier-key structure, positive host demand, and finite strictly
+newer generation. The host-demand rule accepts any positive host resource;
+it requires neither both CPU and memory nor a current offer or fit. Oversized
+timestamp conversion is a generation contract error, retaining the same strict
+history validation. Same-generation
 retries grant no supersession. Malformed, unreadable or uncertain successor
 evidence retains the original claim/tombstone authority and preserves READY.
 The immutable first decision wins on retries even if READY later changes.
@@ -1062,7 +1066,8 @@ the old tombstone is filed and removed. An old exact execution or withdrawal
 ending suppresses supersession. A claimed successor's resources and lease are
 never the old tombstone's to release. No original claim is restored beside a
 newer READY merely to reconstruct an ending, and no synthetic attempt is
-created for an unstarted release.
+created for an unstarted release. The actual validated READY read establishes
+live ownership even when an earlier existence lookup returned a cached negative.
 
 Exact pool waiters expose the publication ending as a typed value rather than
 an execution summary. It retains the watched generation; only the existing
