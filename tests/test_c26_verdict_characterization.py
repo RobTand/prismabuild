@@ -1,6 +1,7 @@
 """C26 baseline REDs use native observations and existing public consumers."""
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 import sys
@@ -205,8 +206,13 @@ def gate_receipt(tmp_path, monkeypatch, fault):
     assert receipt is not None
     log = cas.result_path(receipt, action).read_text()
     (tmp_path / 'verified-gate.log').write_text(log)
+    request = json.loads((cas.root / 'requests' / action['action_key'][:2]
+                          / (action['action_key'] + '.json')).read_text())
+    inputs = {item['sha256']: base64.b64encode((cas.root / 'blobs' / item['sha256'][:2]
+              / item['sha256']).read_bytes()).decode() for item in receipt['producer']['inputs']}
     print('C26_NATIVE_GATE_RECEIPT ' + json.dumps({'action_key': action['action_key'],
-        'receipt': receipt, 'terminal': json.loads(terminal.read_text()), 'log': log}, sort_keys=True))
+        'request': request, 'input_blobs_base64': inputs, 'receipt': receipt,
+        'terminal': json.loads(terminal.read_text()), 'log': log}, sort_keys=True))
     observed = record(log)
     assert sorted(observed['collected']) == shape_gate.reference_nodes()
     assert len(observed['reports']) == len(names) + bool(fault)
