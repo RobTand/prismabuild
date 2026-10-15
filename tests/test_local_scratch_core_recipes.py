@@ -4,7 +4,7 @@ Run only in the parent's admitted PB action. Tiny real recorder executions use
 existing queue/Core/CAS fixture helpers. Source changes are confined to private
 copies, never the tracked checkout or the executing worker's Core. Independent
 hashlib/JSON recipes here are expected-byte oracles, not production recipes.
-Pbrun's action code closure contains only its identity stamp; the four producer
+Pbrun's action code closure contains only its identity stamp; the five producer
 sources are proved from the sealed checkout snapshot through the real materializer.
 """
 from __future__ import annotations
@@ -165,7 +165,7 @@ def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_roo
 
 def test_real_isolated_tiny_profile_receipt_and_loader_accept_all_four_sources(fleet, monkeypatch):
     action = _recorder_action(fleet)
-    _assert_materialized_producer_snapshot(fleet, action)
+    sources = _assert_materialized_producer_snapshot(fleet, action)
     assert action["task"]["argv"][1:3] == ["-I", "-S"]
     receipt, raw = _successful_profile_execution(fleet, monkeypatch, action)
     body = json.loads(raw)
@@ -176,7 +176,10 @@ def test_real_isolated_tiny_profile_receipt_and_loader_accept_all_four_sources(f
     assert receipt["producer"]["executable"]["path"] == sys.executable
     reader = _profile_reader(fleet, action, pb.canonical_sha256(body))
     assert reader.expected_sources is not None
-    assert len(reader.expected_sources) == 4
+    assert reader.expected_sources == tuple(hashlib.sha256(sources[name]).hexdigest()
+        for name in ("tools/fleet/local_scratch_profile.py", "src/prismabuild/local_scratch.py",
+                     "src/prismabuild/core.py", "src/prismabuild/digest_primitives.py",
+                     "src/prismabuild/immutable_files.py"))
     detail = worker_loop.scratch_observed_detail(None, reader)
     assert detail[PROFILES] == [{**body, "artifact_sha256": pb.canonical_sha256(body)}]
     assert detail[DEVICES][fleet.scratch] == fleet.actual_root_identity(fleet.scratch)
