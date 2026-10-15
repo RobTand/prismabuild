@@ -1,5 +1,6 @@
 """Maintenance defers only unstarted attempts and preserves later publication."""
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -83,9 +84,15 @@ def test_maintenance_gate_blocks_claims_before_queue_reads(tmp_path, monkeypatch
     worker = _worker_loop()
     gate = tmp_path / 'maintenance.json'
     gate.write_text(json.dumps({'draining': True}))
+    for name in ('loaded.json', 'published.json'):
+        (tmp_path / name).write_text(json.dumps({'commit': 'same', 'generation': 'test'}))
     monkeypatch.setattr(role_session, 'MAINTENANCE_GATE', gate, raising=False)
-    monkeypatch.setattr(role_session, 'loaded_runtime_commit', lambda: 'same')
-    monkeypatch.setattr(role_session, 'published_commit', lambda: 'same')
+    monkeypatch.setattr(role_session, 'GENERATION_VERSION', tmp_path / 'loaded.json')
+    monkeypatch.setattr(role_session, 'RUNTIME_VERSION', tmp_path / 'published.json')
+    monkeypatch.setattr(role_session, 'PARKED_ROOT', tmp_path / 'parked')
+    monkeypatch.setattr(worker, 'SH', tmp_path)
+    monkeypatch.setattr(worker.container_images, 'InventoryCache', partial(
+        worker.container_images.InventoryCache, root=tmp_path / 'images'))
     # The drain poll republishes its advisory offer (#1204), so it now takes
     # the host-local publication lock; keep that lock inside the test rather
     # than letting it contend with a live loop or a sibling pytest worker.

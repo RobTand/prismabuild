@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from functools import partial
 from pathlib import Path
 import socket
 import sys
@@ -201,10 +202,19 @@ def test_an_idle_worker_says_how_much_of_the_queue_is_one_box_wide(
     spec = importlib.util.spec_from_file_location("wl_census", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(module.container_images, "InventoryCache", partial(
+             module.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0
@@ -288,10 +298,19 @@ def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
     spec = importlib.util.spec_from_file_location("wl_bad_item", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(module.container_images, "InventoryCache", partial(
+             module.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0              # the item is bad; the box is not

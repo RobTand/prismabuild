@@ -509,7 +509,6 @@ def test_the_exporter_serves_under_its_role_lock(tmp_path):
 
     with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
             mock.patch.object(role_session, "read_maintenance_gate", return_value=None), \
-            mock.patch.object(role_session, "generation_drift", return_value=None), \
             mock.patch.object(pbmetrics, "ThreadingHTTPServer", Server):
         assert pbmetrics.main(["--port", "9469",
                                "--queue-root", str(tmp_path / "q")]) == 0
