@@ -4604,7 +4604,7 @@ an independent signature. See [client upgrades](client_upgrade.md).
 
 The storage prewarm role also checks the existing maintenance gate before each
 queue cycle. A closed, missing or unreadable gate parks the continuous process
-and records its PID/start-time marker through the worker's existing helper.
+and records its PID/start-time marker through `role_session.post_park_marker`.
 `--once` returns 75 without starting a cycle under the same conditions, including
 with `--dry-run`. An in-progress cycle finishes before the process records a
 park; disk holds and filesystem waits can therefore delay parking. At the next
@@ -4667,8 +4667,8 @@ daemon:
   cycle it is inside and cycles on a later tick.
 * **Every refusal is stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
-  `worker_loop.py` (the module the roles already import as `runtime_gate`
-  and the supervisor now imports too), following the queue's immutable
+  `prismabuild.role_session` (the module the roles and supervisor import as
+  `runtime_gate`), following the queue's immutable
   record conventions: canonical JSON, atomic first-writer link, mode 0444,
   naming both generations, the actor's pid and host, a timestamp, and — for
   a supervisor restart — the role, the argv it was running, the argv the
@@ -4696,7 +4696,7 @@ no per-role lock, so a direct invocation, a legacy loop or a stale
 generation's supervisor could serve a second role beside the current one.
 The guard exists because a role cannot depend on its launcher being single.
 
-* **A service role owns a host-local singleton lock.**  ``worker_loop``'s
+* **A service role owns a host-local singleton lock.**  ``role_session``'s
   ``take_role_singleton`` takes a nonblocking ``flock`` on
   ``/tmp/prismabuild-roles-<uid>/<script-stem>.lock``: a private per-uid
   directory under the admission lock's discipline, the script name rather
@@ -4758,6 +4758,18 @@ The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
 barrier activation. The #458 protocol still needs fresh epoch participation
 and a generation-uniform rotation proof that includes this reader.
+
+`prismabuild.role_session` supplies operations rather than a serving loop.
+Each role owns its work, idle waits, error handling, one-shot exit policy and
+completion boundary. `stop_requests` supplies an Event and restores the exact
+signal handlers each caller chose. The worker installs SIGTERM only. Tier and
+local tier install SIGTERM and SIGINT. Worker loops remain multi-instance;
+storage, tiers and local tier keep their script-stem singleton locks. The
+metrics snapshot form `--once` keeps its existing singleton exemption.
+`generation_receipt` owns receipt parsing and identity comparison, while the
+stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
+behavior and the roles required by each drain observer remain unchanged by
+this ownership change.
 
 ### The pre-publish shape gate (#987)
 
@@ -9031,7 +9043,7 @@ from the active generation, and `ensure_roles` stops and respawns it when its
 argv drifts from the declaration or when a publish retires its generation. The
 role holds no work, so it is always idle for that purpose, and SIGTERM ends
 `serve_forever`. The server takes the role's singleton lock
-(`worker_loop.role_singleton`) before it binds the port, so a second exporter
+(`role_session.role_singleton`) before it binds the port, so a second exporter
 on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
 and writes one JSON record naming the port and, where `/proc` lets it, the
