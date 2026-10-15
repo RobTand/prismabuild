@@ -1185,13 +1185,14 @@ def test_sealed_corrupt_request_refuses_not_legacy(tmp_path: Path) -> None:
     assert pool._read_json(q.item_path(pool.READY, mover)) is None
 
 
-def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> None:
+def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker) -> None:
     """A real immutable request survives loss of BOTH mutable carriers."""
     owner = _hexkey("sq-crash-owner")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1235,14 +1236,15 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path) -> Non
     assert ledger.available().get(KIND) == free_before
 
 
-def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path) -> None:
+def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path, broker) -> None:
     """Legacy row (no sealed key) + existing funding file => refuse, no fresh."""
     owner = _hexkey("mp-owner")
     mover = _hexkey("mp-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1418,13 +1420,14 @@ def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path, broker
 
 
 def test_ready_reread_failure_defers_at_claim_seam(
-        tmp_path: Path, monkeypatch) -> None:
+        tmp_path: Path, monkeypatch, broker) -> None:
     """READY unreadable at the claim seam (listing saw it): defer, no fresh."""
     owner = _hexkey("rr-owner")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
