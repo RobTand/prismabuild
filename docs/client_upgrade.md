@@ -230,7 +230,10 @@ One no-follow regular file descriptor supplies bounded previous proof bytes and
 uid/gid/mode together. Missing files are explicit absence; unavailable, oversized
 or nonregular files refuse before journal or service mutation. Worker-owned or
 worker-writable regular files remain repairable through the existing owned
-zero-scope drain, without receipt MATCH or physical park evidence. Whenever the
+zero-scope drain, without receipt MATCH or physical park evidence. Unsafe captured
+proof ownership or write mode still takes that repair path when client byte
+digests already match. A trusted equal-byte installation stays current without
+staging or service restart. Whenever the
 member union includes the leaf, the journal requires `previous_proof_file`: null
 for known absence, or exact integer `uid`, `gid`, `mode` fields for a previous
 file. Missing legacy metadata is unknown and cannot authorize rollback. Recovery

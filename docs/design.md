@@ -4810,6 +4810,9 @@ exclusive temporary file before fsync and replacement, preserving prior trust
 at interruption cuts. Unavailable, oversized or nonregular installed proof
 files refuse before journal/service mutation. Bounded worker-controlled regular
 files retain ordinary owned-zero-scope repair without receipt or physical proof.
+Equal byte digests do not make unsafe captured proof ownership/write mode current;
+those files take the same repair path. Trusted equal-byte clients retain the
+current fast path without staging or service restart.
 Production callers read generation identities through `loaded_generation()`
 and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without

@@ -1666,7 +1666,10 @@ class Upgrader:
                 rollout, local_rollout, version, installed, blobs)
             if outcome is not None:
                 return outcome
-        if installed == version['files']:
+        proof_file = installed_snapshot.proof_file
+        proof_metadata_safe = (proof_file is None or (
+            proof_file.metadata.uid == 0 and proof_file.metadata.mode & 0o022 == 0))
+        if installed == version['files'] and proof_metadata_safe:
             # Recover a crash after drain began but before a transaction existed.
             status = self.call('status')
             if status.get('health') is not True or not self.loaded_matches(status):
@@ -1779,7 +1782,6 @@ class Upgrader:
                        **({'rollout_epoch': rollout['intent']['epoch']}
                           if rollout is not None else {})}
         if 'park_proof.py' in names:
-            proof_file = installed_snapshot.proof_file
             transaction['previous_proof_file'] = (
                 proof_file.metadata._asdict() if proof_file is not None else None)
         atomic(self.journal, transaction)
