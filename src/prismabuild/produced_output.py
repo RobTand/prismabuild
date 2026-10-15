@@ -1336,7 +1336,7 @@ def _file_version(path: Path | str) -> tuple[int, ...] | None:
 class _TickReads:
     """What one origin-retirement tick has read, so it reads each thing once.
 
-    Commitments are kept by the file's trusted version (`_keepable_version`
+    Commitments are kept by the file's trusted version (`file_version`
     over a fence read before the stat, #1045) and handed back while a fresh
     ``stat`` returns the same version: every writer replaces the file by
     rename (`_write_commitments`), so a changed file has another version,
@@ -1376,10 +1376,11 @@ class _TickReads:
 
     def batches(self, scope: Path) -> dict[str, object]:
         path = scope / "commitments.json"
-        fence = (kept_reads.version_fence()
+        fence = (kept_reads.filesystem_trust.file_fence()
                  if kept_reads.file_versions_enabled() else None)
         info = _file_stat(path)
-        version = None if info is None else kept_reads.metadata_version(info)
+        version = (None if info is None else
+                   kept_reads.filesystem_trust.file_version(info, fence, path=path))
         kept = self._commitments.get(str(path))
         if (fence is not None and version is not None
                 and kept is not None and kept[0] == version):
@@ -1398,7 +1399,7 @@ class _TickReads:
         # Kept only at a version no later write can reproduce (#1045): the
         # fence was read before the stat, so a change after it moved ctime
         # to or past the fence, and a refused version is read again.
-        keepable = kept_reads.keepable_version(info, fence, path=path)
+        keepable = kept_reads.filesystem_trust.file_version(info, fence, path=path)
         if keepable is None:
             self._commitments.pop(str(path), None)
         else:

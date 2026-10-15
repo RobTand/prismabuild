@@ -1158,8 +1158,8 @@ class _StagedPublisher:
         #: census compares each directory with its stamp and lists again only
         #: the ones that moved (:meth:`_forest_census`); records are looked
         #: up afresh every census.  Touched only by the one running census.
-        self._listed_root: tuple[tuple, list[str]] | None = None
-        self._listed_children: dict[str, tuple[tuple, tuple[tuple[str, Path], ...]]] = {}
+        self._forest_roots = kept_reads.DirectoryCaptures()
+        self._forest_children = kept_reads.DirectoryCaptures()
         #: Whether a divergent name is settled by its owners' states (#966).
         #: A stage mover and a ram promotion (#1004 item 1) name their
         #: consumer and do; a publisher built with none keeps the retryable
@@ -1207,16 +1207,16 @@ class _StagedPublisher:
         self._claim_memo = kept_reads.CensusMemo()
         #: The range decision's partial-temporaries hint (#1028): each
         #: range directory is listed once under
-        #: :func:`kept_reads.trusted_directory_stamp` and a name revalidates the
+        #: :func:`kept_reads.filesystem_trust.directory_before` and a name revalidates the
         #: hint with one directory version, re-listing only what moved.
         #: The claim census and the pin census are main's, per name.
         #: Guarded by ``_range_lock`` because every copy worker thread
         #: shares one publisher.
         self._range_lock = threading.Lock()
         #: Each range directory's ``(stamp, partial names)``, listed once
-        #: per :func:`kept_reads.trusted_directory_stamp`; only a fenced listing is
+        #: per :func:`kept_reads.filesystem_trust.directory_before`; only a fenced listing is
         #: remembered.
-        self._range_partials: dict[str, tuple[tuple, tuple[str, ...]]] = {}
+        self._partial_names = kept_reads.DirectoryCaptures()
 
     @contextmanager
     def _ownership(self):
@@ -2119,7 +2119,7 @@ class _StagedPublisher:
     def _range_partial_census(self, directory: Path) -> tuple[str, ...] | None:
         """One range directory's partial temporaries, as a fenced hint (#1028).
 
-        Listed once per :func:`kept_reads.trusted_directory_stamp` of the directory
+        Listed once per :func:`kept_reads.filesystem_trust.directory_before` of the directory
         and remembered -- the stamp taken before the scan, kept only while
         a fresh directory version still equals it, the same fence the
         forest census's listings are kept under (#1004, #992) --
@@ -2137,21 +2137,16 @@ class _StagedPublisher:
         """
 
         key = os.path.normpath(str(directory))
-        remembered = self._range_partials.get(key)
-        if (remembered is not None
-                and kept_reads.current_directory_version(directory) == remembered[0]):
-            return remembered[1]
-        stamp = kept_reads.trusted_directory_stamp(directory)
-        try:
-            names = tuple(sorted(
-                entry.name for entry in os.scandir(directory)
-                if entry.name.endswith(".partial")))
-        except OSError:
-            return None
-        if stamp is not None and kept_reads.current_directory_version(directory) == stamp:
-            with self._range_lock:
-                self._range_partials[key] = (stamp, names)
-        return names
+        with self._partial_names.acquire(key) as capture:
+            if capture.hit:
+                return capture.value
+            try:
+                names = tuple(sorted(
+                    entry.name for entry in os.scandir(directory)
+                    if entry.name.endswith(".partial")))
+            except OSError:
+                return None
+            return capture.commit(names)
 
     def _live_pins(self, norm: str) -> list[str] | None:
         """Pin ids live on one staged path, or None when unknowable."""
@@ -2214,10 +2209,10 @@ class _StagedPublisher:
         means the directory could not be read (fail closed).
 
         The range directory is listed once per
-        :func:`kept_reads.trusted_directory_stamp` and remembered
+        :func:`kept_reads.filesystem_trust.directory_before` and remembered
         (#1028, :meth:`_range_partial_census`); each name revalidates the
         listing with one directory version
-        (:func:`_current_directory_version`) and the directory is listed
+        (:func:`directory_current`) and the directory is listed
         again only when it moved.  Each name's check filters the
         remembered listing by the same prefix rule and re-stats only the
         names that pass it; a candidate that cannot be stat'ed -- one
@@ -2747,7 +2742,7 @@ class _StagedPublisher:
 
         A directory is listed only when it moved (#1004 item 4, #992).  Each
         listing's names are remembered under the stamp
-        :func:`kept_reads.trusted_directory_stamp` took before it, and a later census
+        :func:`kept_reads.filesystem_trust.directory_before` took before it, and a later census
         whose ``lstat`` of the directory still returns that stamp reuses the
         names without listing: no entry was created, removed or renamed
         since.  Every fragment is still stat-ed and looked up through the
@@ -2763,68 +2758,56 @@ class _StagedPublisher:
         """
 
         root = self.residency_root
-        kept_root = self._listed_root
-        if (kept_root is not None
-                and kept_reads.current_directory_version(root) == kept_root[0]):
-            children = kept_root[1]
-        else:
-            self._listed_root = None
-            stamp = kept_reads.trusted_directory_stamp(root)
-            try:
-                children = sorted(
-                    e.name for e in os.scandir(root)
-                    if e.is_dir() and not e.name.startswith(".")
-                    and e.name not in _NON_FRAGMENT_DIRS)
-            except FileNotFoundError:
-                self._listed_children.clear()
-                return ("absent",)
-            except OSError as exc:
-                return ("unreadable", f"{root}: {exc}")
-            for gone in set(self._listed_children) - set(children):
-                del self._listed_children[gone]
-            if stamp is not None and kept_reads.current_directory_version(root) == stamp:
-                self._listed_root = (stamp, children)
+        with self._forest_roots.acquire(root) as capture:
+            if capture.hit:
+                children = capture.value
+            else:
+                try:
+                    children = sorted(
+                        e.name for e in os.scandir(root)
+                        if e.is_dir() and not e.name.startswith(".")
+                        and e.name not in _NON_FRAGMENT_DIRS)
+                except FileNotFoundError:
+                    self._forest_children.retain(())
+                    return ("absent",)
+                except OSError as exc:
+                    return ("unreadable", f"{root}: {exc}")
+                self._forest_children.retain(root / child for child in children)
+                capture.commit(children)
         slots: list[tuple] = []
-        # The comparison runs once per directory per decision, under the
-        # stage lock for a re-decision: a string path and a bare ``lstat``
-        # rather than a path object per directory.
         prefix = os.fspath(root) + os.sep
         for child in children:
-            kept = self._listed_children.get(child)
-            if (kept is not None
-                    and kept_reads._directory_version_at(prefix + child) == kept[0]):
-                stamp, paths = None, kept[1]
-            else:
-                self._listed_children.pop(child, None)
-                cdir = root / child
-                stamp = kept_reads.trusted_directory_stamp(cdir)
-                try:
-                    paths = tuple(
-                        (name, cdir / name) for name in sorted(
-                            e.name for e in os.scandir(cdir)
-                            if e.is_file() and e.name.endswith(".json")
-                            and not e.name.endswith(".retiring.json")
-                            and not e.name.endswith(".tmp")))
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:
-                    slots.append((child, None, f"{child}: {exc}", None))
-                    continue
-            listed: list[tuple] = []
-            for name, path in paths:
-                observed = _observe(path)
-                with self._lookup_lock:
-                    record = self._fragment_record(path, observed)
-                    if isinstance(record, tuple) and record[1].keys:
-                        retained = self._fragments.get(str(path))
-                        if retained is None or retained[1] is not record:
-                            record = _LOOK_AGAIN
-                listed.append((child, name, path, record))
-            slots.extend(listed)
-            if (stamp is not None
-                    and all(slot[3] != "tainted" for slot in listed)
-                    and kept_reads.current_directory_version(root / child) == stamp):
-                self._listed_children[child] = (stamp, paths)
+            with self._forest_children.acquire(prefix + child) as capture:
+                if capture.hit:
+                    paths = capture.value
+                else:
+                    cdir = root / child
+                    try:
+                        paths = tuple(
+                            (name, cdir / name) for name in sorted(
+                                e.name for e in os.scandir(cdir)
+                                if e.is_file() and e.name.endswith(".json")
+                                and not e.name.endswith(".retiring.json")
+                                and not e.name.endswith(".tmp")))
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        slots.append((child, None, f"{child}: {exc}", None))
+                        continue
+                listed: list[tuple] = []
+                for name, path in paths:
+                    observed = _observe(path)
+                    with self._lookup_lock:
+                        record = self._fragment_record(path, observed)
+                        if isinstance(record, tuple) and record[1].keys:
+                            retained = self._fragments.get(str(path))
+                            if retained is None or retained[1] is not record:
+                                record = _LOOK_AGAIN
+                    listed.append((child, name, path, record))
+                slots.extend(listed)
+                if not capture.hit:
+                    capture.commit(paths, complete=all(
+                        slot[3] != "tainted" for slot in listed))
         return ("listed", tuple(slots))
 
     def _proof_candidate(self, fragment_path: Path, consumer: str,
@@ -4173,7 +4156,7 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
-    (:func:`kept_reads.keepable_version`), as :class:`kept_reads.CensusMemo` reads
+    (:func:`kept_reads.filesystem_trust.file_version`), as :class:`kept_reads.CensusMemo` reads
     its hint pass, so a qualified version can be compared once the lock is held
     (:func:`_reread_own_document`).  A same-key retry's own fragment can be
     large, and this is the mover's *first* wait for the stage lock
@@ -4187,11 +4170,11 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     document this one returns ``None`` for.
     """
 
-    fence = kept_reads.version_fence()
+    fence = kept_reads.filesystem_trust.file_fence()
     try:
         with open(path, "rb") as stream:
             descriptor = stream.fileno()
-            version = kept_reads.keepable_version(
+            version = kept_reads.filesystem_trust.file_version(
                 os.fstat(descriptor), fence, descriptor=descriptor)
             document = validate(json.load(stream))
     except (OSError, ValueError):
@@ -4219,10 +4202,10 @@ def _reread_own_document(path: Path,
     ``ValueError`` for one that exists but cannot be read or validated.
     """
 
-    fence = kept_reads.version_fence()
+    fence = kept_reads.filesystem_trust.file_fence()
     with open(path, "rb") as stream:
         descriptor = stream.fileno()
-        version = kept_reads.keepable_version(
+        version = kept_reads.filesystem_trust.file_version(
             os.fstat(descriptor), fence, descriptor=descriptor)
         if prior is not None and prior[0] == version:
             return prior[1]

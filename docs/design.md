@@ -17987,12 +17987,32 @@ Availability eligibility and the complete shared submission owner also remain
 separate work. Source changes establish no new deployed capability or
 staged-read workload proof.
 
-`src/prismabuild/kept_reads.py` owns local filesystem version trust and retained
-directory/census reads. Produced-output per-tick memos retain versions only
-inside `file_version_scope`; the tier cycle and blocked-origin observation
-entrypoints establish that scope. Action-side callers default to fresh reads.
-The scope resets after exceptions. Directory readers still require trusted local
-filesystem metadata older than the coarse clock fence before reuse.
+`src/prismabuild/kept_reads.py` owns filesystem trust through the injected
+`FilesystemTrust` port. `LinuxFilesystemTrust` preserves the namespace/watch,
+mount-table and exact-object descriptor qualification rules. `DirectoryCaptures`
+owns complete listing proofs separately from untrusted per-file candidates.
+Acquisition detaches old state before filesystem or clock work; context exit
+aborts unfinished reads. Only the newest acquisition may publish, and forget or
+retain revokes in-flight ownership. Publication compares fresh trust outside the
+short state lock. No filesystem or descriptor I/O runs under that lock.
+DirectoryRecords discards candidates on actual directory trust loss while
+retaining individually qualified older records when only the directory tick
+refuses a listing. History requalifies detached entries independently and never
+adds candidate-only persistence. Census stage classifications remain hints.
+Mover names captures retain names and paths; fragment and partial candidate
+observations stay fresh on every decision.
+
+Exporter derived values use opaque `DirectoryEvidence` and `EvidenceSet`.
+A scrape view observes each directory once; post-computation checks use fresh
+trust. Skip-checkpoint classification uses opaque directory observations that
+preserve its trusted-before, fallback-before and bare-after order. Only trusted
+evidence survives in a skip checkpoint; action identity and authority remain
+with the action reader. Produced-output per-tick memos requalify current trust
+before a warm hit, and retain versions only inside `file_version_scope`. The
+tier cycle and blocked-origin observation entrypoints establish that scope.
+Action-side callers default to fresh reads, and the scope resets after exceptions.
+Directory and file retention still require metadata older than the coarse fence.
+
 
 `manifest_layout.py` owns manifest timelines, phase frontiers, ranges and
 entry-aligned chunk cuts. Movement uses `read_entries`, which preserves v1

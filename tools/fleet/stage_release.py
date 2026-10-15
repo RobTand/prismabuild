@@ -93,7 +93,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import nullcontext, contextmanager
 import contextvars
 import errno
 import json
@@ -560,12 +560,12 @@ def _read_own_material(root: Path, consumer_action_key: str,
     path = reader_lease.material_path(root, consumer_action_key,
                                       mover_action_key)
     key = str(path)
-    fence = kept_reads.version_fence()
+    fence = memo.trust.file_fence()
     try:
         with open(path) as stream:
             info = os.fstat(stream.fileno())
             version = kept_reads.metadata_version(info)
-            kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
+            kept = memo.trust.file_version(info, fence, descriptor=stream.fileno())
             hit = memo.materials.get(key)
             if kept is not None and hit is not None and hit[0] == version:
                 memo.reuses += 1
@@ -573,7 +573,7 @@ def _read_own_material(root: Path, consumer_action_key: str,
             memo.parses += 1
             material = reader_lease.validate_material(json.load(stream))
             # Validate the original fstat while its exact descriptor is open.
-            kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
+            kept = memo.trust.file_version(info, fence, descriptor=stream.fileno())
     except FileNotFoundError:
         memo.materials.pop(key, None)
         return None
@@ -615,7 +615,8 @@ def _read_fragment(path: Path, memo: kept_reads.CensusMemo | None = None,
     """
 
     key = str(path)
-    fence = kept_reads.version_fence() if memo is not None else None
+    trust = memo.trust if memo is not None else kept_reads.filesystem_trust
+    fence = trust.file_fence() if memo is not None else None
     try:
         with open(path) as stream:
             info = None
@@ -623,7 +624,7 @@ def _read_fragment(path: Path, memo: kept_reads.CensusMemo | None = None,
             if memo is not None:
                 info = os.fstat(stream.fileno())
                 version = kept_reads.metadata_version(info)
-                kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
+                kept = trust.file_version(info, fence, descriptor=stream.fileno())
                 hit = memo.fragments.get(key)
                 if kept is not None and hit is not None and hit[0] == version:
                     memo.reuses += 1
@@ -631,7 +632,7 @@ def _read_fragment(path: Path, memo: kept_reads.CensusMemo | None = None,
                 memo.parses += 1
             document = residency_map.validate_fragment(json.load(stream))
             if info is not None:
-                kept = kept_reads.keepable_version(info, fence, descriptor=stream.fileno())
+                kept = trust.file_version(info, fence, descriptor=stream.fileno())
     except (OSError, ValueError) as exc:
         if memo is not None:
             memo.forget(key)
@@ -666,68 +667,62 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
     """
 
     index = memo if isinstance(memo, kept_reads.CensusIndex) else None
-    stamp = None
-    if index is not None:
-        kept = index.namespace_hit(directory)
-        if kept is not None:
-            # Unchanged since a listing whose stamp predates it (#992): the
-            # same documents, and not one file opened to learn that.
-            for mover, document in kept:
+    with (index.namespace(directory) if index is not None else nullcontext()) as capture:
+        if capture is not None and capture.hit:
+            for mover, document in capture.value[0]:
                 fragments.append((namespace, mover, document, direct))
             return
-        stamp = kept_reads.trusted_directory_stamp(directory)
-    found: list[tuple[str, dict[str, object]]] = []
-    read: set[str] = set()
-    taint_before = len(tainted)
-    try:
-        entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
-    except OSError as exc:
-        tainted.append(f"{namespace}: {exc}")
-        if index is not None:
-            index.remember_namespace(directory, None, [], set(), True)
-        return
-    for entry in entries:
-        if not entry.name.endswith(".json"):
-            continue
+        found: list[tuple[str, dict[str, object]]] = []
+        read: set[str] = set()
+        taint_before = len(tainted)
         try:
-            if entry.is_symlink():
-                tainted.append(
-                    f"{namespace}/{entry.name}: symlink is not a fragment")
-                continue
-            is_file = entry.is_file()
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
         except OSError as exc:
-            tainted.append(f"{namespace}/{entry.name}: {exc}")
-            continue
-        if not is_file:
-            tainted.append(
-                f"{namespace}/{entry.name}: not a regular file")
-            continue
-        read.add(entry.path)
-        document = _read_fragment(Path(entry.path), memo)
-        if isinstance(document, str):
-            tainted.append(f"{namespace}/{entry.name}: {document}")
-            continue
-        if str(document["consumer_action_key"]) != namespace:
-            # The directory is what attributes this document; a fragment
-            # filed under another namespace is malformed ownership.
-            tainted.append(
-                f"{namespace}/{entry.name}: fragment is filed under another namespace")
-            continue
-        mover = str(document["mover_action_key"])
-        if entry.name != f"{mover}.json":
-            # The file name is the mover's identity in the directory, and the
-            # egress excludes its own document by the mover it carries.
-            # A name that disagrees could hide another owner's copy (or
-            # impersonate one): unknown ownership, never self.
-            tainted.append(
-                f"{namespace}/{entry.name}: fragment names another mover")
-            continue
-        found.append((mover, document))
-        fragments.append((namespace, mover, document, direct))
-    if index is not None:
-        index.remember_namespace(directory, stamp, found, read,
-                                 len(tainted) > taint_before)
-
+            tainted.append(f"{namespace}: {exc}")
+            if index is not None:
+                index.remember_namespace(directory, capture, [], set(), True)
+            return
+        for entry in entries:
+            if not entry.name.endswith(".json"):
+                continue
+            try:
+                if entry.is_symlink():
+                    tainted.append(
+                        f"{namespace}/{entry.name}: symlink is not a fragment")
+                    continue
+                is_file = entry.is_file()
+            except OSError as exc:
+                tainted.append(f"{namespace}/{entry.name}: {exc}")
+                continue
+            if not is_file:
+                tainted.append(
+                    f"{namespace}/{entry.name}: not a regular file")
+                continue
+            read.add(entry.path)
+            document = _read_fragment(Path(entry.path), memo)
+            if isinstance(document, str):
+                tainted.append(f"{namespace}/{entry.name}: {document}")
+                continue
+            if str(document["consumer_action_key"]) != namespace:
+                # The directory is what attributes this document; a fragment
+                # filed under another namespace is malformed ownership.
+                tainted.append(
+                    f"{namespace}/{entry.name}: fragment is filed under another namespace")
+                continue
+            mover = str(document["mover_action_key"])
+            if entry.name != f"{mover}.json":
+                # The file name is the mover's identity in the directory, and the
+                # egress excludes its own document by the mover it carries.
+                # A name that disagrees could hide another owner's copy (or
+                # impersonate one): unknown ownership, never self.
+                tainted.append(
+                    f"{namespace}/{entry.name}: fragment names another mover")
+                continue
+            found.append((mover, document))
+            fragments.append((namespace, mover, document, direct))
+        if index is not None:
+            index.remember_namespace(directory, capture, found, read,
+                                     len(tainted) > taint_before)
 
 class _LevelChild:
     """The two ``os.DirEntry`` fields :func:`_census_level` reads, by name."""
@@ -768,30 +763,31 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
     """
 
     index = memo if isinstance(memo, kept_reads.CensusIndex) else None
-    children = index.level_hit(directory) if index is not None else None
-    if children is None:
-        stamp = (kept_reads.trusted_directory_stamp(directory)
-                 if index is not None else None)
-        try:
-            entries = sorted(os.scandir(directory),
-                             key=lambda entry: entry.name)
-        except OSError as exc:
-            tainted.append(f"{directory}: {exc}")
-            return
-        children = []
-        for entry in entries:
+    with (index.levels.acquire(directory) if index is not None else nullcontext()) as capture:
+        children = capture.value if capture is not None and capture.hit else None
+        if children is not None:
+            index.kept += 1
+        else:
             try:
-                if entry.is_symlink():
-                    kind = "link"
-                elif entry.is_dir():
-                    kind = "dir"
-                else:
-                    kind = "other"
+                entries = sorted(os.scandir(directory),
+                                 key=lambda entry: entry.name)
             except OSError as exc:
-                kind = f"error: {exc}"
-            children.append((entry.name, kind))
-        if index is not None:
-            index.remember_level(directory, stamp, children)
+                tainted.append(f"{directory}: {exc}")
+                return
+            children = []
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        kind = "link"
+                    elif entry.is_dir():
+                        kind = "dir"
+                    else:
+                        kind = "other"
+                except OSError as exc:
+                    kind = f"error: {exc}"
+                children.append((entry.name, kind))
+            if index is not None:
+                index.remember_level(directory, capture, children)
     for name, kind in children:
         # One classification of each child, whether this pass listed the
         # level or reused a listing whose stamp still holds (#992).
@@ -2619,7 +2615,7 @@ def _fenced_path_version(path: Path | str, fence: int | None,
     ``version`` is :func:`_path_version`'s change evidence, which the prune
     compares before and after its scan.  ``trusted`` is the same version
     when a skip checkpoint may stand on it, else ``None``: the #1045 rule
-    (:func:`kept_reads.keepable_version`) with ``fence`` read before this
+    (:func:`kept_reads.filesystem_trust.file_version`) with ``fence`` read before this
     ``lstat``.  A file whose ctime is not strictly before the fence changed
     in the fence's clock tick, and a rename cycle later in that tick can be
     given the freed inode number and reproduce all five fields (#1070).
@@ -2631,7 +2627,7 @@ def _fenced_path_version(path: Path | str, fence: int | None,
         return None, None
     if not statmod.S_ISREG(info.st_mode):
         return None, None
-    return kept_reads.metadata_version(info), kept_reads.keepable_version(
+    return kept_reads.metadata_version(info), kept_reads.filesystem_trust.file_version(
         info, fence, path=path, follow_symlinks=False)
 
 
@@ -2736,13 +2732,13 @@ SKIP_CHECKPOINT_REFUSALS = (
 
 
 def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
-                             stamps: dict[str, tuple[int, int, int, int]],
+                             stamps: dict[str, kept_reads.DirectoryEvidence | None],
                              documents: dict[str, tuple] | None = None,
                              ) -> _CheckpointVerdict:
     """Install the EXACT verified versions of one owner with nothing to act on.
 
     The caller passes the trusted stamps it sampled before its scan
-    (:func:`kept_reads.trusted_directory_stamp`, #1062) and proved equal to
+    (:func:`kept_reads.filesystem_trust.directory_before`, #1062) and proved equal to
     a sample after it, and the co-owner fragment versions its census read
     (``documents``, which ``None`` refuses); nothing is sampled again here, so
     a rename that lands between the scan and this call can never be blessed
@@ -2810,7 +2806,7 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
         record = _skip_checkpoints.get(key)
     if record is None:
         return False
-    fence = kept_reads.version_fence()  # before any current file observation (#1045)
+    fence = kept_reads.filesystem_trust.file_fence()  # before any current file observation (#1045)
     fresh = (_fenced_path_version(fragment_path, fence)[1] == record["fragment"]
              and _fenced_path_version(material_path, fence)[1] == record["material"])
     if fresh:
@@ -2819,8 +2815,8 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
                 fresh = False
                 break
     if fresh:
-        for name, version in dict(record["dirs"]).items():
-            if kept_reads.current_directory_version(Path(name)) != version:
+        for evidence in dict(record["dirs"]).values():
+            if not kept_reads.filesystem_trust.holds(evidence):
                 fresh = False
                 break
     if not fresh:
@@ -3031,7 +3027,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # in the tick of the clock read before its ``lstat`` is one a same-tick
     # rename given the freed inode could reproduce, so it is scanned again
     # next pass, as a refused directory stamp is (#1062).
-    document_fence = kept_reads.version_fence()
+    document_fence = kept_reads.filesystem_trust.file_fence()
     fragment_version_before, fragment_trusted = _fenced_path_version(
         fragment_path, document_fence)
     material_version_before, material_trusted = _fenced_path_version(
@@ -3220,18 +3216,15 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         # one coarse clock tick share a stamp, so a stamp sampled between
         # them would be one the second change never moves, and a checkpoint
         # standing on it would skip a rename made in that tick.
-        # ``kept_reads.trusted_directory_stamp`` refuses a directory changed
+        # ``kept_reads.filesystem_trust.directory_before`` refuses a directory changed
         # in the current tick (and one on a filesystem whose times are not
         # this kernel's clock); a refused stamp still takes part in the
         # before/after comparison, at its bare version, but the checkpoint
         # refuses to install on it, so the owner is scanned again next pass.
         parents = {Path(str(entry["stage_path"])).parent
                    for entry in entries.values()}
-        dirs_trusted = {str(parent): kept_reads.trusted_directory_stamp(parent)
-                        for parent in parents}
-        dirs_before = {name: (stamp if stamp is not None
-                              else _directory_version(name))
-                       for name, stamp in dirs_trusted.items()}
+        directory_observations = kept_reads.filesystem_trust.directory_observations(parents)
+        dirs_trusted = directory_observations.trusted
         prune: list[str] = []
         absent: list[str] = []
         retained_paths = 0
@@ -3286,8 +3279,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         # before sample.  Equal means no change moved a stamp during the
         # scan, so each trusted stamp is still the directory's version, and
         # that trusted stamp (never this sample) is what a checkpoint records.
-        dirs_after = {str(parent): _directory_version(parent) for parent in parents}
-        if dirs_before != dirs_after:
+        if not directory_observations.unchanged():
             return uncached("ownership-uncertain",
                             "ownership uncertain: a parent directory changed")
         fragment_version_after = _path_version(fragment_path)
@@ -3347,7 +3339,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # The trim's own write is in the current tick, so this is
                 # trusted only once a tick has passed since it (#1070).
                 material_final_version = _fenced_path_version(
-                    material_path, kept_reads.version_fence())[1]
+                    material_path, kept_reads.filesystem_trust.file_fence())[1]
             cacheable = _install_skip_checkpoint(
                 checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
@@ -5396,6 +5388,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     ``mover_residue`` mark names, otherwise ``""``.
     """
 
+    trust = memo.trust if memo is not None else kept_reads.filesystem_trust
     if named is None:
         named = attributed
     candidates: list[tuple[Path, tuple | None, str, int, str]] = []
@@ -5470,7 +5463,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         except OSError as exc:
             errors.append(f"{name}: {exc}")
             return unreadable
-        version = kept_reads.keepable_version(info, fence, path=path, follow_symlinks=False)
+        version = trust.file_version(info, fence, path=path, follow_symlinks=False)
         if os.path.normpath(path) in attributed:
             # Attribution decides first and reads no mark; the name is kept
             # so a later pass that no longer attributes it can judge it.
@@ -5502,7 +5495,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         children: list[str] = []
         entries: dict[str, tuple] = {}
         retry = False
-        fence = kept_reads.version_fence()
+        fence = trust.file_fence()
         try:
             with os.scandir(directory) as scanned:
                 listed = list(scanned)
@@ -5533,12 +5526,16 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         return children, entries, retry
 
     def visit(directory: str) -> None:
-        kept = memo.stage_hit(directory) if memo is not None else None
-        if kept is not None:
-            children, entries = kept
+        with (memo.stage_walk.acquire(directory) if memo is not None else nullcontext()) as capture:
+            visit_capture(directory, capture)
+
+    def visit_capture(directory, capture):
+        if capture is not None and capture.hit:
+            memo.walk_kept += 1
+            children, entries = capture.value
             refreshed: dict[str, tuple] = {}
             retry = False
-            fence = kept_reads.version_fence()
+            fence = trust.file_fence()
             for name, (version, kind, mover) in entries.items():
                 if skipped_name(directory, name):
                     continue
@@ -5551,7 +5548,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     errors.append(f"{name}: {exc}")
                     retry = True
                     continue
-                current_version = kept_reads.keepable_version(
+                current_version = trust.file_version(
                     info, fence, path=path, follow_symlinks=False)
                 normalized = os.path.normpath(path)
                 if kind == attributed_mark:
@@ -5581,16 +5578,12 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     version = current_version
                 refreshed[name] = (version, kind, mover)
                 judge(name, path, info, kind, mover)
-            if memo is not None:
-                memo.refresh_stage(directory, refreshed, retry=retry)
+            payload = (children, refreshed)
+            capture.commit(payload, complete=not retry, candidates=payload)
         else:
-            previous_kept = (memo.stage_memo(directory) if memo is not None
-                             else None)
-            previous = previous_kept[2] if previous_kept is not None else None
-            previous_children = (list(previous_kept[1])
-                                 if previous_kept is not None else None)
-            stamp = (kept_reads.trusted_directory_stamp(Path(directory))
-                     if memo is not None else None)
+            previous_kept = capture.previous if capture is not None else kept_reads.NoCapture
+            previous = previous_kept[1] if previous_kept is not kept_reads.NoCapture else None
+            previous_children = previous_kept[0] if previous_kept is not kept_reads.NoCapture else ()
             scanned = fresh(directory, previous)
             if scanned is None:
                 if memo is not None:
@@ -5598,8 +5591,11 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                 return
             children, entries, retry = scanned
             if memo is not None:
-                memo.remember_stage(directory, stamp, children, entries,
-                                    previous_children, retry=retry)
+                memo.walk_listed += 1
+                for gone in set(previous_children) - set(children):
+                    memo.forget_stage(gone)
+                payload = (tuple(children), entries)
+                capture.commit(payload, complete=not retry, candidates=payload)
         for child in children:
             visit(child)
 

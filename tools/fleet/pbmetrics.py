@@ -157,7 +157,7 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # parsed and censused.  ``KeptReads`` is what one exporter keeps between
 # scrapes instead, under the fences the tier loop's census already trusts
 # (#992): a directory is not listed again while its ``lstat`` version equals
-# a stamp taken before its last listing (``kept_reads.trusted_directory_stamp``), and a record is not read again while its file version holds
+# a stamp taken before its last listing (``kept_reads.filesystem_trust.directory_before``), and a record is not read again while its file version holds
 # (``kept_reads.DirectoryRecords``).  Every queue writer files by rename,
 # which is what both fences stand on.  A stamp is never trusted on a network
 # filesystem or inside the clock tick it was taken in, so on NFS every
@@ -322,18 +322,18 @@ class KeptReads:
     cost, so a changed scrape costs no more than a fresh one.
     """
 
-    def __init__(self) -> None:
-        self.records = kept_reads.DirectoryRecords()
-        #: Directory -> ``(stamp, {name: entry})`` for :meth:`history`.
-        self._histories: dict[str, tuple[tuple, dict[str, _KeptEntry]]] = {}
+    def __init__(self, *, trust=None) -> None:
+        self.trust = kept_reads.filesystem_trust if trust is None else trust
+        self.records = kept_reads.DirectoryRecords(trust=self.trust)
+        self._histories = kept_reads.DirectoryCaptures(self.trust)
         self._history_listed = 0
         self._history_kept = 0
         self._at_begin: tuple[int, ...] = (0, 0, 0, 0, 0)
-        #: path -> ``(fenced directory, stamp, value)`` for single files.
-        self._files: dict[str, tuple[str, tuple, object]] = {}
+        #: path -> opaque directory evidence and a derived single-file value.
+        self._files: dict[str, tuple[kept_reads.DirectoryEvidence, object]] = {}
         #: memo key -> ``(fence, value)`` for derived values.
-        self._memos: dict[object, tuple[tuple, object]] = {}
-        self._versions: dict[str, tuple | None] = {}
+        self._memos: dict[object, tuple[kept_reads.EvidenceSet, object]] = {}
+        self._view = self.trust.scrape_view()
         self._reads: dict[str, tuple[object, object, list]] = {}
         self._named: set[str] = set()
         self._touched: set[object] = set()
@@ -358,7 +358,7 @@ class KeptReads:
             self._totals(), self._at_begin)}
 
     def begin(self) -> None:
-        self._versions = {}
+        self._view = self.trust.scrape_view()
         self._reads = {}
         self._named = set()
         self._touched = set()
@@ -370,8 +370,7 @@ class KeptReads:
         # once the decision is gone -- is forgotten with its records.
         wanted = set(self._reads) | self._named
         self.records.retain(wanted)
-        for name in [name for name in self._histories if name not in wanted]:
-            del self._histories[name]
+        self._histories.retain(wanted)
         for name in [name for name in self._files if name not in self._touched]:
             del self._files[name]
         for key in [key for key in self._memos if key not in self._touched]:
@@ -411,43 +410,17 @@ class KeptReads:
 
     # -- fences ------------------------------------------------------------
 
-    def version(self, directory: Path | str) -> tuple | None:
-        """``directory``'s version, read once per scrape."""
+    def available(self, directory: Path | str) -> bool:
+        return self._view.available(directory)
 
-        name = os.fspath(directory)
-        if name not in self._versions:
-            self._versions[name] = kept_reads.current_directory_version(Path(name))
-        return self._versions[name]
+    def fence(self, directory: Path) -> kept_reads.DirectoryEvidence | None:
+        return self.trust.ancestor_evidence(directory)
 
-    def fence(self, directory: Path) -> tuple[str, tuple] | None:
-        """A trusted stamp on ``directory``, or on its nearest existing ancestor.
+    def holds(self, fences) -> bool:
+        return self._view.holds(fences)
 
-        A directory that does not exist yet is fenced by its parent: making
-        it changes the parent.  ``None`` when no stamp can be trusted (a
-        network filesystem, or a change inside the current clock tick).
-        """
-
-        current = Path(directory)
-        while True:
-            stamp = kept_reads.trusted_directory_stamp(current)
-            if stamp is not None:
-                return os.fspath(current), stamp
-            if os.path.lexists(current) or current.parent == current:
-                return None
-            current = current.parent
-
-    def holds(self, fences: tuple) -> bool:
-        """Whether every fence in ``fences`` still holds this scrape."""
-
-        return all(fence is not None and self.version(fence[0]) == fence[1]
-                   for fence in fences)
-
-    def still(self, fences: tuple) -> bool:
-        """Whether every fence holds now, read fresh, not from this scrape."""
-
-        return all(fence is not None
-                   and kept_reads.current_directory_version(Path(fence[0])) == fence[1]
-                   for fence in fences)
+    def still(self, fences) -> bool:
+        return self.trust.holds(fences)
 
     def memo(self, key: object, make_fences, compute, *, keep=None):
         """``compute()``, reused while every fence ``make_fences()`` took holds.
@@ -467,7 +440,7 @@ class KeptReads:
             # A fenced directory is unchanged, so what ``DirectoryRecords``
             # keeps for it is still good: it must survive this scrape's end
             # even though nothing read it.
-            self._named.update(fence[0] for fence in kept[0])
+            self._named.update(fence.directory for fence in kept[0])
             return kept[1]
         # Nothing is kept while ``compute`` runs: one that raises leaves no
         # value behind, stale or otherwise.
@@ -481,13 +454,14 @@ class KeptReads:
             self._memos.pop(key, None)
         return value
 
-    def fences(self, directories) -> tuple | None:
+    def fences(self, directories) -> kept_reads.EvidenceSet | None:
         """A trusted fence on each of ``directories``, or ``None``."""
 
         taken = tuple(self.fence(Path(directory)) for directory in directories)
-        return None if any(fence is None for fence in taken) else taken
+        return (None if any(fence is None for fence in taken) else
+                kept_reads.EvidenceSet(taken))
 
-    def ledger_fences(self, ledger: pool.ResourceLedger) -> tuple | None:
+    def ledger_fences(self, ledger: pool.ResourceLedger) -> kept_reads.EvidenceSet | None:
         """Fences on everything a tier ledger's tokens are read from.
 
         ``free/``, ``held/`` and each holder directory under ``held/``: a
@@ -508,18 +482,19 @@ class KeptReads:
             self._memos.pop(key, None)
             return None
         try:
-            holders = sorted(os.listdir(held[0])) if held[0] == os.fspath(
+            holders = sorted(os.listdir(held.directory)) if held.directory == os.fspath(
                 ledger.held_dir) else []
         except OSError:
             self._memos.pop(key, None)
             return None
-        taken = (free, held, *(self.fence(Path(held[0]) / name)
+        taken = (free, held, *(self.fence(Path(held.directory) / name)
                                for name in holders))
         if any(fence is None for fence in taken):
             self._memos.pop(key, None)
             return None
-        self._memos[key] = (taken, None)
-        return taken
+        evidence = kept_reads.EvidenceSet(taken)
+        self._memos[key] = (evidence, None)
+        return evidence
 
     # -- reads ---------------------------------------------------------------
 
@@ -553,26 +528,20 @@ class KeptReads:
             if done[0] is not _HISTORY or done[1] is not select:
                 raise AssertionError(f"{name} read under two meanings")
             return done[2]
-        kept = self._histories.pop(name, None)
-        if kept is not None and self.version(name) == kept[0]:
-            self._histories[name] = kept
-            self._history_kept += 1
-            out = kept[1].values()
-        else:
-            out = self._list_history(name, select, absent_ok,
-                                     kept[1] if kept is not None else {})
+        with self._histories.acquire_files(name) as capture:
+            if capture.hit:
+                self._history_kept += 1
+                out = capture.value.values()
+            else:
+                previous = capture.previous
+                out = self._list_history(name, select, absent_ok,
+                                         {} if previous is kept_reads.NoCapture else previous,
+                                         capture)
         self._reads[name] = (_HISTORY, select, out)
         return out
 
     def _list_history(self, name: str, select, absent_ok: bool,
-                      previous: dict[str, _KeptEntry]) -> Iterable[_KeptEntry]:
-        directory = Path(name)
-        stamp = kept_reads.trusted_directory_stamp(directory)
-        # Read before any entry is stat-ed (#1045): an entry whose ctime is
-        # not strictly before it is listed with no version, so the next
-        # listing derives it afresh, and this listing is not kept.
-        fence = kept_reads.version_fence()
-        keepable = kept_reads.keepable_version
+                      previous: dict[str, _KeptEntry], capture) -> Iterable[_KeptEntry]:
         complete = True
         entries: dict[str, _KeptEntry] = {}
         stat = os.stat
@@ -582,7 +551,7 @@ class KeptReads:
                     if not select(entry):
                         continue
                     info = stat(entry.path)
-                    version = keepable(info, fence, path=entry.path)
+                    version = capture.file_version(info, path=entry.path)
                     kept = previous.get(entry.name)
                     if (version is None or kept is None
                             or kept.version != version):
@@ -598,9 +567,7 @@ class KeptReads:
             # The directory exists, but a selected entry was not readable.
             raise
         self._history_listed += 1
-        if (stamp is not None and complete
-                and kept_reads.current_directory_version(directory) == stamp):
-            self._histories[name] = (stamp, entries)
+        capture.commit(entries, complete=complete)
         return entries.values()
 
     def names(self, directory: Path, *, select) -> frozenset[str]:
@@ -651,15 +618,15 @@ class KeptReads:
         name = os.fspath(path)
         self._touched.add(name)
         kept = self._files.get(name)
-        if kept is not None and self.version(kept[0]) == kept[1]:
+        if kept is not None and self._view.holds(kept[0]):
             self.reused += 1
-            return kept[2]
+            return kept[1]
         fence = self.fence(Path(name).parent)
         value = _read_or_exception(Path(name))
         self.computed += 1
         if (fence is not None and not isinstance(value, Exception)
-                and self.still((fence,))):
-            self._files[name] = (fence[0], fence[1], value)
+                and self.still(fence)):
+            self._files[name] = (fence, value)
         else:
             self._files.pop(name, None)
         return value
@@ -987,7 +954,7 @@ def _terminal_metrics(
     # window unproven.  The plain reader listed each one to find out; its
     # version answers the same question for one ``lstat``, and a directory
     # that exists but cannot be listed still fails the read below.
-    accessible = all(reader.version(Path(queue_root) / state) is not None
+    accessible = all(reader.available(Path(queue_root) / state)
                      for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN))
     with pbstatus.kept_reads(reader):
         endings = pbstatus.read_endings(queue_root, limit=limit)
@@ -1578,7 +1545,7 @@ def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
 
 
 def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
-                 tiers: list[str | None]) -> tuple | None:
+                 tiers: list[str | None]) -> kept_reads.EvidenceSet | None:
     """Fences on the fragment directory and the ledgers one plan's census reads.
 
     ``None`` when any of them cannot be trusted; the census is then taken
@@ -1600,7 +1567,7 @@ def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
         if ledger_fences is None:
             return None
         taken.extend(ledger_fences)
-    return tuple(taken)
+    return kept_reads.EvidenceSet(tuple(taken))
 
 
 def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
@@ -2072,7 +2039,7 @@ def _collect(
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False
     # The census lists ``workers/`` already; this only asks that it be there.
-    if reader.version(root / pool.WORKERS) is None:
+    if not reader.available(root / pool.WORKERS):
         success = False
 
     queue_summary = census.get("queue", {})
