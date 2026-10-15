@@ -452,10 +452,16 @@ def test_gpu_refund_write_error_cannot_be_replayed(unlaunched_probe, monkeypatch
     assert claim() is None
 
 
-def test_gpu_refund_busy_admission_keeps_sample_spent(unlaunched_probe, monkeypatch):
+def test_gpu_refund_busy_admission_keeps_sample_spent(unlaunched_probe, gpu_rig, monkeypatch):
     from contextlib import contextmanager
     cpu, gpu, reserve, claim, tick = unlaunched_probe
     ticket = reserve()
+    queue = gpu_rig[0]
+    candidate = queue.ready_items()[0]
+    reservation = pool._ClaimReservation(
+        queue, candidate['action_key'], ledger=queue.ledger(), controller=cpu,
+        gpu_controller=gpu, tier_demand={})
+    reservation.gpu_probe = ticket
 
     @contextmanager
     def busy():
@@ -464,7 +470,7 @@ def test_gpu_refund_busy_admission_keeps_sample_spent(unlaunched_probe, monkeypa
 
     with monkeypatch.context() as patch:
         patch.setattr(cpu, 'locked', busy)
-        pool.PoolQueue._return_gpu_probe(cpu, gpu, ticket)
+        reservation.return_unlaunched_probe()
     assert claim() is None
 
 

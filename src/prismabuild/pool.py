@@ -115,6 +115,7 @@ from typing import Any, Literal, NamedTuple, cast
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
 import contextvars
 import errno
+from enum import Enum
 import fcntl
 import fnmatch
 from functools import wraps
@@ -5763,6 +5764,138 @@ def ready_placement(tags: Iterable[str], has_gpu: bool) -> Iterator[None]:
     finally:
         _READY_PLACEMENT.reset(token)
 
+
+class _ClaimExit(Enum):
+    HOST_REFUSAL = "host_refusal"
+    QUEUED_REFUSAL = "queued_refusal"
+    RENAME_LOST = "rename_lost"
+    RENAMED_REFUSAL = "renamed_refusal"
+    COMMITTED_RETRY = "committed_retry"
+    PERSISTED_RETRY = "persisted_retry"
+    UNCERTAIN = "uncertain"
+    DROP_EXACT_CLAIM = "drop_exact_claim"
+
+
+class _MovedReady(NamedTuple):
+    ready_path: Path
+    claimed_path: Path
+    record: dict[str, object]
+
+
+class _ClaimReservation:
+    """The receipts one claim frame can return; recovery has no such authority."""
+
+    def __init__(self, queue: PoolQueue, action_key: str, *,
+                 ledger: ResourceLedger | None,
+                 controller: cpu_admission.Controller | None,
+                 gpu_controller: gpu_admission.Controller | None,
+                 tier_demand: Mapping[str, Mapping[str, int]]) -> None:
+        self.queue = queue
+        self.action_key = action_key
+        self.ledger = ledger
+        self.controller = controller
+        self.gpu_controller = gpu_controller
+        self.tier_demand = tier_demand
+        self.host_handle: str | None = None
+        self.borrow: tuple[dict, dict | None] | None = None
+        self.gpu_probe: dict | None = None
+        self.host_committed = False
+        self.tier_handles: dict[str, str] = {}
+        self.tier_funded: dict[str, dict[str, object]] = {}
+
+    def commit_host(self) -> int:
+        assert self.ledger is not None and self.host_handle is not None
+        filed = self.ledger.commit_acquire(self.action_key, self.host_handle)
+        self.host_committed = True
+        return filed
+
+    def reset_tier_take(self) -> None:
+        self.queue._abandon_tier_acquire(self.tier_handles)
+        self.tier_handles.clear()
+
+    def _return_borrow(self) -> None:
+        if self.controller is None or self.borrow is None:
+            return
+        metadata, previous = self.borrow
+        with suppress(cpu_admission.AdmissionBusy):
+            with self.controller.locked():
+                self.controller.withdrew(metadata, previous)
+
+    def return_unlaunched_probe(self) -> None:
+        if (self.controller is None or self.gpu_controller is None
+                or self.gpu_probe is None):
+            return
+        with suppress(cpu_admission.AdmissionBusy):
+            with self.controller.locked():
+                self.gpu_controller.return_probe(self.gpu_probe)
+
+    def _return_funded_remainder(self) -> None:
+        # The transferred fence never touches free; only this take's remainder returns.
+        for tier_id in sorted(self.tier_demand):
+            try:
+                ledger = self.queue.tier_ledger(tier_id)
+            except (OSError, PoolContractError, ValueError):
+                continue
+            entry = self.tier_funded.get(tier_id)
+            names = (entry.get("tokens") if isinstance(entry, dict) else None)
+            try:
+                if isinstance(names, list) and names:
+                    ledger.release_except(
+                        self.action_key, {str(name) for name in names})
+                else:
+                    ledger.release(self.action_key)
+            except (OSError, PoolContractError, ValueError):
+                continue
+
+    def abandon(self, exit: _ClaimExit, *, moved: _MovedReady | None = None) -> None:
+        if exit is _ClaimExit.UNCERTAIN:
+            if (self.ledger is not None and self.host_handle is not None
+                    and not self.host_committed):
+                with suppress(Exception):
+                    self.ledger.abandon_acquire(self.host_handle)
+                    self._return_borrow()
+            if self.tier_handles:
+                with suppress(Exception):
+                    self.queue._abandon_tier_acquire(self.tier_handles)
+            # An uncertain probe stays spent, even if the private tokens returned.
+            return
+        if exit is _ClaimExit.DROP_EXACT_CLAIM:
+            if self.ledger is not None:
+                self.ledger.release(self.action_key)
+            # A concluding claim retains names an outstanding output intent owns.
+            self.queue._release_reservation(self.action_key, host=None)
+            return
+        if exit is _ClaimExit.QUEUED_REFUSAL:
+            self.reset_tier_take()
+        if exit is _ClaimExit.HOST_REFUSAL:
+            assert self.ledger is not None and self.host_handle is not None
+        if self.ledger is not None and self.host_handle is not None:
+            self.ledger.abandon_acquire(self.host_handle)
+            if exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}:
+                self.ledger.release(self.action_key)
+            self._return_borrow()
+            self.return_unlaunched_probe()
+        if exit in {_ClaimExit.RENAME_LOST, _ClaimExit.RENAMED_REFUSAL,
+                    _ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}:
+            self.queue._abandon_tier_acquire(self.tier_handles)
+        if exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}:
+            self._return_funded_remainder()
+        if exit in {_ClaimExit.RENAMED_REFUSAL, _ClaimExit.COMMITTED_RETRY,
+                    _ClaimExit.PERSISTED_RETRY}:
+            assert moved is not None
+            if exit is _ClaimExit.PERSISTED_RETRY:
+                with suppress(Exception):
+                    self.queue.lease_path(self.action_key).unlink()
+                try:
+                    _write_json_atomic(moved.claimed_path, moved.record)
+                except (OSError, PoolContractError, ValueError):
+                    return
+            try:
+                os.link(moved.claimed_path, moved.ready_path)
+            except OSError:
+                return
+            moved.claimed_path.unlink(missing_ok=True)
+            self.queue.item_path(INTENT, self.action_key).unlink(missing_ok=True)
 
 class _TransitionHolds:
     """The per-key transition-lock holds of one claim pass, timed (#1029).
@@ -17877,41 +18010,6 @@ class PoolQueue:
         return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
                    for tier_id, handle in sorted(handles.items()))
 
-    def _unwind_funded_tier_commit(
-        self, action_key: str, tier_demand: Mapping[str, Mapping[str, int]],
-        tier_funded: Mapping[str, Mapping[str, object]],
-    ) -> None:
-        """Return a rolled-back claim's remainder, keep its verified fences.
-
-        Past ``_commit_tier_acquire`` the handles are empty, so abandoning
-        them returns nothing: the remainder this attempt newly took from free
-        is filed under the key beside the fence.  Per tier: unfunded tiers
-        release by key (everything there is remainder); funded tiers release
-        everything EXCEPT the exact token names the claim verified against
-        the funding record, so the fence stays fused with no free interval
-        for a stealer while the remainder goes home and the retry cannot add
-        it again.  Releasing the fence by key would open that steal gap;
-        keeping everything would double-hold on retry.  Contained per tier
-        like :meth:`release_tier_reservations`: a tier this call cannot read
-        keeps its tokens for the next attempt rather than costing the unwind.
-        """
-
-        for tier_id in sorted(tier_demand):
-            try:
-                ledger = self.tier_ledger(tier_id)
-            except (OSError, PoolContractError, ValueError):
-                continue
-            entry = tier_funded.get(tier_id)
-            names = (entry.get("tokens") if isinstance(entry, dict) else None)
-            try:
-                if isinstance(names, list) and names:
-                    ledger.release_except(
-                        action_key, {str(name) for name in names})
-                else:
-                    ledger.release(action_key)
-            except (OSError, PoolContractError, ValueError):
-                continue
-
     # -- residency (#583) -------------------------------------------------
 
     @classmethod
@@ -20986,32 +21084,6 @@ class PoolQueue:
 
         return controller.locked() if controller is not None else nullcontext()
 
-    @staticmethod
-    def _return_borrow(controller: cpu_admission.Controller | None, borrow) -> None:
-        """Return a borrow whose claim did not happen, when the lock is free.
-
-        Host-local and bounded, but it still takes the lock, because restoring
-        the record has to see the record a concurrent ``admitted`` wrote.  A
-        refusal here leaves the borrow spent, which only ever refuses the next
-        borrow and never authorizes a second one against one sample.
-        """
-
-        if controller is None or borrow is None:
-            return
-        metadata, previous = borrow
-        with suppress(cpu_admission.AdmissionBusy):
-            with controller.locked():
-                controller.withdrew(metadata, previous)
-
-    @staticmethod
-    def _return_gpu_probe(controller, gpu_controller, ticket) -> None:
-        """Return ordinary unlaunched probe credit; lock contention loses credit."""
-        if controller is None or gpu_controller is None or ticket is None:
-            return
-        with suppress(cpu_admission.AdmissionBusy):
-            with controller.locked():
-                gpu_controller.return_probe(ticket)
-
     def _report_admission_busy(self, refusal: cpu_admission.AdmissionBusy,
                                *, evaluating: bool = False) -> None:
         """Expose the admission gate that refused, without shared I/O.
@@ -22481,9 +22553,9 @@ class PoolQueue:
                 allowance = None
                 dependent_owner: object = cpu_admission._UNREAD
                 gang = gang_record = gang_entry = None  # #1517, read below
-                handle: str | None = None
-                tier_handles: dict[str, str] = {}
-                tier_funded: dict[str, dict[str, object]] = {}
+                reservation = _ClaimReservation(
+                    self, key, ledger=ledger, controller=controller,
+                    gpu_controller=gpu_controller, tier_demand=tier_demand)
                 tier_borrowed: dict[str, object] | None = None
                 #: Pool fill the reader plan waived for a copy a claimed
                 #: consumer is blocked on (#1091): counted as covered, held
@@ -22491,8 +22563,6 @@ class PoolQueue:
                 tier_fill_waived: dict[str, object] | None = None
                 adaptive = None
                 adaptive_gpu = None
-                borrow = None
-                gpu_probe = None
                 scratch_intent = scratch_evidence = scratch_boundary = None
                 scratch_expired = scratch_changed = False
                 # The optional row is only a projection, including on legacy
@@ -22528,7 +22598,6 @@ class PoolQueue:
                 # ``LEASE_TIMEOUT_S``.  Every ending in that window therefore
                 # has to give them back -- including the ones this code does
                 # not author, which is what the bare ``except`` is for.
-                committed = False
                 try:
                     if ledger is not None and demand:
                         if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
@@ -22965,30 +23034,30 @@ class PoolQueue:
                                     scratch_evidence["reservation_demand"] = dict(reservation_demand)
                             if not refused:
                                 if adaptive_gpu is not None:
-                                    handle = ledger.begin_acquire(
+                                    reservation.host_handle = ledger.begin_acquire(
                                         key, reservation_demand, adaptive=adaptive,
                                         cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
                                     asked = reservation_demand
                                 else:
-                                    handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                                    reservation.host_handle = (ledger.begin_acquire(key, demand) if adaptive is None else
                                               ledger.begin_acquire(key, demand, adaptive=adaptive,
                                                                    cpu_tiers=cpu_tiers))
                                     asked = demand
                                 token_shortage = ledger.last_token_shortage
-                                if handle is not None:
+                                if reservation.host_handle is not None:
                                     # A funded reservation spends its probe and borrow
                                     # freshness under the same exclusion as its decision.
                                     # Ordinary abandonment returns only owned credit;
                                     # failure to persist rolls the reservation back.
                                     if adaptive_gpu is not None:
-                                        gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
+                                        reservation.gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
                                     if adaptive is not None:
-                                        borrow = (adaptive, controller.admitted(adaptive))
+                                        reservation.borrow = (adaptive, controller.admitted(adaptive))
                             if (ledger is not None
                                     and int(reservation_demand.get("gpu", 0) or 0)
                                     and ((refused and refusal_source in (
                                         "adaptive_gpu_refused", "adaptive_cpu_refused"))
-                                         or (not refused and handle is None))):
+                                         or (not refused and reservation.host_handle is None))):
                                 # The free tokens the refusal was decided
                                 # against, read under the same exclusion
                                 # (#1240): a refused GPU row keeps its room
@@ -23109,7 +23178,7 @@ class PoolQueue:
                                 keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
                             self.record_denial(item, reason, evidence)
                             continue
-                        if handle is None:
+                        if reservation.host_handle is None:
                             verdict = self._withhold_verdict(
                                 key, ledger=ledger, need=asked, mode="tokens",
                                 gpu_sample=_gpu_sample_for(gpu_controller, demand),
@@ -23174,15 +23243,13 @@ class PoolQueue:
                             keep_refused_room(key, asked, reason, evidence, free_at_refusal)
                             self.record_denial(item, reason, evidence)
                             continue
-                    allocation = (ledger.cpu_allocation(handle, cpu_tiers)
-                                  if ledger is not None and handle is not None and cpu_tiers is not None else None)
+                    allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
+                                  if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
                     fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
                                           if allocation is not None and allocation["fallback"]
                                           and not (adaptive or {}).get("funded_by") else None)
                     if fallback_deferral is not None:
-                        ledger.abandon_acquire(handle)
-                        self._return_borrow(controller, borrow)
-                        self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        reservation.abandon(_ClaimExit.HOST_REFUSAL)
                         self.record_denial(item, "deferred_for_preferred_cpu", {
                             "demand": demand,
                             "cpu_allocation": allocation,
@@ -23197,10 +23264,8 @@ class PoolQueue:
                         plan_verdict = self.reader_plan_verdict(
                             item, tier_demand, pass_cache=reader_plans)
                         if plan_verdict is not None and plan_verdict.get("deny"):
-                            if ledger is not None and handle is not None:
-                                ledger.abandon_acquire(handle)
-                                self._return_borrow(controller, borrow)
-                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            if ledger is not None and reservation.host_handle is not None:
+                                reservation.abandon(_ClaimExit.HOST_REFUSAL)
                             self.record_denial(item, str(plan_verdict["deny"]), {
                                 "demand": sealed_demand, "tier_demand": tier_demand,
                                 "reader_plan": plan_verdict,
@@ -23224,30 +23289,27 @@ class PoolQueue:
                         # a shortage every box shares would idle it for nothing
                         # (Rob, #583: the box does other work meanwhile).
                         shortage = self._begin_tier_acquire(
-                            key, acquire_demand, tier_handles, tier_funded,
+                            key, acquire_demand, reservation.tier_handles, reservation.tier_funded,
                             cas_root=item.get("cas_root"))
                         if shortage is not None:
-                            self._abandon_tier_acquire(tier_handles)
-                            tier_handles.clear()
+                            reservation.reset_tier_take()
                             fill_owner = (dependent_owner if isinstance(dependent_owner, str)
                                           else cpu_admission.dependent_owner(item)
                                           if item.get("dependent_of") is not None else None)
                             if (shortage.get("reason") == "tier_reservation_unavailable"
-                                    and isinstance(fill_owner, str) and not tier_funded):
+                                    and isinstance(fill_owner, str) and not reservation.tier_funded):
                                 # A producer's paced export at the fill ceiling
                                 # its own family holds (#999).
                                 tier_borrowed = self._borrow_family_fill(
-                                    key, fill_owner, tier_demand, tier_handles)
+                                    key, fill_owner, tier_demand, reservation.tier_handles)
                                 if tier_borrowed is not None:
                                     shortage = None
                                 else:
                                     shortage = dict(shortage, dependent_of=fill_owner,
                                                     family_fill="not_enough_family_fill")
                         if shortage is not None:
-                            if ledger is not None and handle is not None:
-                                ledger.abandon_acquire(handle)
-                                self._return_borrow(controller, borrow)
-                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            if ledger is not None and reservation.host_handle is not None:
+                                reservation.abandon(_ClaimExit.HOST_REFUSAL)
                             self.record_denial(item, str(shortage["reason"]), {
                                 "demand": sealed_demand, "tier_demand": tier_demand,
                                 "tier_shortage": shortage,
@@ -23265,13 +23327,7 @@ class PoolQueue:
                     # preserves current behavior for fenceless callers. The
                     # unwind mirrors the tier-shortage path above it.
                     if admission_open is not None and not admission_open():
-                        self._abandon_tier_acquire(tier_handles)
-                        tier_handles.clear()
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller,
-                                                   gpu_probe)
+                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
                         self.record_denial(item, "resign_fenced", {
                             "action_key": key,
                         })
@@ -23282,13 +23338,7 @@ class PoolQueue:
                     # the rename.  The unwind is the resign fence's, above.
                     present, why = self._claim_blocked_fresh(key)
                     if present:
-                        self._abandon_tier_acquire(tier_handles)
-                        tier_handles.clear()
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller,
-                                                   gpu_probe)
+                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
                         self.record_denial(item, "already_claimed",
                                            {"checked": "before_rename",
                                             **({"error": why} if why else {})})
@@ -23300,24 +23350,14 @@ class PoolQueue:
                             container_inventory, now=_now(),
                             max_age_s=image_inventory.CLAIM_FRESHNESS_S)
                         if not class_verdict["container_work_eligible"]:
-                            self._abandon_tier_acquire(tier_handles)
-                            tier_handles.clear()
-                            if ledger is not None and handle is not None:
-                                ledger.abandon_acquire(handle)
-                                self._return_borrow(controller, borrow)
-                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
                             self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
                                                {"container_class_verdict": class_verdict,
                                                 "checked": "before_rename"})
                             continue
                     if item.get("gang") is not None and gang_record is None:
                         # A gang row is never claimed outside the gang path.
-                        self._abandon_tier_acquire(tier_handles)
-                        tier_handles.clear()
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
                         self.record_denial(item, "gang_contract_invalid",
                                            {"error": "gang row reached commit without its group"})
                         continue
@@ -23332,12 +23372,7 @@ class PoolQueue:
                         except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
                             readiness = {"complete": False, "error": str(exc)}
                         if not readiness["complete"]:
-                            self._abandon_tier_acquire(tier_handles)
-                            tier_handles.clear()
-                            if ledger is not None and handle is not None:
-                                ledger.abandon_acquire(handle)
-                                self._return_borrow(controller, borrow)
-                                self._return_gpu_probe(controller, gpu_controller, gpu_probe)
+                            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
                             self.record_denial(item, "gang_waiting_for_peers", {
                                 "group": gang["group"], "index": gang["index"], **readiness})
                             continue
@@ -23347,15 +23382,7 @@ class PoolQueue:
                     try:
                         os.rename(src, dst)
                     except (FileNotFoundError, NotADirectoryError):
-                        if ledger is not None and handle is not None:
-                            # Lost the race: hold nothing -- and return only what THIS
-                            # claimant took.  Releasing by action key here returned the
-                            # winner's reservation and let a third action be admitted
-                            # on top of it.
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
-                        self._abandon_tier_acquire(tier_handles)
+                        reservation.abandon(_ClaimExit.RENAME_LOST)
                         # Leave no evidence of a claim that did not happen.  The marker
                         # is written by rename, so this claimant's copy replaced
                         # whatever was there -- and if the winner wrote first, the
@@ -23373,7 +23400,7 @@ class PoolQueue:
                         self._discard_claim_intent(key, owner=owner)
                         self.record_denial(item, "claim_rename_lost_race", {
                             "demand": demand, "reservation_demand": reservation_demand,
-                            "had_reservation": handle is not None,
+                            "had_reservation": reservation.host_handle is not None,
                         })
                         continue
                     # This pass renamed into ``claimed/``: a later candidate
@@ -23405,20 +23432,8 @@ class PoolQueue:
                         # verdict additionally belongs to its exact publication/
                         # attempt, even when replacement demand is identical.
                         # Restore the renamed bytes before committing tokens.
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(controller, gpu_controller, gpu_probe)
-                        self._abandon_tier_acquire(tier_handles)
-                        try:
-                            os.link(dst, src)
-                        except OSError:
-                            # A still newer submission may own ready already. Leave
-                            # the moved record for the reaper, as below.
-                            pass
-                        else:
-                            dst.unlink(missing_ok=True)
-                            self.item_path(INTENT, key).unlink(missing_ok=True)
+                        reservation.abandon(
+                            _ClaimExit.RENAMED_REFUSAL, moved=_MovedReady(src, dst, moved))
                         self.record_denial(item,
                             "container_class_" + str(class_verdict["reason"]) if class_refused else "claimed_record_changed", {
                             "scanned_demand": demand, "moved_demand": self.demand_of(moved),
@@ -23431,11 +23446,11 @@ class PoolQueue:
                     # handle uncommitted, so the guard below still abandons it,
                     # and a committed tier token answers to the key, which every
                     # release path returns.
-                    tier_filed = self._commit_tier_acquire(key, tier_handles)
+                    tier_filed = self._commit_tier_acquire(key, reservation.tier_handles)
                     tier_wanted = sum(sum(needs.values()) for needs in tier_demand.values())
                     tier_funded_total = sum(
                         sum(entry["kinds"].values())
-                        for entry in tier_funded.values()
+                        for entry in reservation.tier_funded.values()
                         if isinstance(entry, dict)
                         and isinstance(entry.get("kinds"), dict))
                     # Funded credit counts exactly once: the fence the
@@ -23452,72 +23467,22 @@ class PoolQueue:
                     incomplete = (tier_filed + tier_funded_total + tier_borrowed_total
                                   + tier_waived_total < tier_wanted)
                     filed = 0
-                    if ledger is not None and handle is not None:
+                    if ledger is not None and reservation.host_handle is not None:
                         # Won the rename, so the reservation stops belonging to this
                         # claimant and starts belonging to the action.  Every branch
                         # below releases by action key, which is correct only once the
                         # tokens are filed under it.
-                        filed = ledger.commit_acquire(key, handle)
+                        filed = reservation.commit_host()
                         # Past this call the handle directory is empty and the
                         # tokens answer to the action key, so the branches
                         # below release by key and the guard must stop trying
                         # to abandon a handle that owns nothing.
-                        committed = True
                         if (filed < sum(reservation_demand.values())
                                 or (adaptive is not None and _read_json(
                                     ledger.held_dir / key / cpu_admission.METADATA) is None)
                                 or (adaptive_gpu is not None and _read_json(
                                     ledger.held_dir / key / gpu_admission.METADATA) is None)):
                             incomplete = True
-                    # ``_unwind_funded_claim`` below serves every rollback on
-                    # this item: host take and committed remainder go home,
-                    # verified fences stay fused, the row goes back.
-                    def _unwind_funded_claim(
-                        reason: str, detail: dict[str, object], *,
-                        post_persist: bool,
-                    ) -> bool:
-                        """Roll one tier/funded claim back to ready, fenced.
-
-                        Host take and committed remainder go home; verified
-                        fences stay fused (see
-                        ``_unwind_funded_tier_commit``); the row goes back.
-                        ``post_persist`` restorations rewrite ``dst`` from
-                        ``moved`` first, because past persistence ``dst`` may
-                        hold claim content that must never be linked back as
-                        a ready row.  Returns whether the row was restored to
-                        ``ready`` (``False`` leaves a lease-less claimed row
-                        plus the denial for the reaper: a disk failure inside
-                        persistence is already catastrophic territory, and a
-                        claimed-content row in ``ready`` would be worse).
-                        """
-
-                        if ledger is not None and handle is not None:
-                            ledger.abandon_acquire(handle)
-                            ledger.release(key)
-                            self._return_borrow(controller, borrow)
-                            self._return_gpu_probe(
-                                controller, gpu_controller, gpu_probe)
-                        self._abandon_tier_acquire(tier_handles)
-                        self._unwind_funded_tier_commit(
-                            key, tier_demand, tier_funded)
-                        if post_persist:
-                            with suppress(Exception):
-                                self.lease_path(key).unlink()
-                            try:
-                                _write_json_atomic(dst, moved)
-                            except (OSError, PoolContractError, ValueError):
-                                self.record_denial(item, reason, detail)
-                                return False
-                        try:
-                            os.link(dst, src)
-                        except OSError:
-                            self.record_denial(item, reason, detail)
-                            return False
-                        else:
-                            dst.unlink(missing_ok=True)
-                            self.item_path(INTENT, key).unlink(missing_ok=True)
-                        self.record_denial(item, reason, detail)
-                        return True
 
                     if incomplete:
                         # A stale-acquisition sweep took part of the reservation,
@@ -23533,20 +23498,22 @@ class PoolQueue:
                         # failure and the next attempt re-verifies the same
                         # binding instead of re-taking it from free -- while the
                         # remainder this attempt newly committed goes home via
-                        # ``_unwind_funded_tier_commit`` (release-by-key would
+                        # the reservation owner (release-by-key would
                         # free the fence into a stealer window; keeping it all
                         # would double-hold on retry).  Physical occupancy keeps
                         # the pre-existing release semantics everywhere else,
                         # unchanged here.
-                        _unwind_funded_claim("committed_reservation_incomplete", {
+                        reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                            moved=_MovedReady(src, dst, moved))
+                        self.record_denial(item, "committed_reservation_incomplete", {
                             "filed_tokens": filed,
                             "expected_tokens": sum(reservation_demand.values()),
                             "tier_filed_tokens": tier_filed,
                             "tier_expected_tokens": tier_wanted,
                             "adaptive_cpu": adaptive is not None,
                             "adaptive_gpu": adaptive_gpu is not None,
-                        }, post_persist=False)
-                        # Link rather than rename (inside the closure):
+                        })
+                        # The owner links rather than renaming:
                         # ``publish`` writes ``ready`` unconditionally, so a
                         # re-submission of this key can already be sitting
                         # there, and a rename would replace that new
@@ -23557,27 +23524,7 @@ class PoolQueue:
                         # submission.
                         continue
                 except BaseException:
-                    # The handle is the only name these tokens have, and it
-                    # lives in this frame.  ``begin_acquire`` keeps its own
-                    # all-or-nothing promise up to the point it returns; after
-                    # that an ESTALE out of the intent marker, an ENOSPC in the
-                    # rename, a torn ``.adaptive.json`` -- anything at all --
-                    # left the whole demand under ``held/claiming.<...>/`` with
-                    # no caller able to return it, recoverable only by
-                    # ``sweep_stale_acquisitions`` a ``LEASE_TIMEOUT_S`` later
-                    # and once per poll for as long as the cause repeated.
-                    if ledger is not None and handle is not None and not committed:
-                        with suppress(Exception):
-                            # Already failing; a failure to roll back must not
-                            # replace the ending that is on its way out.
-                            ledger.abandon_acquire(handle)
-                            self._return_borrow(controller, borrow)
-                    if tier_handles:
-                        with suppress(Exception):
-                            # Whatever ``committed`` says about the host handle: a
-                            # tier handle that was never committed owns tokens no
-                            # key names, and one that was is empty and a no-op.
-                            self._abandon_tier_acquire(tier_handles)
+                    reservation.abandon(_ClaimExit.UNCERTAIN)
                     raise
                 terminal = self.terminal_outcome_covers(moved, action_key=key)
                 if terminal is not None:
@@ -23585,22 +23532,7 @@ class PoolQueue:
                     # its outcome was filed, or the outcome can land between the
                     # ready scan and this rename.  The rename is the last boundary
                     # at which the payload is definitely not executing.
-                    if ledger is not None:
-                        ledger.release(key)
-                    # The tier half goes through the one concluding-path
-                    # helper, not the blanket per-key release.  This claim
-                    # took tokens and never ran, so its own acquisition must
-                    # go back -- but the key may ALSO hold names an
-                    # outstanding output intent still owns (an owner that
-                    # concluded with a staged, unfunded batch keeps exactly
-                    # those, and the mover draws them at
-                    # ``fund_output_batch``).  ``release_tier_reservations``
-                    # cannot tell the two apart and frees both, which left
-                    # the intent citing a name the ledger reads as free.
-                    # ``_release_reservation`` is the selective release every
-                    # other concluding path already uses; ``host=None``
-                    # because the host tokens went back on the line above.
-                    self._release_reservation(key, host=None)
+                    reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
                     state, outcome = terminal
                     self._file_superseded(
                         moved, key=key, kind="terminal-claim", status="dropped",
@@ -23617,12 +23549,7 @@ class PoolQueue:
                     # is microseconds wide and closing it here costs one listing on
                     # a path taken once per claim; leaving it open costs a cancelled
                     # action a full run before ``execute`` notices.
-                    if ledger is not None:
-                        ledger.release(key)
-                    # Selective for the same reason as the terminal branch
-                    # above: a withdrawal cancels THIS claim, not an output
-                    # intent that another key is still going to draw from.
-                    self._release_reservation(key, host=None)
+                    reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
                     self._file_superseded(
                         moved, key=key, kind="dropped", status="dropped",
                         dropped_unix=_now(), dropped_host=socket.gethostname(),
@@ -23699,7 +23626,7 @@ class PoolQueue:
                     claimed["tier_fill_borrowed"] = tier_borrowed
                 if tier_fill_waived:
                     claimed["tier_fill_waived"] = tier_fill_waived
-                if tier_funded:
+                if reservation.tier_funded:
                     # Re-verify each funding against the renamed record before
                     # persisting: the claim holds this key's transition lock,
                     # so no coordinator transfer/cancel interleaves, but the
@@ -23711,12 +23638,12 @@ class PoolQueue:
                     # ``transferring`` for the next attempt to re-verify),
                     # never consumed-but-no-executable-claim stranded credit.
                     # The fence stays fused while the remainder this attempt
-                    # committed goes home (see ``_unwind_funded_tier_commit``);
+                    # committed goes home through the reservation owner;
                     # the row goes back byte-identical, and the next attempt
                     # re-verifies the same binding: preserved, never freed
                     # into a stealer window, never double-spent.
                     funding_verified = True
-                    for funded_tier, entry in tier_funded.items():
+                    for funded_tier, entry in reservation.tier_funded.items():
                         pinned = (entry.get("generation")
                                   if isinstance(entry, dict) else None)
                         kinds = (entry.get("kinds")
@@ -23808,16 +23735,18 @@ class PoolQueue:
                             funding_verified = False
                             break
                     if not funding_verified:
-                        _unwind_funded_claim("committed_reservation_incomplete", {
+                        reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                            moved=_MovedReady(src, dst, moved))
+                        self.record_denial(item, "committed_reservation_incomplete", {
                             "filed_tokens": filed,
                             "expected_tokens": sum(reservation_demand.values()),
                             "tier_filed_tokens": tier_filed,
                             "tier_expected_tokens": tier_wanted,
                             "adaptive_cpu": adaptive is not None,
                             "adaptive_gpu": adaptive_gpu is not None,
-                        }, post_persist=False)
+                        })
                         continue
-                if tier_funded:
+                if reservation.tier_funded:
                     # Bind the exact funding generations to this durable
                     # attempt: every later release/recovery decision (settle,
                     # reapers, egress) proves against these names instead of
@@ -23833,7 +23762,7 @@ class PoolQueue:
                                        (entry.get("tokens") or [])],
                             "variant": str(entry.get("variant") or "window"),
                         }
-                        for funded_tier, entry in sorted(tier_funded.items())
+                        for funded_tier, entry in sorted(reservation.tier_funded.items())
                         if isinstance(entry, dict)
                     }
                 # Read here, where the claim record is being written anyway,
@@ -23859,7 +23788,9 @@ class PoolQueue:
                     # The claim record never landed (atomic replace leaves
                     # ``dst`` with its old bytes): nothing may execute.
                     # Fence-first unwind, row still byte-identical.
-                    _unwind_funded_claim("claim_persistence_failed", {
+                    reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                        moved=_MovedReady(src, dst, moved))
+                    self.record_denial(item, "claim_persistence_failed", {
                         "error": str(exc),
                         "phase": "claim-record",
                         "filed_tokens": filed,
@@ -23868,7 +23799,7 @@ class PoolQueue:
                         "tier_expected_tokens": tier_wanted,
                         "adaptive_cpu": adaptive is not None,
                         "adaptive_gpu": adaptive_gpu is not None,
-                    }, post_persist=False)
+                    })
                     continue
                 try:
                     self.write_lease(
@@ -23881,7 +23812,9 @@ class PoolQueue:
                     # The lease never landed but ``dst`` now holds claim
                     # content: restore it from ``moved`` before linking back,
                     # so a claimed-content row never lands in ``ready``.
-                    _unwind_funded_claim("claim_persistence_failed", {
+                    reservation.abandon(_ClaimExit.PERSISTED_RETRY,
+                                        moved=_MovedReady(src, dst, moved))
+                    self.record_denial(item, "claim_persistence_failed", {
                         "error": str(exc),
                         "phase": "lease",
                         "filed_tokens": filed,
@@ -23890,9 +23823,9 @@ class PoolQueue:
                         "tier_expected_tokens": tier_wanted,
                         "adaptive_cpu": adaptive is not None,
                         "adaptive_gpu": adaptive_gpu is not None,
-                    }, post_persist=True)
+                    })
                     continue
-                if tier_funded:
+                if reservation.tier_funded:
                     # Fuse each funding shut only after the claim is durable.
                     # A mark that fails here unwinds the whole claim back to
                     # ready instead of returning it: no execution without
@@ -23907,7 +23840,7 @@ class PoolQueue:
                     # (records stay ``transferring``) for the next attempt.
                     funding_sealed = True
                     failed_tier: str | None = None
-                    for funded_tier, entry in tier_funded.items():
+                    for funded_tier, entry in reservation.tier_funded.items():
                         pinned = (entry.get("generation")
                                   if isinstance(entry, dict) else None)
                         variant = (str(entry.get("variant") or "window")
@@ -23942,7 +23875,9 @@ class PoolQueue:
                         failed_tier = funded_tier
                         break
                     if not funding_sealed:
-                        _unwind_funded_claim("funding_not_durable", {
+                        reservation.abandon(_ClaimExit.PERSISTED_RETRY,
+                                            moved=_MovedReady(src, dst, moved))
+                        self.record_denial(item, "funding_not_durable", {
                             "tier_id": failed_tier,
                             "filed_tokens": filed,
                             "expected_tokens": sum(reservation_demand.values()),
@@ -23950,7 +23885,7 @@ class PoolQueue:
                             "tier_expected_tokens": tier_wanted,
                             "adaptive_cpu": adaptive is not None,
                             "adaptive_gpu": adaptive_gpu is not None,
-                        }, post_persist=True)
+                        })
                         continue
                 # Keep a canonical election through unstarted deferral/retry.
                 # Neither READY absence nor a successful rename retires it.

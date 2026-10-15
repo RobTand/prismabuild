@@ -154,6 +154,15 @@ instead of refreshing it on no evidence (#16). The snapshot is advisory, as the
 in-process scan was: an intervening claim wins at the rename. This removes
 scan stalls from the worker's wait, but shared transition, lease and token I/O
 remain synchronous and still need ownership-safe recovery qualification (#266).
+
+`pool._ClaimReservation` owns one claim frame's host handle, borrow and probe
+receipts, tier handles and verified funding names. Its named exit policies
+preserve cleanup order, uncertain spent probes and selective funding retention.
+Handled rollback returns the same resources before and after claim persistence;
+only the restoration of ready bytes and lease removal differ. Persisted reaper
+recovery remains separate and uses no reconstructed frame receipts. Admission
+facts, decisions, denial writes and lock scopes remain in `PoolQueue`.
+
 The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
 private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
