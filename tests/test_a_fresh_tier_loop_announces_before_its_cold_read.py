@@ -54,6 +54,7 @@ from prismabuild import kept_reads
 from prismabuild import pool  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from kept_read_clock import after_paths
 
 import test_a_leg_past_the_horizon_is_waited_for_not_clocked as leg  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -429,17 +430,6 @@ def test_a_hung_read_among_parallel_readers_reads_dead_within_the_bound(
 # ------------------------------------------------------------- equivalence
 
 
-def _past_the_tick() -> None:
-    """Let the coarse clock pass every change just made (#1045).
-
-    A version whose ctime is not before the read's fence is not kept, so
-    without this whether a record is parsed again would depend on when the
-    tick fell, and the two readers' counters could differ by chance.
-    """
-
-    time.sleep(0.05)
-
-
 def _receipt_tree(root: Path) -> tuple[Path, Path]:
     """Two receipt directories: one clean, one holding an unreadable entry."""
 
@@ -458,7 +448,6 @@ def _receipt_tree(root: Path) -> tuple[Path, Path]:
             {"schema": "pb.test-1153.v1", "index": index}))
     # A receipt name that cannot be read as a file, whoever runs the test.
     (broken / "r-005-dir.json").mkdir()
-    _past_the_tick()
     return clean, broken
 
 
@@ -478,6 +467,7 @@ def test_the_parallel_reader_returns_what_the_serial_reader_returns(
         tmp_path, monkeypatch):
     clean, broken = _receipt_tree(tmp_path / "tree")
     directories = [clean, broken]
+    after_paths(monkeypatch, clean, broken, *clean.iterdir(), *broken.iterdir())
     seen = {}
     # Two readers take runs of seven entries; eight take one entry each.
     for readers in (1, 2, 8):
@@ -490,7 +480,7 @@ def test_the_parallel_reader_returns_what_the_serial_reader_returns(
         (clean / "r-100.json").write_text(json.dumps(
             {"schema": "pb.test-1153.v1", "index": 100}))
         (clean / "r-004.json").unlink()
-        _past_the_tick()
+        after_paths(monkeypatch, clean, broken, *clean.iterdir(), *broken.iterdir())
         second = _snapshot(cache, cache.read(directories), directories)
         seen[readers] = (first, second)
         # Put the tree back for the other reader count.
@@ -499,7 +489,7 @@ def test_the_parallel_reader_returns_what_the_serial_reader_returns(
         (clean / "r-004.json").write_text(json.dumps(
             {"schema": "pb.test-1153.v1", "index": 4}))
         (clean / "r-100.json").unlink()
-        _past_the_tick()
+        after_paths(monkeypatch, clean, broken, *clean.iterdir(), *broken.iterdir())
 
     serial = seen[1]
     for readers in (2, 8):

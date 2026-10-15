@@ -35,6 +35,7 @@ from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
+from kept_read_clock import after_paths
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -183,18 +184,6 @@ def _fragment(queue: pool.PoolQueue, paths: list[Path]) -> Path:
         queue.root / pool.RESIDENCY, CONSUMER, MOVER)
 
 
-def _settle() -> None:
-    """Let the coarse clock tick so the first listing's stamp is trusted.
-
-    ``directory_before`` refuses a version inside the tick it was
-    taken in; without the wait the first pass keeps nothing and the reuse
-    assertions below would pass for the wrong reason.
-    """
-
-    import time
-    time.sleep(0.05)
-
-
 @pytest.fixture()
 def stage_fleet(tmp_path: Path):
     root = _clock_root(tmp_path)
@@ -209,7 +198,7 @@ def test_a_steady_walk_lists_no_directory_and_probes_no_mark(
     queue, stage = stage_fleet
     for index in range(12):
         _mark(_staged_file(stage, f"prewarm/p{index % 3}/obj-{index}.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
 
@@ -237,7 +226,7 @@ def test_a_created_file_is_seen_and_only_its_directory_is_listed(
     queue, stage = stage_fleet
     for index in range(6):
         _mark(_staged_file(stage, f"prewarm/obj-{index}.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -259,7 +248,7 @@ def test_an_unlinked_file_leaves_the_count(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     for index in range(6):
         _mark(_staged_file(stage, f"prewarm/obj-{index}.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -279,7 +268,7 @@ def test_a_renamed_file_is_classified_under_its_new_name(
         stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj-old.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -299,7 +288,7 @@ def test_a_renamed_file_is_classified_under_its_new_name(
 def test_an_in_place_write_is_probed_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -320,7 +309,7 @@ def test_an_in_place_write_is_probed_again(stage_fleet, monkeypatch):
 def test_a_changed_mark_is_probed_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -340,7 +329,7 @@ def test_a_changed_mark_is_probed_again(stage_fleet, monkeypatch):
 def test_a_symlink_replacement_is_not_a_staged_file(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     target = _mark(_staged_file(stage, "prewarm/obj.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
@@ -364,7 +353,7 @@ def test_a_removed_fragment_still_unattributes_on_a_reused_listing(
     queue, stage = stage_fleet
     attributed = _staged_file(stage, "prewarm/obj.bin")
     fragment = _fragment(queue, [attributed])
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
 
@@ -388,7 +377,7 @@ def test_a_removed_fragment_still_unattributes_on_a_reused_listing(
 def test_a_live_pin_is_honored_on_a_reused_listing(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     pinned = _staged_file(stage, "prewarm/obj.bin")
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     real_live_for = stage_release.reader_lease.live_for
@@ -423,7 +412,7 @@ def test_a_refused_directory_stamp_lists_again(stage_fleet, monkeypatch):
 
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_before',
                         lambda path: None)
     monkeypatch.setattr(kept_reads.filesystem_trust, 'file_version',
@@ -466,7 +455,7 @@ def test_a_name_that_cannot_be_stat_ed_is_retried_on_the_next_pass(
     queue, stage = stage_fleet
     flaky = _mark(_staged_file(stage, "prewarm/flaky.bin"))
     _mark(_staged_file(stage, "prewarm/steady.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     StageCalls(stage, monkeypatch)
     broken = {os.path.normpath(str(flaky))}
@@ -493,7 +482,7 @@ def test_a_stat_failure_on_a_cached_listing_is_retried(
     queue, stage = stage_fleet
     flaky = _mark(_staged_file(stage, "prewarm/flaky.bin"))
     _mark(_staged_file(stage, "prewarm/steady.bin"))
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     first = stage_release.reconcile(queue, tier_id=TIER,
@@ -524,7 +513,7 @@ def test_a_pin_added_after_the_cached_walk_still_protects(
 
     queue, stage = stage_fleet
     protected = _staged_file(stage, "prewarm/obj.bin")
-    _settle()
+    after_paths(monkeypatch, stage, *stage.rglob("*"))
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)
     real_live_for = stage_release.reader_lease.live_for
