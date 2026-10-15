@@ -20,8 +20,10 @@ this test's own and the queue is a stub.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 from unittest import mock
 
 import pytest
@@ -104,23 +106,46 @@ def _announced(module, names: list[str], *, gang=False, generation="", gpu=False
     def gethostname() -> str:
         return answers.pop(0) if len(answers) > 1 else answers[0]
 
-    argv = ["worker_loop.py", "--once", "--assume-idle", "--gpu-slots", "0",
+    argv = ["worker_loop.py", "--once", "--assume-idle",
             "--poll-s", "0", "--all-cores"]
     if gpu:
         argv.append("--gpu")
+    else:
+        argv.extend(("--gpu-slots", "0"))
     if gang:
         argv.append("--gang-admission")
     for tag in extra_tags:
         argv.extend(("--tag", tag))
-    with mock.patch.object(module.pool, "PoolQueue", _Queue), \
+    with tempfile.TemporaryDirectory(prefix="pb-worker-offer-") as private:
+        private_root = Path(private)
+        _Queue.root = private_root / "queue"
+        gate = private_root / "maintenance.json"
+        gate.write_text(json.dumps({"draining": False}))
+        receipt = private_root / "RUNTIME_VERSION.json"
+        receipt.write_text(json.dumps({"commit": "audit", "generation": generation}))
+        inventory = module.container_images.InventoryCache
+        trusted_sample = module.gpu_admission.trusted_sample
+        with mock.patch.object(module.pool, "PoolQueue", _Queue), \
+         mock.patch.dict(module.os.environ, {"PRISMABUILD_GANG_ADMISSION": "0"}), \
+         mock.patch.object(module, "SH", private_root / "fleet"), \
+         mock.patch.object(module, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(module, "PARKED_ROOT", private_root / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", private_root / "offer-locks"), \
+         mock.patch.object(module, "ROLE_LOCK_ROOT", private_root / "role-locks"), \
+         mock.patch.object(module, "RUNTIME_VERSION", receipt), \
+         mock.patch.object(module, "GENERATION_VERSION", receipt), \
+         mock.patch.object(module.container_images, "InventoryCache", side_effect=lambda: inventory(
+             root=private_root / "images", docker=str(private_root / "docker"),
+             probe=lambda *_args, **_kwargs: None)), \
+         mock.patch.object(module.gpu_admission, "trusted_sample", side_effect=lambda: trusted_sample(
+             private_root / "gpu-capacity.json")), \
          mock.patch.object(module, "published_commit", return_value="audit"), \
          mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
-         mock.patch.object(module, "_generation_at", return_value=generation), \
          mock.patch.object(module.os, "sched_getaffinity",
                            lambda _pid: {2, 3}), \
          mock.patch.object(module.socket, "gethostname", gethostname), \
          mock.patch.object(sys, "argv", argv):
-        assert module.main() == 0
+            assert module.main() == 0
     return calls
 
 

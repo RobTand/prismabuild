@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from test_progress_keeps_a_working_action_alive import _policy, _run, pool, pb
+from prismabuild import contracts
 
 
 def _watch(tmp_path):
@@ -207,7 +208,6 @@ def test_checkpoint_before_an_accepted_report_is_refunded_only_once(tmp_path, mo
 
 def test_documented_package_reporter_is_available():
     import prismabuild
-    from prismabuild import contracts
     from prismabuild import progress
 
     # It lives in the leaf module an action can reach without the package
