@@ -152,8 +152,8 @@ closed or merged during this work.
 | [1717](https://github.com/RobTand/prismabuild/pull/1717), [1752](https://github.com/RobTand/prismabuild/pull/1752), [1756](https://github.com/RobTand/prismabuild/pull/1756), [1678](https://github.com/RobTand/prismabuild/pull/1678), [1719](https://github.com/RobTand/prismabuild/pull/1719) | Members of 1764 | Their audited head OIDs are in the vehicle's retained commit list. Apply once through the train, then rebase affected refactor slices. |
 | [1755](https://github.com/RobTand/prismabuild/pull/1755) | Preserve independent safety fix | It is not a member of 1764. Carry its child/fleet publication gates through a later submission-owner extraction and prove refusal before writes. |
 | [1754](https://github.com/RobTand/prismabuild/pull/1754), [1802](https://github.com/RobTand/prismabuild/pull/1802) | Keep independent; rebase | Preserve GPU closure and class-scoped CPU behavior. These are behavior changes with fresh qualification obligations. |
-| [1780](https://github.com/RobTand/prismabuild/pull/1780) | Revise guard | A large AST scanner and line-number allowlist do not prove timing safety. Its shrink-only comparison needs a trusted baseline. Keep this review inventory small and descriptive. |
-| [1490](https://github.com/RobTand/prismabuild/pull/1490) | Reconcile dependencies, then rebase | Resolve actual ancestry and ownership of 1483/1487; remove guard-dependent skips only when their dependency is integrated. |
+| [1780](https://github.com/RobTand/prismabuild/pull/1780) | Revise guard | Its repository check never invokes the shrink-only comparison; that call appears only in a synthetic self-test. Keep a descriptive inventory, or wire a trusted external baseline before claiming enforcement. The scanner does not prove timing safety. |
+| [1490](https://github.com/RobTand/prismabuild/pull/1490) | Preserve the composed unit; rebase and qualify | Its 18 commits already include the guard, tier boundary and host serialization. Reconcile its reserve_operation with the current local_disk_room helper. Issues 1483 and 1487 are not outstanding dependency PRs; their state does not prove qualification. |
 | [1750](https://github.com/RobTand/prismabuild/pull/1750) | Keep decision hold | Pending D38 audit policy requires the recorded human decision. A refactor cannot enact it. |
 | [1683](https://github.com/RobTand/prismabuild/pull/1683) | Keep acceptance hold | Lifetime/phase fences remain opt-in and UNKNOWN until their exact acceptance and deployment requirements pass. |
 | [1325](https://github.com/RobTand/prismabuild/pull/1325), [1326](https://github.com/RobTand/prismabuild/pull/1326) | Keep Phase 0 A/B hold | 1752 explicitly withdrew GO. Its partial proxy evidence does not authorize paced-export or output-window defaults. |
@@ -162,6 +162,14 @@ closed or merged during this work.
 
 All 20 reviewed PRs are linked to this thread. The cleanup PR bodies' test claims
 are recorded claims, not independent refactor qualification. No PR state changed.
+
+The 2026-10-15 10:03 UTC refresh found exactly these 20 open PRs and no changed
+heads, with complete host pagination. All remain linked to the thread. PR 1764's
+44 commits contain the five member heads above, excluding 1755. PR 1813 contains
+all four 1812 commits plus its one policy-changing commit. PR 1717 and 1812 share
+cleanup ownership and must be reconciled once. Issue-link check results do not
+qualify execution. The fresh exact metadata, diffs and recommendations are in
+the `open-pr-refresh` evidence directory; no GitHub state or deployment changed.
 
 ## Verification and decision trail
 

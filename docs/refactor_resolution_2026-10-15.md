@@ -368,6 +368,42 @@ receipt/payload. The corresponding `refusal-wave` and `flock-owner` artifacts
 also retain exact old-node comparisons and source integration checks. These
 overlapping scoped runs are separate from the pending final current-source suite.
 
+## Qualified sampler closure and combined source
+
+CPU and GPU controllers now accept observation callables through the public
+claim entry. Their default collectors, read positions, caches and exception
+boundaries retain their existing behavior. All 102 controller sampler mutations
+are removed. The first complete 120-file qualification exposed 103 missed fixture
+or caller failures. Those failures remain recorded at
+`4fbf2cfcec247b8f92148e1e81a7147b9e129a54`. The corrected closed source
+`637a60fbafd86d66f3f214e3b2b918bf728cb623` passed 1,892 tests, with the same
+opt-in profile skip. All 1,885 baseline nodes remain, with eight new cases.
+Independent review reconstructed the 92-file caller closure and found no
+remaining issue. It also checked the merge against the flock and refusal owners.
+
+Docker-shim tests now wait for actual client, late-start and cleanup events.
+The fake client announces readiness after installing its signal handlers.
+All 100 original assertions remain, and a new assertion requires both signals
+in the real shim receipt. The complete file passed all 41 cases before and
+after the change. No observed flake or performance improvement is claimed.
+
+The assembled source `0e17e8b0ef2804b21a055f7e0d877b121138ece9` passed
+6,619 tests across 434 files. Three skips remain: two require a readable NFS
+mount and one is an opt-in profile. All 5,230 nodes in the earlier 356-file run
+remain. Six auxiliary subtest reports are separate from the 6,622 unique nodes.
+All eight source, terminal, log and CAS receipt/payload chains are verified.
+This is a scoped integration run; the full brief and final suite remain open.
+
+The duplication guard then exposed missing receipt-owner registration and stale
+GPU/receipt helper entries. The correction registers only the distinct
+`generation_receipt.observe` module contract and removes the exact obsolete
+entries. The scanner and test assertions remain unchanged. Its full eight cases
+passed at `c6a30113449057dc9839dd03ad31ce723147e2dc`, with verified evidence.
+That source contains the assembled implementation plus only these data changes.
+The accumulation branch advanced through that qualified sequence. The
+`sampler-port`, `shim-test-signals` and `merged-sampler-flock-refusal` artifacts
+retain the source audits, original failures, node comparisons and qualifications.
+
 The combined qualification at `a230804e91b65011ccb8f082b770da77bd313c0b`
 passed all 5,230 unique tests across 356 files and eight actions. It retains
 every one of the 5,229 nodes in the earlier receipt, drain and mover runs.
