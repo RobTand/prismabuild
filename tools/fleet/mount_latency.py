@@ -555,7 +555,7 @@ def _holder_lock_paths(pid: int) -> dict | None:
     subvolume device. Even fdinfo's mount ID cannot distinguish nested btrfs
     subvolumes. Bind the lock row and inode to the descriptor's procfs link,
     in this collector's mount namespace and at the visible mount of that path.
-    Unlike admission's _holder_of, this passive census cannot infer that an
+    Unlike flock_owner.holder_pid, this passive census cannot infer that an
     inode-only candidate is ours: the file we watch may not be locked at all.
 
     Never follow /proc/PID/fd links or probe a lock. Those could access an

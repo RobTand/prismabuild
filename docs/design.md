@@ -4779,8 +4779,8 @@ The guard exists because a role cannot depend on its launcher being single.
   from the serving block -- a service rotation, a one-shot return, an
   exception -- never by an unlock or an unlink, so a lock taken by a
   one-shot invocation cannot leak into a hosting interpreter.  A loser exits
-  ``3``; the holder pid is a diagnostic from the admission lock's own
-  ``/proc/locks`` rule, read only when a refusal needs decorating, and an
+  ``3``; the holder pid comes from ``flock_owner.holder_pid``, shared with
+  host admission and read only when a refusal needs decorating, and an
   unreadable holder is "unknown", never "nobody", and never changes the
   refusal.  The one-cycle operator form is not exempt: a ``--once``
   invocation can mint, announce, warm and publish against the real queue, so
@@ -5736,6 +5736,12 @@ its normal poll cadence. Output is limited to one line per 60 monotonic seconds
 per queue instance, including across holder changes and successful acquisitions.
 This is an observed refusal at the enclosing gate, not process ownership for
 recovery or evidence about any candidate's placement, CPU or GPU decision.
+`flock_owner.holder_pid` reads the existing descriptor and `/proc/locks` to
+name a holder after an admission or role singleton refusal. It matches the
+inode first so btrfs subvolume device differences cannot hide a sole holder; when several
+rows share that inode, the device tuple must identify exactly one. Waiting
+and OFD rows never enter the FLOCK candidate set. An unknown holder preserves
+the refusal. This diagnostic neither acquires nor releases the lock.
 The diagnostic adds no shared-filesystem reads or writes. A holder can still
 block on shared I/O inside the narrowed critical section, which reads holder
 token metadata and renames under `begin_acquire`; the diagnostic does not bound
