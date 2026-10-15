@@ -2048,8 +2048,15 @@ with `tempfile.mkdtemp(prefix="pb-", dir=TMPDIR)` (#1709).
 pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
-Exit 0 removes only this attempt directory; a nonzero exit retains it.
-The sealed `TMPDIR` and explicit `--basetemp` contracts stay unchanged.
+The attempt directory is an owned tree (see "Owned trees" below). It holds
+the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
+`pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
+directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
+directories included. Any other ending keeps it for diagnosis and starts its
+24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
+under its root, and exit 0 also removes the key directory it empties. The
+sealed root and `TMPDIR` themselves are never removed or changed.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one

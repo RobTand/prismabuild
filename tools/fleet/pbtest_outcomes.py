@@ -372,13 +372,17 @@ from pbtest_collection import ignored_named_paths
 
 def main(argv: list[str] | None = None, *, preflight=None,
          resource_source: str | None = None, collection_spec=None,
-         collection_source: str | None = None) -> int:
+         collection_source: str | None = None,
+         roster_parent: str | None = None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
     ``preflight`` runs first and ends the shard, before pytest, on a
     non-zero answer: it is the reviewed-dependency guard when the checkout
     pins one.  This mirrors ``pytest.console_main``, which is what
-    ``python -m pytest`` runs.
+    ``python -m pytest`` runs.  ``roster_parent`` is where the plugin
+    roster's temporary directory goes: the attempt's own directory, so a
+    killed shard's roster expires with its base temp instead of staying in
+    ``TMPDIR``.
     """
 
     if preflight is not None:
@@ -670,7 +674,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
         # The shard is already inside one admitted PB action. The worker
         # plugin lives only for this pytest invocation and changes no checkout
         # or sealed input. xdist's workeroutput is the transport it owns.
-        with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-") as folder:
+        with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-",
+                                         dir=roster_parent) as folder:
             Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
             if collection_spec is not None:
                 Path(folder, "pbtest_file_selection.py").write_text(

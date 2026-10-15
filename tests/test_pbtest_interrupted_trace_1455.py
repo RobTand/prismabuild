@@ -145,11 +145,15 @@ def test_unreadable_io_is_unknown_and_retains_its_error(tmp_path):
 
 def test_opt_out_has_no_trace_and_needs_no_accounting_helper(tmp_path):
     entry = pbtest.shard_entry(sys.executable, tmp_path)
-    assignment = next(node for node in ast.parse(entry[-1]).body
-                      if isinstance(node, ast.Assign) and any(
-                          isinstance(target, ast.Name) and target.id == "SOURCES"
-                          for target in node.targets))
-    assert "pbtest_resource_scope" not in ast.literal_eval(assignment.value)
+    # Carried as text (SOURCES) or compressed (PACKED), it is absent from both.
+    carried = {}
+    for node in ast.parse(entry[-1]).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id in ("SOURCES", "PACKED")
+                for target in node.targets):
+            carried.update(ast.literal_eval(node.value))
+    assert "pbtest_outcomes" in carried
+    assert "pbtest_resource_scope" not in carried
     result = _run(tmp_path, "def test_passes():\n    pass\n", [], trace=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not _events(result.stdout)

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import importlib.util
 import json
 import os
@@ -47,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -56,7 +58,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import adaptive_gpu, core, pool  # noqa: E402
+from prismabuild import adaptive_gpu, core, owned_tree, pool  # noqa: E402
 from prismabuild import dependency_digest  # noqa: E402
 from pbrun import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
@@ -900,13 +902,20 @@ SHARD_DIGEST_MODULE = "_prismabuild_pbtest_digest_primitives"
 #: The interpreter program every shard runs.  It carries the modules it runs
 #: as text, so the action key names their bytes and no helper path has to
 #: exist on the worker -- the rule the dependency guard already followed.
+#: ``PACKED`` carries the largest optional helper the same way, compressed
+#: (``packed_source``), and is unpacked into ``SOURCES`` before anything runs.
 SHARD_PROGRAM = """\
 # A pbtest shard: pytest under pbtest_outcomes' recorder.
+import base64
 import builtins
 import sys
 import types
+import zlib
 
 SOURCES = @SOURCES@
+PACKED = @PACKED@
+for _name, _blob in PACKED.items():
+    SOURCES[_name] = zlib.decompress(base64.b85decode(_blob)).decode("utf-8")
 DIGEST_MODULE = @DIGEST_MODULE@
 
 
@@ -956,7 +965,22 @@ raise SystemExit(load("pbtest_outcomes").main(
     preflight=preflight,
     resource_source=SOURCES.get("pbtest_resource_scope"),
     collection_spec=selection,
+    roster_parent=globals().get("_pb_attempt_directory"),
     collection_source=SOURCES["pbtest_collection"]))
+"""
+
+#: Loads ``owned_tree`` (the owner lock, retention clock and removal both
+#: attempt programs below use), so the shard's interpreter needs no
+#: PrismaBuild on its path.  ``@SOURCE@`` becomes the module's exact bytes,
+#: zlib-compressed and base85-encoded: the whole program is one ``python -c``
+#: argument, which Linux caps at ``MAX_ARG_STRLEN`` (128 KiB), and the
+#: largest program already used 94% of that before this module.
+OWNED_TREE_PROGRAM = """\
+import base64 as _pb_base64
+import zlib as _pb_zlib
+_pb_owned_tree = {}
+exec(compile(_pb_zlib.decompress(_pb_base64.b85decode(@SOURCE@)),
+             "<pbtest owned_tree>", "exec"), _pb_owned_tree)
 """
 
 
@@ -964,9 +988,14 @@ raise SystemExit(load("pbtest_outcomes").main(
 #: else (#1469).  The coordinator never runs it and never needs the root to
 #: exist; the worker refuses an unusable root here, before pytest, rather
 #: than letting a qualification problem surface mid-run.  ``@ROOT@`` becomes
-#: the sealed root.
+#: the sealed root.  The attempt's ``<root>/<key>/<attempt>`` holds an owner
+#: lock beside pytest's leaf: exit 0 removes the attempt directory (and the
+#: key directory it empties); any other ending starts its retention clock,
+#: and a later attempt under the same root reaps it once the window passes.
+#: The root itself is never removed or changed.
 BASETEMP_PROGRAM = """\
 import os as _pb_os
+import re as _pb_re
 import stat as _pb_stat
 import sys as _pb_sys
 import tempfile as _pb_tempfile
@@ -1016,8 +1045,28 @@ _pb_check_capacity(_pb_root)
 # pytest receives the action-owned leaf, never the sealed root itself:
 # pytest deletes its basetemp at startup, and the sealed root belongs to
 # every attempt of the action, not to this one.
-_pb_derived = _pb_os.path.join(_pb_root, _pb_key, _pb_attempt, "pytest")
+_pb_attempt_directory = _pb_os.path.join(_pb_root, _pb_key, _pb_attempt)
+_pb_derived = _pb_os.path.join(_pb_attempt_directory, "pytest")
+_pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_NOFOLLOW | _pb_os.O_CLOEXEC
 try:
+    _pb_parent = _pb_os.open(_pb_root, _pb_flags)
+    try:
+        _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("[0-9a-f]{64}"),
+                                          inner=_pb_re.compile("[0-9a-f]{32}"))
+    except Exception as _pb_exc:
+        print("pbtest: basetemp expiry skipped: " + str(_pb_exc), file=_pb_sys.stderr)
+    try:
+        _pb_os.makedirs(_pb_attempt_directory, exist_ok=True)
+    except FileNotFoundError:
+        # A finished attempt of this key removed the key directory it had
+        # emptied between makedirs' two mkdir calls; make it again.
+        _pb_os.makedirs(_pb_attempt_directory, exist_ok=True)
+    _pb_key_fd = _pb_os.open(_pb_key, _pb_flags, dir_fd=_pb_parent)
+    _pb_held = _pb_os.open(_pb_attempt, _pb_flags, dir_fd=_pb_key_fd)
+    try:
+        _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
+    finally:
+        _pb_os.close(_pb_held)
     _pb_os.makedirs(_pb_derived, exist_ok=True)
     with _pb_tempfile.TemporaryFile(dir=_pb_derived):
         pass
@@ -1026,20 +1075,37 @@ except (OSError, ValueError) as _pb_exc:
 # The pair goes after the collection JSON (sys.argv[1]) and before the
 # trailing file arguments pbtest_outcomes checks the argv tail against.
 _pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
+
+
+def _pb_run_and_clean_attempt_base(_pb_run):
+    _pb_code = _pb_run()
+    try:
+        _pb_owned_tree["release_owned_tree"](
+            _pb_key_fd, _pb_attempt, _pb_lock, remove=int(_pb_code) == 0)
+        if int(_pb_code) == 0:
+            _pb_os.rmdir(_pb_key, dir_fd=_pb_parent)
+    except OSError as _pb_exc:
+        if _pb_os.path.isdir(_pb_attempt_directory):
+            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
+                  file=_pb_sys.stderr)
+    return _pb_code
 """
 
 #: The worker-only source every shard runs before anything else (#1542). It
 #: gives the attempt its own pytest base temp under the sealed ``TMPDIR``:
-#: ``<tmpdir>/pb-<mkdtemp suffix>/pytest``. An explicit sealed
-#: ``--basetemp`` keeps its existing meaning and owns its own namespace;
-#: this default never touches it. The worker removes only this attempt's
-#: directory after pytest exits 0, and keeps it on a non-zero exit, as
-#: ``tmp_path_retention_policy=failed`` does. Expiry of kept directories
-#: is out of scope. ``TMPDIR`` itself is the sealed scratch placement and
-#: the compiler cache context; it is never removed.
+#: ``<tmpdir>/pb-<mkdtemp suffix>/pytest``, beside the attempt's owner lock
+#: (``owned_tree``). An explicit sealed ``--basetemp`` keeps its own
+#: namespace; this default never touches it. After pytest exits 0 the
+#: worker removes this attempt's directory, read-only test directories
+#: included. Any other ending keeps it for diagnosis, as
+#: ``tmp_path_retention_policy=failed`` does, and starts its retention
+#: clock (a SIGKILL starts it when a later attempt first finds the lock
+#: free); a later attempt in the same ``TMPDIR`` reaps it
+#: ``owned_tree.RETENTION_S`` after that. ``TMPDIR`` itself is the sealed
+#: scratch placement and the compiler cache context; it is never removed.
 ATTEMPT_TEMP_PROGRAM = """\
 import os as _pb_os
-import shutil as _pb_shutil
+import re as _pb_re
 import sys as _pb_sys
 import tempfile as _pb_tempfile
 
@@ -1057,10 +1123,22 @@ if _pb_attempt and (len(_pb_attempt) != 32 or any(
         "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
 if (_pb_tmpdir and _pb_key and "/" not in _pb_key
         and _pb_key not in (".", "..")):
+    _pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_CLOEXEC
     try:
+        _pb_parent = _pb_os.open(_pb_tmpdir, _pb_flags)
+        try:
+            _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("pb-[a-z0-9_]{8}"))
+        except Exception as _pb_exc:
+            print("pbtest: base temp expiry skipped: " + str(_pb_exc), file=_pb_sys.stderr)
         # mkdtemp creates an exclusive namespace; no action identity is truncated.
-        _pb_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
-        _pb_owned = _pb_os.path.join(_pb_directory, "pytest")
+        _pb_attempt_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
+        _pb_name = _pb_os.path.basename(_pb_attempt_directory)
+        _pb_held = _pb_os.open(_pb_name, _pb_flags | _pb_os.O_NOFOLLOW, dir_fd=_pb_parent)
+        try:
+            _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
+        finally:
+            _pb_os.close(_pb_held)
+        _pb_owned = _pb_os.path.join(_pb_attempt_directory, "pytest")
         _pb_os.mkdir(_pb_owned)
         with _pb_tempfile.TemporaryFile(dir=_pb_owned):
             pass
@@ -1071,8 +1149,12 @@ if (_pb_tmpdir and _pb_key and "/" not in _pb_key
 
     def _pb_run_and_clean_attempt_base(_pb_run):
         _pb_code = _pb_run()
-        if int(_pb_code) == 0:
-            _pb_shutil.rmtree(_pb_directory, ignore_errors=True)
+        try:
+            _pb_owned_tree["release_owned_tree"](
+                _pb_parent, _pb_name, _pb_lock, remove=int(_pb_code) == 0)
+        except OSError as _pb_exc:
+            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
+                  file=_pb_sys.stderr)
         return _pb_code
 
 
@@ -1080,6 +1162,16 @@ if (_pb_tmpdir and _pb_key and "/" not in _pb_key
 
 
 
+
+
+def packed_source(path: Path) -> str:
+    """A carried module's exact bytes, zlib-compressed and base85-encoded.
+
+    The shard unpacks the same bytes, so the action key still names them;
+    the encoding only keeps the program inside one exec argument.
+    """
+
+    return base64.b85encode(zlib.compress(path.read_bytes(), 9)).decode("ascii")
 
 
 def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
@@ -1103,20 +1195,32 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
                "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
+    packed = {}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
-        # Carry its standalone source into any target project/interpreter.
-        sources["pbtest_resource_scope"] = (
-            RUNTIME_ROOT / "src" / "prismabuild" / "resource_scope.py").read_text()
+        # Carry its standalone source into any target project/interpreter;
+        # at 44 KB it is the largest helper, so it travels packed.
+        packed["pbtest_resource_scope"] = packed_source(
+            RUNTIME_ROOT / "src" / "prismabuild" / "resource_scope.py")
     if capabilities:
         sources["pbtest_dependency_digest"] = (
             RUNTIME_ROOT / "src" / "prismabuild" /
             "dependency_digest.py").read_text()
     if any((checkout / "tools").glob("resolve_*_dev_pin.py")):
         sources["pbtest_pins"] = here.with_name("pbtest_pins.py").read_text()
+    # ``@PACKED@`` last: a base85 blob may spell any later placeholder.
     program = SHARD_PROGRAM.replace("@SOURCES@", repr(sources)).replace(
         "@DIGEST_MODULE@", repr(SHARD_DIGEST_MODULE)).replace(
-        "@COLLECTION@", repr(collection))
+        "@COLLECTION@", repr(collection)).replace("@PACKED@", repr(packed))
+    # Either attempt program defines the cleanup beside the exit call, so the
+    # derivation and the removal cannot drift apart.
+    program = program.replace(
+        'raise SystemExit(load("pbtest_outcomes").main(',
+        'raise SystemExit(_pb_run_and_clean_attempt_base(lambda: load("pbtest_outcomes").main(',
+        1).replace(
+        'collection_source=SOURCES["pbtest_collection"]))',
+        'collection_source=SOURCES["pbtest_collection"])))',
+        1)
     if basetemp is not None:
         # The derivation runs before every other guard: it is the worker's
         # refusal point for an unusable or unowned sealed root (#1469), and
@@ -1125,18 +1229,12 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # the attempt default below never runs beside it.
         program = BASETEMP_PROGRAM.replace("@ROOT@", repr(basetemp)) + program
     else:
-        # No sealed root: mkdtemp gives the attempt a short, exclusive directory
-        # and the worker removes that directory after exit 0. The wrapper
-        # defines the cleanup beside the exit call, so the derivation and
-        # the removal cannot drift apart.
-        program = program.replace(
-            'raise SystemExit(load("pbtest_outcomes").main(',
-            'raise SystemExit(_pb_run_and_clean_attempt_base(lambda: load("pbtest_outcomes").main(',
-            1).replace(
-            'collection_source=SOURCES["pbtest_collection"]))',
-            'collection_source=SOURCES["pbtest_collection"])))',
-            1)
+        # No sealed root: mkdtemp gives the attempt a short, exclusive
+        # directory under TMPDIR.
         program = ATTEMPT_TEMP_PROGRAM + program
+    # The loaded module's own bytes, as with the digest owner above.
+    program = OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
+        Path(owned_tree.__file__)))) + program
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
