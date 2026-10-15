@@ -323,6 +323,11 @@ synchronous and can delay their own caller.
 
 CPU/GPU policy refusals and unfunded reservations record denial aging outside
 host admission, while retaining the candidate's per-key transition lock.
+`PoolQueue.claim` accepts optional CPU and GPU observation callables and passes
+them to the corresponding admission controllers. Without a supplied callable,
+the CPU controller keeps its host-local counter history and the GPU controller
+reads the trusted broker snapshot. Sampling still occurs at the existing
+decision and evidence reads, with the same per-pass caches and exclusion.
 Each host also keeps a bounded, best-effort latest claim-denial record per
 action generation in its local admission state. It names the exact branch and
 the controller decision/sample already consumed, never a diagnostic resample.

@@ -20317,6 +20317,8 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        cpu_sampler: Callable[[], dict[str, object]] | None = None,
+        gpu_sampler: Callable[[], Mapping[str, object] | None] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
@@ -20328,10 +20330,11 @@ class PoolQueue:
         ledger = self.ledger()
         tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
-            controller = cpu_admission.Controller(ledger, tiers)
+            controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler)
             # Resolving the ledger identity may stat the shared mount. Prepare
             # both controllers before taking the host-wide admission lock.
-            gpu_controller = (gpu_admission.Controller(ledger, publisher=controller)
+            gpu_controller = (gpu_admission.Controller(ledger, publisher=controller,
+                                                       sampler=gpu_sampler)
                               if has_gpu else None)
             evaluating = False
             try:

@@ -14,7 +14,7 @@ in the sample for display and provenance and is never a denominator.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import math
 import os
@@ -493,11 +493,13 @@ class Controller:
     holds no probe feedback, which refuses probes until fresh evidence exists.
     """
 
-    def __init__(self, ledger, publisher=None):
+    def __init__(self, ledger, publisher=None, *,
+                 sampler: Callable[[], Mapping[str, object] | None] | None = None):
         self.ledger = ledger
         self.base = adaptive_cpu.local_state_base(ledger.base)
         self._publisher = publisher
         self._sample = None
+        self._sampler = sampler
 
     def _write_state(self, state):
         if self._publisher is not None:
@@ -506,6 +508,8 @@ class Controller:
             adaptive_cpu.write_json(self.base / 'gpu-state.json', state)
 
     def sample(self):
+        if self._sampler is not None:
+            return self._sampler()
         return trusted_sample()
 
     def decision(self, item, demand, *, contract=None):

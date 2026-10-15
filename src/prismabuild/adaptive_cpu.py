@@ -7,6 +7,7 @@ ownership (which still uses NFS rename).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 import contextlib
 import fcntl
@@ -1423,7 +1424,8 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS,
 
 
 class Controller:
-    def __init__(self, ledger, tiers):
+    def __init__(self, ledger, tiers, *,
+                 sampler: Callable[[], dict[str, object]] | None = None):
         self.ledger = ledger
         self.tiers = tiers
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
@@ -1434,6 +1436,7 @@ class Controller:
         # at most once per sample (#1185): it names the suspects in a
         # measurement_foreign_ambient refusal, never a decision input.
         self._foreign_pid_cache = None
+        self._sampler = sampler
 
     def idle(self, sample, holders):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
@@ -1658,6 +1661,8 @@ class Controller:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):
+        if self._sampler is not None:
+            return self._sampler()
         path = self.base / 'cpu-sample.json'
         previous = read_json(path)
         # No proc census for each candidate inside the same sampling interval.
