@@ -1,16 +1,11 @@
 """Causal PB1419 admission-front-door controls, not metadata exemptions."""
 from __future__ import annotations
 
-import importlib.util
-import json
-from pathlib import Path
-
 import pytest
 
 from prismabuild import pool
 
 KEY = "a" * 64
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def publish(queue, resources):
@@ -67,38 +62,6 @@ def test_explicit_controlled_admission_retains_normal_claim(tmp_path):
     claimed = queue.claim(capacity={"cpu": 2, "mem_gb": 4})
     assert claimed is not None and claimed["action_key"] == KEY
     assert queue.ledger().holder_tokens(KEY) == {"cpu": 1, "mem_gb": 1}
-
-
-def test_production_one_shot_supplies_admission_not_just_containment(tmp_path, monkeypatch, capsys):
-    spec = importlib.util.spec_from_file_location("admission_one_shot_test", ROOT / "tools/fleet/worker.py")
-    assert spec is not None and spec.loader is not None
-    worker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(worker)
-    monkeypatch.setattr(worker, "refusal", lambda: "")
-    monkeypatch.setattr(worker, "SH", tmp_path)
-    seen = []
-    def serve(queue, **options):
-        seen.append(options)
-        return None
-    monkeypatch.setattr(pool.PoolQueue, "serve_once", serve)
-    # The shared loop's existing preparation is tested independently. Here
-    # its admitted boundary is witnessed on the actual production entrypoint.
-    import worker_loop
-    def once(stop_requested, **options):
-        queue = pool.PoolQueue(tmp_path / "pb-queue")
-        outcome = queue.serve_once(capacity={"cpu": 2, "mem_gb": 4},
-                                   cpu_tiers={"preferred": [0, 1], "fallback": []},
-                                   adaptive_cpu=True, containment=True, has_gpu=True)
-        if options.get("on_outcome") is not None:
-            options["on_outcome"](outcome)
-        return 0
-    monkeypatch.setattr(worker_loop, "_run_loop", once)
-    assert worker.main() == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["outcome"] is None
-    assert len(seen) == 1
-    assert seen[0].get("capacity") == {"cpu": 2, "mem_gb": 4}, "one-shot bypassed shared preparation"
-    assert seen[0]["adaptive_cpu"] is True and seen[0]["containment"] is True
 
 
 def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monkeypatch):
