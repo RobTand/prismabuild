@@ -1,11 +1,10 @@
 """Fresh installed updater readers own transport, not broker-loaded proof code."""
 import json
-import subprocess
 
 import pytest
 
 from client_proof_bridge_fixture import (
-    PREBRIDGE, PREBRIDGE_UPDATER_SHA256, ROOT, _fresh, _sha, publication,
+    PREBRIDGE, PREBRIDGE_UPDATER_SHA256, ROOT, _fresh, _sha, fixed_source_artifact, publication,
 )
 
 
@@ -54,8 +53,8 @@ def test_proof_transaction_requires_both_actual_reader_capabilities_before_mutat
     candidate = (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
     if incapable == "candidate":
         (install / "upgrade_client.py").write_bytes(candidate)
-        candidate = subprocess.check_output(
-            ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
+        candidate = fixed_source_artifact(
+            "prebridge-upgrader.py", PREBRIDGE, "tools/fleet/upgrade_client.py", PREBRIDGE_UPDATER_SHA256)
         assert _sha(candidate) == PREBRIDGE_UPDATER_SHA256
         target = generation / "tools/upgrade_client.py"
         target.write_bytes(candidate)

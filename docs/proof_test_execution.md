@@ -34,17 +34,18 @@ actual call outcomes, or source/terminal/log/CAS verification.
 ## Prepare the root inputs
 
 Use a new verification checkout, preserving every completed source snapshot.
-Supply an explicit immutable directory containing the six historical artifact
-names and bytes declared in the JSON. Preparation checks every SHA-256 before
-copying; it never reads Git objects or fetches a missing commit. The original
-revisions and paths in the metadata describe provenance. They are not a promise
-that those commits will be reachable after cherry-pick integration.
+Preparation reads the bundled `tests/fixtures/proof-readers.tar.gz` by default.
+It verifies the archive SHA-256, exact regular member set, and every member's
+length and SHA before copying. It reads members with `extractfile`, never
+`extractall`. No Git objects, network fetch or Python package fallback is used.
 
 ```sh
-proof_artifacts=/path/to/sha-verified-proof-reader-artifacts
-python3 tests/prepare_proof_execution.py --checkout "$proof_checkout" \
-  --prepare-from "$proof_artifacts"
+python3 tests/prepare_proof_execution.py --checkout "$proof_checkout" --prepare
 ```
+
+An explicit `--prepare-from DIR` instead reads only that supplied directory.
+All six declared members must be present and match their pins. An empty, missing,
+incomplete or wrong input fails without falling back to the bundled archive.
 
 Preparation also copies 497 pure tooling files from the declared distribution
 RECORDs without importing the packages. Each recorded hash and size is checked.
@@ -106,20 +107,34 @@ the same. The complete native suite contains additional unrelated cases.
 Each action declares its actual resources, and PB chooses partition and eligible
 workers. Native tests run as the ordinary unprivileged worker.
 
-## Retained native reader artifact gate
+## Immutable retained reader sources
 
-The current native bridge/recovery fixtures still read historical Git objects.
-Their frozen author lineage can be qualified, but a cherry-picked bundle need
-not contain the same original commit hashes. Root preparation does not fix those
-native callers merely by copying historical byte files. Their artifact transport
-and direct Git reads require a separate fixed-reader corpus closure before
-strict production release or an integrated full-routing completion claim.
+Native fixtures consume the same bundled archive directly, so a fresh checkout
+needs no historical source staging or special `pbtest` option. The archive is
+92,405 compressed bytes, containing exactly 376,155 raw source bytes / 7,692
+historical source lines. It contains six unchanged earlier source files. Their
+original revisions, paths, lengths and SHA values are declared in the JSON.
+Those revisions describe provenance; tests do not read their Git objects.
 
-Supply and archive the exact immutable artifact bytes explicitly. A later
-reviewed corpus unit must give the native fixtures a bundled, hash-verified
-source without a new `pbtest` environment option or a dependency on the
-coordinator's unbundled object database. Preserve retained79 and its separate
-latest-b36 history. Do not infer compatibility from a protocol number.
+The USTAR entries are filename-sorted regular files with mode `0444`, UID/GID
+zero, empty owner/group names and mtime zero. Gzip has an empty filename, mtime
+zero and compression level nine. The immutable archive's SHA-256 is
+`02f96d28e3ec6f0ffeec18634868ec7fef88c895d814888415e6cae6123eef3e`.
+These are historical test artifacts, not production edits encoded as data.
+
+The existing root adapter intentionally sets `PRISMABUILD_PROOF_ARTIFACT_ROOT`
+to its prepared read-only directory. If that variable is explicitly present,
+the fixture provider uses only that directory and requires all six exact
+members. An invalid override fails; it does not try the archive, Git, another
+package or current production source. Ordinary native PB needs no environment
+override and reads the bundled corpus. Keep retained79 distinct from b36 and
+the actual current updater positives. Do not infer semantics from a protocol.
+
+Qualify the retained native family in an independent single-commit source
+capsule containing the frozen candidate files but none of the original five
+historical commits, alternates or remotes. Record the missing historical
+objects inside the admitted action before actual execution. A passing run on
+the author's complete Git history alone does not establish this closure.
 
 ## Reconcile qualification
 

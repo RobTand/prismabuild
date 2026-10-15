@@ -1,13 +1,12 @@
 """Byte-bound snapshots and fresh installed readers at durable copy cuts."""
 import json
-import subprocess
 
 import pytest
 
 from client_proof_bridge_fixture import (
     BROKER_LOADED, PREBRIDGE, PREBRIDGE_UPDATER_SHA256,
-    ROOT, _fresh, _sha, capable_publication, capable_reader_artifact, member_bytes,
-    publication, reader_process,
+    _fresh, _sha, capable_publication, capable_reader_artifact, fixed_source_artifact,
+    member_bytes, publication, reader_process,
 )
 
 
@@ -37,8 +36,8 @@ def test_capability_digest_and_backup_bind_the_same_captured_bytes(
     before = member_bytes(install)
     assert _sha(before["upgrade_client.py"]) == previous_sha256
     candidate = (generation / "tools/upgrade_client.py").read_bytes()
-    incapable = subprocess.check_output(
-        ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
+    incapable = fixed_source_artifact(
+        "prebridge-upgrader.py", PREBRIDGE, "tools/fleet/upgrade_client.py", PREBRIDGE_UPDATER_SHA256)
     assert _sha(incapable) == PREBRIDGE_UPDATER_SHA256
     replacement = state / "incapable-reader.py"
     replacement.write_bytes(incapable)
@@ -96,8 +95,9 @@ def test_first_introduction_recovers_through_the_actual_installed_reader(capable
 @pytest.mark.parametrize("cut", ["leaf-after-replace", "updater-after-replace"])
 def test_a_capable_bridge_restores_exact_previous_proof_presence(capable_publication, cut):
     _, install, _, _, _, _ = capable_publication
-    previous = subprocess.check_output(
-        ["git", "show", f"{PREBRIDGE}:src/prismabuild/park_proof.py"], cwd=ROOT)
+    previous = fixed_source_artifact(
+        "legacy-proof.py", PREBRIDGE, "src/prismabuild/park_proof.py",
+        "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7")
     assert _sha(previous) == "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7"
     (install / "park_proof.py").write_bytes(previous)
     before = member_bytes(install)
