@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -267,7 +267,7 @@ def _stage_copy(stage: Path, name: str, *, marked: bool = True) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\0" * SIZE)
     if marked:
-        os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                     f"/originals/{name}@0".encode())
     return path
 
@@ -407,7 +407,7 @@ def test_a_pre_range_bare_name_is_retained_and_named(fleet) -> None:
     _queue, stage, *_rest = fleet
     legacy = stage / NAMES[0]
     legacy.write_bytes(b"\0" * SIZE)
-    os.setxattr(legacy, prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(legacy, stage_marks.STAGE_SOURCE_XATTR,
                 f"/originals/{NAMES[0]}@0".encode())
     for name in NAMES[1:]:
         _stage_copy(stage, name)

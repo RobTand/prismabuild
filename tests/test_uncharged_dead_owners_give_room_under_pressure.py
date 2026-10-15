@@ -36,10 +36,10 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
 
 TIER = base.TIER
@@ -70,7 +70,7 @@ def _staged(stage: Path, name: str, size: int) -> Path:
     if not path.exists():
         with open(path, "wb") as stream:
             stream.truncate(size)
-        os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                     f"/originals/{name}@0".encode())
     return path
 

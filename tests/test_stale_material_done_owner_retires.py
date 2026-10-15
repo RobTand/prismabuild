@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
@@ -134,7 +135,7 @@ def _stage(stage: Path, name: str, payload: bytes) -> Path:
             if name.endswith(later) else stage / staged_name(name))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    os.setxattr(path, base.prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                 f"/originals/{name}@0".encode())
     return path
 
@@ -467,7 +468,7 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
     handoff._claim_promotion(queue, tmp_path, manifest, manifest_sha)
     replacement = staged.with_name(staged.name + ".later")
     replacement.write_bytes(NEW_PAYLOAD)
-    os.setxattr(replacement, base.prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(replacement, stage_marks.STAGE_SOURCE_XATTR,
                 b"/originals/calib.bin@0")
     os.replace(replacement, staged)
     for key, status in ((handoff.CONSUMER_A, "failed"),

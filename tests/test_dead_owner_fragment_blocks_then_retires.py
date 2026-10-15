@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -95,7 +95,7 @@ def _withdraw_mover(queue: pool.PoolQueue, *, conclude: bool = True) -> str:
 def _stage_marked(stage: Path, name: str) -> Path:
     path = stage / name
     path.write_bytes(b"\0" * SIZE)
-    os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                 f"/originals/{name}@0".encode())
     return path
 
