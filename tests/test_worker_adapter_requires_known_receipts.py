@@ -119,7 +119,9 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         assert cas._verified_receipt_result_path(receipt).read_bytes() == b"real child\n"
         payload = json.loads((tmp_path / "payload.json").read_text())
         assert payload["action_key"] == key
-        assert payload["affinity"] == process["affinity"]
+        assert payload["affinity"]
+        assert set(payload["affinity"]) <= set(process["affinity"])
+        assert len(payload["affinity"]) == action["params"]["demand"]["cpu"]
         assert not Path(f"/proc/{payload['pid']}").exists()
         records = [json.loads(path.read_text()) for path in (tmp_path / "broker-state").glob("*.json")]
         assert len(records) == 1
@@ -129,5 +131,9 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         assert control["memory_max_bytes"] == 1 << 30
         assert control["launched_unix"] <= control["stopped_unix"] <= control["released_unix"]
         calls = json.loads((tmp_path / "broker-calls.json").read_text())
+        runs = [call for call in calls if call["op"] == "run"]
+        assert len(runs) == 1
+        assert runs[0]["scope"] == control["scope_id"]
+        assert payload["affinity"] == runs[0]["affinity"]
         operations = [call["op"] for call in calls]
         assert operations.index("create") < operations.index("run") < operations.index("stop") < operations.index("release")
