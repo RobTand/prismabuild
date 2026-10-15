@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import container_images as ci  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
@@ -38,9 +39,16 @@ CAPABILITY = contracts.CONTAINER_IMAGE_TAG
 
 def _offer_images(queue, *images):
     queue.announce(
-        host="sparky", tags=["sparky", "gb10", CAPABILITY], has_gpu=True,
+        host="sparky",
+        tags=["sparky", "gb10", CAPABILITY],
+        has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
-        observed_images=list(images),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                list(images),
+                None,
+            ),
+        ),
     )
 
 
@@ -129,8 +137,18 @@ def test_the_slurm_lane_cannot_declare_an_image(tmp_path, monkeypatch, capsys):
 
 def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.announce(host="new-box", tags=["gb10", CAPABILITY], has_gpu=False,
-                   capacity={"cpu": 4, "mem_gb": 16}, observed_images=[REF_A])
+    queue.announce(
+        host="new-box",
+        tags=["gb10", CAPABILITY],
+        has_gpu=False,
+        capacity={"cpu": 4, "mem_gb": 16},
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [REF_A],
+                None,
+            ),
+        ),
+    )
     queue.announce(host="old-box", tags=["gb10"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 16})
     notice = pbrun.container_image_notice(queue, {
@@ -144,9 +162,18 @@ def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
 def test_capacity_refusal_does_not_blame_a_present_image(tmp_path, monkeypatch):
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    queue.announce(host="sparky", tags=["sparky", CAPABILITY], has_gpu=False,
-                   capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241},
-                   observed_images=[REF_A])
+    queue.announce(
+        host="sparky",
+        tags=["sparky", CAPABILITY],
+        has_gpu=False,
+        capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241},
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [REF_A],
+                None,
+            ),
+        ),
+    )
     with pytest.raises(SystemExit) as exc:
         _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "sparky",
                    "--container-image", REF_A, "--env",

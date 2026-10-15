@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import core as pb, pool
 
@@ -20,9 +21,23 @@ def fleet(tmp_path, monkeypatch, request):
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
     queue = pool.PoolQueue(tmp_path / "queue")
     worker_tags = [host, "gb10", contracts.INTERPRETER_TAG, contracts.CONTAINER_IMAGE_TAG]
-    queue.announce(host=host, tags=worker_tags, has_gpu=True,
-                   capacity=CAPACITY, observed_capacity=CAPACITY,
-                   interpreters=[sys.executable], observed_images=[])
+    queue.announce(
+        host=host,
+        tags=worker_tags,
+        has_gpu=True,
+        capacity=CAPACITY,
+        observed_capacity=CAPACITY,
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [sys.executable],
+                None,
+            ),
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [],
+                None,
+            ),
+        ),
+    )
 
     def publish(key, *, gpu=False, tags=None, resources=None, priority=0, **fields):
         queue.publish(

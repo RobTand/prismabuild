@@ -33,8 +33,18 @@ def _queue_at(tmp_path: Path) -> pool.PoolQueue:
 
 def _announce(queue, host, *, interpreters=None, tags=("gb10",),
               capacity=CAPACITY, gpu=False):
-    queue.announce(host=host, tags=list(tags), has_gpu=gpu,
-                   capacity=dict(capacity), interpreters=interpreters)
+    queue.announce(
+        host=host,
+        tags=list(tags),
+        has_gpu=gpu,
+        capacity=dict(capacity),
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                interpreters,
+                None,
+            ),
+        ),
+    )
 
 
 def _publish(queue, key, **kwargs):
@@ -429,8 +439,19 @@ def test_local_dependency_offer_and_lookup_do_not_infer_presence(tmp_path):
         [{"dependency_queries": requirements}], python=sys.executable).local_paths
     assert answers[str(data)] == "path" and answers[absent] == "absent"
     assert answers[sys.executable] == "executable"
-    q.announce(host="present", tags=[local_dependencies.TAG], has_gpu=False,
-               capacity={"cpu": 1}, local_dependency_answers=answers)
+    q.announce(
+        host="present",
+        tags=[local_dependencies.TAG],
+        has_gpu=False,
+        capacity={"cpu": 1},
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                answers,
+                None,
+                None,
+            ),
+        ),
+    )
     q.announce(host="unknown", tags=[local_dependencies.TAG], has_gpu=False,
                capacity={"cpu": 1})
     probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
@@ -460,8 +481,19 @@ def test_raw_file_suffix_is_absent_at_offer_and_claim(tmp_path, kind, suffix):
     requirements = {invalid: kind}
     answers = local_dependencies.observe(requirements)
     queue = _queue_at(tmp_path)
-    queue.announce(host="raw-worker", tags=[local_dependencies.TAG], has_gpu=False,
-                   capacity={"cpu": 1}, local_dependency_answers=answers)
+    queue.announce(
+        host="raw-worker",
+        tags=[local_dependencies.TAG],
+        has_gpu=False,
+        capacity={"cpu": 1},
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                answers,
+                None,
+                None,
+            ),
+        ),
+    )
     probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
              "local_dependencies": requirements}
     placeable = queue.placeable(probe)

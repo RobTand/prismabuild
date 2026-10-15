@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # pbrun against the MIRROR's pool -- and report a missing method as a failure
 # of code that is right here.  Binding the package first makes the file
 # self-contained however it is invoked.
+from prismabuild import capability_eligibility
 from prismabuild import core as core_module  # noqa: E402
 from prismabuild import pool as pool_module  # noqa: E402
 
@@ -2179,10 +2180,19 @@ def class_submission(tmp_path, monkeypatch):
         for member in ("spark-a", "spark-b"):
             if member in omit:
                 continue
-            queue.announce(host=member, tags=["gb10", member, "interpreter-path-v1",
-                                             "local-dependency-v1"], has_gpu=True,
-                           capacity={"cpu": 8, "mem_gb": 32, "gpu": 1},
-                           interpreters=[command[0]] if command[0].startswith("/") else [])
+            queue.announce(
+                host=member,
+                tags=["gb10", member, "interpreter-path-v1",
+                                             "local-dependency-v1"],
+                has_gpu=True,
+                capacity={"cpu": 8, "mem_gb": 32, "gpu": 1},
+                capabilities=capability_eligibility.OfferCapabilities(
+                    interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                        [command[0]] if command[0].startswith("/") else [],
+                        None,
+                    ),
+                ),
+            )
             record = queue.root / "workers" / f"{member}.json"
             value = json.loads(record.read_text())
             value["local_dependencies"] = (answers or {}).get(member, {})
@@ -2398,8 +2408,19 @@ def test_class_proof_needs_a_distinct_real_offer_per_member(tmp_path, population
         members = {"box-a": ("box-a", "box-b"), "box-b": ("box-b",)}
     hosts = ["box-a", "box-b"] if population == "healthy" else ["box-b"]
     for host in hosts:
-        queue.announce(host=host, tags=["gb10", local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1}, local_dependency_answers=local_dependencies.observe(requirements))
+        queue.announce(
+            host=host,
+            tags=["gb10", local_dependencies.TAG],
+            has_gpu=False,
+            capacity={"cpu": 1},
+            capabilities=capability_eligibility.OfferCapabilities(
+                dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                    local_dependencies.observe(requirements),
+                    None,
+                    None,
+                ),
+            ),
+        )
     reason = queue.class_dependency_gap("gb10", members, requirements)
     if population == "healthy":
         assert reason is None
@@ -2625,8 +2646,19 @@ def test_symlink_parent_traversal_guards_the_requested_input(symlink_parent_inpu
     probe = {"tags": [local_dependencies.TAG], "resources": {"cpu": 1},
              "local_dependencies": requirements}
     def announce():
-        queue.announce(host="input-worker", tags=[local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1}, local_dependency_answers=local_dependencies.observe(requirements))
+        queue.announce(
+            host="input-worker",
+            tags=[local_dependencies.TAG],
+            has_gpu=False,
+            capacity={"cpu": 1},
+            capabilities=capability_eligibility.OfferCapabilities(
+                dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                    local_dependencies.observe(requirements),
+                    None,
+                    None,
+                ),
+            ),
+        )
     announce()
     assert queue.placeable(probe) is True
     target.unlink()
@@ -2921,9 +2953,19 @@ def relocated_input_submission(tmp_path, monkeypatch):
     answers = local_dependencies.observe({declared: "path",
                                           str(work / ".." / "shared" / "input.bin"): "path"})
     for member in ("spark-a", "spark-b"):
-        queue.announce(host=member, tags=["gb10", member, local_dependencies.TAG],
-                       has_gpu=False, capacity={"cpu": 1, "mem_gb": 4},
-                       local_dependency_answers=answers)
+        queue.announce(
+            host=member,
+            tags=["gb10", member, local_dependencies.TAG],
+            has_gpu=False,
+            capacity={"cpu": 1, "mem_gb": 4},
+            capabilities=capability_eligibility.OfferCapabilities(
+                dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                    answers,
+                    None,
+                    None,
+                ),
+            ),
+        )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
     monkeypatch.setattr(pbrun, "SH", fleet)
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
@@ -3075,9 +3117,19 @@ def raw_copy_submission(tmp_path, monkeypatch):
     paths = {os.path.join(str(work), raw + suffix): "path" for suffix in ("", "/", "/.")}
     answers = local_dependencies.observe(paths)
     for member in ("spark-a", "spark-b"):
-        queue.announce(host=member, tags=["gb10", member, local_dependencies.TAG],
-                       has_gpu=False, capacity={"cpu": 1, "mem_gb": 4},
-                       local_dependency_answers=answers)
+        queue.announce(
+            host=member,
+            tags=["gb10", member, local_dependencies.TAG],
+            has_gpu=False,
+            capacity={"cpu": 1, "mem_gb": 4},
+            capabilities=capability_eligibility.OfferCapabilities(
+                dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                    answers,
+                    None,
+                    None,
+                ),
+            ),
+        )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
     monkeypatch.setattr(pbrun, "SH", fleet)
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)

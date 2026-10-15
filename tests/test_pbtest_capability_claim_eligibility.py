@@ -117,12 +117,34 @@ def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
     queue.announce(host="old", tags=[], has_gpu=False, capacity=dict(CAPACITY))
     assert queue.placeable(probe) is False
     # New generation, silent answers: unknown is not capable (#1263's rule).
-    queue.announce(host="new", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[])
+    queue.announce(
+        host="new",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                None,
+            ),
+        ),
+    )
     assert queue.placeable(probe) is False
     # The same box, having answered: capable.
-    queue.announce(host="new", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[entry["path"]])
+    queue.announce(
+        host="new",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [entry["path"]],
+                None,
+            ),
+        ),
+    )
     assert queue.placeable(probe) is True
 
 
@@ -212,20 +234,51 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
     entry = _dependency(tmp_path)
     absent_entry = {"path": "/no/such/secondary", "sha256": "a" * 64}
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                None,
+            ),
+        ),
+    )
     intent = _intent(entry["path"])
     assert queue.dependency_placement_verdict(intent) == "unknown_paths"
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[],
-                   dependency_files_absent=[absent_entry["path"]])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                [absent_entry["path"]],
+            ),
+        ),
+    )
     assert queue.dependency_placement_verdict(
         _intent(absent_entry["path"])) == "absent"
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[entry["path"]],
-                   dependency_files_absent=[absent_entry["path"]])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [entry["path"]],
+                [absent_entry["path"]],
+            ),
+        ),
+    )
     assert queue.dependency_placement_verdict(
         intent) == "present"
 

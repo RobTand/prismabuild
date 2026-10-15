@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import pool  # noqa: E402
 
@@ -59,9 +60,19 @@ def test_qualification_container_image_unknown_vs_present(tmp_path: Path) -> Non
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))
     _publish(queue, "b" * 64, tags=["x86"], container_images=[IMAGE])
     assert _claim(queue, tags=["x86", contracts.CONTAINER_IMAGE_TAG]) is None
-    queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
-                   capacity=dict(CAPACITY), cpu_tiers=dict(TIERS),
-                   observed_images=[IMAGE])
+    queue.announce(
+        host="worker-a",
+        tags=["x86"],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        cpu_tiers=dict(TIERS),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [IMAGE],
+                None,
+            ),
+        ),
+    )
     admitted = _claim(queue, tags=["x86", contracts.CONTAINER_IMAGE_TAG],
                       observed_images=[IMAGE])
     assert admitted is not None
@@ -130,9 +141,19 @@ def test_mixed_capability_matrix_without_hosts(tmp_path: Path) -> None:
     _box(queue)
     queue.announce(host="cpu-only", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))
-    queue.announce(host="gpu-box", tags=["x86", "gb10"], has_gpu=True,
-                   capacity=dict(CAPACITY), cpu_tiers=dict(TIERS),
-                   observed_images=[IMAGE])
+    queue.announce(
+        host="gpu-box",
+        tags=["x86", "gb10"],
+        has_gpu=True,
+        capacity=dict(CAPACITY),
+        cpu_tiers=dict(TIERS),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [IMAGE],
+                None,
+            ),
+        ),
+    )
     _publish(queue, "1" * 64, tags=["x86"])
     _publish(queue, "2" * 64, tags=["gb10"], needs_gpu=True,
              container_images=[IMAGE])
