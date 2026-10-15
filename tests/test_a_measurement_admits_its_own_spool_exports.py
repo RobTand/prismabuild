@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, core as pb  # noqa: E402
 from prismabuild import movement_actions, pool  # noqa: E402
 from prismabuild import produced_output as po  # noqa: E402
+from prismabuild import drain_policy
 
 HOST = "sparklina"
 #: Sized like the live Spark: 20 CPUs and 104 GiB offered.
@@ -299,6 +300,6 @@ def test_a_measurement_waiting_behind_ordinary_work_is_not_isolated(tmp_path) ->
     decision = controller.last_decision
     assert decision["reason"] == "measurement_holder" and decision["holder"] == "0" * 64
     assert decision["isolated_by"] is None
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 1}, measurement=True,
         cpu_count=2) == ("exclusive", False)

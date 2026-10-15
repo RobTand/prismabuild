@@ -30,6 +30,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
 from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import drain_policy
 
 T0 = 3_000_000.0
 CPUS = 20
@@ -280,7 +281,7 @@ def test_busy_cpus_no_pool_holder_holds_do_not_withhold(
     ({"reason": "host_pressure", "held_cpus": [], "foreign_cpus": []}, (None, False)),
 ], ids=["pre-1160-record", "held-only", "foreign-only", "held-and-foreign", "neither"])
 def test_the_drain_mapping_reads_held_and_foreign_cpus(decision, expected) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 9, "gpu": 1},
         measurement=False, cpu_count=CPUS) == expected
 
@@ -289,6 +290,6 @@ def test_an_exclusive_host_pressure_need_keeps_the_exclusive_drain() -> None:
     """A measurement's host_pressure still needs the host quiet, not its CPUs."""
 
     decision = {"reason": "host_pressure", "held_cpus": [3], "foreign_cpus": []}
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 2},
         measurement=True, cpu_count=CPUS) == ("exclusive", False)

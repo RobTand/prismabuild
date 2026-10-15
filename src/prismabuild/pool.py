@@ -509,175 +509,6 @@ def _claim_order_relief_age(order: Mapping[str, object], *,
 DEFAULT_MAX_ATTEMPTS = 3
 
 
-#: Adaptive refusals that draining this box's own holders resolves (#924),
-#: by what the item needs from the drain.
-#:
-#: *Exclusive*: the item needs the box empty of other holders.  A measurement
-#: needs a quiet host and an idle device, so it is refused while anything else
-#: runs, and a stream of small admissions behind it keeps the box occupied for
-#: as long as the stream lasts.  These GPU refusals are exclusive only for a
-#: measurement; for any other item see :data:`DRAIN_GPU_HOLDERS`.
-DRAIN_EXCLUSIVE_CPU = frozenset({
-    "measurement_host_not_idle", "measurement_holder", "unbounded_cpu_not_exclusive",
-})
-DRAIN_EXCLUSIVE_GPU = frozenset({
-    "exclusive_holder", "measurement_device_not_idle", "host_or_device_congested",
-    "sharing_probe_not_authorized", "gpu_memory_budget",
-})
-#: *GPU*: the refusals ``adaptive_gpu.Controller.decision`` gives an item that
-#: is not a measurement only while the pool's own GPU holders are on the
-#: device (#1085).  Each is resolved by those holders draining, and the one
-#: thing that stops them draining is later GPU work sharing the device with
-#: them: the GPU controller lets a shared generation row join a holder once a
-#: probe is authorized, and every such row keeps the device occupied past the
-#: holder it joined.  So the withhold these refusals earn holds back later
-#: rows that demand a GPU, and only those.  CPU-only rows take nothing these
-#: holders release, and keep filling the box; what the item then needs from
-#: them is its CPU and memory, which is the token verdict's to keep.
-#: ``host_or_device_congested`` and ``gpu_memory_budget`` stay out: they read
-#: the device's and the host's state, which a GPU holder leaving is not known
-#: to repair.  The one congested refusal a drain does repair is
-#: :data:`DRAIN_SW_CAP_IDLE`'s.
-DRAIN_GPU_HOLDERS = frozenset({
-    "exclusive_holder", "sharing_probe_not_authorized",
-    "holder_telemetry_unavailable", "max_actions",
-})
-#: *SW-cap idle* (#1125): a ``host_or_device_congested`` refusal with
-#: ``limited`` set, on a GB10 whose only limiter is the idle SW power cap.
-#: ``adaptive_gpu.sw_cap_idle_first_job`` (#719) admits a first job on that
-#: device only on an empty host, and names the occupancy that stopped it.
-#: When that occupancy is the one unmet condition
-#: (``adaptive_gpu.sw_cap_idle_after_drain``), draining it resolves the
-#: refusal, so it maps to the drain that clears it:
-#:
-#: * holders -- the pool's GPU holders must leave, which is the ``gpu`` drain;
-#: * broker jobs -- every job the broker runs must leave, CPU-only jobs
-#:   included, which is the ``exclusive`` drain: it counts every holder on the
-#:   box and holds the whole box back.
-#:
-#: Every other limited refusal -- thermal, power brake, HW slowdown, unknown
-#: mask bits, power or clocks above the idle gate, pressure -- is overtaken.
-DRAIN_SW_CAP_IDLE: dict[str, str] = {
-    "holders_present_no_sharing_exception": "gpu",
-    "broker_jobs_present": "exclusive",
-}
-#: *Tokens*: under adaptive admission a CPU token shortage never reaches the
-#: ledger -- ``available < declared`` routes it through borrowing, so it is
-#: refused as one of these before ``begin_acquire`` runs.  They are a token
-#: shortage in the controller's words only when the box's free CPU tokens do
-#: not cover the demand; a refusal about *usage* with tokens free is not
-#: something draining is known to repair.
-DRAIN_TOKENS_CPU = frozenset({
-    "borrow_evidence_unavailable", "pressure_override_no_borrow", "projected_cpu_cost",
-})
-
-
-def _measurement_unmeasured_refusal(
-    source: str | None, decision: Mapping[str, object] | None,
-) -> bool:
-    """Identify only a fresh CPU refusal whose exceeded history is unknown."""
-    baseline = decision.get("baseline") if isinstance(decision, Mapping) else None
-    return (source == "adaptive_cpu_refused" and isinstance(decision, Mapping)
-            and decision.get("reason") == "measurement_host_not_idle"
-            and decision.get("fresh") is True and isinstance(baseline, Mapping)
-            and baseline.get("basis") == "unmeasured" and baseline.get("exceeds") is True)
-
-
-def _measurement_holder_tail_refusal(decision: Mapping[str, object] | None) -> bool:
-    """Recognize known CPU holder overlap without inventing a baseline."""
-    if not isinstance(decision, Mapping):
-        return False
-    baseline, sample = decision.get("baseline"), decision.get("sample")
-    if (decision.get("reason") != "measurement_host_not_idle"
-            or decision.get("fresh") is not True or not isinstance(baseline, Mapping)
-            or baseline.get("state") != "holder_tail" or baseline.get("exceeds") is not True
-            or not isinstance(sample, Mapping)):
-        return False
-    values = (baseline.get("holders_seen_unix"), baseline.get("interval_start_unix"),
-              sample.get("sampled_unix"), sample.get("interval_s"))
-    if any(type(value) not in (int, float) for value in values):
-        return False
-    try:
-        seen, started, sampled, interval = (float(value) for value in values
-                                            if isinstance(value, (int, float)))
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return (all(math.isfinite(value) for value in (seen, started, sampled, interval))
-            and 0 < interval <= cpu_admission.MAX_INTERVAL_S
-            and started == sampled - interval and started <= seen <= sampled)
-
-
-def _measurement_foreign_clear(decision: Mapping[str, object] | None) -> bool:
-    proof = decision.get("measurement_pool_drain") if isinstance(decision, Mapping) else None
-    return isinstance(proof, Mapping) and proof.get("foreign_clear") is True
-
-
-def _adaptive_refusal_drains(
-    source: str | None, decision: Mapping[str, object] | None, *,
-    demand: Mapping[str, int], measurement: bool, cpu_count: int | None,
-) -> tuple[str | None, bool]:
-    """Classify one adaptive refusal for the withhold verdict (#924).
-
-    Returns ``(mode, foreign)``: ``mode`` is ``"exclusive"``, ``"tokens"``,
-    ``"gpu"`` (the pool's GPU holders must drain, #1085; or, for an idle
-    SW-capped GB10, whichever drain :data:`DRAIN_SW_CAP_IDLE` names, #1125),
-    ``"held_cpus"`` (the holders on the CPUs a ``host_pressure`` refusal
-    names must drain, :data:`DRAIN_HELD_CPUS`, #1160) or ``None``
-    (draining does not resolve it, and the item is overtaken exactly as
-    before), and ``foreign`` is true when the refusal's own evidence names
-    processes the pool does not own -- draining the pool's holders cannot
-    idle a device a vLLM serve is using.
-    """
-
-    reason = decision.get("reason") if isinstance(decision, Mapping) else None
-    if source == "adaptive_gpu_refused":
-        foreign = decision.get("foreign_processes") if isinstance(decision, Mapping) else None
-        if foreign:
-            return None, True
-        if reason == "host_or_device_congested" and decision.get("limited") is True:
-            # Thermal, power-brake and slowdown limiters are the device's own
-            # state; no holder leaving turns them off.  The idle SW cap is the
-            # exception (#1125): the first-job exception admits it on an empty
-            # host, so when occupancy is all that stopped it, a drain does.
-            exception = decision.get("sw_cap_idle_exception")
-            if not measurement and gpu_admission.sw_cap_idle_after_drain(exception):
-                mode = DRAIN_SW_CAP_IDLE.get(str(exception["exception_reason"]))  # type: ignore[index]
-                if mode is not None:
-                    return mode, False
-            return None, False
-        if measurement:
-            return ("exclusive" if reason in DRAIN_EXCLUSIVE_GPU else None), False
-        return ("gpu" if reason in DRAIN_GPU_HOLDERS else None), False
-    if source != "adaptive_cpu_refused":
-        return None, False
-    if reason == "measurement_foreign_ambient":
-        # The refusal's own attribution names foreign load on the
-        # measurement's own predicted CPUs: the row would read a machine
-        # its own run shares with load it does not own, so it is overtaken
-        # and reported starved with the foreign CPUs and their PIDs in its
-        # evidence, and the rows behind it keep claiming (#1185).
-        return None, True
-    if reason in DRAIN_EXCLUSIVE_CPU:
-        return "exclusive", False
-    declared = int(demand.get("cpu", 0) or 0)
-    if reason == "host_pressure" and (measurement or not declared
-                                      or (cpu_count is not None and declared == cpu_count)):
-        # The branch that is closed to the per-CPU override
-        # (``adaptive_cpu.decision``): this item needs the host quiet, which
-        # is an exclusive need, not a CPU count.
-        return "exclusive", False
-    if reason == "host_pressure":
-        held = decision.get("held_cpus") if isinstance(decision, Mapping) else None
-        foreign_cpus = decision.get("foreign_cpus") if isinstance(decision, Mapping) else None
-        if (isinstance(held, list) and held and isinstance(foreign_cpus, list)
-                and not foreign_cpus):
-            return DRAIN_HELD_CPUS, False
-        return None, False
-    if reason in DRAIN_TOKENS_CPU:
-        return "tokens", False
-    return None, False
-
-
 def _starved_suffix(verdict: Mapping[str, object]) -> str:
     """The denial suffix of an eligible item that is not withholding (#924).
 
@@ -8110,11 +7941,11 @@ class PoolQueue:
             cpu_fresh = isinstance(decision, Mapping) and decision.get("fresh") is True
             sample = decision.get("sample") if isinstance(decision, Mapping) else None
             cpu_sampled = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
-            unmeasured = _measurement_unmeasured_refusal("adaptive_cpu_refused", decision)
+            unmeasured = drain_policy.unmeasured_refusal("adaptive_cpu_refused", decision)
             if (isinstance(decision, Mapping)
                     and decision.get("reason") == "measurement_host_not_idle"):
                 baseline = decision.get("baseline")
-                if (not _measurement_holder_tail_refusal(decision)
+                if (not drain_policy.holder_tail_refusal(decision)
                         and (not isinstance(baseline, Mapping)
                              or baseline.get("basis") not in ("measured", "unmeasured")
                              or baseline.get("exceeds") is not True)):
@@ -12649,7 +12480,7 @@ class PoolQueue:
         try:
             chosen = reservation.elect(
                 self, ledger, controller, item,
-                verdict if _measurement_foreign_clear(cpu_decision) else dict(verdict, withhold=False),
+                verdict if drain_policy.foreign_clear(cpu_decision) else dict(verdict, withhold=False),
                 sampled_unix=sampled, gpu_sample=gpu_sample,
                 authority=authority, tags=tags, has_gpu=has_gpu)
         except reservation.CensusUnavailable as exc:
@@ -22378,7 +22209,7 @@ class PoolQueue:
                             decision = (gpu_decision
                                         if refusal_source == "adaptive_gpu_refused"
                                         else cpu_decision)
-                            mode, foreign = _adaptive_refusal_drains(
+                            mode, foreign = drain_policy.refusal_mode(
                                 refusal_source, decision, demand=demand,
                                 measurement=bool(identity and identity[1]),
                                 cpu_count=len(controller.cpus) if controller is not None else None)
@@ -22392,8 +22223,8 @@ class PoolQueue:
                                 measurement=bool(identity and identity[1]),
                                 measurement_generation=(self.attempt_generation(item)
                                     if identity and identity[1] else None),
-                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision),
-                                measurement_unmeasured=_measurement_unmeasured_refusal(
+                                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision),
+                                measurement_unmeasured=drain_policy.unmeasured_refusal(
                                     refusal_source, decision))
                                 if mode is not None or foreign else None)
                             verdict = None
@@ -22495,7 +22326,7 @@ class PoolQueue:
                                 measurement=bool(identity and identity[1]),
                                 measurement_generation=(self.attempt_generation(item)
                                     if identity and identity[1] else None),
-                                measurement_foreign_clear=_measurement_foreign_clear(cpu_decision))
+                                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision))
                             self._drain_accounting.stage(key, observed.notes)
                             if isinstance(observed, drain_policy.DrainFailure):
                                 raise observed.error

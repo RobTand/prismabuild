@@ -29,6 +29,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import adaptive_cpu, adaptive_gpu, pool  # noqa: E402
+from prismabuild import drain_policy
 
 T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
@@ -339,7 +340,7 @@ def _refusal(exception) -> dict:
 def test_only_occupancy_on_an_idle_sw_capped_gb10_drains(
     exception, measurement: bool, expected,
 ) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_gpu_refused", _refusal(exception), demand={"gpu": 1},
         measurement=measurement, cpu_count=20) == expected
 
@@ -356,4 +357,4 @@ def test_the_exception_itself_is_unchanged_by_the_drain_question() -> None:
 def test_the_drain_table_names_exactly_the_occupancy_reasons() -> None:
     """The pool's drain table and the exception's occupancy reasons are one set:
     a reason the helper accepts but the table lacks would drop to "overtaken"."""
-    assert set(pool.DRAIN_SW_CAP_IDLE) == set(adaptive_gpu.SW_CAP_OCCUPANCY_REASONS)
+    assert set(drain_policy.DRAIN_SW_CAP_IDLE) == set(adaptive_gpu.SW_CAP_OCCUPANCY_REASONS)

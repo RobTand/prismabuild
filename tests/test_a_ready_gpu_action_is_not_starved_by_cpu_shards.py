@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
 import pbstatus  # noqa: E402
+from prismabuild import drain_policy
 
 #: Loaded the same way the ``pbtest`` test files load it: a fresh module
 #: object per test file, not ``sys.modules``'s cached one, so a monkeypatch
@@ -791,7 +792,7 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
 def test_only_refusals_draining_resolves_are_eligible_to_withhold(
     source, decision, measurement, demand, expected,
 ) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         source, decision, demand=demand, measurement=measurement,
         cpu_count=20) == expected
 
