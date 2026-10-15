@@ -18,7 +18,7 @@ LEGACY_SHA256 = "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe
 @pytest.fixture
 def installed_leaf(tmp_path):
     install = tmp_path / "installed"
-    install.mkdir(mode=0o755)
+    install.mkdir(mode=0o755, exist_ok=True)
     path = install / "park_proof.py"
     strict = fixed_source_artifact(
         "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
