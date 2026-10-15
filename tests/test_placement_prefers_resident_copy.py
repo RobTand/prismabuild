@@ -17,6 +17,7 @@ import pytest
 
 from prismabuild import _gang, core as pb, pool, resident_sets as rs
 from admitted_queue_fixture import AdmittedQueueFixture
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_resident_sets_records import source as resident_source
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -353,7 +354,9 @@ def resident_gang(fleet, tmp_path, monkeypatch):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(advance)
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                             has_gpu=True, tags=["gb10", host, _gang.TAG])
+                             has_gpu=True, tags=["gb10", host, _gang.TAG],
+                             cpu_sampler=lambda: cpu_sample(clock, readings),
+                             gpu_sampler=lambda: gpu_sample(sample, readings))
         return None if result is None else result["action_key"]
 
     def members(name, *, resident_set=True, tags=None):

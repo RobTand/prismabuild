@@ -295,7 +295,9 @@ def test_gpu_evidence_fallback_preserves_the_decision_cache_schedule(tmp_path):
         reads.append(1)
         return observation
 
-    controller = adaptive_gpu.Controller(queue.ledger(), sampler=sample)
+    ledger = queue.ledger()
+    ledger.ensure_capacity({"gpu": 1})
+    controller = adaptive_gpu.Controller(ledger, sampler=sample)
     assert pool._gpu_sample_for(controller, {"gpu": 1}) is observation
     assert pool._gpu_sample_for(controller, {"gpu": 1}) is observation
     assert len(reads) == 2

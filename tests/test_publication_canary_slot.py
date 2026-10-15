@@ -158,9 +158,7 @@ def test_canary_waits_for_existing_gpu_holder_then_wins_next_boundary(gpu_box, t
     tags = [socket.gethostname(), CAPABILITY, f"runtime-generation:{GENERATION}"]
 
     def claim():
-        return q.claim(tags=tags, has_gpu=True, adaptive_cpu=True,
-                       capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
-                       cpu_tiers={"preferred": list(range(20)), "fallback": []})
+        return _claim(tags=tags)
 
     tick()
     assert claim() is None
@@ -171,7 +169,7 @@ def test_canary_waits_for_existing_gpu_holder_then_wins_next_boundary(gpu_box, t
     q.finish(holder, status="executed", detail={})
     tick()
     taken = claim()
-    assert taken is not None and taken["action_key"] == key
+    assert taken is not None and taken == key
     assert q.item_path(pool.READY, ordinary).exists()
 
 
@@ -205,10 +203,8 @@ def test_foreign_capability_only_row_is_denied_without_aborting_scan(gpu_box, tm
     ordinary = publish("ordinary-after-foreign-row", {"cpu": 2, "gpu": 1, "mem_gb": 16},
                        priority=-20)
     tick()
-    taken = q.claim(tags=[socket.gethostname(), CAPABILITY, f"runtime-generation:{GENERATION}"],
-                    has_gpu=True, adaptive_cpu=True,
-                    capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
-                    cpu_tiers={"preferred": list(range(20)), "fallback": []})
-    assert taken is not None and taken["action_key"] == ordinary
+    taken = _claim(tags=[socket.gethostname(), CAPABILITY,
+                        f"runtime-generation:{GENERATION}"])
+    assert taken is not None and taken == ordinary
     assert q.latest_denials({key})[key][0]["reason"] == "publication_canary_authority_invalid"
     assert path.exists()

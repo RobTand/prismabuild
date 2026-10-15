@@ -13,6 +13,7 @@ import secrets
 import sys
 
 import pytest
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
 from prismabuild import _gang, adaptive_gpu, core as pb, pool
@@ -37,12 +38,15 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
         queue.finish(key, status="executed")
         tick(adaptive_gpu.PSI_AVG10_S + 1)
 
-    def gclaim(host):
+    def gclaim(host, *, ready=None, advance=0.01):
         """A gang-enabled worker on ``host``: the fixture's claim plus the tag."""
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
-        tick(0.01)
+        if advance is not None:
+            tick(advance)
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                             has_gpu=True, tags=["gb10", host, _gang.TAG])
+                             has_gpu=True, tags=["gb10", host, _gang.TAG],
+                             cpu_sampler=lambda: cpu_sample(clock, readings),
+                             gpu_sampler=lambda: gpu_sample(sample, readings), ready=ready)
         return None if result is None else result["action_key"]
 
     def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
