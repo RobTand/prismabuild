@@ -844,6 +844,53 @@ def test_child_result_blob_opens_respect_the_size_bound(
         assert opened, "the observer must witness actual reads of an accepted result"
 
 
+@pytest.mark.parametrize("consumer", ["bound-query", "reporter", "queue"])
+def test_a_receipted_json_null_preserves_query_refusal_and_zero_credit(
+    tmp_path: Path, capsys, consumer,
+) -> None:
+    producer = PRODUCER + (
+        '\nwith open(batch["result_manifest_path"], "w") as result:\n'
+        '    result.write("null\\n")\n')
+    cas, plan, children = _batch(
+        tmp_path, producer=producer, setup_seconds=20.0, max_setup_fraction=0.5)
+    assert len(children) == 1
+    child = children[0]
+    key = child["action_key"]
+    state = _controller_state(tmp_path, children)
+    queue = _queue(tmp_path, cas)
+    receipt = _finish_child(tmp_path, queue, cas, child)
+    assert cas.result_path(receipt, child).read_bytes() == b"null\n"
+    queue.item_path(pool.DONE, key).unlink()
+    capsys.readouterr()
+
+    if consumer == "bound-query":
+        publication = json.loads(
+            (dc.record_dir(cas.root, plan["parent_key"]) / "publication.json").read_bytes())
+        with pytest.raises(pb.ActionContractError) as refusal:
+            dc.child_result(
+                cas, child, child_key=key, plan=plan, publication=publication)
+        assert str(refusal.value) == "child result manifest must be an object"
+    elif consumer == "reporter":
+        reporter = DurableChildReporter(
+            cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+            child_keys=[key], controller_state=state, phase="run")
+        assert reporter.establish_baseline() == set()
+        assert reporter.newly_durable() == []
+        assert reporter.units == 0
+    else:
+        verdict = queue.queued_child_wait_verdict(
+            "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state),
+            admitted={key: {}})
+        assert verdict["exempt"] is False
+        assert verdict["children"][0]["state"] == "unpublished"
+        assert verdict["children"][0]["evidence"] == "none"
+        assert verdict["missing"] == [key]
+        assert verdict["reason"] == (
+            "an awaited child is missing or unreadable with no verified durable result")
+    assert capsys.readouterr().err == ""
+    assert cas.lookup(child) == receipt
+
+
 def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
     """The declaration is valid only with progress phases on pool transport."""
 
