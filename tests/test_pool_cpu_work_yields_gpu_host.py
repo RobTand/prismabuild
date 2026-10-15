@@ -180,3 +180,39 @@ def test_one_pass_never_leaves_a_cpu_host_more_than_it_fits(fleet):
     assert claimed and claimed['action_key'] in {'a' * 64, 'c' * 64}
     left = ({'a' * 64, 'c' * 64} - {claimed['action_key']}).pop()
     assert _local_denial(queue, left)['reason'] == 'deferred_for_cpu_only_host'
+
+
+@pytest.mark.parametrize('timer', ['cross_resource', 'preferred_cpu'])
+def test_timer_queries_respect_an_earlier_cpu_host_charge(tmp_path, monkeypatch, timer):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    local_tiers = (TIERS if timer == 'cross_resource'
+                   else {'preferred': [0], 'fallback': [1, 2, 3]})
+    for host, capacity, tiers, has_gpu in (
+        (socket.gethostname(), CAPACITY, local_tiers, True),
+        (CPU_HOST, CPU_CAPACITY, TIERS, False),
+    ):
+        ledger = queue.ledger(host)
+        ledger.configure_cpu_tiers(tiers)
+        ledger.ensure_capacity(capacity)
+        detail = _detail(gpu=has_gpu)
+        if has_gpu and timer == 'cross_resource':
+            detail['gpu_power_fraction'] = .9
+        queue.announce(host=host, tags=[], has_gpu=has_gpu, capacity=capacity,
+                       observed_capacity=capacity, cpu_tiers=tiers, observed_detail=detail)
+    keys = {'a' * 64, 'c' * 64}
+    for key in sorted(keys):
+        queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                      checkout_root=str(tmp_path), worker_script='worker.py',
+                      resources={'cpu': 3, 'mem_gb': 1})
+    monkeypatch.setattr(pool.time, 'monotonic', lambda: 10.)
+    claimed = queue.claim(has_gpu=True, capacity=CAPACITY, cpu_tiers=local_tiers)
+    denials = [_local_denial(queue, key) for key in sorted(keys)]
+    assert claimed, [denial['reason'] for denial in denials if denial]
+    left = (keys - {claimed['action_key']}).pop()
+    assert _local_denial(queue, left)['reason'] == 'deferred_for_cpu_only_host'
+    assert [denial['reason'] for denial in denials if denial] == ['deferred_for_cpu_only_host']
+    assert queue.item_path(pool.READY, left).exists()
+    assert not queue.lease_path(left).exists()
+    assert all(not queue.passes_path(key).exists() for key in keys)
+    assert queue.ledger().available()['cpu'] == 1
+    assert queue.ledger(CPU_HOST).available()['cpu'] == 4
