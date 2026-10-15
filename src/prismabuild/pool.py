@@ -6536,18 +6536,8 @@ class PoolQueue:
             record["container_class_verdict"] = dict(container_class_verdict)
         record.update(capability_eligibility.InterpreterAnswers.from_observed(
             interpreters, interpreters_absent).offer_fields())
-        if local_dependency_answers is not None:
-            record["local_dependencies"] = dict(local_dependency_answers)
-        if dependency_files is not None:
-            # The digest-contract answers (#1495): the requirement paths this
-            # poll's ready rows name, statted on this box.  Present-and-empty
-            # is an answer; a field absent entirely is an older loop, which
-            # is unknown and therefore not capable.
-            record["dependency_files"] = sorted(
-                {str(p) for p in dependency_files})
-        if dependency_files_absent is not None:
-            record["dependency_files_absent"] = sorted(
-                {str(p) for p in dependency_files_absent})
+        record.update(capability_eligibility.DependencyAnswers.from_observed(
+            local_dependency_answers, dependency_files, dependency_files_absent).offer_fields())
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -6685,20 +6675,11 @@ class PoolQueue:
             if declared_interpreter:
                 answers = capability_eligibility.InterpreterAnswers.from_offer(offer)
                 if (answers.answer(declared_interpreter)
-                        is not capability_eligibility.InterpreterAnswer.PRESENT):
+                        is not capability_eligibility.Presence.PRESENT):
                     continue
-            if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
+            if not capability_eligibility.DependencyAnswers.from_offer(offer).matches(
+                    dependencies, declared_requirements):
                 continue
-            if declared_requirements:
-                # The same positive-evidence rule for digest-pinned
-                # dependencies (#1495): an offer that has not answered for a
-                # required path is unknown, and unknown is not capable.
-                answered = offer.get("dependency_files")
-                if not isinstance(answered, list) or any(
-                        str(entry.get("path")) not in {
-                            str(path) for path in answered}
-                        for entry in declared_requirements):
-                    continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
             # difference is what a publish looks like from the queue: capacity
@@ -6813,17 +6794,9 @@ class PoolQueue:
             return "unknown_capability"
         requirements = item.get("requires_files") or []
         paths = {str(entry.get("path")) for entry in requirements}
-        unanimous_absent = True
-        for offer in capable:
-            answers = offer.get("dependency_files")
-            if isinstance(answers, list) and paths <= {
-                    str(entry) for entry in answers}:
-                return "present"
-            missing = offer.get("dependency_files_absent")
-            if not (isinstance(missing, list) and paths <= {
-                    str(entry) for entry in missing}):
-                unanimous_absent = False
-        return "absent" if unanimous_absent else "unknown_paths"
+        return capability_eligibility.dependency_answer(
+            paths, [capability_eligibility.DependencyAnswers.from_offer(offer)
+                    for offer in capable])
 
     def placeable(
         self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S
@@ -22087,11 +22060,7 @@ class PoolQueue:
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         interpreter_host = capability_eligibility.LiveInterpreters()
-        #: Digest-pinned dependency answers, one stat and one hash per
-        #: distinct path per pass (#1495): the
-        #: claim gate reads the actual bytes once, whatever passes over it.
-        requirement_present_cache: dict[str, bool] = {}
-        requirement_digest_cache: dict[str, str | None] = {}
+        dependency_host = capability_eligibility.LiveDependencies()
         #: The census is not read about a candidate, so a refusal of it
         #: (the reader fence busy, a record unreadable) is the same answer for
         #: every later candidate of this pass: take it once (#1571).  Each
@@ -22303,77 +22272,12 @@ class PoolQueue:
                     self.record_denial(item, interpreter_refusal.reason,
                                        interpreter_refusal.evidence)
                     continue
-                try:
-                    dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
-                    if local_dependencies.TAG in (item.get("tags") or []) and not dependencies:
-                        raise ValueError(f"{local_dependencies.TAG} requires local_dependencies")
-                    missing_dependencies = local_dependencies.missing(
-                        dependencies, local_dependencies.observe(dependencies))
-                except (ValueError, OSError) as exc:
-                    self.record_denial(item, "local_dependencies_unavailable", {"error": str(exc)})
+                dependency_refusal = dependency_host.refusal(item)
+                if dependency_refusal is not None:
+                    self.record_denial(item, dependency_refusal.reason,
+                                       dependency_refusal.evidence)
                     continue
-                if missing_dependencies:
-                    self.record_denial(item, "local_dependency_not_present",
-                                       {"paths": missing_dependencies})
-                    continue
-                declared_requirements = item.get("requires_files")
                 item_tags = item.get("tags")
-                if (not declared_requirements and isinstance(item_tags, list)
-                        and contracts.DEPENDENCY_DIGEST_TAG
-                        in item_tags):
-                    # A record this pool did not write (publish refuses the
-                    # pair) that requires the capability but states no
-                    # requirement.  Fail closed: an unstated requirement is
-                    # not an absent one.
-                    self.record_denial(item, "dependency_requirement_missing", {
-                        "tags": item_tags,
-                    })
-                    continue
-                if declared_requirements is not None:
-                    # The claim gate for digest-pinned dependencies (#1495):
-                    # one stat then one hash per distinct path per pass, so
-                    # the bytes a row pins are read before the attempt is
-                    # spent, on the box about to spend it.  The observation
-                    # is the owner module's, the same one the shard's own
-                    # preflight runs -- the claim and the preflight cannot
-                    # disagree about what a drift is.  Nothing here imports
-                    # or executes the pinned bytes.
-                    try:
-                        dependency_digest.validate_requirements(
-                            declared_requirements)
-                    except ValueError as exc:
-                        self.record_denial(item, "malformed_requires_files", {
-                            "error": str(exc)})
-                        continue
-                    paths = [str(entry["path"])
-                             for entry in declared_requirements]
-                    missing = [path for path in paths if not
-                               requirement_present_cache.setdefault(
-                                   path, os.path.isfile(path))]
-                    if missing:
-                        self.record_denial(item, "dependency_not_present", {
-                            "paths": missing})
-                        continue
-                    denial: tuple[str, dict] | None = None
-                    for entry in declared_requirements:
-                        path = str(entry["path"])
-                        if path not in requirement_digest_cache:
-                            requirement_digest_cache[path] = (
-                                dependency_digest.claim_digest(path))
-                        observed = requirement_digest_cache[path]
-                        if observed is None:
-                            denial = ("dependency_unreadable",
-                                      {"path": path})
-                            break
-                        if observed != entry["sha256"]:
-                            denial = ("dependency_digest_mismatch",
-                                      {"path": path,
-                                       "expected": entry["sha256"],
-                                       "observed": observed})
-                            break
-                    if denial is not None:
-                        self.record_denial(item, denial[0], denial[1])
-                        continue
                 declared_images = item.get("container_images")
                 if (not declared_images and isinstance(item_tags, list)
                         and contracts.CONTAINER_IMAGE_TAG in item_tags):

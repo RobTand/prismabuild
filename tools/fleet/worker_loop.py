@@ -110,8 +110,8 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import capability_eligibility, contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, dependency_digest,
-                         filesystem_floor, local_dependencies, local_scratch,
+                         core as pb, cpu_topology,
+                         filesystem_floor, local_scratch,
                          park_proof, pool, publication_canary, role_session, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
@@ -516,47 +516,6 @@ def _retained_reader(abandoned: list) -> tuple[int, str] | None:
     """
 
     return _retained_publisher(abandoned)
-
-
-def local_dependency_lookup(items, *, python: str) -> dict[str, str]:
-    """Extend the same offer lookup with command/path questions, not a registry."""
-    import shutil
-    requirements = {python: "executable"}
-    shell = shutil.which("bash", path=os.defpath)
-    if shell:
-        requirements[str(Path(shell).resolve())] = "executable"
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        interpreter = item.get("interpreter")
-        if isinstance(interpreter, str):
-            requirements[interpreter] = "executable"
-        for field in ("dependency_queries", "local_dependencies"):
-            try:
-                queries = local_dependencies.normalize(item.get(field, {}))
-            except ValueError:
-                continue  # A malformed foreign row cannot vouch for any path.
-            for path, kind in queries.items():
-                if kind == "executable" or path not in requirements:
-                    requirements[path] = kind
-    return local_dependencies.observe(requirements)
-def dependency_lookup(items) -> tuple[list[str], list[str]]:
-    """The requirement paths READY items name, as this box's ``(present, absent)``.
-
-    The interpreter lookup's shape (#1263), one stat per distinct path per
-    poll (#1495): the offer answers exactly what the queue asks about, never
-    scans, and never hashes here -- the claim gate reads the bytes.
-    """
-
-    paths = sorted({
-        str(entry.get("path"))
-        for item in items if isinstance(item, dict)
-        for entry in (item.get("requires_files") or ())
-        if isinstance(entry, dict) and isinstance(entry.get("path"), str)})
-    present, absent = [], []
-    for path in paths:
-        (present if os.path.isfile(path) else absent).append(path)
-    return present, absent
 
 
 def discover_ready_snapshot(queue, *, budget_s: float,
@@ -1459,11 +1418,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # fail-closed answer rather than a guess.
         interpreter_answers = capability_eligibility.observe_interpreters(
             discovery.snapshot or [])
-        dependency_answers = local_dependency_lookup(discovery.snapshot or [], python=args.python)
-        # And the digest-contract answers (#1495): the requirement paths this
-        # poll's ready snapshot asks about, statted on this box.
-        offered_dependencies, absent_dependencies = dependency_lookup(
-            discovery.snapshot or [])
+        dependency_answers = capability_eligibility.observe_dependencies(
+            discovery.snapshot or [], python=args.python)
 
         # Immutable producer/source verification is cached; small CAS proof
         # inputs and independent current device identity refresh outside the
@@ -1478,8 +1434,6 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            observed_images=observed_images, class_verdict=class_verdict,
                            interpreter_answers=interpreter_answers,
                            dependency_answers=dependency_answers,
-                           dependency_files=offered_dependencies,
-                           dependency_files_absent=absent_dependencies,
                            observed_detail=observed_detail):
             """The exact advisory record this poll offers the queue.
 
@@ -1522,9 +1476,9 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # an interpreter reads that as unknown, never capable.
                 interpreters=sorted(interpreter_answers.present or ()),
                 interpreters_absent=sorted(interpreter_answers.absent or ()),
-                local_dependency_answers=dependency_answers,
-                dependency_files=dependency_files,
-                dependency_files_absent=dependency_files_absent,
+                local_dependency_answers=dependency_answers.local_paths,
+                dependency_files=sorted(dependency_answers.files_present or ()),
+                dependency_files_absent=sorted(dependency_answers.files_absent or ()),
             )
 
         publication = publish_offer(

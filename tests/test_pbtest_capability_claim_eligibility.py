@@ -20,7 +20,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
-from prismabuild import contracts
+from prismabuild import capability_eligibility, contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 
@@ -235,15 +235,14 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
-    from worker_loop import dependency_lookup
     entry = _dependency(tmp_path)
     items = [{"requires_files": [entry]},
              {"requires_files": [{"path": "/no/such/secondary",
                                   "sha256": "a" * 64}]},
              {"interpreter": "/ignored"}]
-    present, absent = dependency_lookup(items)
-    assert present == [entry["path"]]
-    assert absent == ["/no/such/secondary"]
+    answers = capability_eligibility.observe_dependencies(items, python=sys.executable)
+    assert answers.offer_fields()["dependency_files"] == [entry["path"]]
+    assert answers.offer_fields()["dependency_files_absent"] == ["/no/such/secondary"]
 
 
 # --------------------------------------------------------------------------

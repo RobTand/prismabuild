@@ -420,15 +420,13 @@ def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, targ
 
 def test_local_dependency_offer_and_lookup_do_not_infer_presence(tmp_path):
     from prismabuild import local_dependencies
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-    import worker_loop
     q = _queue_at(tmp_path)
     data = tmp_path / "input.bin"
     data.write_text("data")
     absent = str(tmp_path / "absent.bin")
     requirements = {str(data): "path", absent: "path", sys.executable: "executable"}
-    answers = worker_loop.local_dependency_lookup(
-        [{"dependency_queries": requirements}], python=sys.executable)
+    answers = capability_eligibility.observe_dependencies(
+        [{"dependency_queries": requirements}], python=sys.executable).local_paths
     assert answers[str(data)] == "path" and answers[absent] == "absent"
     assert answers[sys.executable] == "executable"
     q.announce(host="present", tags=[local_dependencies.TAG], has_gpu=False,
