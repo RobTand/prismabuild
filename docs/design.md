@@ -4908,10 +4908,10 @@ It requires `Match` at both poll top and claim boundary. Known `Drift` keeps the
 existing immutable worker incident and exit 0, including `--once`. `Unknown`
 claims no work and files no drift incident. A one-shot returns 75; a continuous
 worker waits at its poll interval, interruptibly by its SIGTERM stop Event,
-before observing again. At poll top, a closed maintenance gate can still record
-the worker's actual idle park marker before that return or wait. UNKNOWN at
-that boundary performs no queue housekeeping, reconciliation, saved-finish
-retry or offer publication.
+before observing again. At either idle receipt boundary, a closed maintenance
+gate can still record the worker's actual idle park marker before that return
+or wait. After observing UNKNOWN, the worker performs no queue housekeeping,
+reconciliation, saved-finish retry or offer publication.
 While loaded identity is unavailable, retries can
 recover its complete receipt. Once known, that loaded identity stays attached
 to the imported code even if the receipt path changes. Offers use the captured
