@@ -37,6 +37,11 @@ def test_cold_start_is_one_job_independent_of_historical_slots(tmp_path, monkeyp
     assert queue.ledger().held()['mem_gb'] == 1
 
 
+def _cpu_sample(clock):
+    return {'sampled_unix': clock[0], 'busy_cpus': 0., 'psi_some': 0.,
+            'cpu_count': 8, 'interval_s': 1.}
+
+
 @pytest.fixture
 def gpu_rig(tmp_path, monkeypatch):
     from prismabuild import adaptive_gpu
@@ -45,9 +50,7 @@ def gpu_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_gpu, 'action_contract', lambda item, demand:
                         ('shape', False, False, demand['mem_gb'] * adaptive_gpu.GIB))
-    cpu_sampler = lambda: {
-        'sampled_unix': clock[0], 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 8, 'interval_s': 1.}
+    cpu_sampler = lambda: _cpu_sample(clock)
     sample = {'schema': 'prismabuild.gpu_capacity.v1', 'sample_id': '100',
               'sampled_unix': 100., 'complete': True, 'attributed': True,
               'devices': [{'uuid': 'GPU-1', 'name': 'NVIDIA GB10', 'power_w': 15.,
@@ -284,7 +287,9 @@ def test_fallback_deferral_leaves_gpu_sample_for_preferred_candidate(gpu_rig):
     tiers = {'preferred': [0, 1], 'fallback': list(range(2, 8))}
     def claim():
         return queue.claim(capacity=capacity, cpu_tiers=tiers,
-                           adaptive_cpu=True, has_gpu=True)
+                           adaptive_cpu=True, has_gpu=True,
+                           cpu_sampler=lambda: _cpu_sample(clock),
+                           gpu_sampler=sample.copy)
     holder = publish(1)
     assert claim()['action_key'] == holder
     remote_tiers = {'preferred': list(range(8)), 'fallback': []}
