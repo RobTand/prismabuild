@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import contracts, pool  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -182,7 +182,9 @@ class Fleet:
         candidate = json.loads(source.read_text())
         simulated_host = host if host is not None else pool.socket.gethostname()
         with mock.patch.object(pool.socket, "gethostname", lambda: simulated_host):
-            item = self.queue.claim(owner="prewarm-fixture", ready=[candidate])
+            item = self.queue.claim(
+                owner="prewarm-fixture", ready=[candidate],
+                tags=[contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG])
         assert item is not None and item["action_key"] == action_key
         target = self.queue.item_path(pool.CLAIMED, action_key)
         if age_s:

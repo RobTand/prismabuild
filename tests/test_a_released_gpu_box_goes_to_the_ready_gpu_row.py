@@ -38,7 +38,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
-from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
 
 T0 = 4_000_000.0
 #: sparky's offer, 2026-09-25.
@@ -55,6 +55,7 @@ SHARD = {"cpu": 2, "mem_gb": 8}
 #: A CPU-only demand that fits beside the GPU row.
 SMALL = {"cpu": 2, "mem_gb": 5}
 BAND = -10
+PROGRESS_CAPABILITIES = (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG)
 
 
 def _key(seed: str) -> str:
@@ -135,8 +136,9 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 def _claimer(q: pool.PoolQueue, *, adaptive: bool):
     def claim() -> str | None:
-        item = (q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
-                if adaptive else q.claim(capacity=CAPACITY))
+        item = (q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+                        tags=PROGRESS_CAPABILITIES)
+                if adaptive else q.claim(capacity=CAPACITY, tags=PROGRESS_CAPABILITIES))
         return None if item is None else str(item["action_key"])
     return claim
 
@@ -386,7 +388,7 @@ def test_cpu_work_is_not_held_for_a_gpu_row_that_cannot_take_the_box(
 
     capacity = dict(CAPACITY, mem_gb=120)
     claim = lambda: (lambda item: None if item is None else item["action_key"])(  # noqa: E731
-        queue.claim(capacity=capacity, tags=["gb10"]))
+        queue.claim(capacity=capacity, tags=["gb10", *PROGRESS_CAPABILITIES]))
     if case == "gpu-held":
         holder_key, cas_root, checkout = _sealed(tmp_path, "gpu-holder", progress=True)
         _publish(queue, clock, holder_key, {"cpu": 2, "gpu": 1, "mem_gb": 10},

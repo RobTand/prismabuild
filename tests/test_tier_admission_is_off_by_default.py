@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import core as pb, pool  # noqa: E402
 
 KEY = "c" * 64
 #: The live row's demand, tags and GPU flag, 2026-09-17.
@@ -84,12 +84,33 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
     """The sealed GLM-5.3-Flash prepare's exact demand claims unchanged.
 
     An admission change that refused or re-placed a running action would be a
-    defect, not a feature.  The live row is reproduced field for field on a
-    sparky-shaped worker; it claims, reserves on the host ledger only, and
-    concludes.
+    defect, not a feature. The live demand, tags and GPU flag are reproduced
+    with a sealed prepare policy on a sparky-shaped worker; it claims,
+    reserves on the host ledger only, and concludes.
     """
 
-    _publish(queue, KEY, CAMPAIGN_RESOURCES, tags=CAMPAIGN_TAGS, needs_gpu=True,
+    checkout = queue.root / "co"
+    checkout.mkdir()
+    (checkout / "task.py").write_text("raise SystemExit(0)\n")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/tier-campaign-prepare",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic", "artifact_family": "generic",
+                 "artifact_kind": "generic", "argv": [sys.executable, "task.py"],
+                 "working_directory": ".", "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {pb.PROGRESS_PARAM: {
+            "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+            "phases": [{"name": "prepare", "grace_s": 600}]}},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(queue.root / "cas")
+    cas.publish_action_request(action)
+    key = str(action["action_key"])
+    _publish(queue, key, CAMPAIGN_RESOURCES, tags=CAMPAIGN_TAGS, needs_gpu=True,
              max_attempts=1, retry_safe=False)
     claimed = queue.claim(
         owner="sparky-worker-0",
@@ -97,14 +118,14 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
         tags=CAMPAIGN_TAGS,
         has_gpu=True,
     )
-    assert claimed is not None and claimed["action_key"] == KEY
+    assert claimed is not None and claimed["action_key"] == key
     assert claimed["resources"] == CAMPAIGN_RESOURCES
     assert claimed["reserved_on"] == pool.socket.gethostname()
     assert "tier_reservations" not in claimed
     assert "residency_verdict" not in claimed
     assert queue.ledger().held() == CAMPAIGN_RESOURCES
     assert queue.tier_ids() == []
-    queue.finish(KEY, status="executed", claim_snapshot=claimed)
+    queue.finish(key, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
 
 

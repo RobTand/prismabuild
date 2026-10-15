@@ -32,7 +32,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
+from prismabuild import contracts, core as pb, pool, produced_spool, progress  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 ENTRY_BYTES = 1 << 20
@@ -112,7 +112,7 @@ def _owner(tmp_path: Path):
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    item = queue.claim()
+    item = queue.claim(tags=[contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG])
     assert item is not None, "the owner was not admitted"
     return queue, item
 
