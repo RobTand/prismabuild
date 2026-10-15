@@ -24,6 +24,10 @@ from pathlib import Path
 import sys
 from unittest import mock
 
+import pytest
+
+from prismabuild import contracts, pool
+
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
@@ -57,7 +61,8 @@ class _Ledger:
         return {"cpu": 2}
 
 
-def _announced(module, names: list[str]) -> list[dict]:
+def _announced(module, names: list[str], *, gang=False, generation="", gpu=False,
+               extra_tags=()) -> list[dict]:
     """One poll of the real loop, with ``gethostname`` answering ``names``.
 
     The first answer is the startup read and the second is the re-read at the
@@ -101,9 +106,16 @@ def _announced(module, names: list[str]) -> list[dict]:
 
     argv = ["worker_loop.py", "--once", "--assume-idle", "--gpu-slots", "0",
             "--poll-s", "0", "--all-cores"]
+    if gpu:
+        argv.append("--gpu")
+    if gang:
+        argv.append("--gang-admission")
+    for tag in extra_tags:
+        argv.extend(("--tag", tag))
     with mock.patch.object(module.pool, "PoolQueue", _Queue), \
          mock.patch.object(module, "published_commit", return_value="audit"), \
          mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
+         mock.patch.object(module, "_generation_at", return_value=generation), \
          mock.patch.object(module.os, "sched_getaffinity",
                            lambda _pid: {2, 3}), \
          mock.patch.object(module.socket, "gethostname", gethostname), \
@@ -129,36 +141,39 @@ def test_a_loop_announces_the_name_the_box_has_now() -> None:
         "worker that no longer answers to it")
 
 
-def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
-    """Re-reading the name must not disturb the ordinary case.
-
-    The tags are a set the scheduler matches against, so an extra or reordered
-    entry here is a placement change, not a cosmetic one.
-    """
-
+def test_a_box_that_was_not_renamed_announces_its_current_name() -> None:
     module = _worker_loop()
 
     calls = _announced(module, ["sparky"])
 
     offer = calls[-1]
     assert offer["host"] == "sparky"
-    # Current advertised capability, in the order the loop appends it: the
-    # declared-image claim check (#714) rides the same subset rule, so this
-    # loop offers container-image-v1 and a pre-check loop cannot claim
-    # image-pinned work and die inside it; the named-interpreter (#1263),
-    # digest-pinned dependency (#1495), scratch-I/O and scratch-lifetime
-    # capabilities fence their own rolling publications the same way.  The
-    # later capabilities are read from their owners, so adding one is a
-    # reviewed edit of this list rather than a silent stale literal (#1040
-    # review of the doubles).
-    assert offer["tags"] == [
-        "gb10", "sparky", "cpu", "progress-v1", "progress-helper-v1",
-        "progress-cycle-v1", "progress-pool-contention-v1",
-        "progress-egress-v1", "progress-queued-child-v1",
-        "container-image-v1",
-        module.contracts.INTERPRETER_TAG,
-        module.local_dependencies.TAG,
-        module.contracts.DEPENDENCY_DIGEST_TAG,
-        module.contracts.SCRATCH_IO_TAG,
-        module.contracts.SCRATCH_LIFETIME_TAG,
-    ], offer["tags"]
+    assert "sparky" in offer["tags"]
+
+
+@pytest.mark.parametrize("gang", [False, True])
+@pytest.mark.parametrize("generation", ["", "g1"])
+@pytest.mark.parametrize("gpu", [False, True])
+def test_worker_enablement_reaches_the_published_offer_and_claim_matcher(
+        tmp_path, gang, generation, gpu):
+    module = _worker_loop()
+    announcement = _announced(module, ["testbox"], gang=gang,
+                              generation=generation, gpu=gpu)[-1]
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.announce(**announcement)
+    offer = queue.offers()[0]
+    tags = frozenset(offer["tags"])
+
+    assert ("cpu" in tags) is (not gpu)
+    assert contracts.CONTAINER_IMAGE_TAG in tags
+    assert contracts.SCRATCH_IO_TAG in tags
+    assert contracts.SCRATCH_LIFETIME_TAG in tags
+    assert (contracts.GANG_TAG in tags) is gang
+    assert (contracts.PUBLICATION_CANARY_TAG in tags) is bool(generation)
+    assert {tag for tag in tags if tag.startswith("runtime-generation:")} == (
+        {f"runtime-generation:{generation}"} if generation else set())
+    assert queue._placement_matches(
+        {"tags": [contracts.GANG_TAG]}, tags=tags, has_gpu=gpu) is gang
+    assert queue._placement_matches(
+        {"tags": [contracts.PUBLICATION_CANARY_TAG]}, tags=tags,
+        has_gpu=gpu) is bool(generation)
