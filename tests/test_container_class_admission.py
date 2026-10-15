@@ -9,7 +9,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from prismabuild import contracts
+from prismabuild import capability_eligibility, contracts
 from prismabuild import adaptive_cpu, container_images as ci, core as pb, pool
 
 CONTENT = 'content:sha256:' + 'a' * 64
@@ -28,6 +28,27 @@ def snapshot(now=1000., **changes):
 
 def policy():
     return ci.ClassImagePolicy(DECLARATION, klass='gb10')
+
+
+def test_live_image_checks_reobserve_inventory_and_class_freshness():
+    inventory = snapshot()
+    images = capability_eligibility.LiveImages([CONTENT], policy=policy(), inventory=inventory)
+    assert isinstance(images.check({'container_images': [CONTENT]}, clock=lambda: 1000.),
+                      capability_eligibility.ImageAccepted)
+
+    inventory['image_contents']['pb-canary:test'] = OTHER
+    changed = images.class_check(clock=lambda: 1000.)
+    assert changed.reason == 'container_class_image_content_mismatch'
+    assert images.check({'container_images': CONTENT}, clock=lambda: 1000.).reason == changed.reason
+    inventory['image_contents']['pb-canary:test'] = CONTENT
+    expired = images.class_check(clock=lambda: 1006.)
+    assert expired.reason == 'container_class_inventory_unknown'
+
+    def unexpected_clock():
+        raise AssertionError('native work must not read configured image freshness')
+
+    assert isinstance(images.check({}, clock=unexpected_clock), capability_eligibility.ImageAccepted)
+    assert images.room_eligible({}, clock=unexpected_clock)
 
 
 def publish(queue, *, container=True):

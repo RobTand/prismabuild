@@ -6519,21 +6519,14 @@ class PoolQueue:
             # storage role that finds no addresses protects every client, as
             # it did before the field existed.
             record["addresses"] = sorted({str(a) for a in addresses})
-        if observed_images is not None:
-            # The exact local references this box positively holds, as the
-            # inventory reports them: bare image IDs, repository-qualified
-            # RepoDigests and store-independent ``content:`` references
-            # (#805).  Present-but-empty says the box looked and has
-            # none; absent says the box could not look, and an item that
-            # declares images must read that absence as unknown (#714).
-            record["container_images"] = sorted(
-                {str(entry) for entry in observed_images})
-        if container_class_verdict is not None:
-            record["container_class_verdict"] = dict(container_class_verdict)
-        record.update(capability_eligibility.InterpreterAnswers.from_observed(
-            interpreters, interpreters_absent).offer_fields())
-        record.update(capability_eligibility.DependencyAnswers.from_observed(
-            local_dependency_answers, dependency_files, dependency_files_absent).offer_fields())
+        observations = capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                observed_images, container_class_verdict),
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                interpreters, interpreters_absent),
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                local_dependency_answers, dependency_files, dependency_files_absent))
+        record.update(observations.offer_fields())
         if state is not None:
             record["state"] = str(state)
         if drain_owner is not None:
@@ -6617,30 +6610,10 @@ class PoolQueue:
         if not isinstance(required, list):
             raise PoolContractError("pool item tags must be a list")
         wanted = {str(t) for t in required}
-        declared_images = item.get("container_images")
-        if declared_images is not None and (
-                not isinstance(declared_images, list)
-                or not all(isinstance(entry, str) for entry in declared_images)):
-            raise PoolContractError(
-                "pool item container_images must be a list of strings")
-        declared_interpreter = item.get("interpreter")
-        if declared_interpreter is not None and not isinstance(
-                declared_interpreter, str):
-            raise PoolContractError(
-                "pool item interpreter must be an absolute path string")
         try:
-            dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
+            requirements = capability_eligibility.OfferRequirements.from_item(item)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
-        declared_requirements = item.get("requires_files")
-        if declared_requirements is not None and (
-                not isinstance(declared_requirements, list) or any(
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("path"), str)
-                    for entry in declared_requirements)):
-            raise PoolContractError(
-                "pool item requires_files must be a list of entries "
-                "naming a path")
         demand = self.demand_of(item)
         needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
@@ -6650,31 +6623,8 @@ class PoolQueue:
                 continue
             if needs_gpu and not offer.get("has_gpu"):
                 continue
-            if declared_images:
-                if ("container_class_verdict" in offer
-                        and not image_inventory.offer_class_image_eligible(
-                            offer["container_class_verdict"], now=_now())):
-                    continue
-                # Presence is positive evidence only.  An offer that did not
-                # report an inventory -- a loop from before the field, a box
-                # whose Docker could not be read -- is unknown, and unknown
-                # must not count as a capable box (#714).
-                present = offer.get("container_images")
-                if not isinstance(present, list):
-                    continue
-                # The same predicate the claim reads (image_inventory.missing
-                # -> satisfied): a bare sha256: requirement takes the image ID
-                # or any RepoDigest carrying the hex, so one image under two
-                # stores' names (#805) places on both boxes.
-                if image_inventory.missing(declared_images, present):
-                    continue
-            if declared_interpreter:
-                answers = capability_eligibility.InterpreterAnswers.from_offer(offer)
-                if (answers.answer(declared_interpreter)
-                        is not capability_eligibility.Presence.PRESENT):
-                    continue
-            if not capability_eligibility.DependencyAnswers.from_offer(offer).matches(
-                    dependencies, declared_requirements):
+            if not capability_eligibility.OfferCapabilities.from_offer(offer).matches(
+                    requirements, clock=_now):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -8051,18 +8001,9 @@ class PoolQueue:
                         and type(sampled) in (int, float)
                         and 0 <= _now() - sampled <= gpu_admission.MAX_SAMPLE_AGE_S):
                     return None
-            declared_images = item.get("container_images")
-            if declared_images:
-                if (container_class_policy is not None
-                        and not container_class_policy.evaluate(
-                            container_inventory, now=_now(),
-                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)["container_work_eligible"]):
-                    return None
-                if (observed_images is None or not isinstance(declared_images, list)
-                        or image_inventory.missing(
-                            declared_images, {str(entry) for entry in observed_images})):
-                    return None
-            elif contracts.CONTAINER_IMAGE_TAG in (item.get("tags") or []):  # type: ignore[operator]
+            images = capability_eligibility.LiveImages(
+                observed_images, policy=container_class_policy, inventory=container_inventory)
+            if not images.room_eligible(item, clock=_now):
                 return None
             if self.residency_verdict(item)["state"] in RESIDENCY_REFUSAL_STATES:
                 return None
@@ -22048,6 +21989,8 @@ class PoolQueue:
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
         interpreter_host = capability_eligibility.LiveInterpreters()
         dependency_host = capability_eligibility.LiveDependencies()
+        image_host = capability_eligibility.LiveImages(
+            observed_images, policy=container_class_policy, inventory=container_inventory)
         #: The census is not read about a candidate, so a refusal of it
         #: (the reader fence busy, a record unreadable) is the same answer for
         #: every later candidate of this pass: take it once (#1571).  Each
@@ -22264,69 +22207,17 @@ class PoolQueue:
                     self.record_denial(item, dependency_refusal.reason,
                                        dependency_refusal.evidence)
                     continue
-                item_tags = item.get("tags")
                 declared_images = item.get("container_images")
-                if (not declared_images and isinstance(item_tags, list)
-                        and contracts.CONTAINER_IMAGE_TAG in item_tags):
-                    # A record this pool did not write (publish refuses the
-                    # pair) that requires the capability but states no
-                    # reference.  Fail closed: an unstated requirement is
-                    # not an absent one.
-                    self.record_denial(item, "container_image_requirement_missing", {
-                        "tags": item_tags,
-                    })
-                    continue
-                class_verdict = None
-                if declared_images:
-                    if container_class_policy is not None:
-                        class_verdict = container_class_policy.evaluate(
-                            container_inventory, now=_now(),
-                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
-                        if not class_verdict["container_work_eligible"]:
-                            self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
-                                               {"container_class_verdict": class_verdict})
-                            continue
-                    if (not isinstance(declared_images, list)
-                            or not all(isinstance(image, str)
-                                       for image in declared_images)):
-                        # The pool writes this field from the sealed action;
-                        # a foreign shape is a denial for the item rather than
-                        # a raise out of a poll whose only handler re-raises
-                        # (#592).
-                        self.record_denial(item, "malformed_container_images", {
-                            "container_images": item.get("container_images")})
-                        continue
-                    observed = None
-                    if observed_images is not None:
-                        try:
-                            observed = {str(entry) for entry in observed_images}
-                        except TypeError:
-                            observed = None
-                    if observed is None:
-                        # Unknown is not presence.  Fail closed: the item
-                        # stays ready for a box that can show the reference.
-                        # Nor is it a verdict: this host's live withhold for
-                        # the row holds for the pass (#1143), or every row
-                        # behind it is admitted into the drain it is waiting
-                        # on, whenever a sibling loop is mid-refresh.
+                image_check = image_host.check(item, clock=_now)
+                if isinstance(image_check, capability_eligibility.CapabilityRefusal):
+                    evidence = dict(image_check.evidence)
+                    if image_check.reason == "container_image_presence_unknown":
                         carried = carry_withhold(item, key)
-                        self.record_denial(
-                            item, "container_image_presence_unknown", {
-                                "required": declared_images,
-                                **({"withhold_carried": carried}
-                                   if carried is not None else {}),
-                            })
-                        continue
-                    absent = image_inventory.missing(declared_images, observed)
-                    if absent:
-                        # Named, and deliberately no ``record_pass`` and no
-                        # token work: this box is not being skipped while it
-                        # waits, it simply cannot run the item, and only a box
-                        # that positively holds the image may claim it (#714).
-                        self.record_denial(item, "container_image_absent", {
-                            "absent": list(absent), "required": declared_images,
-                        })
-                        continue
+                        if carried is not None:
+                            evidence["withhold_carried"] = carried
+                    self.record_denial(item, image_check.reason, evidence)
+                    continue
+                class_verdict = image_check.class_verdict
                 if self.withdrawal_covers(
                         item, action_key=key, withdrawn=withdrawn) is not None:
                     # Already filed under ``withdrawn``, and of the generation that
@@ -23290,15 +23181,13 @@ class PoolQueue:
                     if declared_images and container_class_policy is not None:
                         # Re-evaluate after reservation I/O; a fresh offer or
                         # earlier verdict cannot renew old inventory proof.
-                        class_verdict = container_class_policy.evaluate(
-                            container_inventory, now=_now(),
-                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
-                        if not class_verdict["container_work_eligible"]:
+                        image_check = image_host.class_check(clock=_now)
+                        if isinstance(image_check, capability_eligibility.CapabilityRefusal):
                             reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                            self.record_denial(item, "container_class_" + str(class_verdict["reason"]),
-                                               {"container_class_verdict": class_verdict,
-                                                "checked": "before_rename"})
+                            self.record_denial(item, image_check.reason,
+                                               {**image_check.evidence, "checked": "before_rename"})
                             continue
+                        class_verdict = image_check.class_verdict
                     if item.get("gang") is not None and gang_record is None:
                         # A gang row is never claimed outside the gang path.
                         reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
@@ -23358,10 +23247,12 @@ class PoolQueue:
                     moved_record = _read_json(dst)
                     moved = moved_record or item
                     if container_class_policy is not None:
-                        class_verdict = (container_class_policy.evaluate(
-                            container_inventory, now=_now(),
-                            max_age_s=image_inventory.CLAIM_FRESHNESS_S)
-                            if moved.get("container_images") else None)
+                        image_check = (image_host.class_check(clock=_now)
+                                       if moved.get("container_images")
+                                       else capability_eligibility.ImageAccepted())
+                        class_verdict = (image_check.evidence["container_class_verdict"]
+                                         if isinstance(image_check, capability_eligibility.CapabilityRefusal)
+                                         else image_check.class_verdict)
                     class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
                     if (class_refused
                             or (gang_backfill and (moved.get("priority") != -10

@@ -7,7 +7,8 @@ import sys
 
 import pytest
 
-from prismabuild import capability_eligibility as eligibility, contracts, dependency_digest, pool
+from prismabuild import (capability_eligibility as eligibility, container_images,
+                        contracts, dependency_digest, pool)
 
 
 TAG = contracts.INTERPRETER_TAG
@@ -329,7 +330,9 @@ def test_dependency_evidence_is_detached_from_its_source_and_advertisement():
     advertisement["local_dependencies"].clear()
     advertisement["dependency_files"].clear()
 
-    assert answers.matches({"/a": "path"}, [_required("/b")])
+    required = eligibility.OfferRequirements.from_item({
+        "local_dependencies": {"/a": "path"}, "requires_files": [_required("/b")]})
+    assert eligibility.OfferCapabilities(dependencies=answers).matches(required, clock=lambda: 1000.)
 
 
 def test_live_digest_keeps_its_first_answer_but_reobserves_presence_each_candidate(tmp_path, monkeypatch):
@@ -367,3 +370,97 @@ def test_live_digest_keeps_its_first_answer_but_reobserves_presence_each_candida
     assert {denial["evidence"]["observed"] for denial in denials} == {hashlib.sha256(b"old").hexdigest()}
     assert path.read_bytes() == b"new"
     assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], capacity=CAPACITY) is not None
+
+
+IMAGE = "content:sha256:" + "a" * 64
+
+
+def _class_report():
+    return {"schema": container_images.CLASS_VERDICT_SCHEMA,
+            "authority": "supplied_snapshot_only", "scope": "container_work_only",
+            "status": "satisfied", "container_work_eligible": True,
+            "reason": "class_images_present", "requirements_sha256": "a" * 64,
+            "observed_unix": 1000., "evaluated_unix": 1000.}
+
+
+@pytest.mark.parametrize("report_kind", [
+    "omitted", "null", "malformed", "fresh", "stale", "future", "refused",
+])
+def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkeypatch, report_kind):
+    monkeypatch.setattr(pool, "_now", lambda: 1000.)
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.announce(host="observed", tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
+                   capacity=CAPACITY, observed_images=[IMAGE])
+    offer_path = queue.root / pool.WORKERS / "observed.json"
+    offer = json.loads(offer_path.read_text())
+    if report_kind != "omitted":
+        report = _class_report()
+        if report_kind == "null":
+            report = None
+        elif report_kind == "malformed":
+            report = {"status": "satisfied"}
+        elif report_kind == "stale":
+            report["observed_unix"] = 969.
+        elif report_kind == "future":
+            report["evaluated_unix"] = 1001.
+        elif report_kind == "refused":
+            report["container_work_eligible"] = False
+        offer["container_class_verdict"] = report
+    offer_path.write_text(json.dumps(offer))
+    fields = eligibility.ImageAnswers.from_offer(offer).offer_fields()
+    assert ("container_class_verdict" in fields) == (report_kind != "omitted")
+    if report_kind == "null":
+        assert fields["container_class_verdict"] is None
+    queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
+                  worker_script="/worker.py", resources=CAPACITY, container_images=[IMAGE])
+
+    assert queue.placeable({"tags": [contracts.CONTAINER_IMAGE_TAG],
+                            "container_images": [IMAGE], "resources": CAPACITY}) is (
+                                report_kind in ("omitted", "fresh"))
+    assert queue.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
+                       observed_images=[IMAGE]) is not None
+
+
+@pytest.mark.parametrize("item,references,room,reason", [
+    ({}, None, True, None),
+    ({"tags": [contracts.CONTAINER_IMAGE_TAG]}, [IMAGE], False, "container_image_requirement_missing"),
+    ({"container_images": [IMAGE]}, None, False, "container_image_presence_unknown"),
+    ({"container_images": [IMAGE]}, [], False, "container_image_absent"),
+    ({"container_images": [7]}, ["7"], True, "malformed_container_images"),
+    ({"container_images": IMAGE}, [IMAGE], False, "malformed_container_images"),
+])
+def test_room_image_rule_keeps_its_narrower_foreign_row_contract(item, references, room, reason):
+    images = eligibility.LiveImages(references, policy=None, inventory=None)
+
+    def unexpected_clock():
+        raise AssertionError("an unconfigured image gate must not read class freshness")
+
+    assert images.room_eligible(item, clock=unexpected_clock) is room
+    verdict = images.check(item, clock=unexpected_clock)
+    if reason is None:
+        assert isinstance(verdict, eligibility.ImageAccepted)
+    else:
+        assert verdict.reason == reason
+
+
+def test_image_advertisement_does_not_share_mutable_reference_or_class_answers():
+    offer = {"container_images": [IMAGE], "container_class_verdict": _class_report()}
+    answers = eligibility.OfferCapabilities.from_offer(offer)
+    offer["container_images"].clear()
+    offer["container_class_verdict"]["container_work_eligible"] = False
+    advertisement = answers.offer_fields()
+    advertisement["container_images"].clear()
+    advertisement["container_class_verdict"]["container_work_eligible"] = False
+    required = eligibility.OfferRequirements.from_item({"container_images": [IMAGE]})
+
+    assert answers.matches(required, clock=lambda: 1000.)
+
+
+def test_live_image_references_are_checked_again_for_each_candidate():
+    references = [IMAGE]
+    images = eligibility.LiveImages(references, policy=None, inventory=None)
+    assert isinstance(images.check({"container_images": [IMAGE]}, clock=lambda: 1000.),
+                      eligibility.ImageAccepted)
+    references.clear()
+
+    assert images.check({"container_images": [IMAGE]}, clock=lambda: 1000.).reason == "container_image_absent"

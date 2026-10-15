@@ -1,7 +1,7 @@
 """Host capability evidence from advisory offers and live observations."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 from types import MappingProxyType
 
-from . import contracts, dependency_digest, local_dependencies
+from . import container_images, contracts, dependency_digest, local_dependencies
 
 
 class Presence(str, Enum):
@@ -157,14 +157,6 @@ class DependencyAnswers:
             return Presence.ABSENT
         return Presence.UNKNOWN
 
-    def matches(
-        self, local: Mapping[str, str], files: Sequence[Mapping[str, object]] | None,
-    ) -> bool:
-        if local_dependencies.missing(local, self.local_paths):
-            return False
-        return not files or self.files_answer(
-            {str(entry.get("path")) for entry in files}) is Presence.PRESENT
-
     def offer_fields(self) -> dict[str, object]:
         fields: dict[str, object] = {}
         if self.local_paths is not None:
@@ -262,3 +254,172 @@ class LiveDependencies:
                 return CapabilityRefusal("dependency_digest_mismatch", {
                     "path": path, "expected": entry["sha256"], "observed": observed})
         return None
+
+
+@dataclass(frozen=True)
+class ImageClassReport:
+    _value: object
+
+    @classmethod
+    def capture(cls, value: object) -> ImageClassReport:
+        return cls(dict(value) if isinstance(value, dict) else value)
+
+    def eligible(self, *, clock: Callable[[], float]) -> bool:
+        return container_images.offer_class_image_eligible(self._value, now=clock())
+
+    def offer_value(self) -> object:
+        return dict(self._value) if isinstance(self._value, dict) else self._value
+
+
+@dataclass(frozen=True)
+class ImageAnswers:
+    references: frozenset[str] | None = None
+    class_report: ImageClassReport | None = None
+
+    @classmethod
+    def from_offer(cls, offer: Mapping[str, object]) -> ImageAnswers:
+        references = offer.get("container_images")
+        return cls(
+            frozenset(str(ref) for ref in references) if isinstance(references, list) else None,
+            ImageClassReport.capture(offer["container_class_verdict"])
+            if "container_class_verdict" in offer else None)
+
+    @classmethod
+    def from_observed(
+        cls, references: Iterable[str] | None, verdict: Mapping[str, object] | None,
+    ) -> ImageAnswers:
+        return cls(
+            frozenset(str(ref) for ref in references) if references is not None else None,
+            ImageClassReport.capture(dict(verdict)) if verdict is not None else None)
+
+    def matches(self, required: Sequence[str], *, clock: Callable[[], float]) -> bool:
+        if self.class_report is not None and not self.class_report.eligible(clock=clock):
+            return False
+        return self.references is not None and not container_images.missing(required, self.references)
+
+    def offer_fields(self) -> dict[str, object]:
+        fields: dict[str, object] = {}
+        if self.references is not None:
+            fields["container_images"] = sorted(self.references)
+        if self.class_report is not None:
+            fields["container_class_verdict"] = self.class_report.offer_value()
+        return fields
+
+
+@dataclass(frozen=True)
+class OfferRequirements:
+    images: tuple[str, ...] | None
+    interpreter: str | None
+    local_paths: Mapping[str, str]
+    file_paths: frozenset[str] | None
+
+    @classmethod
+    def from_item(cls, item: Mapping[str, object]) -> OfferRequirements:
+        images = item.get("container_images")
+        if images is not None and (
+                not isinstance(images, list) or not all(isinstance(ref, str) for ref in images)):
+            raise ValueError("pool item container_images must be a list of strings")
+        interpreter = item.get("interpreter")
+        if interpreter is not None and not isinstance(interpreter, str):
+            raise ValueError("pool item interpreter must be an absolute path string")
+        local = local_dependencies.normalize(item.get("local_dependencies", {}))
+        files = item.get("requires_files")
+        if files is not None and (
+                not isinstance(files, list) or any(
+                    not isinstance(entry, dict) or not isinstance(entry.get("path"), str)
+                    for entry in files)):
+            raise ValueError("pool item requires_files must be a list of entries naming a path")
+        return cls(
+            tuple(images) if images is not None else None,
+            interpreter, MappingProxyType(local),
+            frozenset(str(entry.get("path")) for entry in files) if files is not None else None)
+
+
+@dataclass(frozen=True)
+class OfferCapabilities:
+    images: ImageAnswers = ImageAnswers()
+    interpreters: InterpreterAnswers = InterpreterAnswers()
+    dependencies: DependencyAnswers = DependencyAnswers()
+
+    @classmethod
+    def from_offer(cls, offer: Mapping[str, object]) -> OfferCapabilities:
+        return cls(ImageAnswers.from_offer(offer), InterpreterAnswers.from_offer(offer),
+                   DependencyAnswers.from_offer(offer))
+
+    def matches(self, required: OfferRequirements, *, clock: Callable[[], float]) -> bool:
+        if required.images and not self.images.matches(required.images, clock=clock):
+            return False
+        if (required.interpreter
+                and self.interpreters.answer(required.interpreter) is not Presence.PRESENT):
+            return False
+        if local_dependencies.missing(required.local_paths, self.dependencies.local_paths):
+            return False
+        return not required.file_paths or self.dependencies.files_answer(
+            set(required.file_paths)) is Presence.PRESENT
+
+    def offer_fields(self) -> dict[str, object]:
+        return {**self.images.offer_fields(), **self.interpreters.offer_fields(),
+                **self.dependencies.offer_fields()}
+
+
+@dataclass(frozen=True)
+class ImageAccepted:
+    class_verdict: Mapping[str, object] | None = None
+
+
+class LiveImages:
+    def __init__(
+        self, references: Iterable[str] | None, *,
+        policy: container_images.ClassImagePolicy | None, inventory: object,
+    ) -> None:
+        self._references = references
+        self._policy = policy
+        self._inventory = inventory
+
+    def class_check(self, *, clock: Callable[[], float]) -> ImageAccepted | CapabilityRefusal:
+        if self._policy is None:
+            return ImageAccepted()
+        verdict = self._policy.evaluate(
+            self._inventory, now=clock(), max_age_s=container_images.CLAIM_FRESHNESS_S)
+        if not verdict["container_work_eligible"]:
+            return CapabilityRefusal("container_class_" + str(verdict["reason"]),
+                                     {"container_class_verdict": verdict})
+        return ImageAccepted(verdict)
+
+    def check(
+        self, item: Mapping[str, object], *, clock: Callable[[], float],
+    ) -> ImageAccepted | CapabilityRefusal:
+        required = item.get("container_images")
+        tags = item.get("tags")
+        if not required and isinstance(tags, list) and contracts.CONTAINER_IMAGE_TAG in tags:
+            return CapabilityRefusal("container_image_requirement_missing", {"tags": tags})
+        if not required:
+            return ImageAccepted()
+        accepted = self.class_check(clock=clock)
+        if isinstance(accepted, CapabilityRefusal):
+            return accepted
+        if not isinstance(required, list) or not all(isinstance(ref, str) for ref in required):
+            return CapabilityRefusal("malformed_container_images", {"container_images": required})
+        observed = None
+        if self._references is not None:
+            try:
+                observed = {str(ref) for ref in self._references}
+            except TypeError:
+                pass
+        if observed is None:
+            return CapabilityRefusal("container_image_presence_unknown", {"required": required})
+        absent = container_images.missing(required, observed)
+        if absent:
+            return CapabilityRefusal("container_image_absent", {
+                "absent": list(absent), "required": required})
+        return accepted
+
+    def room_eligible(self, item: Mapping[str, object], *, clock: Callable[[], float]) -> bool:
+        required = item.get("container_images")
+        if required:
+            if isinstance(self.class_check(clock=clock), CapabilityRefusal):
+                return False
+            return (self._references is not None and isinstance(required, list)
+                    and not container_images.missing(
+                        required, {str(ref) for ref in self._references}))
+        return contracts.CONTAINER_IMAGE_TAG not in (item.get("tags") or [])
