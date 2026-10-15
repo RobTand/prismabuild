@@ -5,16 +5,18 @@ and sampler observations are controlled. No GPU execution or subprocesses.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from prismabuild import adaptive_cpu, pool
 
 
-def _silence(monkeypatch, clock, readings, kind):
+def _silence(clock, readings, kind):
     observed = clock[0]
 
-    def sample(self):
+    def sample():
         if kind == "missing":
             return {}
         return {
@@ -26,8 +28,8 @@ def _silence(monkeypatch, clock, readings, kind):
             "foreign_per_cpu_busy": dict(readings["foreign"]),
         }
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
     clock[0] += adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    return sample
 
 
 def _reason(value):
@@ -82,7 +84,7 @@ def test_unknown_observations_do_not_protect_a_long_incumbent_drain(fleet, monke
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     backfill = publish("backfill")
-    _silence(monkeypatch, clock, readings, kind)
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, kind))
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock)
     assert queue.item_path(pool.CLAIMED, holder).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}
@@ -92,7 +94,7 @@ def test_absent_initial_observation_is_unknown_not_idle(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     measurement = publish("measurement", measurement=True, pinned=True)
     backfill = publish("backfill")
-    _silence(monkeypatch, clock, readings, "missing")
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, "missing"))
     assert claim() == backfill
     _assert_unknown(queue, measurement, denial, clock)
     assert set(queue.ledger().held_keys()) == {backfill}
@@ -177,8 +179,8 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
     original = denial(measurement)["evidence"]["withhold"]["drain_until_unix"]
-    fresh_sample = adaptive_cpu.Controller.sample
-    _silence(monkeypatch, clock, readings, "stale")
+    fresh_claim = claim
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, "stale"))
     if recover_after_expiry:
         tick(original - clock[0] + 1)
     backfill = publish("backfill", timeout_s=8000)
@@ -191,7 +193,7 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     episode = episodes["sparklina"]
     assert isinstance(episode, dict)
     assert episode["measurement_until_unix"] == original
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", fresh_sample)
+    claim = fresh_claim
     assert claim(q=restarted) is None, "fresh recovery bypassed holder isolation"
     recovered = denial(measurement)["evidence"]["withhold"]
     assert recovered["drain_until_unix"] == original

@@ -7,6 +7,8 @@ import threading
 
 import pytest
 
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import _bounded_reader as reader
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 from test_measurement_reservation_backfill_1419 import (
@@ -33,7 +35,9 @@ def test_stale_prefetch_cannot_omit_an_elected_measurement(fleet):
     result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
                          adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"],
-                         ready=[candidate])
+                         ready=[candidate],
+                         cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                         gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
     assert result is None
     refusal = denial(lower)
     assert refusal["reason"] == "deferred_for_measurement_reservation"
@@ -119,7 +123,9 @@ def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
         return queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                            cpu_tiers={"preferred": list(range(20)), "fallback": []},
                            adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"],
-                           ready=[candidate])
+                           ready=[candidate],
+                           cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                           gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
     with queue._transition_locked(measurement), ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(candidate_only).result(timeout=5) is None
     # Still nonblocking and still no refill: the busy elected key is kept as a
@@ -138,16 +144,17 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
     lower = publish("unknown-after-election")
     tick(opportunity - clock[0] + 1)
     _observe_real_sharing_permission(fleet, lower)
+    cpu_sampler = lambda: fleet_cpu_sample(clock, readings)
     if fault == "missing":
         queue.item_path(pool.READY, measurement).unlink()
     elif fault == "corrupt":
         queue.item_path(pool.READY, measurement).write_text("{")
     elif fault == "cpu_unknown":
-        monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {})
+        cpu_sampler = lambda: {}
     else:
         readings["foreign"]["2"] = 0.2
         readings["busy_cpus"] = 2.0
-    assert claim(q=pool.PoolQueue(queue.root)) is None
+    assert claim(q=pool.PoolQueue(queue.root), cpu_sampler=cpu_sampler) is None
     assert _chosen(queue, measurement) == chosen
     assert queue.ledger().held_keys() == [holder]
     assert queue.item_path(pool.READY, lower).exists()
@@ -197,7 +204,9 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
             return pool.PoolQueue(queue.root).claim(
                 capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                 cpu_tiers={"preferred": list(range(20)), "fallback": []},
-                adaptive_cpu=True, has_gpu=True, tags=["gb10", host], ready=[row])
+                adaptive_cpu=True, has_gpu=True, tags=["gb10", host], ready=[row],
+                cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
         finally:
             host_context.reset(token)
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -265,7 +274,9 @@ def test_locked_authoritative_retirement_allows_lower_progress(fleet, ending):
     candidate = pool._read_json(queue.item_path(pool.READY, lower))
     result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
-                         adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate])
+                         adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
+                         cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                         gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
     assert result is not None and result["action_key"] == lower
 
 
@@ -309,7 +320,8 @@ def test_mixed_lock_contention_is_nonblocking_and_takes_no_tokens(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     lower = publish("legacy-contended-control")
     row = pool._read_json(queue.item_path(pool.READY, lower))
-    controller = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []})
+    controller = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
+        sampler=lambda: fleet_cpu_sample(clock, readings))
     with controller.locked():
         assert _legacy_claim(queue, row) is None
     assert not queue.ledger().held_keys()

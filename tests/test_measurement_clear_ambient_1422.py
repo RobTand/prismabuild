@@ -10,6 +10,8 @@ from __future__ import annotations
 import pytest
 
 from test_measurement_drains_gpu_backfill import fleet as gpu_backfill_fleet
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import adaptive_cpu, pool
 
 fleet = gpu_backfill_fleet
@@ -17,7 +19,7 @@ TIERS = {"preferred": list(range(20)), "fallback": []}
 
 
 def _measurement_decision(fleet, *, busy, attribution="clear", with_holder=False,
-                          baseline_samples=()):
+                          baseline_samples=(), cpu_sampler=None):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder = None
     if with_holder:
@@ -54,7 +56,8 @@ def _measurement_decision(fleet, *, busy, attribution="clear", with_holder=False
     elif attribution == "excess":
         readings["foreign"][str(predicted[0])] = 0.2
     tick(0.01)
-    controller = adaptive_cpu.Controller(queue.ledger(), TIERS)
+    controller = adaptive_cpu.Controller(queue.ledger(), TIERS,
+        sampler=lambda: fleet_cpu_sample(clock, readings) if cpu_sampler is None else cpu_sampler())
     with controller.locked():
         metadata = controller.decision(item, item["resources"])
         decision = controller.last_decision
@@ -107,14 +110,12 @@ def test_ambient_clear_never_skips_unknown_foreign_or_holder_gates(
 ])
 def test_clear_cpu_attribution_preserves_same_reference_psi_gate(
         fleet, monkeypatch, measured, psi, admitted):
-    original_sample = adaptive_cpu.Controller.sample
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self:
-                        dict(original_sample(self), psi_some=psi))
+    cpu_sampler = lambda: dict(fleet_cpu_sample(fleet[1], fleet[2]), psi_some=psi)
     clock = fleet[1]
     history = [{"sampled_unix": clock[0] - age,
                 "busy_cpus": 0.5, "psi_some": 0.04} for age in (30, 20, 10)]
     queue, measurement, _, metadata, decision = _measurement_decision(
-        fleet, busy=2.3, baseline_samples=history if measured else ())
+        fleet, busy=2.3, baseline_samples=history if measured else (), cpu_sampler=cpu_sampler)
     assert (metadata is not None) is admitted, decision
     assert decision["reason"] == ("admitted" if admitted else "measurement_host_not_idle")
     observed = decision["sample"]
