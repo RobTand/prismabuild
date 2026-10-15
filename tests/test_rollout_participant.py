@@ -11,6 +11,24 @@ import socket
 import pytest
 
 from test_client_upgrade import CLIENT, setup, upgrade
+from test_client_proof_prior_trust import tmp_path
+from test_installed_park_proof_loader import installed_leaf
+from prismabuild import park_proof
+
+
+@pytest.fixture(autouse=True)
+def rollout_rule_owner(setup, installed_leaf):
+    updater, _, generation = setup
+    path, strict_bytes, _ = installed_leaf
+    assert path == updater.install / "park_proof.py"
+    member = upgrade.OPTIONAL_MEMBERS["park_proof.py"]
+    published = generation / member
+    published.parent.mkdir(parents=True, exist_ok=True)
+    published.write_bytes(strict_bytes)
+    receipt_path = generation / "RUNTIME_VERSION.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["files"][member] = upgrade.digest(strict_bytes)
+    receipt_path.write_text(json.dumps(receipt))
 
 
 def _intent(updater, generation, *, epoch="4" * 32, target="target-generation"):
@@ -102,7 +120,9 @@ def _rotation_processes(updater, generation, *, old_generation=None, one_shot=Fa
     updater.parked_root.mkdir(parents=True, exist_ok=True)
     for pid, starttime, _ in rows:
         if pid != 101 and (pid != 104 or not one_shot):
-            (updater.parked_root / upgrade.park_marker_name(pid, starttime, 458.0)).touch()
+            (updater.parked_root / park_proof.park_marker_filename(
+                park_proof.ProcessIdentity(pid, starttime),
+                park_proof.drain_identity({"draining": True, "changed_unix": 458.0}))).touch()
     updater.procs = lambda: rows
     return rows
 

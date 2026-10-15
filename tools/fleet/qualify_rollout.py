@@ -27,7 +27,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
-from prismabuild import core as pb  # noqa: E402
+from prismabuild import core as pb, park_proof  # noqa: E402
 
 
 QUALIFICATION_ROOT = Path("/mnt/shared/pb-qualification")
@@ -134,7 +134,7 @@ def build_generation(root, name, source, upgrade, hosts, *, changed_member=None)
     generation = root / "runtime-generations" / name
     generation.mkdir(parents=True)
     files = {}
-    for member in (set(upgrade.MEMBERS.values())
+    for member in ((set(upgrade.MEMBERS.values()) | {upgrade.OPTIONAL_MEMBERS["park_proof.py"]})
                    | {"tools/fleet/fleet_boxes.json", "tools/fleet/publish_runtime.py"}):
         destination = generation / member
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +192,9 @@ class FakeBroker:
         parked.mkdir(parents=True, exist_ok=True)
         for pid, starttime, _ in self.procs():
             if pid != 1001:
-                (parked / self.upgrade.park_marker_name(pid, starttime, self.changed)).touch()
+                (parked / park_proof.park_marker_filename(
+                    park_proof.ProcessIdentity(pid, starttime),
+                    park_proof.drain_identity({"draining": True, "changed_unix": self.changed}))).touch()
 
     def procs(self):
         generation = Path(self.config["runtime"]).resolve(strict=True)
@@ -257,7 +259,8 @@ def make_upgrader(root, host, upgrade, *, fail_first_start=False):
     install.mkdir(parents=True, exist_ok=True)
     state.mkdir(parents=True, exist_ok=True)
     source = Path(config["runtime"]).resolve(strict=True)
-    for name, member in upgrade.MEMBERS.items():
+    for name, member in {**upgrade.MEMBERS,
+                         "park_proof.py": upgrade.OPTIONAL_MEMBERS["park_proof.py"]}.items():
         (install / name).write_bytes((source / member).read_bytes())
     broker = FakeBroker(root, config, upgrade, fail_first_start=fail_first_start)
 

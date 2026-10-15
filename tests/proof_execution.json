@@ -2,7 +2,7 @@
   "schema": "prismabuild.proof_test_execution.v1",
   "root": {
     "files": {
-      "tests/test_park_proof_real_writer.py": 18,
+      "tests/test_park_proof_real_writer.py": 19,
       "tests/test_required_park_identity.py": 25,
       "tests/test_park_epoch_injectivity.py": 15,
       "tests/test_installed_host_proof.py": 13,
@@ -10,7 +10,8 @@
       "tests/test_client_proof_metadata.py": 22,
       "tests/test_client_proof_current_trust.py": 3,
       "tests/test_installed_park_proof_loader.py": 2,
-      "tests/test_host_drain_evidence.py": 11
+      "tests/test_host_drain_evidence.py": 11,
+      "tests/test_rollout_participant.py": 25
     },
     "cpus": 1,
     "memory_gib": 4,

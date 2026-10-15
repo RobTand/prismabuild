@@ -20,6 +20,8 @@ from prismabuild import park_proof
 
 from client_proof_bridge_fixture import fixed_source_artifact
 from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
+from test_installed_park_proof_loader import installed_leaf
+from test_prewarm_rollout import load, role
 
 ROOT = Path(__file__).resolve().parents[1]
 WRITER = """\
@@ -200,7 +202,7 @@ def test_existing_host_and_member_profiles_select_different_roles(
         parked_role, script, host_requires, member_requires):
     with parked_role(script) as role:
         pid, start, _ = role.census[0]
-        assert upgrade_client.serving(role.census) == (
+        assert upgrade_client.serving(role.census, park_proof.HOST_QUIESCENT) == (
             [(pid, start)] if host_requires else [])
         assert supervise._is_fleet_loop(pid, [role.runtime]) is member_requires
 
@@ -249,3 +251,23 @@ def test_member_reader_rejects_malformed_retained_process_names(parked_role, pid
         marker.rename(retained)
         assert retained.stat().st_ino == inode
         assert park_proof.parked_markers(role.parked, park_proof.read_gate(role.gate)) == []
+
+
+@pytest.mark.usefixtures("installed_leaf")
+def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
+    loop, gate, parked, current, calls, argv, stop = role
+    upgrade = load('upgrade_client')
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
+    # Read the process identity independently of the marker writer.
+    start = Path('/proc/self/stat').read_text().rpartition(')')[2].split()[19]
+    client = upgrade.Upgrader({
+        'install_dir': str(gate.parent / 'installed'),
+        'state_dir': str(gate.parent / 'state'),
+        'maintenance_gate': str(gate),
+    }, procs=lambda: [(os.getpid(), start, ['python3', str(ROOT / 'tools/fleet/prewarm_loop.py')])])
+    status = {'draining': True, 'active_scopes': 0}
+    assert client.drain_evidence(status)['unparked'] == [os.getpid()]
+    assert loop.main(argv + ['--once']) == 75
+    assert calls == []
+    assert client.drain_evidence(status) == {
+        'drained': True, 'unparked': [], 'active_scopes': 0}
