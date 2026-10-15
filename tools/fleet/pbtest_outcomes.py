@@ -687,7 +687,9 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
     if required_nodes is not None:
         expected = sorted(required_nodes)
         selected = sorted(n for s in shards for n in s["collected"])
-        records = [parse(row.get("output", "")) for row in rows if isinstance(row, dict)]
+        records = [parse(row["output"]) for row in rows
+                   if isinstance(row, dict) and isinstance(row.get("output"), str)]
+        records = [r for r in records if _valid_record(r)]
         reports = [r for record in records if record for r in record.get("reports", [])]
         if (selected != expected or any(record.get("collect_only") or record.get("uncounted") for record in records if record)
                 or sorted((r[0], r[1], r[2]) for r in reports) != sorted((n, "call", "passed") for n in expected)):

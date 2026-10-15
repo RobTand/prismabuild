@@ -860,7 +860,8 @@ class Runner:
         if rows is None and returncode and invocation is not None:
             snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
             if (snapshot is not None and snapshot["state"] == "refused"
-                    and not snapshot["completed_shards"] and snapshot["runtime_refusal"]):
+                    and not snapshot["completed_shards"] and snapshot["runtime_refusal"]
+                    and snapshot["runtime_refusal"]["code"] == "interpreter_absent"):
                 result.runtime_refusal = snapshot["runtime_refusal"]["message"]
         return result
 

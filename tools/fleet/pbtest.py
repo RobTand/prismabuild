@@ -275,6 +275,8 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
                  f"--wait-s {wait_s:g} left, not resubmitting")
             return
         result["attempts"] += 1
+        if progress is not None:
+            progress.observe(index, result)
         _say(f"shard {index:>3} pbtest: worker-offer discovery timed out and "
              f"nothing was published; attempt {result['attempts']} in "
              f"{pbrun.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
