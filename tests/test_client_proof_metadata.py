@@ -6,7 +6,7 @@ import runpy
 
 import pytest
 
-from client_proof_bridge_fixture import ROOT, _fresh, member_bytes, reader_process
+from client_proof_bridge_fixture import ROOT, _fresh, member_bytes, publication, reader_process
 from test_client_proof_prior_trust import (
     PRIOR_FILES, STRICT_PROOF_SHA256, _file_facts, _retain_proof, root_publication, tmp_path,
 )
