@@ -2,7 +2,7 @@
  "must_differ": [],
  "near_duplicates": [
   [
-   "src/prismabuild/park_proof.py::_proc_starttime",
+   "src/prismabuild/park_proof.py::process_starttime",
    "tools/fleet/resource_broker.py::_proc_starttime"
   ],
   [
@@ -213,6 +213,14 @@
   "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
  ],
  "same_name_distinct": [
+  {
+   "modules": [
+    "src/prismabuild/park_proof.py",
+    "tools/fleet/fleet_membership.py"
+   ],
+   "name": "gate_key",
+   "reason": "park_proof serializes drain identity and preserves unknown when no identity exists. The membership presentation adapter returns open for an open gate and delegates every closed-gate key to park_proof; its open-state contract cannot replace the marker owner's unknown-identity contract."
+  },
   {
    "modules": [
     "src/prismabuild/_measurement_reservation.py"
@@ -476,10 +484,6 @@
    "src/prismabuild/core.py",
    "src/prismabuild/dagster.py",
    "src/prismabuild/slurm.py"
-  ],
-  "_proc_starttime": [
-   "src/prismabuild/park_proof.py",
-   "tools/fleet/resource_broker.py"
   ],
   "_read": [
    "src/prismabuild/action_edges.py",
