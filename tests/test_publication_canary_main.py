@@ -1,11 +1,18 @@
 """Real pbrun parsing/preparation/sealing/publication, wholly in a tmp store."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
+from pathlib import Path
 import socket
+import subprocess
 import sys
+import time
 
+import pbcanary
+import pbcanary_submission as handoff
 import pytest
 import pbrun
-from prismabuild import pool, publication_canary as slots
+from prismabuild import contracts, pool, publication_canary as slots
 from test_pbrun_detach import _checkout
 from test_publication_canary_slot import GENERATION
 
@@ -95,3 +102,56 @@ def test_real_main_placement_refusal_precedes_the_grant(tmp_path, monkeypatch):
         pbrun.main(publication_canary_intent=intent, authorize_canary=grant)
     assert seen == []
     assert not slots.slot_path(q.root, intent).exists()
+
+
+def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatch):
+    checkout = _checkout(tmp_path)
+    host = socket.gethostname()
+    image = "example.invalid/canary@sha256:" + "a" * 64
+    intent = {"generation": GENERATION, "host": host}
+    q = pool.PoolQueue(tmp_path / "pb-queue")
+    q.announce(host=host, tags=[host, slots.CAPABILITY,
+                              contracts.CONTAINER_IMAGE_TAG,
+                              f"runtime-generation:{GENERATION}"],
+               has_gpu=True, capacity={"cpu": 4, "gpu": 1, "mem_gb": 16},
+               observed_images=[image])
+    monkeypatch.setattr(pbrun, "SH", tmp_path)
+
+    # Exercise the driver's argv and real pbrun publication in this process.
+    # The independent handoff tests cover the child IPC/authorization protocol.
+    def submit(argv, *, intent, authorize, timeout_s):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with monkeypatch.context() as patch, redirect_stdout(stdout), redirect_stderr(stderr):
+            patch.setattr(sys, "argv", argv[1:])
+            status = pbrun.main(
+                publication_canary_intent=intent,
+                authorize_canary=lambda action: authorize(
+                    action, deadline=time.monotonic() + timeout_s))
+        return subprocess.CompletedProcess(argv, status, stdout.getvalue(), stderr.getvalue())
+
+    monkeypatch.setattr(handoff, "submit", submit)
+    authorized = []
+
+    def grant(action, *, run_id, deadline):
+        assert deadline > time.monotonic()
+        authorized.append(action["action_key"])
+        slots.mint(q.root, action, run_id=run_id)
+
+    key, detached = pbcanary.submit_leg(
+        {"pbrun": Path(pbrun.__file__),
+         "published_src": Path(__file__).resolve().parents[1] / "src",
+         "publication_canary_authorizer": grant},
+        {"name": "leg-2", "argv": ["/bin/true"],
+         "demand": {"cpu": 1, "gpu": 1, "mem_gb": 8}, "container_image": image},
+        checkout, "driver-image-canary", -10, GENERATION)
+
+    assert authorized == [key] == [detached["action_key"]]
+    request = json.loads((tmp_path / "cas/requests" / key[:2] / f"{key}.json").read_text())
+    assert request["params"]["container_images"] == [image]
+    assert slots.intent(request) == intent
+    ready = json.loads(q.item_path(pool.READY, key).read_text())
+    assert {slots.CAPABILITY, contracts.CONTAINER_IMAGE_TAG,
+            f"runtime-generation:{GENERATION}"} <= set(ready["tags"])
+    assert ready["container_images"] == [image]
+    assert ready["publication_canary"] == intent
+    assert slots.verified(q.root, ready)
