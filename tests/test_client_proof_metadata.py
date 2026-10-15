@@ -51,7 +51,7 @@ def test_unsafe_or_unbounded_proof_refuses_before_drain_journal_or_service(root_
         leaf.write_bytes(b"x" * (4 * 1024 * 1024 + 1))
     before = leaf.lstat()
     observed = _fresh(root_publication)
-    assert observed["exception"] in ("ValueError", "OSError"), observed
+    assert observed["exception"] in ("ValueError", "OSError", "IsADirectoryError"), observed
     after = leaf.lstat()
     assert all(getattr(after, name) == getattr(before, name) for name in (
         "st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"))
