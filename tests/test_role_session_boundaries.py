@@ -8,6 +8,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
+import socket
 import sys
 import threading
 from types import SimpleNamespace
@@ -96,7 +97,7 @@ def _metrics_request(port, errors):
 @pytest.mark.parametrize("release_before_deadline", [True, False])
 def test_metrics_sigterm_waits_for_real_handlers_before_park(
         boundary, monkeypatch, release_before_deadline):
-    entered, ready = CONTEXT.Event(), CONTEXT.Event()
+    entered, ready, closed = (CONTEXT.Event() for _ in range(3))
     release = threading.Event()
     receiver, sender = CONTEXT.Pipe(duplex=False)
     errors = []
@@ -108,6 +109,10 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
             super().__init__((address[0], 0), *args, **kwargs)
             port.value = self.server_address[1]
             ready.set()
+
+        def server_close(self):
+            super().server_close()
+            closed.set()
 
     def collect(*args, **kwargs):
         entered.set()
@@ -133,6 +138,9 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         process.join(0.15)
         assert process.is_alive(), "SIGTERM exited before the handler completed"
         assert list(boundary.parked.iterdir()) == [], "in-flight handler earned a marker"
+        assert closed.wait(3), "stop did not close the listener before waiting for handlers"
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port.value), timeout=0.2)
         if release_before_deadline:
             sender.send_bytes(b"release")
         process.join(5)
