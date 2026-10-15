@@ -5838,6 +5838,17 @@ class _QualifiedClaim:
     reservation: _ClaimReservation
 
 
+@dataclass(frozen=True)
+class _HostClaimRequest:
+    candidate: _QualifiedClaim
+    identity: object
+    allowance: dict[str, object] | None
+    dependent_owner: object
+    contract: object
+    scratch_evidence: dict[str, object] | None
+    scratch_boundary: tuple[float, float, object, object] | None
+
+
 class _ClaimScanReads:
     def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
                  tags: frozenset[str], has_gpu: bool) -> None:
@@ -21320,6 +21331,84 @@ class PoolQueue:
             scratch_intent=scratch_intent, dependent_owner=dependent_owner,
             reservation=reservation)
 
+    def _prepare_host_claim(
+        self, candidate: _QualifiedClaim, scan: candidate_policy.ScanOrder, *,
+        total: Mapping[str, int], has_gpu: bool,
+        controller: cpu_admission.Controller | None,
+        gpu_controller: gpu_admission.Controller | None,
+        placement: _peer_placement.PlacementPass,
+    ) -> _HostClaimRequest | candidate_policy.CandidateDenial | candidate_policy.ScanOrder:
+        item = candidate.item
+        demand = candidate.demand.host
+        reservation_demand = candidate.demand.reservation
+        sealed_host_demand = candidate.demand.sealed_host
+        scratch_intent = candidate.scratch_intent
+        allowance = None
+        dependent_owner = candidate.dependent_owner
+        scratch_evidence = scratch_boundary = None
+        if candidate_policy.never_fits(reservation_demand, total):
+            return candidate_policy.CandidateDenial("never_fits_capacity", {
+                "capacity_total": total, "demand": demand,
+                "reservation_demand": reservation_demand,
+            }, scan)
+        # Peer registry and ledger I/O must not hold host admission (#351).
+        cpu_host = self._defer_to_cpu_host(
+            item, reservation_demand, has_gpu=has_gpu,
+            placement=placement)
+        if cpu_host is not None:
+            return candidate_policy.CandidateDenial("deferred_for_cpu_only_host", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "cpu_host": cpu_host,
+            }, scan)
+        cross_resource = self._defer_cross_resource_placement(
+            item, reservation_demand, placement=placement)
+        if cross_resource is not None:
+            return candidate_policy.CandidateDenial("deferred_for_cross_resource_placement", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "remote_offer": cross_resource,
+            }, scan)
+        # Slow sealed-request I/O must not hold host admission (#351).
+        identity = (cpu_admission.action_identity(item)
+                    if controller is not None else None)
+        if controller is not None:
+            if item.get("produced_output") is not None:
+                allowance = self._export_allowance(
+                    item, controller=controller, total=total,
+                    sealed_host_demand=sealed_host_demand,
+                    reservation_demand=reservation_demand)
+                if allowance:
+                    for kind in cpu_admission.EXPORT_DEMAND:
+                        demand[kind] = int(demand.get(kind, 0)) + int(allowance[kind])
+                        reservation_demand[kind] = (
+                            int(reservation_demand.get(kind, 0)) + int(allowance[kind]))
+            if self._may_serve_a_producer(item):
+                dependent_owner = cpu_admission.dependent_owner(item)
+        contract = (gpu_admission.action_contract(item, sealed_host_demand)
+                    if gpu_controller is not None and demand.get("gpu")
+                    else None)
+        if scratch_intent is not None:
+            try:
+                scratch_evidence, yielding = self._scratch_placement(
+                    item, scratch_intent, reservation_demand,
+                    placement=placement)
+                if yielding:
+                    self.record_denial(item, "deferred_for_local_scratch_io", scratch_evidence)
+                    return scan
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
+                return scan
+        if scratch_intent is not None:
+            try:
+                scratch_boundary = self._scratch_boundary(
+                    item, scratch_intent, scratch_evidence, reservation_demand)
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
+                return scan
+        return _HostClaimRequest(
+            candidate=candidate, identity=identity, allowance=allowance,
+            dependent_owner=dependent_owner, contract=contract,
+            scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary)
+
     def _claim_pass(
         self,
         *,
@@ -21681,84 +21770,26 @@ class PoolQueue:
                 # not author, which is what the bare ``except`` is for.
                 try:
                     if ledger is not None and demand:
-                        if candidate_policy.never_fits(reservation_demand, total):
-                            self.record_denial(item, "never_fits_capacity", {
-                                "capacity_total": total, "demand": demand,
-                                "reservation_demand": reservation_demand,
-                            })
-                            continue      # never fits this box; not this box's to hold
-                        # Soft placement preference, deliberately outside the
-                        # admission lock below: it reads the worker registry
-                        # and other boxes' ledgers over the shared mount, and
-                        # holding host admission across a mount stall is #351.
-                        cpu_host = self._defer_to_cpu_host(
-                            item, reservation_demand, has_gpu=has_gpu,
+                        prepared = self._prepare_host_claim(
+                            qualified, scan, total=total, has_gpu=has_gpu,
+                            controller=controller, gpu_controller=gpu_controller,
                             placement=placement)
-                        if cpu_host is not None:
-                            # Not a refusal: no ``record_pass``, as for the
-                            # preferences below.  It lasts until the host
-                            # without a GPU claims the row or passes on it.
-                            self.record_denial(item, "deferred_for_cpu_only_host", {
-                                "demand": demand, "reservation_demand": reservation_demand,
-                                "cpu_host": cpu_host,
-                            })
+                        if isinstance(prepared, candidate_policy.CandidateDenial):
+                            scan = prepared.order_before
+                            if prepared.evidence is None:
+                                self.record_denial(item, prepared.reason)
+                            else:
+                                self.record_denial(item, prepared.reason, prepared.evidence)
                             continue
-                        cross_resource = self._defer_cross_resource_placement(
-                            item, reservation_demand, placement=placement)
-                        if cross_resource is not None:
-                            # Not a refusal and not starvation: no ``record_pass``,
-                            # for the same reason ``deferred_for_preferred_cpu``
-                            # records none.  The denial is what makes a bounded
-                            # wait visible instead of silent.
-                            self.record_denial(item, "deferred_for_cross_resource_placement", {
-                                "demand": demand, "reservation_demand": reservation_demand,
-                                "remote_offer": cross_resource,
-                            })
+                        if isinstance(prepared, candidate_policy.ScanOrder):
+                            scan = prepared
                             continue
-                        # These facts belong to the sealed action, not changing
-                        # host capacity. A slow CAS request read must not hold
-                        # admission. Retain this candidate's transition lock and
-                        # pass even unknown facts explicitly: no locked reread.
-                        identity = (cpu_admission.action_identity(item)
-                                    if controller is not None else None)
-                        # #985, outside the admission lock and after the
-                        # identity read, whose bytes these reuse
-                        # (``adaptive_cpu._LAST_REQUEST``): a producer's export
-                        # allowance, and the producer a dependent serves.  Only
-                        # rows that carry the lane's marker -- a producer's
-                        # ``produced_output`` reference, an export-shaped row --
-                        # ask, so no ordinary candidate pays for them.
-                        if controller is not None:
-                            if item.get("produced_output") is not None:
-                                allowance = self._export_allowance(
-                                    item, controller=controller, total=total,
-                                    sealed_host_demand=sealed_host_demand,
-                                    reservation_demand=reservation_demand)
-                                if allowance:
-                                    for kind in cpu_admission.EXPORT_DEMAND:
-                                        demand[kind] = int(demand.get(kind, 0)) + int(allowance[kind])
-                                        reservation_demand[kind] = (
-                                            int(reservation_demand.get(kind, 0)) + int(allowance[kind]))
-                            if self._may_serve_a_producer(item):
-                                # The sealed request names the owner; the row's hint
-                                # only says which rows are worth the read.
-                                dependent_owner = cpu_admission.dependent_owner(item)
-                        contract = (gpu_admission.action_contract(item, sealed_host_demand)
-                                    if gpu_controller is not None and demand.get("gpu")
-                                    else None)
-                        if scratch_intent is not None:
-                            try:
-                                # Full current demand, including any producer
-                                # allowance above; placement never discounts it.
-                                scratch_evidence, yielding = self._scratch_placement(
-                                    item, scratch_intent, reservation_demand,
-                                    placement=placement)
-                                if yielding:
-                                    self.record_denial(item, "deferred_for_local_scratch_io", scratch_evidence)
-                                    continue
-                            except (ValueError, OSError, KeyError, TypeError) as exc:
-                                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
-                                continue
+                        identity = prepared.identity
+                        allowance = prepared.allowance
+                        dependent_owner = prepared.dependent_owner
+                        contract = prepared.contract
+                        scratch_evidence = prepared.scratch_evidence
+                        scratch_boundary = prepared.scratch_boundary
                         # Host admission's exclusive half, and only that half: read
                         # the headroom, decide against it, and take the tokens out
                         # of ``free/`` before letting go.  ``begin_acquire`` moves
@@ -21775,13 +21806,6 @@ class PoolQueue:
                         room_taken: dict[str, object] | None = None
                         cpu_decision = gpu_decision = token_shortage = None
                         free_at_refusal: dict[str, int] | None = None
-                        if scratch_intent is not None:
-                            try:
-                                scratch_boundary = self._scratch_boundary(
-                                    item, scratch_intent, scratch_evidence, reservation_demand)
-                            except (ValueError, OSError, KeyError, TypeError) as exc:
-                                self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
-                                continue
                         # Gang membership (#1517, default off: only a box
                         # offering ``_gang.TAG`` places these rows). Read from
                         # the sealed request and the immutable group record

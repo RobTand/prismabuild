@@ -7958,7 +7958,7 @@ there is no current epoch, so every ram fragment is a prior one. Until
 fresh ranges land, nothing reads as ram-resident, and `residency_verdict`
 denies `ram_epoch_stale` whenever a composed map's ram epoch is not the one
 the tier announces now — the same one-cycle wait as `map_not_composed`.
-`ram_epoch_stale` is a member of the shared `RESIDENCY_REFUSAL_STATES` the
+`ram_epoch_stale` is a member of `candidate_policy.RESIDENCY_REFUSAL_STATES` the
 claim pass and the ready GPU row's kept room read, so admission refuses on
 it exactly as on `map_not_composed`: no host token is taken, no pass is
 aged, the row stays `READY`, and the denial is filed as
@@ -18201,3 +18201,57 @@ unmeasured finalization, clocks, holder-release observations and preemption
 order are retained. Fairness limits and admission authority keep their existing
 owners and defaults. Later candidate composition and claim-driver reduction
 remain unfinished C01 work.
+
+
+### Candidate qualification and pre-host preparation
+
+`candidate_policy` owns the residency refusal vocabulary and the pure
+`residency_denial`, `admission_denial`, `never_fits` and `funded_remainder`
+decisions. Queue observation, parsing, publication and resource ownership stay
+with their existing owners.
+`RESIDENCY_REFUSAL_STATES` and `RESIDENCY_LEAD_UNFINISHED` have one definition
+in `candidate_policy`; pool consumers use that owner directly.
+
+`PoolQueue._qualify_claim` runs under candidate T, before the existing UNCERTAIN
+guard. It keeps the lazy claimed-name hint, release and placement checks,
+canary and live capability checks, withdrawal, residency, demand parsing,
+reservation construction, sealed scratch intent and empty-demand branch in
+that order. The result carries the exact demand dictionaries, canonical proofs,
+unread dependent-owner sentinel and existing `_ClaimReservation`. It adds no
+resource lifetime. Handler diagnostics remain inside their original except
+blocks so a diagnostic-write failure retains the original active exception.
+An unreadable-residency carry returns the updated scan order to later rows.
+
+`PoolQueue._prepare_host_claim` runs inside that same UNCERTAIN guard and its
+ledger/nonempty-demand branch, still under T and before host admission. Total
+fit precedes the two soft placement preferences. Sealed CPU identity precedes
+producer allowance and dependent-owner reads that reuse its request cache;
+conditional GPU contract follows them. The export loop updates the original
+host demand and reservation demand, in that order for each kind. Scratch
+placement and the fresh scratch boundary use the resulting full reservation
+demand. Their shared offer, profile, root and generation reads stay outside H.
+
+Both protocols return their typed success, an ordinary `CandidateDenial`, or
+the existing `ScanOrder` after completing a handled path. The driver publishes
+ordinary denials with the original two-argument call when evidence is None and
+three arguments otherwise. Scratch yielding publication stays inside its
+original narrow try, and both profile-invalid diagnostics stay in their except
+handlers. They preserve the caught types and active exception contexts. Any
+uncaught preparation error still reaches the original UNCERTAIN abandonment
+and re-raise. Literal H-result seeds initialize after successful preparation.
+
+The frozen records preserve references rather than copying or freezing their
+maps. `_HostClaimRequest` describes pre-funding preparation; later H funding
+still replaces the driver demand locals and their separate reservation copy.
+No hint, capability result, scratch price or peer observation grants local
+capacity. Canonical census and admission still decide against current host
+state, and `_ClaimReservation` still owns every token, probe, borrow, funded
+transfer and abandon policy.
+
+Sealed gang preparation, its conditional import and group state remain in the
+claim driver. Backfill reclaim retains its own preemption/H lock lifetime under
+T. Measurement census M/H, host admission, acquisition, funding, commit and
+publication also retain their original positions and error boundaries. These
+later protocols and the final claim-driver reduction remain unfinished C01
+work. This extraction adds no compatibility phase and changes no queue schema,
+lock scope, fairness limit or default.
