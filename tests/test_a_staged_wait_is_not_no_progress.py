@@ -39,6 +39,7 @@ from prismabuild import (  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
+from prismabuild import candidate_policy
 
 MANIFEST = "d" * 64
 
@@ -1079,7 +1080,7 @@ def _claim_pass(queue: pool.PoolQueue, row, ledger: pool.ResourceLedger) -> dict
     verdict = observed.verdict
     queue.record_pass(key, drain_notes=queue._drain_accounting.for_key(key))
     reason = ("reservation_unavailable_withholding" if verdict["withhold"]
-              else "reservation_unavailable" + pool._starved_suffix(verdict))
+              else "reservation_unavailable" + candidate_policy.starved_suffix(verdict))
     queue.record_denial(ready, reason, {"withhold": verdict})
     return verdict
 

@@ -7,6 +7,7 @@ import pytest
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_measurement_unmeasured_timeout import _unmeasured, FAIRNESS_BOUND_S
 from prismabuild import pool
+from prismabuild import drain_policy
 
 
 @pytest.mark.parametrize("baseline", [None, {"basis": "unknown", "exceeds": True}],
@@ -65,8 +66,8 @@ def test_known_holder_tail_is_not_an_invented_measured_baseline(seen):
     decision = _tail_decision()
     decision["baseline"]["holders_seen_unix"] = seen
     assert "basis" not in decision["baseline"]
-    assert pool._measurement_holder_tail_refusal(decision)
-    assert not pool._measurement_unmeasured_refusal("adaptive_cpu_refused", decision)
+    assert drain_policy.holder_tail_refusal(decision)
+    assert not drain_policy.unmeasured_refusal("adaptive_cpu_refused", decision)
 
 
 @pytest.mark.parametrize("section,field,value", [
@@ -83,12 +84,12 @@ def test_known_holder_tail_is_not_an_invented_measured_baseline(seen):
 def test_malformed_holder_tail_does_not_authorize_protection(section, field, value):
     decision = _tail_decision()
     decision[section][field] = value
-    assert not pool._measurement_holder_tail_refusal(decision)
+    assert not drain_policy.holder_tail_refusal(decision)
 
 
 def test_stale_or_missing_holder_tail_proof_remains_unknown():
     decision = _tail_decision()
     decision["fresh"] = False
-    assert not pool._measurement_holder_tail_refusal(decision)
-    assert not pool._measurement_holder_tail_refusal(None)
-    assert not pool._measurement_holder_tail_refusal({"fresh": True})
+    assert not drain_policy.holder_tail_refusal(decision)
+    assert not drain_policy.holder_tail_refusal(None)
+    assert not drain_policy.holder_tail_refusal({"fresh": True})

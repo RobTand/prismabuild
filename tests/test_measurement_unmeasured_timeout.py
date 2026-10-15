@@ -10,6 +10,7 @@ import pytest
 
 from test_measurement_drains_gpu_backfill import fleet, T0  # noqa: F401
 from prismabuild import adaptive_cpu, adaptive_gpu, pool
+from prismabuild import drain_policy
 
 FAIRNESS_BOUND_S = 180
 
@@ -34,7 +35,7 @@ def _unmeasured(fleet, *, gpu=1, holder_gpu=None):
     assert decision["reason"] == "measurement_host_not_idle"
     assert decision["fresh"] is True
     assert decision["baseline"]["basis"] == "unmeasured"
-    assert pool._measurement_foreign_clear(decision) is False
+    assert drain_policy.foreign_clear(decision) is False
     first = denial(measurement)["evidence"]["withhold"]
     assert first["withhold"] is True
     return holder, measurement, first, clock[0]
@@ -208,11 +209,11 @@ def test_unknown_classifier_does_not_relabel_independent_protection(change):
     source = change.get("source", "adaptive_cpu_refused")
     decision = {"reason": "measurement_host_not_idle", "fresh": True,
                 "baseline": {"basis": "unmeasured", "exceeds": True}}
-    assert pool._measurement_unmeasured_refusal("adaptive_cpu_refused", decision)
+    assert drain_policy.unmeasured_refusal("adaptive_cpu_refused", decision)
     for key in ("fresh", "reason"):
         if key in change:
             decision[key] = change[key]
     for key in ("basis", "exceeds"):
         if key in change:
             decision["baseline"][key] = change[key]
-    assert not pool._measurement_unmeasured_refusal(source, decision)
+    assert not drain_policy.unmeasured_refusal(source, decision)

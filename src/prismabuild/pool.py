@@ -142,7 +142,6 @@ import uuid
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
-from .candidate_policy import WITHHOLD_KINDS
 from . import drain_policy
 from .drain_policy import (DRAIN_HELD_CPUS, MEASUREMENT_UNMEASURED_CEILING_S,
                            STARVATION_FLOOR, WITHHOLD_CEILING_S)
@@ -507,20 +506,6 @@ def _claim_order_relief_age(order: Mapping[str, object], *,
 # separate safe default of one for arbitrary commands; changing this legacy
 # pool API default would silently rewrite those producers' policy.
 DEFAULT_MAX_ATTEMPTS = 3
-
-
-def _starved_suffix(verdict: Mapping[str, object]) -> str:
-    """The denial suffix of an eligible item that is not withholding (#924).
-
-    ``_past_ceiling`` keeps its pre-#924 meaning -- the item's own clock ran
-    out -- and now also covers a veto that expired while work ahead of it kept
-    refilling the box.  ``_starved`` is every holder or load that draining
-    will not clear soon.  ``pbstatus --starvation`` lists both.
-    """
-
-    return ("_past_ceiling" if verdict.get("why") in ("unknown_past_ceiling",
-                                                     "refilled_past_ceiling")
-            else "_starved")
 
 
 def _gpu_sample_for(
@@ -19880,7 +19865,7 @@ class PoolQueue:
             return False
         reason = record.get("reason")
         # Fairness display suffixes do not change the recorded policy evidence.
-        # Recognize the closed vocabulary emitted by _starved_suffix, not an
+        # Recognize the closed vocabulary emitted by candidate_policy.starved_suffix, not an
         # arbitrary adaptive_* prefix or an unknown suffix.
         reason_class = next((base for base in (
             "adaptive_cpu_refused", "adaptive_gpu_refused")
@@ -22239,85 +22224,25 @@ class PoolQueue:
                                     cpu_decision=cpu_decision,
                                     gpu_sample=_gpu_sample_for(gpu_controller, demand),
                                     authority=copy_authority, tags=tagset, has_gpu=has_gpu)
-                            if (verdict is not None and verdict["withhold"]
-                                    and isinstance(decision, Mapping)
-                                    and decision.get("reason") == "measurement_holder"
-                                    and decision.get("isolated_by")):
-                                # While a measurement holds this box, the only
-                                # work it admits is its own dependents (#982),
-                                # so a veto here protects against no
-                                # overtaking.  It would block just the work the
-                                # holder's progress waits on, and the holder
-                                # would then never drain: the deadlock #924
-                                # was written to prevent.  The item keeps its
-                                # passes and its place, and is denied starved.
-                                verdict = dict(verdict, withhold=False,
-                                               why="measurement_admits_only_its_dependents")
-                            reason = refusal_source or "adaptive_refused"
-                            evidence: dict[str, object] = {"decision": decision or {}}
-                            if refusal_source == "deferred_behind_withholding":
-                                # Not a refusal of this item's own: no pass.
-                                # Recorded for a producer's export, whose
-                                # producer is waiting on it; any other row the
-                                # scan looked at stays as silent as before.
-                                if isinstance(dependent_owner, str):
-                                    evidence["withheld_for"] = scan.withheld_for
-                                    if scan.withheld_kinds is not None:
-                                        evidence["withheld_kinds"] = sorted(scan.withheld_kinds)
-                                    self.record_denial(item, reason, evidence)
+                            prefix = candidate_policy.prepare_adaptive_refusal(
+                                refusal_source, decision, verdict, order=scan,
+                                dependent_owner=dependent_owner, room_taken=room_taken)
+                            if isinstance(prefix, candidate_policy.Silent):
                                 continue
-                            if refusal_source == "deferred_for_ready_gpu_row":
-                                # Held back for a GPU row's room (#1169), not
-                                # refused on its own account: no pass, as for
-                                # a row behind a withhold.  Named, so a reader
-                                # of this host's denials sees what it waits on.
-                                evidence.update(room_taken or {})
-                                self.record_denial(item, reason, evidence)
-                                continue
-                            self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
-                            # A refusal a drain of the pool's holders resolves
-                            # keeps the refused row's room, whatever its
-                            # verdict (#1240, ``keep_refused_room``).
-                            drain_resolves = (mode is not None and not foreign
-                                              and (verdict is None
-                                                   or verdict.get("drain_resolves") is not False))
-                            if (demand.get("gpu") and isinstance(decision, Mapping)
-                                    and isinstance(decision.get("reason"), str)
-                                    and decision["reason"]):
-                                evidence["drain_resolves"] = drain_resolves
-                            if verdict is not None and verdict["eligible"]:
-                                # #924: an occupied-box refusal holds the box
-                                # shut while its holders drain soon, exactly as
-                                # a token shortage does, and says so when they
-                                # will not.
-                                evidence["withhold"] = verdict
-                                if verdict["withhold"]:
-                                    # A GPU refusal holds back only the rows
-                                    # that demand a GPU (#1085); every other
-                                    # withhold holds back the whole box.
-                                    kinds = WITHHOLD_KINDS.get(str(verdict["mode"]))
-                                    if kinds is not None:
-                                        evidence["withheld_kinds"] = sorted(kinds)
-                                    reason = f"{reason}_withholding"
-                                    if drain_resolves:
-                                        if ledger is not None:
-                                            scan, room_evidence = scan.keep_refused_room(
-                                                key, reservation_demand, reason, free_at_refusal)
-                                            evidence.update(room_evidence)
-                                    self.record_denial(item, reason, evidence)
-                                    if not (measurement_suspended and identity and identity[1]):
-                                        scan = scan.withhold(
-                                            key, kinds, measurement=bool(identity and identity[1]))
-                                    continue
-                                reason = f"{reason}{_starved_suffix(verdict)}"
-                                evidence["starved"] = {"why": verdict["why"],
-                                                       "holders": verdict.get("holders")}
-                            if drain_resolves:
-                                if ledger is not None:
-                                    scan, room_evidence = scan.keep_refused_room(
-                                        key, reservation_demand, reason, free_at_refusal)
-                                    evidence.update(room_evidence)
-                            self.record_denial(item, reason, evidence)
+                            if isinstance(prefix, candidate_policy.Uncounted):
+                                denial = prefix.denial
+                            else:
+                                self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
+                                denial = candidate_policy.counted_adaptive_refusal(
+                                    prefix, key=key, order=scan, demand=demand,
+                                    reservation_demand=reservation_demand, mode=mode,
+                                    foreign=foreign, free_at_refusal=free_at_refusal)
+                            scan = denial.order_before
+                            self.record_denial(item, denial.reason, denial.evidence)
+                            if denial.withhold_after is not None:
+                                scan = denial.withhold_after.apply(
+                                    scan, identity=identity,
+                                    measurement_suspended=measurement_suspended)
                             continue
                         if reservation.host_handle is None:
                             observed = self._observe_drain(
@@ -22363,33 +22288,15 @@ class PoolQueue:
                                 "gpu_decision": gpu_decision,
                                 "withhold": verdict,
                             }
-                            if withholding and verdict["withhold"]:
-                                if ledger is not None:
-                                    scan, room_evidence = scan.keep_refused_room(
-                                        key, asked, "reservation_unavailable_withholding", free_at_refusal)
-                                    evidence.update(room_evidence)
-                                self.record_denial(
-                                    item, "reservation_unavailable_withholding", evidence)
-                                if not (measurement_suspended and identity and identity[1]):
-                                    scan = scan.withhold(
-                                        key, None, measurement=bool(identity and identity[1]))
-                                continue
-                            if withholding:
-                                # Keep its passes, and so its place, but let the
-                                # box run what fits while the holders in its way
-                                # do not drain soon (#924, 2026-09-04).
-                                evidence["starved"] = {"why": verdict["why"],
-                                                       "holders": verdict.get("holders")}
-                            reason = "reservation_unavailable" + (
-                                _starved_suffix(verdict) if withholding else "")
-                            # A token shortage is what holders releasing
-                            # resolves: the room is kept at every verdict
-                            # (#1240, ``keep_refused_room``).
-                            if ledger is not None:
-                                scan, room_evidence = scan.keep_refused_room(
-                                    key, asked, reason, free_at_refusal)
-                                evidence.update(room_evidence)
-                            self.record_denial(item, reason, evidence)
+                            denial = candidate_policy.counted_token_refusal(
+                                evidence, key=key, order=scan, eligible=withholding,
+                                asked=asked, free_at_refusal=free_at_refusal)
+                            scan = denial.order_before
+                            self.record_denial(item, denial.reason, denial.evidence)
+                            if denial.withhold_after is not None:
+                                scan = denial.withhold_after.apply(
+                                    scan, identity=identity,
+                                    measurement_suspended=measurement_suspended)
                             continue
                     allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
                                   if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
