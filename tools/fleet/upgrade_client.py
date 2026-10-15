@@ -530,24 +530,6 @@ def request(endpoint, operation, **fields):
     return reply
 
 
-def gate_changed_unix(path):
-    """When the drain in force closed admission, or None when that is unknown.
-
-    A gate that is absent, unreadable, unparsable, not an object, or states no
-    open drain all answer None. None is not "no drain": it is "no key", and a
-    caller with no key matches no park marker, so the box reads as still
-    admitting. That is the safe direction and it is why this reader does not
-    restate the loop's fail-closed rules -- it cannot fail open.
-    """
-    try:
-        value = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(value, dict) or value.get('draining') is not True:
-        return None
-    return value.get('changed_unix')
-
-
 def sanitized(value, safe):
     """`value` with every character outside `safe` replaced, never dropped.
 
@@ -1149,7 +1131,7 @@ class Upgrader:
             gate_before=before, gate_after=after)
         return HostParkObservation(proof, before, census, markers, acknowledgements)
 
-    def drain_evidence(self, status, *, rollout=False):
+    def drain_evidence(self, status):
         """Physical quiescence plus the broker's independent zero-scope fact."""
         if status.get('draining') is not True:
             return {}
@@ -1356,28 +1338,42 @@ class Upgrader:
         holder = self.held_elsewhere(status)
         if holder is not None:
             return self.report('held', epoch=intent['epoch'], drain_owner=holder,
-                               **self.drain_evidence(status, rollout=True))
+                               **self.drain_evidence(status))
         if status.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
             raise ValueError('rollout requires durable maintenance protocol 1')
         if status.get('draining') is not True:
             raise RuntimeError('broker failed to retain rollout drain')
         if status.get('health') is not True or not self.loaded_matches(status):
             raise RuntimeError('broker is unhealthy or stale while entering rollout drain')
-        drained_evidence = self.drain_evidence(status, rollout=True)
+        try:
+            observation = self.observe_host_park()
+        except (OSError, ValueError) as exc:
+            return self.report(
+                'rollout_draining', epoch=intent['epoch'], drained=False,
+                unparked=[], active_scopes=status.get('active_scopes'),
+                evidence_errors=[f'host park observation unavailable: {exc}'])
+        drained_evidence = observation.as_host_evidence(status.get('active_scopes'))
         if not drained_evidence.get('drained'):
             return self.report('rollout_draining', epoch=intent['epoch'],
                                **drained_evidence)
-        changed = gate_changed_unix(self.gate)
-        drained_marker = make_marker(
-            intent, 'drained', host=host, generation=intent['from_generation'],
-            posted_unix=time.time(), active_scopes=0, drain_changed_unix=changed,
-            rollout_protocol=CLIENT_UPGRADE_ROLLOUT_PROTOCOL)
         if marker_name(host, 'drained') not in snapshot['markers']:
             snapshot = self._refresh_epoch(snapshot)
             if snapshot['live_generation'] != intent['from_generation']:
                 return self._rollout_transitioning(
                     intent, snapshot, version,
                     expected=intent['from_generation'], boundary='before-drained-proof')
+        api = observation.proof.module
+        drain = api.drain_identity(observation.gate)
+        if api.drain_identity(api.read_gate(self.gate)) != drain:
+            return self.report(
+                'rollout_draining', epoch=intent['epoch'],
+                **{**drained_evidence, 'drained': False,
+                   'evidence_errors': ['maintenance gate changed before drained publication']})
+        drained_marker = make_marker(
+            intent, 'drained', host=host, generation=intent['from_generation'],
+            posted_unix=time.time(), active_scopes=0,
+            drain_changed_unix=observation.gate['changed_unix'],
+            rollout_protocol=CLIENT_UPGRADE_ROLLOUT_PROTOCOL)
         self._post_epoch_marker(snapshot, drained_marker)
         snapshot = self._refresh_epoch(snapshot)
 
