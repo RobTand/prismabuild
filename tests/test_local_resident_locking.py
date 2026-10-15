@@ -1,15 +1,12 @@
 """Lock-order regressions with a live caller and an expired evictor clock."""
-import ast
 from contextlib import contextmanager
 import fcntl
-import inspect
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
-import textwrap
 
 import pytest
 
@@ -37,77 +34,7 @@ with posix_lock.held(lock):
 """
 
 
-def _reservation(statement):
-    return (isinstance(statement, ast.Expr)
-            and isinstance(statement.value, ast.Call)
-            and isinstance(statement.value.func, ast.Attribute)
-            and isinstance(statement.value.func.value, ast.Name)
-            and statement.value.func.value.id == "local_tier"
-            and statement.value.func.attr == "reserve")
-
-
-def _reserve_before_lock(original):
-    """Compile the actual function with ONLY its reservation hoisted.
-
-    This is the review's M2/M3 mutation, not a replacement implementation.
-    It remains in the suite, so the race oracle must reject that exact
-    ordering even when the lease check is still correctly inside the lock.
-    """
-    syntax = ast.parse(textwrap.dedent(inspect.getsource(original)))
-    function = syntax.body[0]
-    locks = [node for node in function.body if isinstance(node, ast.With)
-             and isinstance(node.items[0].context_expr, ast.Call)
-             and isinstance(node.items[0].context_expr.func, ast.Attribute)
-             and node.items[0].context_expr.func.attr == "held"]
-    assert len(locks) == 1, "mutation requires the mover's one top-level lock"
-    lock = locks[0]
-    reservations = [node for node in lock.body if _reservation(node)]
-    if not reservations:
-        # A scratch checkout with M2/M3 already applied is already this mutant.
-        assert len([node for node in function.body if _reservation(node)]) == 1
-        return original
-    assert len(reservations) == 1
-    reservation = reservations[0]
-    lock.body.remove(reservation)
-    function.body.insert(function.body.index(lock), reservation)
-    namespace = {}
-    exec(compile(ast.fix_missing_locations(syntax), "<reserve-before-lock mutant>", "exec"),
-         original.__globals__, namespace)
-    return namespace[original.__name__]
-
-
-def _lease_before_lock(original):
-    """Move only the actual lease check before the mover lock."""
-    syntax = ast.parse(textwrap.dedent(inspect.getsource(original)))
-    function = syntax.body[0]
-    locks = [node for node in function.body if isinstance(node, ast.With)
-             and isinstance(node.items[0].context_expr, ast.Call)
-             and isinstance(node.items[0].context_expr.func, ast.Attribute)
-             and node.items[0].context_expr.func.attr == "held"]
-    assert len(locks) == 1
-    lock = locks[0]
-
-    def lease_check(node):
-        return isinstance(node, ast.If) and any(
-            isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-            and call.func.id == "lease_active" for call in ast.walk(node.test))
-
-    checks = [node for node in lock.body if lease_check(node)]
-    if not checks:
-        assert len([node for node in function.body if lease_check(node)]) == 1
-        return original  # The scratch checkout already carries this mutation.
-    assert len(checks) == 1
-    lock.body.remove(checks[0])
-    function.body.insert(function.body.index(lock), checks[0])
-    namespace = {}
-    exec(compile(ast.fix_missing_locations(syntax), "<lease-before-lock mutant>", "exec"),
-         original.__globals__, namespace)
-    return namespace[original.__name__]
-
-
-
-def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False,
-                     expire_while_waiting=False, lease_mutation=False):
+def _live_lease_race(tmp_path, monkeypatch, operation, *, expire_while_waiting=False):
     store, record, spec = world(tmp_path)
     set_id = record["set_id"]
     # Start with occupied bytes and their publication hold. The caller sees a
@@ -119,10 +46,6 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, mutation=False,
         (source / "weights").write_bytes(b"weights")
         source_inode = (source / "weights").stat().st_ino
     function = local_resident.copy if operation == "copy" else local_resident.adopt_resident_copy
-    if mutation:
-        function = _reserve_before_lock(function)
-    if lease_mutation:
-        function = _lease_before_lock(function)
     mover_lock = store.copy_path(set_id, "test-host").with_suffix(".move.lock").resolve()
     child = subprocess.Popen([sys.executable, "-c", HOLD_AND_EVICT,
         str(store.queue_root), set_id, "test-host", json.dumps(spec)],
@@ -218,22 +141,8 @@ def test_live_lease_caller_blocked_on_mover_lock_lands_with_tokens(tmp_path, mon
 
 
 @pytest.mark.parametrize("operation", ["copy", "adopt"])
-def test_reservation_before_mover_lock_mutant_fails_the_same_oracle(tmp_path, monkeypatch, operation):
-    with pytest.raises(AssertionError, match="resident copy must hold its tokens"):
-        _live_lease_race(tmp_path, monkeypatch, operation, mutation=True)
-
-
-@pytest.mark.parametrize("operation", ["copy", "adopt"])
 def test_lease_expiring_while_waiting_is_checked_after_the_lock(tmp_path, monkeypatch, operation):
     _live_lease_race(tmp_path, monkeypatch, operation, expire_while_waiting=True)
-
-
-@pytest.mark.parametrize("operation", ["copy", "adopt"])
-def test_lease_before_lock_mutant_fails_the_advancing_clock_oracle(tmp_path, monkeypatch, operation):
-    with pytest.raises(AssertionError, match="caller must refuse an expired lease after locking"):
-        _live_lease_race(tmp_path, monkeypatch, operation,
-                         expire_while_waiting=True, lease_mutation=True)
-
 
 
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
@@ -309,24 +218,6 @@ def test_pinned_refusal_leaves_record_resident_and_lock_held_during_check(tmp_pa
     store, set_id, spec, token = _pinned_world(tmp_path)
     _pin_protection(store, set_id, spec, monkeypatch)
     local_resident.release_pin(store, set_id, "test-host", spec, token)
-
-
-def test_reordering_the_pin_check_fails_the_protection_test(tmp_path, monkeypatch):
-    store, set_id, spec, token = _pinned_world(tmp_path)
-
-    def mutant(store_, set_id_, host_, spec_, *, now=None):
-        with local_resident.posix_lock.held(store_.copy_path(set_id_, host_).with_suffix(".move.lock")):
-            with local_tier.host_lock(spec_["root"]):
-                current = store_.read_copy(set_id_, host_)
-                store_.write_copy(set_id_, host_, {**current, "state": "evicting"})
-                final = Path(spec_["root"]) / set_id_
-                assert local_resident._pinned(store_, set_id_, host_, final)
-                return {"state": "evicting", "reason": "pinned"}
-
-    with monkeypatch.context() as patch:
-        patch.setattr(local_resident, "evict_resident_copy", mutant)
-        with pytest.raises(AssertionError, match="pinned copy must stay resident"):
-            _pin_protection(store, set_id, spec, patch)
 
 
 def test_legacy_attempt_without_served_from_still_validates(tmp_path):

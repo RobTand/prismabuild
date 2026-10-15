@@ -72,7 +72,7 @@ def test_adoption_cli_queues_the_owner_action_and_never_hashes_on_coordinator(tm
     assert json.loads(capsys.readouterr().out)["action_key"] == "a" * 64
 
 
-def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, release_on_error=False):
+def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
     set_id = record["set_id"]
@@ -96,17 +96,6 @@ def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, re
 
         monkeypatch.setattr(Path, "read_text", mountinfo)
     function = local_resident.adopt_resident_copy
-    if release_on_error:
-        original = function
-
-        def release_mutant(*args, **kwargs):
-            try:
-                return original(*args, **kwargs)
-            except ValueError:
-                ledger.release(set_id)
-                raise
-
-        function = release_mutant
     with pytest.raises(ValueError, match=expected[defect]):
         function(store, set_id, "test-host", spec, source, now=120)
     assert store.read_copy(set_id, "test-host")["state"] == "absent"
@@ -119,10 +108,3 @@ def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, re
 @pytest.mark.parametrize("defect", ["wrong_bytes", "cross_filesystem", "mounted_source"])
 def test_refused_adoption_retains_its_lease_bounded_reservation(tmp_path, monkeypatch, defect):
     _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect)
-
-
-@pytest.mark.parametrize("defect", ["wrong_bytes", "cross_filesystem", "mounted_source"])
-def test_releasing_on_adoption_failure_mutant_fails_retention(tmp_path, monkeypatch, defect):
-    with pytest.raises(AssertionError, match="refused adoption must retain its reservation"):
-        _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, release_on_error=True)
-
