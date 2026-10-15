@@ -130,7 +130,7 @@ def _claimed(queue: pool.PoolQueue, cas: pb.PrismaBuildCAS, base: Path,
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, max_attempts=1,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")
-    item = queue.claim()
+    item = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert item is not None and item["action_key"] == action["action_key"]
     return item
 

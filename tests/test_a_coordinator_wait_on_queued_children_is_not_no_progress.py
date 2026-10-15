@@ -240,7 +240,7 @@ def _coordinator(tmp_path: Path, cas, plan, children, *, seconds: float):
         checkout_root=checkout,
         worker_script=Path(__file__).resolve().parents[1]
         / "tools" / "prismabuild_worker.py")
-    claimed = queue.claim()
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert claimed is not None, "the coordinator must claim before its child publishes"
     assert claimed["action_key"] == action["action_key"], claimed
     return queue, claimed, state
@@ -627,7 +627,7 @@ def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> No
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     queue.finish(children[0]["action_key"], status="executed", detail=outcome)
@@ -667,7 +667,7 @@ def test_the_reporter_counts_one_unit_per_newly_durable_child(
         queue.publish(
             action_key=child["action_key"], cas_root=cas.root,
             checkout_root=checkout, worker_script=worker)
-        outcome = queue.execute(queue.claim(), timeout_s=60.0,
+        outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                                 heartbeat_s=0.05, timeout_grace_s=0.2)
         assert outcome["status"] == "executed", outcome
         fresh = reporter.newly_durable()
@@ -691,7 +691,7 @@ def test_children_durable_at_start_count_zero(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     reporter = DurableChildReporter(
@@ -731,7 +731,7 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                             heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     other = children[1] if len(children) > 1 else children[0]
@@ -830,7 +830,7 @@ def test_a_cleanup_tombstone_is_neither_credited_nor_released(
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    claimed = queue.claim()
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert claimed is not None
     tombstone, mine = queue._entomb_claim(
         children[0]["action_key"], expect=claimed)
@@ -926,7 +926,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     (run / "t.py").write_text("x")
     queue.publish(action_key=child["action_key"], cas_root=cas.root,
                   checkout_root=run, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                             heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     reporter = DurableChildReporter(
@@ -1392,7 +1392,7 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     (checkout / "t.py").write_text("x")
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
     queue.publish(action_key=key, cas_root=cas.root, checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     queue.finish(key, status="executed", detail=outcome)
     queue.item_path(pool.DONE, key).unlink()

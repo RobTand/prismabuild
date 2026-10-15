@@ -121,7 +121,7 @@ def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim(cpu_tiers=cpu_tiers)
+    return queue, queue.claim(cpu_tiers=cpu_tiers, tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
 
 
 def _run(tmp_path, **kwargs):
@@ -878,7 +878,7 @@ def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script="/worker.py")
-    item = queue.claim(owner="worker")
+    item = queue.claim(owner="worker", tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert item is not None
     lease = json.loads(queue.lease_path(key).read_text(encoding="utf-8"))
     lease["published_unix"] = item["published_unix"]

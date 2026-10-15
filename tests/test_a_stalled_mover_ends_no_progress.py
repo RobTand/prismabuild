@@ -369,7 +369,7 @@ def _claimed_mover(tmp_path: Path, source: str, policy,
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, max_attempts=1,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim()
+    return queue, queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
 
 
 def _waiting_consumer(queue: pool.PoolQueue, mover: str, *, total: int,
