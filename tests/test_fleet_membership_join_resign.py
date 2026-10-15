@@ -263,11 +263,11 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
                     "active_scopes": 0, "active_scope_ids": []}
         raise AssertionError(payload)
 
-    (parked / "111-s1-999.0").touch()
+    (parked / "111-1-999.0").touch()
     with finish_after_terminal_probe(monkeypatch, queue, snapshot) as finished:
         out = fm.resign(host, reason="test resign", queue_root=queue.root,
                         gate=gate, broker_call=fake_broker,
-                        live=[(111, "s1")], wait_s=40.0)
+                        live=[(111, "1")], wait_s=40.0)
     assert finished.is_set()
     assert out["status"] == "resigned", (
         f"phase={out.get('phase')} reason={out.get('reason')} "
@@ -544,7 +544,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
     epoch = fm.gate_label(fm.read_gate(gate))
     parked = gate.parent / "rollout" / "parked"
     parked.mkdir(parents=True)
-    (parked / f"111-s1-{epoch}").touch()
+    (parked / f"111-1-{epoch}").touch()
     real_run = subprocess.run
     calls: list[tuple[int, str]] = []
 
@@ -594,7 +594,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
 
     out = fm.resign(host, reason="root resign", queue_root=queue_root,
                     gate=gate, broker_call=root_broker,
-                    live=[(111, "s1")], wait_s=40.0)
+                    live=[(111, "1")], wait_s=40.0)
     finisher.join(timeout=10.0)
     assert not errors, errors
     assert finished.is_set(), "holder never saw its withdrawal"
