@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import stat as statmod
 import sys
@@ -32,6 +33,7 @@ DEFAULT_PORT = 9469
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_TERMINAL_WINDOW_SECONDS = 3600.0
 DEFAULT_TERMINAL_LIMIT = 500
+SHUTDOWN_GRACE_S = 10.0
 GIB = 1024 ** 3
 #: How far ahead of this reader another box's clock may be before its sample
 #: stops being credible. A telemetry record is stamped by the box executing the
@@ -2665,12 +2667,53 @@ def _port_holder(port: int) -> tuple[int | None, list[str] | None]:
 
 
 def _serve(args: argparse.Namespace, *, refused: int) -> int:
+    from prismabuild import role_session
+
+    with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
+        return _serve_requests(args, refused=refused, stop=stop)
+
+
+def _serve_requests(args: argparse.Namespace, *, refused: int,
+                    stop: threading.Event) -> int:
+    from prismabuild import role_session
+
+    loaded_commit = role_session.loaded_runtime_commit()
+    loaded_generation = role_session._generation_at(role_session.GENERATION_VERSION)
+
+    class CompletingServer(ThreadingHTTPServer):
+        def __init__(self, *args, **kwargs):
+            self.request_threads = []
+            super().__init__(*args, **kwargs)
+
+        def verify_request(self, request, client_address):
+            return not stop.is_set() and super().verify_request(request, client_address)
+
+        def process_request(self, request, client_address):
+            for thread in self.request_threads:
+                thread.join(0)
+            self.request_threads = [thread for thread in self.request_threads
+                                    if thread.is_alive()]
+            thread = threading.Thread(target=self.process_request_thread,
+                                      args=(request, client_address), daemon=True)
+            self.request_threads.append(thread)
+            try:
+                thread.start()
+            except BaseException:
+                self.request_threads.remove(thread)
+                raise
+
+        def join_requests(self):
+            deadline = time.monotonic() + SHUTDOWN_GRACE_S
+            for thread in self.request_threads:
+                thread.join(max(0.0, deadline - time.monotonic()))
+            return all(not thread.is_alive() for thread in self.request_threads)
+
     cache = MetricsCache(
         args.queue_root.absolute(), args.cache_seconds,
         args.terminal_window_seconds, args.terminal_limit,
     )
     try:
-        server = ThreadingHTTPServer((args.listen, args.port), _handler(cache))
+        server = CompletingServer((args.listen, args.port), _handler(cache))
     except OSError as exc:
         if exc.errno != errno.EADDRINUSE:
             raise
@@ -2685,12 +2728,26 @@ def _serve(args: argparse.Namespace, *, refused: int) -> int:
         _refusal_record("port-in-use", args, refused, holder_pid=holder,
                         holder_argv=argv)
         return refused
+    server.timeout = 0.1
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        while not stop.is_set():
+            if role_session.generation_drift(
+                    loaded_commit=loaded_commit,
+                    loaded_generation=loaded_generation) is not None:
+                break
+            if role_session.read_maintenance_gate() is not None:
+                break
+            server.handle_request()
     finally:
         server.server_close()
+    completed = server.join_requests()
+    if completed:
+        gate = role_session.read_maintenance_gate()
+        if gate is not None:
+            role_session.post_park_marker(gate)
+    else:
+        print(f"pbmetrics: request threads still active after {SHUTDOWN_GRACE_S:g}s; "
+              "exiting without a park marker", file=sys.stderr, flush=True)
     return 0
 
 

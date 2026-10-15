@@ -4768,10 +4768,10 @@ and a generation-uniform rotation proof that includes this reader.
 `prismabuild.role_session` supplies operations rather than a serving loop.
 Each role owns its work, idle waits, error handling, one-shot exit policy and
 completion boundary. `stop_requests` supplies an Event and restores the exact
-signal handlers each caller chose. The worker installs SIGTERM only. Tier and
-local tier install SIGTERM and SIGINT. Worker loops remain multi-instance;
-Prewarm also installs SIGTERM and SIGINT and passes that same Event to readers.
-storage, tiers and local tier keep their script-stem singleton locks. The
+signal handlers each caller chose. The worker installs SIGTERM only. Tier,
+local tier, prewarm and metrics install SIGTERM and SIGINT. Prewarm passes
+that same Event to its readers. Worker loops remain multi-instance. Storage,
+tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
 `generation_receipt` owns receipt parsing and identity comparison, while the
 stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
@@ -9030,6 +9030,21 @@ and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
+
+The continuous exporter checks maintenance and runtime identity between accepts.
+SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
+the listener closes before any park proof, and the exporter joins every request
+thread it started. `ThreadingHTTPServer` uses daemon request threads, so
+`handle_request()` returning does not establish request completion.
+
+The shutdown grace is 10 seconds in total, starting when accepts stop. This is
+a new stop-only bound, using the same operational patience as pbstatus's default
+read timeout. Ordinary metrics collection remains unbounded. If every request
+joins, the exporter can post the current gate's marker and exit 0. If the grace
+expires, it exits 0 without a marker or a request-completion claim; the process
+census must observe its exit before treating it as gone. The grace does not
+change the drain observer's required role set. `--once` retains its snapshot
+behavior and singleton exemption.
 
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
 as an installed unit on three boxes, sparky, sparklina and dl380g10, and every
