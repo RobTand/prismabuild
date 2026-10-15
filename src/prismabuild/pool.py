@@ -195,7 +195,7 @@ POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
 POOL_LEASE_SCHEMA_V1 = "prismaquant.prismabuild.pool_lease.v1"
 POOL_OUTCOME_SCHEMA_V1 = "prismaquant.prismabuild.pool_outcome.v1"
-PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismaquant.prismabuild.publication_superseded.v1"
+PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismabuild.publication_superseded.v1"
 #: What one run cost and how loaded its box was, filed with the outcome.  Issue
 #: #372 Tier 0: metadata about a run, never part of the action it was a run of,
 #: so a receipt that carries it and one from before it are the same action.

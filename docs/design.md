@@ -1045,7 +1045,7 @@ is never reported as this run's.
 
 An old claim's requeue collision with a verified newer READY publication also
 has an exact ending, distinct from an execution verdict. The queue retains
-`prismaquant.prismabuild.publication_superseded.v1` at
+`prismabuild.publication_superseded.v1` at
 `publication-endings/<key>/<attempt_generation>.json`, with the original
 identity and the actual successor item observed under the key transition
 lock. The decision proves matching key, usable pool-item addressing and

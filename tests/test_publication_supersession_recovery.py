@@ -171,7 +171,7 @@ def test_corrupt_exact_decision_is_unavailable_instead_of_an_execution_verdict(
     decision = _decision_path(queue, generation)
     assert decision.is_file(), "no exact publication ending was retained"
     record = json.loads(decision.read_bytes())
-    assert record["schema"] == "prismaquant.prismabuild.publication_superseded.v1"
+    assert record["schema"] == "prismabuild.publication_superseded.v1"
     assert record["status"] == "superseded"
     assert record["published_unix"] == generation
     assert record["successor"]["published_unix"] == successor

@@ -31,7 +31,7 @@ def _legacy_slot(queue, clock, damage):
     if damage in {"status", "both"}:
         legacy["status"] = "superseded"
     if damage in {"schema", "both"}:
-        legacy["schema"] = "prismaquant.prismabuild.publication_superseded.v1"
+        legacy["schema"] = "prismabuild.publication_superseded.v1"
     slot.write_text(json.dumps(legacy))
     clock[0] += 1
     _publish(queue)

@@ -36,7 +36,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
     assert decision.published_unix == original["published_unix"]
     assert decision.successor_published_unix == successor["published_unix"]
     assert decision.record == {
-        "schema": "prismaquant.prismabuild.publication_superseded.v1",
+        "schema": "prismabuild.publication_superseded.v1",
         "status": "superseded", "action_key": KEY,
         "published_unix": original["published_unix"], "successor": successor,
     }
