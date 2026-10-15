@@ -24,7 +24,7 @@ The discussion is append-only in
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
 | D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Public names are integrated and qualified in the 303-case check. Strict leaf/member source `52b803d3bf63` passed 110 scoped cases; 17 host assertions remain deliberately deselected. The nonconsuming bridge passed 53 cases and 22 byte-replacement/recovery histories. These units remain outside the accumulation branch while prior-trust preservation, strict host consumption and typed receipt authorization are unfinished. Profile membership awaits Rob. |
-| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Bare roles were selected after both prototype styles preserved the same mutation sensitivity. Original pilot migration `09ee7b1be50b` passed 84 cases and is integrated at `4a6753701cce`. All 17 original assertion ASTs and text were preserved. Ten remaining fake batch-writer sites are being migrated separately; broader fixture ownership remains owed. There is no blanket raw-write ban. |
+| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. Eighteen normal binding setups still use fabricated scope controls, so broader fixture ownership remains owed. There is no blanket raw-write ban. |
 | D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
 
 The detailed agreement and source citations are in messages
@@ -87,6 +87,15 @@ success receipt, as expected. Skips are stated explicitly below.
 | Spawned fixture broker, `265bb1446749` | 11 passed, no warning summary; actual startup, failure cleanup, affinity and bounded reaping. | `675e0e2520faace08b7ef29685fee1e1c2234874955ebf0610924bc9e0a259fa` |
 | Original fixture pilots, `09ee7b1be50b` | 84 passed. Four fork warnings occur only in the retained concurrent CPU claimant case. Funding and broker lifecycle report none. | `83bb5e751e473b8ebb81072ed89a6c2b6c47b6995a1add6501da0f50ca41b61f` |
 | Supersession baseline and B04 controls, `ff35d0bb7d31` | 36 passed. This characterizes the old behavior and is not a supersession fix. | `116a7b8c6278675f693430e8e0ad57f3e223a4ce903b03ca1fc6bc465a0cb9a7` |
+| Real batch writer migration, `3090ea7e65a9` | 41 passed, no skips. Ten fake writes and their helper removed; 238 original assertions preserved. | `ceffe5a03143ffc76c3f7bc4a53bcc04bf4ea3d67d96d1f3a79095a95d8cb25e` |
+| Cap test cleanup and progress fixture, `036a7e3777ae` | 59 passed after isolated denial proved missing worker capability tags. One tautological formula test removed. Initial 58-pass/one-failure result remains failed evidence. | `7a1212a6789a80ec70a8ebf247239b38adf91fbe451b0e5457bf62cc2978b4c4` |
+| Actual token collision, `378c668c1cda` | 36 passed. Real transfer into conflicting held ownership preserves both holders, free tokens and the damaged total. | `1de2a723507f5513864a53211401b471bc4119bf25972a30f37ee457010619d7` |
+| Worker receipt authorization RED, `6a966e0aa694` | Six intended failures, two controls; no setup failures or skips. Four unavailable/partial cases execute work; two falsely record drift. | `34582f473ed0aedd51f2f76513f60baeaa420d7989d7420995c5051723321e25` |
+| Typed receipt observation, `156c5f71cef2` | 39 passed, no skips, including atomic pair publication and read counting. Caller migration remains unfinished and unintegrated. | `652615a37daa293c2e0a9c60cd0cf970e8eae62410cb7ec62f87c6544f3f377e` |
+| Supersession corrected RED, `30733ed686d0` | 31 intended failures, 15 controls. The earlier invalid legacy fixture remains separately recorded. | `091478a3917d3f96533db9289c97bee33d0df1a43668f877045ac51d047d5227` |
+| Supersession queue owner, `93c86e1ad595` | 39 passed, no skips. Direct tombstone settlement preserves the existing no-reinjection rule. | `f7a02bb8e2a5071fc20d264beb615a8e1856899608c6eae47c0a75c788682167` |
+| Supersession reader and IPC, `f54a959c8290` | 150 passed, no skips. The campaign/canary wave and final review remain separate. | `cffbac421a4b5c4e7b9d9414c1455153c1aa2180f9d3a55e38305393318d5ad2`, `d2ff6f35050d4e56e0de5b3c96c34ca4177dbec51c4c0e68ea22dd6c629af076` |
+| Prior proof trust RED, `fb7d8038ee09` | Five intended failures, three controls in admitted UID 0 container with inherited affinity. Both worker-controlled leaves gain root trust after rollback. | `40b87bb97c4f3fa456bed25cb62576a0214549df0d1cfc3f7e1ee648fffc6744` |
 
 The combined 55-file cohort at `1943a388ecd1` passed all 1,264 cases. It covers
 registry producers, peer placement and all ten priority fault files. Its verified
@@ -137,6 +146,13 @@ The independent bridge review
 and D11 source finding were sent to Claude in `20261015T030349Z`; no reply has
 arrived. This is not a mutually closed discussion or a completed B09 card.
 
+The real-root rollback RED at `fb7d8038ee09` reproduces the metadata loss for
+both worker ownership and group write permission. Trusted rollback and both
+ordinary repair controls pass. The first container attempt failed before tests
+because its tooling snapshot omitted pytest's `py.py` shim; that is retained as
+a setup failure. The corrected snapshot copies and verifies installed RECORD
+files. No test ran outside PrismaBuild.
+
 ## Remaining requeue observations
 
 An exact old-generation waiter still lacks a terminal result after generic
@@ -144,6 +160,12 @@ supersession. B16 will give it a typed supersession ending with a verified
 successor and a distinct exit status. This is not an execution verdict or
 permission to follow the successor. B04 preserves this existing limitation
 while protecting the newer publication.
+
+B16's corrected desired RED has 31 intended failures and 15 controls. Its queue
+owner then passed 39 cases and its reader/IPC migration passed 150. These units
+remain outside the accumulation branch until campaign/canary closure and the
+untyped-terminal impersonation boundary are qualified. The new ending supplies
+no execution verdict, receipt, resource release or successor-follow authority.
 
 F1 cleans only aged, exactly named requeue staging siblings after their
 authoritative tombstone disappears. Its qualified cases include a real process
