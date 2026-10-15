@@ -386,9 +386,9 @@ LIVE_DEFAULTS = (
     # the live namespace, a routine ``ensure_roles`` or role-entrypoint test
     # would contend with the box's own running role or file stray lock
     # directories into /tmp.
-    ("worker_loop", "ROLE_LOCK_ROOT", "role-locks"),
+    ("prismabuild.role_session", "ROLE_LOCK_ROOT", "role-locks"),
     ("prewarm_loop", "SH", "fleet"),
-    ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
+    ("prismabuild.role_session", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
     # ``supervise.MIRROR`` was the gap this list was completed to close.
     # ``_proven_roots`` lists ``MIRROR / "runtime-generations"``, so

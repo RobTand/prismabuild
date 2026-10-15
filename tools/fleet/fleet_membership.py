@@ -8,7 +8,7 @@ the two authorities that already exist rather than adding a scheduler:
   durable maintenance state (root-owned persistent JSON; restart replays it,
   and the boot hold keeps the fence closed until client verification).
 - execution fence: the broker-owned volatile gate mirror
-  (``worker_loop.MAINTENANCE_GATE``) with ``changed_unix`` naming the drain
+  (``role_session.MAINTENANCE_GATE``) with ``changed_unix`` naming the drain
   epoch, and ``PARKED_ROOT`` exact-loop markers.
 - running work: the existing withdrawal ladder (``PoolQueue.withdraw``),
   the budget-preserving ``PoolQueue.plan_requeue`` + ``publish`` handoff, and
@@ -63,7 +63,7 @@ sys.path.insert(0, str(SRC_ROOT))
 
 from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
-import worker_loop  # noqa: E402
+from prismabuild import role_session  # noqa: E402
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
 
@@ -81,7 +81,7 @@ def _utc() -> float:
 def gate_paths(gate: Path | str | None = None) -> tuple[Path, Path]:
     """(gate file, parked root) for an explicit or default gate location."""
     if gate is None:
-        return worker_loop.MAINTENANCE_GATE, worker_loop.PARKED_ROOT
+        return role_session.MAINTENANCE_GATE, role_session.PARKED_ROOT
     gate_path = Path(gate)
     return gate_path, gate_path.parent / "rollout" / "parked"
 
@@ -110,7 +110,7 @@ def gate_key(gate: dict[str, Any] | None) -> str:
     """Filename-safe drain identity shared with the loop's park markers."""
     if gate is None:
         return "open"
-    return worker_loop._gate_key(gate)
+    return role_session._gate_key(gate)
 
 
 def local_host() -> str:

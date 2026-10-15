@@ -32,7 +32,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 BROKER = REPO / 'tools/fleet/resource_broker.py'
 CLIENT = REPO / 'tools/fleet/upgrade_client.py'
-WORKER_LOOP = REPO / 'tools/fleet/worker_loop.py'
+ROLE_SESSION = REPO / 'src/prismabuild/role_session.py'
 
 
 def load(name, path):
@@ -54,7 +54,7 @@ def worker_loop(gate):
     previous = os.environ.get('PRISMABUILD_MAINTENANCE_GATE')
     os.environ['PRISMABUILD_MAINTENANCE_GATE'] = str(gate)
     try:
-        return load('worker_loop_proof', WORKER_LOOP)
+        return load('prismabuild.role_session_proof', ROLE_SESSION)
     finally:
         if previous is None:
             os.environ.pop('PRISMABUILD_MAINTENANCE_GATE', None)

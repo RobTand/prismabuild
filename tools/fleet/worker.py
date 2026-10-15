@@ -25,9 +25,7 @@ from runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 import worker_loop
-from prismabuild.role_session import (  # noqa: E402
-    GENERATION_VERSION, RUNTIME_VERSION, _generation_at, maintenance_requested,
-)
+from prismabuild import role_session  # noqa: E402
 
 
 def refusal() -> str:
@@ -40,10 +38,10 @@ def refusal() -> str:
     retired code, which is the case a loop escapes by exiting.
     """
 
-    if maintenance_requested():
+    if role_session.maintenance_requested():
         return "resource broker draining for maintenance; admission paused"
-    loaded = _generation_at(GENERATION_VERSION)
-    live = _generation_at(RUNTIME_VERSION)
+    loaded = role_session._generation_at(role_session.GENERATION_VERSION)
+    live = role_session._generation_at(role_session.RUNTIME_VERSION)
     if loaded and live and loaded != live:
         return f"runtime moved {loaded} -> {live}; rerun from the live generation"
     return ""

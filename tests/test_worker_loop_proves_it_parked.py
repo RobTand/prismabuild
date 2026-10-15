@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
+ROLE_SESSION = Path(__file__).resolve().parents[1] / "src" / "prismabuild" / "role_session.py"
 
 
 def _worker_loop(gate: Path):
@@ -43,8 +43,8 @@ def _worker_loop(gate: Path):
     previous = os.environ.get("PRISMABUILD_MAINTENANCE_GATE")
     os.environ["PRISMABUILD_MAINTENANCE_GATE"] = str(gate)
     try:
-        spec = importlib.util.spec_from_file_location("worker_loop_parked",
-                                                      WORKER_LOOP)
+        spec = importlib.util.spec_from_file_location("prismabuild.role_session_parked",
+                                                      ROLE_SESSION)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
