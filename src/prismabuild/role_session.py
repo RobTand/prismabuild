@@ -10,8 +10,7 @@ import threading
 import time
 
 from . import adaptive_cpu, core as pb, generation_receipt, park_proof
-from .generation_receipt import (commit_at as _commit_at,
-                                 generation_at as _generation_at)
+from .generation_receipt import commit_at as _commit_at
 from .park_proof import _gate_key, _proc_starttime, drain_offer_fields
 from .digest_primitives import raw_sha256
 
