@@ -11578,20 +11578,10 @@ def _start(queue: pool.PoolQueue, *, host: str, interval_s: float,
 
 def _serve(args) -> int:
     """TERM/INT request the next completed cycle boundary, never unwind a cycle."""
-    stopping = False
+    from prismabuild.role_session import stop_requests
 
-    def request_stop(signum, frame):
-        nonlocal stopping
-        stopping = True
-
-    previous = {}
-    try:
-        for signum in (signal.SIGTERM, signal.SIGINT):
-            previous[signum] = signal.signal(signum, request_stop)
-        return _serve_cycles(args, lambda: stopping)
-    finally:
-        for signum, handler in reversed(tuple(previous.items())):
-            signal.signal(signum, handler)
+    with stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
+        return _serve_cycles(args, stop.is_set)
 
 
 def _serve_cycles(args, stop_requested) -> int:

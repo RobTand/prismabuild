@@ -6,12 +6,11 @@ from pathlib import Path
 import signal
 import socket
 import sys
-import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
-from prismabuild import local_tier, pool, resident_sets
+from prismabuild import local_tier, pool, resident_sets, role_session
 import worker_loop as runtime_gate
 
 
@@ -40,11 +39,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.interval_s <= 0:
         parser.error("interval must be positive")
-    stop = threading.Event()
-    handlers = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
     loaded = runtime_gate.loaded_runtime_commit()
     try:
-        with runtime_gate.role_singleton(Path(__file__)):
+        with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop, \
+                runtime_gate.role_singleton(Path(__file__)):
             while not stop.is_set():
                 published = runtime_gate.published_commit()
                 if loaded and published and loaded != published:
@@ -72,9 +70,6 @@ def main(argv=None):
     except (runtime_gate.RoleLockHeld, runtime_gate.RoleLockUnavailable) as exc:
         print(f"localtier: {exc}", file=sys.stderr)
         return runtime_gate.ROLE_SINGLETON_HELD_EXIT
-    finally:
-        for sig, handler in handlers.items():
-            signal.signal(sig, handler)
     return 0
 
 

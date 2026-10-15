@@ -114,7 +114,7 @@ from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E
                          box_capacity, container_images,
                          core as pb, cpu_topology, dependency_digest,
                          filesystem_floor, local_dependencies, local_scratch, pool,
-                         publication_canary, storage_tiers)
+                         publication_canary, role_session, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -1171,19 +1171,10 @@ def main(argv=None, *, on_outcome=None):
     execution and leaving a lease for the reaper. Action cancellation remains
     the queue withdrawal protocol.
     """
-    stopping = False
-
-    def request_stop(signum, frame):
-        nonlocal stopping
-        stopping = True
-
-    previous = signal.signal(signal.SIGTERM, request_stop)
-    try:
+    with role_session.stop_requests(signal.SIGTERM) as stop:
         if argv is None and on_outcome is None:
-            return _run_loop(lambda: stopping)
-        return _run_loop(lambda: stopping, argv=argv, on_outcome=on_outcome)
-    finally:
-        signal.signal(signal.SIGTERM, previous)
+            return _run_loop(stop.is_set)
+        return _run_loop(stop.is_set, argv=argv, on_outcome=on_outcome)
 
 
 def build_parser() -> argparse.ArgumentParser:
