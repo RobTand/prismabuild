@@ -12,6 +12,7 @@ that outlives what it describes is the bug (#244), not the fix.
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
 import json
 from pathlib import Path
 import socket
@@ -75,11 +76,20 @@ def _run(tmp_path: Path, *, loops) -> pool.PoolQueue:
     spec.loader.exec_module(worker)
     census = (mock.Mock(side_effect=OSError) if loops is None else
               mock.Mock(return_value=tuple((100 + i, (LOOP,)) for i in range(loops))))
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "worker_loops", census), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=_sample()), \
          mock.patch.object(worker.box_capacity, "mem_available_gb", return_value=100), \

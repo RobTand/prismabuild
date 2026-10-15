@@ -273,6 +273,7 @@ def _poll(tmp_path: Path, *extra: str) -> dict:
     """One real poll of a real worker loop; returns the offer it wrote."""
 
     import importlib.util
+    from functools import partial
     import json
     from unittest import mock
 
@@ -283,11 +284,20 @@ def _poll(tmp_path: Path, *extra: str) -> dict:
         "worker_loop_ceiling_test", REPOSITORY / "tools/fleet/worker_loop.py")
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "worker_loops", mock.Mock(return_value=())), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample",
                            return_value=counted._sample()), \

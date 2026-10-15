@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
 import json
 from pathlib import Path
 import socket
@@ -52,11 +53,20 @@ def _module():
 
 def _run(tmp_path: Path, argv, *, gpu_sample, mem_gb=100):
     worker = _module()
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=gpu_sample), \
          mock.patch.object(worker.box_capacity, "mem_available_gb", return_value=mem_gb), \
          mock.patch.object(worker.box_capacity, "run_queue", return_value=0.0), \

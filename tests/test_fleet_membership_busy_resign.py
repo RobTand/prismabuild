@@ -10,10 +10,12 @@ a test), wired to ``Authority.handle`` directly.
 
 from __future__ import annotations
 
+from functools import partial
 import json
 import os
 import socket
 import sys
+from threading import Event
 import time
 from pathlib import Path
 from unittest import mock
@@ -1287,19 +1289,22 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     monkeypatch.setattr(loop, "SH", tmp_path)
     monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
-    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
-    monkeypatch.setattr(role_session, "published_generation_name", lambda: "test")
-    monkeypatch.setattr(role_session, "generation_drift",
-                        lambda loaded_commit=None, loaded_generation=None: None)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(loop, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks")
+    monkeypatch.setattr(loop.container_images, "InventoryCache", partial(
+        loop.container_images.InventoryCache, root=tmp_path / "images"))
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "test"}))
+        monkeypatch.setattr(role_session, attribute, receipt)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     monkeypatch.setattr(loop.sys, "argv",
                         ["worker_loop.py", "--all-cores", "--cpu-slots", "1",
                          "--poll-s", "0", "--once"])
     # Reconciler resolves its owner from this lane's incarnation.
     monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (owner, None))
-    rc = loop._run_loop(lambda: False)
+    rc = loop._run_loop(Event())
     assert rc == 0
     ready_path = real_queue.item_path(pool.READY, key)
     assert ready_path.exists(), "drain poll must publish the owed successor"

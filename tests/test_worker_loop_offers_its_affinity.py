@@ -19,6 +19,8 @@ synthetic and the queue is this test's own.
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -92,17 +94,26 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
             raise affinity
         return set(affinity)
 
-    with tempfile.TemporaryDirectory(prefix="pb-affinity-", dir="/home/rob/tmp") as scratch, \
-         mock.patch.object(module, "SH", Path(scratch)), \
-         mock.patch.object(module.pool, "PoolQueue", _Queue), \
-         mock.patch.object(role_session, "published_commit", return_value="audit"), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="audit"), \
-         mock.patch.object(module.cpu_topology, "pin_to_preferred",
-                           return_value=pinned), \
-         mock.patch.object(module.os, "cpu_count", return_value=cpu_count), \
-         mock.patch.object(module.os, "sched_getaffinity", sched_getaffinity), \
-         mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
-        assert module.main() == 0
+    with tempfile.TemporaryDirectory(prefix="pb-affinity-", dir="/home/rob/tmp") as scratch:
+        private = Path(scratch)
+        for name in ("loaded.json", "published.json"):
+            (private / name).write_text(json.dumps({"commit": "audit", "generation": "test"}))
+        gate = private / "maintenance.json"
+        gate.write_text(json.dumps({"draining": False}))
+        with mock.patch.object(module, "SH", private), \
+             mock.patch.object(module.pool, "PoolQueue", _Queue), \
+             mock.patch.object(role_session, "GENERATION_VERSION", private / "loaded.json"), \
+             mock.patch.object(role_session, "RUNTIME_VERSION", private / "published.json"), \
+             mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+             mock.patch.object(role_session, "ROLE_LOCK_ROOT", private / "role-locks"), \
+             mock.patch.object(module, "PUBLICATION_LOCK_ROOT", private / "offer-locks"), \
+             mock.patch.object(module.container_images, "InventoryCache", partial(
+                 module.container_images.InventoryCache, root=private / "images")), \
+             mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=pinned), \
+             mock.patch.object(module.os, "cpu_count", return_value=cpu_count), \
+             mock.patch.object(module.os, "sched_getaffinity", sched_getaffinity), \
+             mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
+            assert module.main() == 0
     return seen
 
 
