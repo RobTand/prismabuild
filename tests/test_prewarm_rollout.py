@@ -1,11 +1,13 @@
 """Storage readers must leave the queue before maintenance or runtime rotation."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
@@ -41,18 +43,20 @@ def role(tmp_path, monkeypatch):
     monkeypatch.setattr(role_session, "RUNTIME_VERSION", current)
     calls = []
     monkeypatch.setattr(loop, "cycle", lambda *a, **k: calls.append(True) or {})
-    monkeypatch.setattr(loop.time, "sleep", lambda _: (_ for _ in ()).throw(CycleBoundary))
+    stop = threading.Event()
+    monkeypatch.setattr(role_session, "stop_requests", lambda *_: nullcontext(stop))
+    monkeypatch.setattr(stop, "wait", lambda _: (_ for _ in ()).throw(CycleBoundary))
     # Private queue and explicit disks: this exercises the non-dry entrypoint
     # boundary without warming production files or relying on the host's gate.
     argv = ["--mount-map", f"{tmp_path}={tmp_path}", "--pool-root", str(tmp_path / "queue"),
             "--cas-root", str(tmp_path / "cas"), "--disks", "sdb"]
-    return loop, gate, parked, current, calls, argv
+    return loop, gate, parked, current, calls, argv, stop
 
 
 @pytest.mark.parametrize("contents", [None, "{broken", '{"draining":true,"changed_unix":458.0}'])
 @pytest.mark.parametrize("once", [False, True])
 def test_gate_stops_every_storage_invocation(role, contents, once):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     if contents is None:
         gate.unlink()
     else:
@@ -71,7 +75,7 @@ def test_gate_stops_every_storage_invocation(role, contents, once):
 
 @pytest.mark.parametrize("once", [False, True])
 def test_same_commit_new_generation_exits_before_reading_queue(role, once):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     current.write_text(json.dumps({"generation": "republished", "commit": "a" * 40}))
     assert loop.main(argv + (["--once"] if once else [])) == (75 if once else 0)
     assert calls == []
@@ -79,27 +83,27 @@ def test_same_commit_new_generation_exits_before_reading_queue(role, once):
 
 
 def test_a_parked_role_rotates_when_generation_moves(role, monkeypatch):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
     def move(_):
         current.write_text(json.dumps({"generation": "new", "commit": "b" * 40}))
-        # A second sleep would mean the role failed to leave old imported code.
-        monkeypatch.setattr(loop.time, "sleep", lambda _: (_ for _ in ()).throw(AssertionError("did not rotate")))
-    monkeypatch.setattr(loop.time, "sleep", move)
+        # A second wait would mean the role failed to leave old imported code.
+        monkeypatch.setattr(stop, "wait", lambda _: (_ for _ in ()).throw(AssertionError("did not rotate")))
+    monkeypatch.setattr(stop, "wait", move)
     assert loop.main(argv) == 0
     assert calls == []
     assert len(list(parked.iterdir())) == 1
 
 
 def test_open_gate_runs_one_cycle(role):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     assert loop.main(argv + ["--once"]) == 0
     assert calls == [True]
     assert list(parked.iterdir()) == []
 
 
 def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     upgrade = load('upgrade_client')
     gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
     # Read the process identity independently of the marker writer.
@@ -118,7 +122,7 @@ def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
 
 
 def test_a_closed_gate_precedes_queue_and_disk_discovery(role, monkeypatch):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
     def forbidden(*args, **kwargs):
         raise AssertionError("closed gate reached queue or disk discovery")
@@ -128,19 +132,19 @@ def test_a_closed_gate_precedes_queue_and_disk_discovery(role, monkeypatch):
 
 
 def test_cycle_finishes_before_maintenance_park(role, monkeypatch):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     def cycle(*args, **kwargs):
         assert list(parked.iterdir()) == []
         calls.append(True)
         gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
         return {}
-    sleeps = []
-    def sleep(_):
-        sleeps.append(True)
-        if len(sleeps) == 2:
+    waits = []
+    def wait(_):
+        waits.append(True)
+        if len(waits) == 2:
             raise CycleBoundary
     monkeypatch.setattr(loop, "cycle", cycle)
-    monkeypatch.setattr(loop.time, "sleep", sleep)
+    monkeypatch.setattr(stop, "wait", wait)
     with pytest.raises(CycleBoundary):
         loop.main(argv)
     assert calls == [True]
@@ -149,7 +153,7 @@ def test_cycle_finishes_before_maintenance_park(role, monkeypatch):
 
 @pytest.mark.parametrize("transition", ["maintenance", "generation"])
 def test_runtime_boundary_is_rechecked_after_disk_setup(role, monkeypatch, transition):
-    loop, gate, parked, current, calls, argv = role
+    loop, gate, parked, current, calls, argv, stop = role
     build = loop.pacer_from_args
     def setup(args):
         if transition == "maintenance":

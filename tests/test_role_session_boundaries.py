@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_tier_loop
 import pbmetrics
 import prewarm_loop
-from prismabuild import role_session
+from prismabuild import generation_receipt, role_session
 from prewarm_fixture import Fleet, StagePool
 
 CONTEXT = multiprocessing.get_context("fork")
@@ -232,3 +232,156 @@ def test_local_tier_unknown_loaded_commit_keeps_its_existing_policy(boundary, mo
     monkeypatch.setattr(local_tier_loop, "local_tier_cycle", lambda *args: calls.append(True) or {})
     assert local_tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--once"]) == 0
     assert calls == [True]
+
+
+@pytest.mark.parametrize("gate_state", ["closed", "missing"])
+def test_metrics_serves_under_a_held_or_uninitialized_gate(
+        boundary, monkeypatch, gate_state):
+    if gate_state == "closed":
+        _close_gate(boundary)
+    else:
+        boundary.gate.unlink()
+    ready = CONTEXT.Event()
+    port = CONTEXT.Value("i", 0)
+    server_type = pbmetrics.ThreadingHTTPServer
+
+    class ReadyServer(server_type):
+        def __init__(self, address, *args, **kwargs):
+            super().__init__((address[0], 0), *args, **kwargs)
+            port.value = self.server_address[1]
+            ready.set()
+
+    monkeypatch.setattr(pbmetrics, "ThreadingHTTPServer", ReadyServer)
+    monkeypatch.setattr(pbmetrics, "collect_metrics", lambda *a, **k: "controlled_metric 1\n")
+    argv = ["--queue-root", str(boundary.root / "queue"), "--port", "9469"]
+    process = CONTEXT.Process(target=_run_role,
+        args=(lambda: pbmetrics.main(argv), boundary.root / "gate-metrics.log"))
+    process.start()
+    try:
+        assert ready.wait(5), "metrics never bound the test port"
+        errors = []
+        for _ in range(2):
+            _metrics_request(port.value, errors)
+            assert errors == [], (errors, (boundary.root / "gate-metrics.log").read_text())
+        assert process.is_alive(), "maintenance gate retired a live observer"
+        assert list(boundary.parked.iterdir()) == [], "serving metrics posted a park marker"
+        os.kill(process.pid, signal.SIGTERM)
+        process.join(3)
+        assert process.exitcode == 0, (boundary.root / "gate-metrics.log").read_text()
+        assert len(list(boundary.parked.iterdir())) == 1
+    finally:
+        _finish(process)
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_metrics_checks_one_published_receipt_every_five_seconds(
+        boundary, monkeypatch, busy):
+    parent, child = CONTEXT.Pipe()
+    clock = [0.0]
+    reads = []
+    server_type = pbmetrics.ThreadingHTTPServer
+    read = generation_receipt.read_receipt
+
+    def observed_read(path):
+        if path == boundary.published:
+            reads.append(clock[0])
+        return read(path)
+
+    class ControlledServer(server_type):
+        def __init__(self, address, *args, **kwargs):
+            super().__init__((address[0], 0), *args, **kwargs)
+
+        def handle_request(self):
+            child.send({"event": "poll", "port": self.server_address[1],
+                        "clock": clock[0], "reads": list(reads)})
+            assert child.poll(5), "parent did not advance the accept boundary"
+            clock[0] = child.recv()
+            super().handle_request()
+
+        def server_close(self):
+            super().server_close()
+            child.send({"event": "closed", "reads": list(reads)})
+
+    monkeypatch.setattr(generation_receipt, "read_receipt", observed_read)
+    monkeypatch.setattr(pbmetrics, "ThreadingHTTPServer", ControlledServer)
+    monkeypatch.setattr(pbmetrics, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], time=pbmetrics.time.time))
+    monkeypatch.setattr(pbmetrics, "collect_metrics", lambda *a, **k: "controlled_metric 1\n")
+    argv = ["--queue-root", str(boundary.root / "queue"), "--port", "9469"]
+    process = CONTEXT.Process(target=_run_role,
+        args=(lambda: pbmetrics.main(argv), boundary.root / "clock-metrics.log"))
+    process.start()
+    child.close()
+
+    def observation():
+        assert parent.poll(5), (process.exitcode, (boundary.root / "clock-metrics.log").read_text())
+        return parent.recv()
+
+    def advance(now, port):
+        parent.send(now)
+        if busy:
+            errors = []
+            _metrics_request(port, errors)
+            assert errors == []
+
+    try:
+        observed = observation()
+        assert observed["event"] == "poll", observed
+        assert observed["reads"] == [0.0], "startup check read the published receipt more than once"
+        port = observed["port"]
+        for now in (0.1, 0.2, 4.9, 5.0, 5.1, 9.9):
+            advance(now, port)
+            observed = observation()
+            assert observed["event"] == "poll", observed
+            assert observed["clock"] == now
+            assert observed["reads"] == ([0.0] if now < 5.0 else [0.0, 5.0])
+            if now == 5.1:
+                boundary.published.write_text(json.dumps({
+                    "commit": "a" * 40, "generation": "second"}))
+        assert process.is_alive(), "drift was checked before its next deadline"
+        _close_gate(boundary)
+        advance(10.0, port)
+        observed = observation()
+        assert observed == {"event": "closed", "reads": [0.0, 5.0, 10.0]}
+        process.join(3)
+        assert process.exitcode == 0, (boundary.root / "clock-metrics.log").read_text()
+        assert list(boundary.parked.iterdir()) == [], "drift exit claimed explicit-stop completion"
+    finally:
+        _finish(process)
+        parent.close()
+
+
+@pytest.mark.parametrize("gate_closed", [False, True])
+def test_prewarm_sigterm_interrupts_idle_wait(boundary, monkeypatch, gate_closed):
+    if gate_closed:
+        _close_gate(boundary)
+    fleet = Fleet(boundary.root / "fleet")
+    entered = CONTEXT.Event()
+    cycles = CONTEXT.Value("i", 0, lock=False)
+
+    class ObservedEvent(threading.Event):
+        def wait(self, timeout=None):
+            entered.set()
+            return super().wait(timeout)
+
+    def cycle(*args, **kwargs):
+        cycles.value += 1
+        return {}
+
+    args = fleet.args(once=False, poll_s=3600, dry_run=True)
+    monkeypatch.setattr(role_session, "threading", SimpleNamespace(Event=ObservedEvent))
+    monkeypatch.setattr(prewarm_loop, "cycle", cycle)
+    monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
+    process = CONTEXT.Process(target=_run_role,
+        args=(lambda: prewarm_loop.main([]), boundary.root / "idle-prewarm.log"))
+    process.start()
+    try:
+        assert entered.wait(5), "prewarm did not enter the interruptible idle wait"
+        assert cycles.value == int(not gate_closed)
+        os.kill(process.pid, signal.SIGTERM)
+        process.join(3)
+        assert process.exitcode == 0, (boundary.root / "idle-prewarm.log").read_text()
+        assert cycles.value == int(not gate_closed), "stop started another storage cycle"
+        assert len(list(boundary.parked.iterdir())) == int(gate_closed)
+    finally:
+        _finish(process)
