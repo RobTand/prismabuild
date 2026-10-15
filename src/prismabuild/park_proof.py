@@ -66,7 +66,7 @@ def process_identity(pid: object, starttime: object) -> ProcessIdentity | ProofU
     return ProcessIdentity(pid, starttime)
 
 
-def marker_name(process: ProcessIdentity, drain: DrainIdentity) -> str:
+def park_marker_filename(process: ProcessIdentity, drain: DrainIdentity) -> str:
     return f"{process.pid}-{process.starttime}-{drain.key}"
 
 
@@ -87,7 +87,7 @@ def acknowledgements(*, processes: list[tuple[int, str]], markers: set[str],
         process = process_identity(pid, starttime)
         if isinstance(process, ProofUnknown):
             unknown.append(process.reason)
-        elif marker_name(process, before) not in markers:
+        elif park_marker_filename(process, before) not in markers:
             unparked.append(process.pid)
     return ParkAcknowledgements(tuple(unparked), tuple(unknown))
 
@@ -191,7 +191,7 @@ def parked_markers(parked_root: Path, gate: dict | None) -> list[Path]:
                 continue
             process = process_identity(int(fields[0]), fields[1])
             if (isinstance(process, ProcessIdentity)
-                    and marker_name(process, drain) == path.name and path.is_file()):
+                    and park_marker_filename(process, drain) == path.name and path.is_file()):
                 accepted.append(path)
     except OSError:
         return []
@@ -209,7 +209,7 @@ def expected_markers(census: list[tuple[int, str]],
         process = process_identity(pid, starttime)
         if isinstance(process, ProofUnknown):
             return process
-        expected.add(marker_name(process, drain))
+        expected.add(park_marker_filename(process, drain))
     return expected
 
 
@@ -232,7 +232,7 @@ def write_park_marker(root: Path, gate: dict) -> Path | None:
     process = process_identity(pid, process_starttime(pid))
     if isinstance(process, ProofUnknown):
         return None
-    marker = root / marker_name(process, drain)
+    marker = root / park_marker_filename(process, drain)
     try:
         os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
     except FileExistsError:
