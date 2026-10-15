@@ -12,18 +12,18 @@ from prismabuild import adaptive_cpu, pool
 @pytest.mark.parametrize('historical_slots', [2, 3])
 def test_cold_start_is_one_job_independent_of_historical_slots(tmp_path, monkeypatch, historical_slots):
     from prismabuild import adaptive_gpu
-    monkeypatch.setattr(adaptive_gpu.Controller, 'sample', lambda self: {
+    gpu_sampler = lambda: {
         'schema':'prismabuild.gpu_capacity.v1', 'sample_id':'cold',
         'sampled_unix':time.time(), 'complete':True, 'attributed':True,
         'devices':[{'uuid':'GPU-1','power_w':5,'power_limit_w':140,
                     'memory_domain':'shared_system','limited':False}],
         'host_total_bytes':128*1024**3,'host_available_bytes':100*1024**3,
         'memory_pressure_some':0,'memory_pressure_full':0,'cpu_pressure_some':0,
-        'foreign_processes':[],'jobs':[]})
+        'foreign_processes':[],'jobs':[]}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+    cpu_sampler = lambda: {
         'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 4, 'interval_s': 1.})
+        'cpu_count': 4, 'interval_s': 1.}
     queue = pool.PoolQueue(tmp_path / 'queue')
     for index in range(2):
         queue.publish(action_key=f'{index:064x}', cas_root=str(tmp_path / 'cas'),
@@ -32,8 +32,8 @@ def test_cold_start_is_one_job_independent_of_historical_slots(tmp_path, monkeyp
     args = dict(capacity={'cpu': 4, 'mem_gb': 4, 'gpu': historical_slots},
                 cpu_tiers={'preferred': [0, 1, 2, 3], 'fallback': []},
                 adaptive_cpu=True, has_gpu=True)
-    assert queue.claim(**args)
-    assert queue.claim(**args) is None
+    assert queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
+    assert queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler) is None
     assert queue.ledger().held()['mem_gb'] == 1
 
 
@@ -45,9 +45,9 @@ def gpu_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_gpu, 'action_contract', lambda item, demand:
                         ('shape', False, False, demand['mem_gb'] * adaptive_gpu.GIB))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+    cpu_sampler = lambda: {
         'sampled_unix': clock[0], 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 8, 'interval_s': 1.})
+        'cpu_count': 8, 'interval_s': 1.}
     sample = {'schema': 'prismabuild.gpu_capacity.v1', 'sample_id': '100',
               'sampled_unix': 100., 'complete': True, 'attributed': True,
               'devices': [{'uuid': 'GPU-1', 'name': 'NVIDIA GB10', 'power_w': 15.,
@@ -58,7 +58,7 @@ def gpu_rig(tmp_path, monkeypatch):
               'host_available_bytes': 100 * adaptive_gpu.GIB,
               'memory_pressure_some': 0., 'memory_pressure_full': 0.,
               'cpu_pressure_some': 0., 'foreign_processes': [], 'jobs': []}
-    monkeypatch.setattr(adaptive_gpu.Controller, 'sample', lambda self: sample.copy())
+    gpu_sampler = lambda: sample.copy()
     queue = pool.PoolQueue(tmp_path / 'queue')
     capacity = {'cpu': 8, 'mem_gb': 4, 'gpu': 1}
     args = dict(capacity=capacity, cpu_tiers={'preferred': list(range(8)), 'fallback': []},
@@ -81,7 +81,7 @@ def gpu_rig(tmp_path, monkeypatch):
             sample['jobs'].append({'action_key': key, 'nonce': record['nonce'],
                                    'scope_id': record['scope_unit'], 'complete': True})
     def claim():
-        return queue.claim(**args)
+        return queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
     return queue, clock, sample, capacity, publish, tick, claim
 
 
@@ -251,7 +251,7 @@ def test_abandoned_probe_does_not_return_virtual_tokens(gpu_rig):
     from prismabuild import adaptive_gpu
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     publish(1); assert claim(); tick()
-    controller=adaptive_gpu.Controller(queue.ledger())
+    controller=adaptive_gpu.Controller(queue.ledger(), sampler=sample.copy)
     item={'action_key': 'f'*64, 'cas_root': '/unused'}
     decision=controller.decision(item, {'gpu':1,'mem_gb':1})
     assert decision
@@ -261,7 +261,7 @@ def test_abandoned_probe_does_not_return_virtual_tokens(gpu_rig):
     queue.ledger().abandon_acquire(handle)
     assert queue.ledger().capacity() == capacity
     assert not (queue.ledger().free_dir / '.gpu.json').exists()
-    assert adaptive_gpu.Controller(queue.ledger()).decision(item, {'gpu':1,'mem_gb':1}) is None
+    assert adaptive_gpu.Controller(queue.ledger(), sampler=sample.copy).decision(item, {'gpu':1,'mem_gb':1}) is None
 
 
 def test_memory_refusal_leaves_gpu_sample_for_smaller_candidate(gpu_rig):
@@ -366,7 +366,7 @@ def unlaunched_probe(gpu_rig):
     tick()
     cpu = adaptive_cpu.Controller(queue.ledger(),
                                   {'preferred': list(range(8)), 'fallback': []})
-    gpu = adaptive_gpu.Controller(queue.ledger(), publisher=cpu)
+    gpu = adaptive_gpu.Controller(queue.ledger(), publisher=cpu, sampler=sample.copy)
 
     def reserve():
         # Model the interval after ordinary reservation abandonment: no payload
@@ -968,7 +968,7 @@ def test_a_private_gpu_token_remains_exclusive_until_it_releases(gpu_rig):
     ledger.ensure_capacity(capacity)
     handle = ledger.begin_acquire('a' * 64, {'gpu': 1})
     assert handle is not None
-    controller = adaptive_gpu.Controller(ledger)
+    controller = adaptive_gpu.Controller(ledger, sampler=sample.copy)
     item = {'action_key': 'b' * 64}
     demand = {'gpu': 1, 'mem_gb': 1}
     with adaptive_cpu.AdmissionGate(ledger).locked():
@@ -998,7 +998,7 @@ def test_a_borrowed_gpu_holder_still_blocks_an_exclusive_request(gpu_rig):
     queue.finish(first['action_key'], status='executed', detail={})
     assert ledger.available()['gpu'] == 1
 
-    controller = adaptive_gpu.Controller(ledger)
+    controller = adaptive_gpu.Controller(ledger, sampler=sample.copy)
     item = {'action_key': 'c' * 64}
     demand = {'gpu': 1, 'mem_gb': 1}
     contract = ('exclusive', False, True, adaptive_gpu.GIB)
@@ -1023,7 +1023,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
         assert ledger.acquire('a' * 64, {'cpu': 1})
     item = {'action_key': 'b' * 64}
     demand = {'gpu': 1, 'mem_gb': 1}
-    controller = adaptive_gpu.Controller(ledger)
+    controller = adaptive_gpu.Controller(ledger, sampler=sample.copy)
     with adaptive_cpu.AdmissionGate(ledger).locked():
         metadata = controller.decision(item, demand)
     assert metadata is not None
@@ -1037,7 +1037,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
         assert ledger.release('a' * 64) == 1
     tick()
     measurement = ('measurement', True, False, adaptive_gpu.GIB)
-    retry = adaptive_gpu.Controller(ledger)
+    retry = adaptive_gpu.Controller(ledger, sampler=sample.copy)
     with adaptive_cpu.AdmissionGate(ledger).locked():
         result = retry.decision(item, demand, contract=measurement)
     if memory_mirror:
@@ -1047,7 +1047,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
         assert retry.last_decision['reason'] == 'host_or_device_congested'
         assert retry.last_decision['baseline']['state'] == 'holder_tail'
         tick(11)
-        after_tail = adaptive_gpu.Controller(ledger)
+        after_tail = adaptive_gpu.Controller(ledger, sampler=sample.copy)
         with adaptive_cpu.AdmissionGate(ledger).locked():
             assert after_tail.decision(item, demand, contract=measurement) is not None
     assert ledger.available() == capacity
