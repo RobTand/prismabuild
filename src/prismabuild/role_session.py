@@ -15,7 +15,8 @@ import stat
 import threading
 import time
 
-from . import adaptive_cpu, core as pb, generation_receipt, park_proof
+from . import core as pb, generation_receipt, park_proof
+from . import flock_owner
 from .park_proof import drain_offer_fields
 from .digest_primitives import raw_sha256
 
@@ -148,7 +149,7 @@ def take_role_singleton(script: str | Path) -> int:
             # holder rule is the one place that parse lives (#264, #276),
             # including the btrfs inode/device ambiguity; a helper that
             # cannot answer still leaves this a refusal.
-            raise RoleLockHeld(role, adaptive_cpu._holder_of(descriptor)) \
+            raise RoleLockHeld(role, flock_owner.holder_pid(descriptor)) \
                 from None
         except OSError as exc:
             raise RoleLockUnavailable(

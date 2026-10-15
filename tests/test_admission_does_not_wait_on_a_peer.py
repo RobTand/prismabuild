@@ -47,7 +47,7 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from prismabuild import adaptive_cpu, pool
+from prismabuild import adaptive_cpu, flock_owner, pool
 
 TIERS = {'preferred': [0], 'fallback': [1]}
 CAPACITY = {'cpu': 2, 'mem_gb': 4}
@@ -176,7 +176,7 @@ def test_busy_diagnostic_is_bounded_across_polls_and_holder_changes(
     assert claim() is None
     assert 'host admission lock busy' in capsys.readouterr().err
     clock[0] = 159.0
-    monkeypatch.setattr(adaptive_cpu, '_holder_of', lambda fd: None)
+    monkeypatch.setattr(flock_owner, 'holder_pid', lambda fd: None)
     for _ in range(10):
         assert claim() is None
     assert capsys.readouterr().err == ''
@@ -302,7 +302,7 @@ def test_an_unreadable_proc_locks_still_refuses(rig, peer, monkeypatch):
             raise OSError('no /proc/locks on this kernel')
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(adaptive_cpu, 'open', no_proc_locks, raising=False)
+    monkeypatch.setattr(flock_owner, 'open', no_proc_locks, raising=False)
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS)
     with pytest.raises(adaptive_cpu.AdmissionBusy) as refusal:
         _bounded(lambda: _attempt(controller), 'locked()')

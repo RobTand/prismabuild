@@ -50,7 +50,7 @@ sys.path.insert(0, str(TOOLS))
 
 import supervise  # noqa: E402
 import worker_loop  # noqa: E402
-from prismabuild import role_session
+from prismabuild import flock_owner, role_session
 
 HOST = "dl380g10"
 STORAGE = "prewarm_loop.py"
@@ -376,9 +376,8 @@ def test_contention_refuses_even_when_no_holder_can_be_named(
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    # The admission lock's holder rule is the one parse; make it unable to
-    # answer, as an unreadable /proc/locks would.
-    monkeypatch.setattr(worker_loop.adaptive_cpu, "_holder_of",
+    # A procfs failure must leave the kernel-proven refusal intact.
+    monkeypatch.setattr(flock_owner, "holder_pid",
                         lambda descriptor: None)
     try:
         assert role_session.role_singleton_holder(script) == (True, None)
