@@ -446,8 +446,6 @@
    "src/prismabuild/slurm_lane.py"
   ],
   "_number": [
-   "src/prismabuild/adaptive_gpu.py",
-   "src/prismabuild/box_capacity.py",
    "src/prismabuild/box_window.py",
    "src/prismabuild/gpu_capacity.py",
    "src/prismabuild/pool_reconcile.py",
@@ -634,10 +632,6 @@
   "promote": [
    "src/prismabuild/publication_canary.py",
    "tools/fleet/ram_promote.py"
-  ],
-  "published_commit": [
-   "src/prismabuild/role_session.py",
-   "tools/fleet/pbrun.py"
   ],
   "reconcile": [
    "src/prismabuild/pool_reconcile.py",
