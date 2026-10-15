@@ -758,7 +758,9 @@ def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
 
     previous_generation = ["x86", "dl380g10", "cpu"]
     assert queue.claim(tags=previous_generation) is None
-    claimed = queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG])
+    assert queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG]) is None
+    claimed = queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG,
+                                contracts.PROGRESS_HELPER_TAG])
     assert claimed is not None
     assert claimed["action_key"] == action["action_key"]
 
