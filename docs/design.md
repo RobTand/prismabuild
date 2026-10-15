@@ -18004,10 +18004,31 @@ capacity. Canonical census and admission still decide against current host
 state, and `_ClaimReservation` still owns every token, probe, borrow, funded
 transfer and abandon policy.
 
-Sealed gang preparation, its conditional import and group state remain in the
-claim driver. Backfill reclaim retains its own preemption/H lock lifetime under
-T. Measurement census M/H, host admission, acquisition, funding, commit and
-publication also retain their original positions and error boundaries. These
-later protocols and the final claim-driver reduction remain unfinished C01
-work. This extraction adds no compatibility phase and changes no queue schema,
-lock scope, fairness limit or default.
+`PoolQueue._prepare_claim_gang` owns sealed gang preparation under candidate T,
+inside the existing UNCERTAIN guard and before census admission. Its gang import,
+group/member/sibling observations, teardown and diagnostics retain their original
+conditional and exception scopes. Backfill reclaim keeps its own preemption/H
+lock lifetime there. A handled refusal is distinct from a pending CandidateDenial.
+
+`PoolQueue._arbitrate_claim_census` runs inside the driver's canonical census
+context. `_measurement_reservation` owns pure candidate priority, measurement
+suppression, incumbent position and canonical-verdict amendments. `_gang` owns
+pure standing/member/rank position. These functions consume observed values and
+preserve mapping references. They read no queue, ledger, clock or controller.
+
+The queue adapter keeps fresh movement proof, conditional held capacity and
+holder keys, protected-role authorization, ordered backfill proofs, resident
+preference, prelaunch and election at their original boundaries. It folds one
+backfill blocker before observing the next proof, retaining list/election
+equality. Resident shared reads remain inside successful census admission.
+Denials there are published before leaving that context. An unavailable census
+does not imply that M/H were acquired. Canonical PassCensus acquisition, reuse,
+refresh and setup-only catches are unchanged.
+
+The driver still owns T and the canonical census context, host admission and
+acquisition, post-H refusal accounting, tier funding, rename/commit and
+publication. The UNCERTAIN catch still ends at commit completeness. Publication
+keeps its separate recovery authority. Host/tier outcomes, publication and the
+final physical driver reduction remain unfinished C01 waves 5 through 8. This
+ownership move adds no compatibility API, queue schema, lock scope, fairness
+limit or default change.

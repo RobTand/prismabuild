@@ -21345,6 +21345,54 @@ class PoolQueue:
             dependent_owner=dependent_owner, contract=contract,
             scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary)
 
+    def _prepare_claim_gang(
+        self, request: _HostClaimRequest, *, ledger: ResourceLedger, host_gate,
+    ) -> _ClaimGang | _ClaimHandled:
+        item = request.candidate.item
+        key = request.candidate.key
+        gang = gang_record = gang_entry = None
+        _gang_api = None
+        if item.get("gang") is not None:
+            from . import _gang
+            _gang_api = _gang
+            try:
+                gang = _gang.sealed(item)
+                gang_record = (_gang.read_group(self, gang["group"])
+                               if gang is not None else None)
+                if gang is not None and gang_record is None:
+                    self.record_denial(item, "gang_group_incomplete",
+                                       {"group": gang["group"]})
+                    return _ClaimHandled.REFUSED
+                if gang_record is not None:
+                    gang_entry = _gang.member(gang_record, item, gang)
+                    ended = {index: state for index, state in
+                             _gang.sibling_states(self, gang_record, gang_entry).items()
+                             if state in _gang.UNSUCCESSFUL}
+                    if ended:
+                        # A sibling already ended badly: the
+                        # gang can never start whole (#1517).
+                        self._gang_teardown(
+                            item, by=key, exclude={key},
+                            reason=f"sibling ended before start: {ended}")
+                    torn = _gang.teardown(self, gang["group"])
+                    if torn is not None:
+                        self.record_denial(item, "gang_torn_down",
+                                           {"group": gang["group"], "teardown": torn})
+                        return _ClaimHandled.REFUSED
+            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
+                    KeyError, TypeError, ValueError) as exc:
+                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
+                return _ClaimHandled.REFUSED
+        if gang_record is not None:
+            pending_backfill = self._preempt_gang_backfill(
+                ledger, gang_record, gang_entry, controller=host_gate)
+            if pending_backfill:
+                self.record_denial(item, "gang_waiting_for_backfill_release", {
+                    "group": gang["group"], "holders": pending_backfill,
+                    "tokens_returned_unix": None})
+                return _ClaimHandled.REFUSED
+        return _ClaimGang(gang, gang_record, gang_entry, _gang_api)
+
     def _arbitrate_claim_census(
         self, request: _HostClaimRequest, gang_context: _ClaimGang, census, *,
         ledger: ResourceLedger, total, copy_authority, tagset, has_gpu,
@@ -21915,47 +21963,13 @@ class PoolQueue:
                         # offering ``_gang.TAG`` places these rows). Read from
                         # the sealed request and the immutable group record
                         # before host admission, as the producer link is.
-                        gang = gang_record = gang_entry = None
-                        _gang_api = None
-                        if item.get("gang") is not None:
-                            from . import _gang
-                            _gang_api = _gang
-                            try:
-                                gang = _gang.sealed(item)
-                                gang_record = (_gang.read_group(self, gang["group"])
-                                               if gang is not None else None)
-                                if gang is not None and gang_record is None:
-                                    self.record_denial(item, "gang_group_incomplete",
-                                                       {"group": gang["group"]})
-                                    continue
-                                if gang_record is not None:
-                                    gang_entry = _gang.member(gang_record, item, gang)
-                                    ended = {index: state for index, state in
-                                             _gang.sibling_states(self, gang_record, gang_entry).items()
-                                             if state in _gang.UNSUCCESSFUL}
-                                    if ended:
-                                        # A sibling already ended badly: the
-                                        # gang can never start whole (#1517).
-                                        self._gang_teardown(
-                                            item, by=key, exclude={key},
-                                            reason=f"sibling ended before start: {ended}")
-                                    torn = _gang.teardown(self, gang["group"])
-                                    if torn is not None:
-                                        self.record_denial(item, "gang_torn_down",
-                                                           {"group": gang["group"], "teardown": torn})
-                                        continue
-                            except (_gang.GangContractError, OSError, pb.PrismaBuildError,
-                                    KeyError, TypeError, ValueError) as exc:
-                                self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
-                                continue
-                        if gang_record is not None:
-                            pending_backfill = self._preempt_gang_backfill(
-                                ledger, gang_record, gang_entry, controller=host_gate)
-                            if pending_backfill:
-                                self.record_denial(item, "gang_waiting_for_backfill_release", {
-                                    "group": gang["group"], "holders": pending_backfill,
-                                    "tokens_returned_unix": None})
-                                continue
+                        gang_context = self._prepare_claim_gang(
+                            prepared, ledger=ledger, host_gate=host_gate)
+                        if gang_context is _ClaimHandled.REFUSED:
+                            continue
+                        gang = gang_context.declaration
+                        gang_record = gang_context.record
+                        gang_entry = gang_context.entry
                         from . import _measurement_reservation as measurement_reservation
                         census_blocked = None
                         if census_refusal is not None:
@@ -21980,7 +21994,7 @@ class PoolQueue:
                             # can be told from other work, and the host keeps the fence
                             # against strictly lower priority that it always had.
                             arbitration = self._arbitrate_claim_census(
-                                prepared, _ClaimGang(gang, gang_record, gang_entry, _gang_api),
+                                prepared, gang_context,
                                 census, ledger=ledger, total=total,
                                 copy_authority=copy_authority, tagset=tagset,
                                 has_gpu=has_gpu, placement=placement,
