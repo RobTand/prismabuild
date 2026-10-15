@@ -326,6 +326,13 @@
   },
   {
    "modules": [
+    "src/prismabuild/generation_receipt.py"
+   ],
+   "name": "observe",
+   "reason": "The generation receipt observer reads one runtime commit and generation pair, preserving missing, unreadable, malformed and incomplete answers. Capacity observes host resource bounds, container images observes Docker inventory and local dependencies observes declared paths. Those observers cannot answer the receipt identity question."
+  },
+  {
+   "modules": [
     "src/prismabuild/container_images.py",
     "src/prismabuild/local_dependencies.py"
    ],
