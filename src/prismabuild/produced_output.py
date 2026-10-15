@@ -1398,7 +1398,7 @@ class _TickReads:
         # Kept only at a version no later write can reproduce (#1045): the
         # fence was read before the stat, so a change after it moved ctime
         # to or past the fence, and a refused version is read again.
-        keepable = kept_reads.keepable_version(info, fence)
+        keepable = kept_reads.keepable_version(info, fence, path=path)
         if keepable is None:
             self._commitments.pop(str(path), None)
         else:
