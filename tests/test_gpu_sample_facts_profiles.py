@@ -5,7 +5,8 @@ from copy import deepcopy
 import pytest
 
 from test_adaptive_gpu import gpu_rig
-from prismabuild import adaptive_cpu, adaptive_gpu, box_capacity, pool
+from test_memory_only_framebuffer_window import KEY, NONCE, SCOPE, _sample as _window_sample
+from prismabuild import adaptive_cpu, adaptive_gpu, box_capacity, box_window, pool
 
 
 def _denial(queue, key):
@@ -160,3 +161,122 @@ def test_an_invalid_header_does_not_evaluate_later_numeric_evidence(gpu_rig):
     assert _denial(queue, key)['evidence']['decision']['reason'] == 'sample_invalid_or_stale'
     assert not queue.ledger().held_keys()
     assert queue.ledger().available() == capacity
+
+
+def _reporting_sample(**kwargs):
+    sample = _window_sample(**kwargs)
+    sample.update(host_total_bytes=128 * adaptive_gpu.GIB,
+                  host_available_bytes=100 * adaptive_gpu.GIB,
+                  memory_pressure_some=0., memory_pressure_full=0.,
+                  cpu_pressure_some=0., cpu_pressure_full=0., foreign_processes=[])
+    return sample
+
+
+def _reporting_offer(sample, *, now=101.):
+    return box_capacity.observe({'gpu': 2}, {}, gpu_sample=sample, now=now,
+                                mem_gb=100, load1=0)
+
+
+@pytest.mark.parametrize('faults,reason', [
+    ({'schema': 'unknown', 'sampled_unix': 'unknown', 'devices': []},
+     'incomplete or unattributed GPU capacity snapshot'),
+    ({'sampled_unix': 'unknown', 'devices': [], 'host_total_bytes': -1},
+     'stale or future GPU capacity snapshot'),
+    ({'devices': [], 'host_total_bytes': -1, 'memory_pressure_some': -1},
+     'malformed GPU device or attribution inventory'),
+    ({'host_total_bytes': -1, 'memory_pressure_some': -1, 'devices': [None]},
+     'invalid host memory bounds in GPU snapshot'),
+    ({'memory_pressure_some': -1, 'cpu_pressure_full': -1, 'devices': [None]},
+     'invalid memory_pressure_some in GPU snapshot'),
+])
+def test_offer_reports_the_first_failure_when_multiple_evidence_stages_are_unknown(faults, reason):
+    sample = _reporting_sample(sampled_unix=100.)
+    sample.update(faults)
+    observed = _reporting_offer(sample)
+    assert observed.capacity['gpu'] == 0
+    assert observed.detail['gpu_capacity_trusted'] is False
+    assert observed.detail['gpu_capacity_error'] == reason
+    assert box_capacity.physical_gpu_count(sample, now=101.) == 0
+
+
+def test_offer_age_uses_the_later_gpu_clock_after_the_public_observation_clock(monkeypatch):
+    sample = _reporting_sample(sampled_unix=100.)
+    readings = iter([101., 107.])
+    monkeypatch.setattr(box_capacity.time, 'time', lambda: next(readings))
+    observed = _reporting_offer(sample, now=None)
+    assert observed.detail['observed_unix'] == 101.
+    assert observed.capacity['gpu'] == 0
+    assert observed.detail['gpu_capacity_error'] == 'stale or future GPU capacity snapshot'
+    assert box_capacity.physical_gpu_count(sample, now=101.) == 1
+
+
+def test_physical_count_observes_its_clock_after_schema_but_even_with_an_invalid_timestamp():
+    sample = _reporting_sample(sampled_unix=100.)
+    sample.update(schema='unknown', sampled_unix='unknown')
+    assert box_capacity.physical_gpu_count(sample, now='unknown') == 0
+    sample['schema'] = box_capacity.GPU_CAPACITY_SCHEMA
+    with pytest.raises(ValueError):
+        box_capacity.physical_gpu_count(sample, now='unknown')
+
+
+def test_a_multi_device_offer_does_not_turn_a_window_into_a_multi_device_measurement():
+    sample = _reporting_sample(sampled_unix=100.)
+    second = deepcopy(sample['devices'][0])
+    second['uuid'] = 'GPU-second'
+    sample['devices'].append(second)
+    assert box_capacity.physical_gpu_count(sample, now=101.) == 2
+    observed = _reporting_offer(sample)
+    assert observed.capacity['gpu'] == 2
+    assert observed.detail['gpu_memory_total_bytes'] == 32 * adaptive_gpu.GIB
+    window = box_window.DiscreteFramebufferWindow(KEY, NONCE, SCOPE)
+    assert not window.observe(sample, now=101.)
+    assert window.group() is None
+
+
+class _ByteSubclass(int):
+    pass
+
+
+@pytest.mark.parametrize('change', ['timestamp_string', 'bytes_string', 'bytes_float',
+                                  'bytes_subclass', 'device_clock_bool', 'counter_gap'])
+def test_offer_coercion_does_not_replace_the_window_profile_or_spend_a_rejected_sample(change):
+    window = box_window.DiscreteFramebufferWindow(KEY, NONCE, SCOPE)
+    assert window.observe(_reporting_sample(sampled_unix=100.), now=100.)
+    before = window.group()
+    sample = _reporting_sample(sample_id='later', sampled_unix=101., used=6 * adaptive_gpu.GIB)
+    device = sample['devices'][0]
+    if change == 'timestamp_string':
+        sample['sampled_unix'] = '101.0'
+    elif change == 'bytes_string':
+        device['memory_used_bytes'] = str(device['memory_used_bytes'])
+    elif change == 'bytes_float':
+        device['memory_used_bytes'] = float(device['memory_used_bytes'])
+    elif change == 'bytes_subclass':
+        device['memory_used_bytes'] = _ByteSubclass(device['memory_used_bytes'])
+    elif change == 'device_clock_bool':
+        device['sampled_unix'] = True
+    else:
+        device['memory_free_bytes'] -= 1
+    assert box_capacity.physical_gpu_count(sample, now=101.) == 1
+    assert _reporting_offer(sample).capacity['gpu'] == 1
+    assert not window.observe(sample, now=101.)
+    assert window.group() == before
+    corrected = _reporting_sample(sample_id='later', sampled_unix=101., used=6 * adaptive_gpu.GIB)
+    assert window.observe(corrected, now=101.)
+    assert window.group()['samples'] == 2
+    assert window.group()['framebuffer_used_bytes_peak'] == 6 * adaptive_gpu.GIB
+
+
+def test_whole_device_reporting_keeps_incomplete_global_attribution_out_of_offer_authority():
+    sample = _reporting_sample(sampled_unix=100.)
+    sample.update(complete=False, attributed=False, foreign_processes=[{'pid': 42}])
+    window = box_window.DiscreteFramebufferWindow(KEY, NONCE, SCOPE)
+    assert window.observe(sample, now=101.)
+    assert window.group()['framebuffer_used_bytes_peak'] == 4 * adaptive_gpu.GIB
+    observed = _reporting_offer(sample)
+    assert observed.capacity['gpu'] == 0
+    assert observed.detail['gpu_capacity_error'] == 'incomplete or unattributed GPU capacity snapshot'
+    sample.update(complete=True, attributed=True)
+    assert _reporting_offer(sample).foreign == {'gpu': 2}
+    sample['foreign_processes'] = []
+    assert _reporting_offer(sample).capacity['gpu'] == 1

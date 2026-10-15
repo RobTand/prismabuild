@@ -41,6 +41,8 @@ import urllib.error
 import urllib.request
 
 from . import fleet_roster
+from .gpu_sample_facts import (SCHEMA as GPU_CAPACITY_SCHEMA, framebuffer_device,
+                               framebuffer_header, framebuffer_inventory)
 
 BOX_WINDOW_SCHEMA_V1 = "prismabuild.box_window.v1"
 
@@ -71,17 +73,8 @@ _FLEET_CONFIG_PATHS = (_ROOT / "tools" / "fleet_boxes.json",
 _GPU_COLUMNS = ("power_draw_w", "gpu_util", "uvm_residual_kb", "temp_gpu_c")
 _MEMORY_COLUMNS = ("MemTotal", "MemAvailable", "psi_mem_full_avg10",
                    "psi_io_full_avg10")
-GPU_CAPACITY_SCHEMA = "prismabuild.gpu_capacity.v1"
 MEMORY_ONLY_TELEMETRY = "memory_only"
 GPU_SAMPLE_MAX_AGE_S = 5.0
-
-
-def _finite_nonnegative_int(value: object) -> int | None:
-    """A byte counter that can safely describe a framebuffer."""
-
-    if type(value) is not int or value < 0:
-        return None
-    return value
 
 
 class DiscreteFramebufferWindow:
@@ -118,47 +111,35 @@ class DiscreteFramebufferWindow:
         differently identified device never changes an already valid window.
         """
 
-        if not isinstance(sample, dict) or sample.get("schema") != GPU_CAPACITY_SCHEMA:
+        header = framebuffer_header(sample, start_unix=self.start_unix, now=now,
+                                    max_age_s=GPU_SAMPLE_MAX_AGE_S)
+        if header is None:
             return False
-        sample_id = sample.get("sample_id")
-        sampled = sample.get("sampled_unix")
-        if (not isinstance(sample_id, str) or not sample_id
-                or type(sampled) not in (int, float) or not math.isfinite(sampled)
-                or sampled < self.start_unix
-                or not 0 <= now - sampled <= GPU_SAMPLE_MAX_AGE_S):
-            return False
+        sample_id, sampled = header.sample_id, header.sampled_unix
         # The broker's publication identity is an observation identity, not
         # an event stream.  Keep constant state for an arbitrarily long
         # progress-governed action and refuse a replay or clock regression.
         if (sample_id == self._last_sample_id
                 or self._last is not None and sampled <= self._last):
             return False
-        devices = sample.get("devices")
-        jobs = sample.get("jobs")
-        if not isinstance(devices, list) or len(devices) != 1 or not isinstance(devices[0], dict):
+        inventory = framebuffer_inventory(header)
+        if inventory is None:
             return False
-        if not isinstance(jobs, list) or not any(
+        if not any(
                 isinstance(job, dict) and job.get("action_key") == self.action_key
                 and job.get("nonce") == self.nonce and job.get("scope_id") == self.scope_id
-                and job.get("complete") is True for job in jobs):
+                and job.get("complete") is True for job in inventory.jobs):
             return False
-        device = devices[0]
+        device = inventory.device
         if (device.get("telemetry_class") != MEMORY_ONLY_TELEMETRY
                 or device.get("memory_domain") != "discrete"):
             return False
-        identity = device.get("uuid")
-        name = device.get("name")
-        device_sampled = device.get("sampled_unix")
-        total = _finite_nonnegative_int(device.get("memory_total_bytes"))
-        free = _finite_nonnegative_int(device.get("memory_free_bytes"))
-        used = _finite_nonnegative_int(device.get("memory_used_bytes"))
-        if (not isinstance(identity, str) or not identity or not isinstance(name, str) or not name
-                or type(device_sampled) not in (int, float) or not math.isfinite(device_sampled)
-                or device_sampled < self.start_unix
-                or not 0 <= now - device_sampled <= GPU_SAMPLE_MAX_AGE_S
-                or total is None or total <= 0 or free is None or used is None
-                or free > total or used > total or free + used != total):
+        reading = framebuffer_device(device, start_unix=self.start_unix, now=now,
+                                     max_age_s=GPU_SAMPLE_MAX_AGE_S)
+        if reading is None:
             return False
+        identity, name, total, free, used = (reading.identity, reading.name, reading.total,
+                                           reading.free, reading.used)
         if self._device_uuid is not None and (identity != self._device_uuid or total != self._total):
             return False
         self._last_sample_id = sample_id
