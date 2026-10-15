@@ -164,3 +164,14 @@ def test_unwritable_initial_companion_refuses_before_any_submission(tmp_path, mo
         '--threads-per-shard', '1', '--shards', '1', '--json', str(report), 'tests'])
     assert pbtest.main() == 2
     assert blocked and not launched
+
+
+def test_coordinator_invocation_identity_never_reaches_native_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv('PRISMABUILD_PBTEST_RUN_ID', 'a' * 32)
+    monkeypatch.setenv('PRISMABUILD_PBTEST_ENTRYPOINT', str(ROOT / 'tools/fleet/pbtest.py'))
+    source = ('import os\ndef test_one():\n'
+              "    assert 'PRISMABUILD_PBTEST_RUN_ID' not in os.environ\n"
+              "    assert 'PRISMABUILD_PBTEST_ENTRYPOINT' not in os.environ\n")
+    root = repository(tmp_path / 'suite', {FILE: source})
+    code, _, rows = dispatch(root, monkeypatch)
+    assert code == 0 and rows[0]['returncode'] == 0

@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from pbtest_shard_output import admitted_child
+from pbtest_shard_output import admitted_child, shard_environment
 from test_pbtest_reconciles_outcomes import pbtest
 from test_pbmergeq import config, mq
 
@@ -105,7 +105,9 @@ def dispatch(checkout: Path, monkeypatch, *, mode: str = 'normal', shards: int =
         evidence = checkout.parent / f'native-{len(launched)}.log'
         launched.append(evidence)
         # The relay changes a real process ending, not the policy result.
-        kwargs.pop('env', None)
+        inherited = kwargs.pop('env', None)
+        if inherited is not None:
+            environment = {**inherited, **shard_environment(command)}
         return REAL_POPEN([sys.executable, '-c', RELAY, mode, str(evidence), *argv],
                           cwd=checkout, env=environment, **kwargs)
 

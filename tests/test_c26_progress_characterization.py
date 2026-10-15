@@ -92,9 +92,11 @@ real = subprocess.Popen
 def payload(command, **kwargs):
     if str(subject.PBRUN) not in [str(part) for part in command]:
         return real(command, **kwargs)
-    from pbtest_shard_output import admitted_child
+    from pbtest_shard_output import admitted_child, shard_environment
     argv, environment = admitted_child(command)
-    kwargs.pop('env', None)
+    inherited = kwargs.pop('env', None)
+    if inherited is not None:
+        environment = {**inherited, **shard_environment(command)}
     return real(argv, env=environment, cwd=os.environ['C26_CHECKOUT'], **kwargs)
 
 subject.subprocess.Popen = payload
