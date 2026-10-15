@@ -17,6 +17,9 @@ import fleet_membership
 import supervise
 import upgrade_client
 
+from client_proof_bridge_fixture import fixed_source_artifact
+from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
+
 ROOT = Path(__file__).resolve().parents[1]
 WRITER = """\
 import json
@@ -61,6 +64,18 @@ def parked_role(tmp_path):
     missing_receipt = tmp_path / "missing-loaded.json"
     malformed_receipt = tmp_path / "malformed-published.json"
     malformed_receipt.write_text("{not JSON")
+    install = tmp_path / "installed"
+    install.mkdir(mode=0o755)
+    install.chmod(0o755)
+    proof = install / "park_proof.py"
+    proof_bytes = fixed_source_artifact(
+        "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
+    assert proof_bytes == (ROOT / "src/prismabuild/park_proof.py").read_bytes()
+    proof.write_bytes(proof_bytes)
+    proof.chmod(0o644)
+    info = proof.lstat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (0, 0, 0o644)
+    assert upgrade_client.trusted(proof) == proof
 
     def set_gate(stamp):
         gate.write_text(json.dumps({"draining": True, "changed_unix": stamp}))

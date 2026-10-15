@@ -4,6 +4,7 @@ import json
 import pytest
 
 import fleet_membership
+from test_client_proof_prior_trust import tmp_path
 from test_park_proof_real_writer import parked_role
 
 
