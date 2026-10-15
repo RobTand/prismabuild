@@ -994,11 +994,12 @@ def test_unreadable_census_finish_retains(tmp_path: Path) -> None:
     assert ledger.available().get(KIND, 0) == cap
 
 
-def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path) -> None:
+def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path, broker) -> None:
     owner = _hexkey("pub-owner")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1028,11 +1029,12 @@ def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path) -> N
     assert row["produced_output_batch"] == ref
 
 
-def test_output_funding_write_keeps_binding_and_transition_contract(tmp_path: Path) -> None:
+def test_output_funding_write_keeps_binding_and_transition_contract(tmp_path: Path, broker) -> None:
     owner, mover = _hexkey("record-owner"), _hexkey("record-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     staged = q.stage_output_intent(
@@ -1132,12 +1134,13 @@ def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path, broker)
     assert row.get("produced_output_batch") == ref
 
 
-def test_sealed_contradictory_kwarg_refuses(tmp_path: Path) -> None:
+def test_sealed_contradictory_kwarg_refuses(tmp_path: Path, broker) -> None:
     """Sealed ref b1 + kwarg ref b2 => publish refuses before exposure (R4)."""
     owner = _hexkey("sq-contra-owner")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1360,13 +1363,14 @@ def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
     assert pool._read_json(q.item_path(pool.READY, mover)) is None
 
 
-def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path) -> None:
+def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path, broker) -> None:
     """Valid filed request, no batch field + nonempty kwarg => contradictory."""
     from prismabuild import core as _pb
     owner = _hexkey("sq-nofield-owner")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
