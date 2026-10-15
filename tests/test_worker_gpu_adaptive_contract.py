@@ -7,6 +7,7 @@ from functools import partial
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -230,7 +231,8 @@ def _run_worker(tmp_path, argv, *, ready, sample=None):
                            create=True), \
          mock.patch.object(worker.box_capacity, "ipv4_addresses",
                            return_value=["10.0.0.1"], create=True), \
-         mock.patch.object(worker.time, "sleep", side_effect=lambda seconds: sleeps.append(seconds)), \
+         mock.patch.object(worker, "time", SimpleNamespace(
+             time=time.time, monotonic=time.monotonic, sleep=sleeps.append)), \
          mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
         assert worker.main() == 0
     return queue, sleeps
