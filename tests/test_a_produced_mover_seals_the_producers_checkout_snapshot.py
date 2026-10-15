@@ -71,6 +71,37 @@ def _isolated_synthetic_launch_context(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_launch_context_keeps_its_narrow_claim_read_error_boundary(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        error_type: type[Exception]) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    owner = "cd" * 32
+    claimed = queue.item_path(pool.CLAIMED, owner)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_text(json.dumps({"worker_script": "/worker.py"}))
+    error = error_type("the claim read failed")
+    cause = ValueError("the original read cause")
+    real_read = Path.read_bytes
+
+    def read(path: Path) -> bytes:
+        if path == claimed:
+            raise error from cause
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+
+    if isinstance(error, OSError):
+        assert po._producer_launch_context(queue, owner) == {
+            "ok": False, "step": "launch-context",
+            "refusal": f"producer-claim-unreadable: {error}"}
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            po._producer_launch_context(queue, owner)
+        assert raised.value is error
+        assert raised.value.__cause__ is cause
+
+
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(root), *args],

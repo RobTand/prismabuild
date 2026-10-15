@@ -326,3 +326,63 @@ def test_a_failed_mover_read_retains_its_original_error_and_path(
     assert isinstance(answer, Unknown)
     assert answer.path == claimed
     assert answer.error is error
+
+
+@pytest.mark.parametrize(("claimed_raw", "expected"), [
+    (None, {"filed_as": "ready"}),
+    (b"", {"filed_as": "ready"}),
+    (b"{}", {}),
+])
+def test_a_queued_read_falls_back_only_from_a_missing_or_empty_claim(
+        tmp_path: Path, claimed_raw: bytes | None,
+        expected: dict[str, object]) -> None:
+    queue = _queue(tmp_path)
+    if claimed_raw is not None:
+        claimed = queue.item_path(pool.CLAIMED, KEY)
+        claimed.parent.mkdir(parents=True, exist_ok=True)
+        claimed.write_bytes(claimed_raw)
+    ready = queue.item_path(pool.READY, KEY)
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    ready.write_text(json.dumps({"filed_as": "ready"}))
+
+    answer = RecordStore(queue.root).queued(KEY)
+
+    assert isinstance(answer, Present)
+    assert answer.value == expected
+
+
+def test_an_invalid_claim_does_not_fall_back_to_a_ready_record(
+        tmp_path: Path) -> None:
+    queue = _queue(tmp_path)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_bytes(b"{")
+    ready = queue.item_path(pool.READY, KEY)
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    ready.write_text(json.dumps({"filed_as": "ready"}))
+
+    answer = RecordStore(queue.root).queued(KEY)
+
+    assert isinstance(answer, Unknown)
+    assert answer.path == claimed
+    assert isinstance(answer.error, pool.PoolContractError)
+    assert isinstance(answer.error.__cause__, json.JSONDecodeError)
+
+
+def test_a_plain_claim_read_does_not_refresh_a_cached_miss(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = _queue(tmp_path)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    cache = NegativeLookupCache(monkeypatch)
+    store = RecordStore(queue.root)
+
+    assert isinstance(store.claimed(KEY), Absent)
+    claimed.write_text(json.dumps({"resource_scope": {"nonce": "next"}}))
+
+    assert isinstance(store.claimed(KEY), Absent)
+    assert cache.revalidations == 0
+    os.listdir(claimed.parent)
+    answer = store.claimed(KEY)
+    assert isinstance(answer, Present)
+    assert answer.value == {"resource_scope": {"nonce": "next"}}
