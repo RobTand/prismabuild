@@ -4076,10 +4076,10 @@ def _serve(args) -> int:
     import signal
 
     with runtime_gate.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
-        return _serve_cycles(args, stop)
+        return _warm_storage(args, stop)
 
 
-def _serve_cycles(args, stop: threading.Event) -> int:
+def _warm_storage(args, stop: threading.Event) -> int:
     mounts = MountMap(list(args.mount_map))
     if not args.dry_run and not mounts.usable():
         raise SystemExit(
