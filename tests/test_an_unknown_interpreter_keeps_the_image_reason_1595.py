@@ -22,6 +22,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -29,7 +30,7 @@ import pbrun  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue, _run_pbrun  # noqa: E402
 
-CAPABILITY = pb.CONTAINER_IMAGE_TAG
+CAPABILITY = contracts.CONTAINER_IMAGE_TAG
 PYTHON = "/home/rob/venvs/pq-pb461728e4-tessera-43da1c39/bin/python"
 REF_A = "ghcr.io/example/stage-a@sha256:" + "a" * 64
 REF_B = "ghcr.io/example/stage-b@sha256:" + "b" * 64
@@ -38,7 +39,7 @@ REF_B = "ghcr.io/example/stage-b@sha256:" + "b" * 64
 def _offer(queue, host, *, capability=True, images=(), capacity=None):
     """One live offer in the PACT shape: the interpreter tag, no path answers."""
 
-    tags = [host, "gb10", pb.INTERPRETER_TAG]
+    tags = [host, "gb10", contracts.INTERPRETER_TAG]
     if capability:
         tags.append(CAPABILITY)
     queue.announce(

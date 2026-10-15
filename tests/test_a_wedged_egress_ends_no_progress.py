@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -470,9 +471,9 @@ def test_a_measured_egress_is_sealed_with_its_grace_and_its_pool(
     assert contention["stage_root"] == str(stage)
     assert contention["priced_bytes_per_s"] == pytest.approx(3 * MIB / priced)
     tags = params["placement"]["required_tags"]
-    assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.POOL_CONTENTION_TAG,
-            pb.EGRESS_PROGRESS_TAG} <= set(tags)
-    assert pb.PROGRESS_CYCLE_TAG not in tags
+    assert {contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.POOL_CONTENTION_TAG,
+            contracts.EGRESS_PROGRESS_TAG} <= set(tags)
+    assert contracts.PROGRESS_CYCLE_TAG not in tags
     assert "dl380g10" in tags
     assert source["mover_progress"][mover_key]["basis"] == "landing"
 

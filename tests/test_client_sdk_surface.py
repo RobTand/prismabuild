@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 import prismabuild.client as client
+from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (
     action_result,
@@ -293,7 +294,7 @@ def test_the_liveness_bound_is_the_one_the_pool_applies():
 
 def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.READER_LEASE_TAG in client.CAPABILITIES
-    assert pb.PROGRESS_TAG in client.CAPABILITIES
+    assert contracts.PROGRESS_TAG in client.CAPABILITIES
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES

@@ -9,6 +9,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from prismabuild import contracts
 from prismabuild import adaptive_cpu, container_images as ci, core as pb, pool
 
 CONTENT = 'content:sha256:' + 'a' * 64
@@ -54,7 +55,7 @@ def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, mon
     q.ledger().ensure_capacity(CAPACITY)
     publish(q)
     before = q.item_path(pool.READY, KEY).read_bytes()
-    claimed = q.claim(tags=[pb.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
+    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
                       observed_images=[CONTENT], container_class_policy=policy(),
                       container_inventory=snapshot(**change))
     assert claimed is None
@@ -67,7 +68,7 @@ def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, mon
 def test_unknown_class_inventory_refuses_even_with_positive_action_reference(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
-    assert q.claim(tags=[pb.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=None) is None
     assert denials(q)[-1]['reason'] == 'container_class_inventory_unknown'
 
@@ -81,17 +82,17 @@ def test_native_claim_survives_class_drift(tmp_path, monkeypatch):
 def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
-    q.announce(host='seen', tags=[pb.CONTAINER_IMAGE_TAG], has_gpu=False,
+    q.announce(host='seen', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
                observed_images=[CONTENT], container_class_verdict=policy().evaluate(snapshot(), now=1000.))
     assert q.placeable(q.ready_items()[0])
-    assert q.claim(tags=[pb.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot(image_contents={})) is None
 
 
 def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
-    claimed = q.claim(tags=[pb.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                       container_class_policy=policy(), container_inventory=snapshot())
     evidence = claimed['container_class_verdict']
     assert evidence['status'] == 'satisfied'
@@ -105,7 +106,7 @@ def test_offer_reports_refusal_and_only_excludes_declared_container_rows(tmp_pat
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(image_contents={}), now=1000.)
-    q.announce(host='drifted', tags=[pb.CONTAINER_IMAGE_TAG], has_gpu=False,
+    q.announce(host='drifted', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
                observed_images=[CONTENT], container_class_verdict=evidence)
     assert q.offers()[0]['container_class_verdict'] == evidence
     assert q.placeable(q.ready_items()[0]) is (not container)
@@ -117,7 +118,7 @@ def test_offer_class_observation_cannot_borrow_fresh_offer_time(tmp_path, monkey
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     evidence = policy().evaluate(snapshot(), now=1000.)
     now[0] = 1031.
-    q.announce(host='old-observation', tags=[pb.CONTAINER_IMAGE_TAG], has_gpu=False,
+    q.announce(host='old-observation', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
                observed_images=[CONTENT], container_class_verdict=evidence)
     assert not q.placeable(q.ready_items()[0])
 
@@ -132,7 +133,7 @@ def test_expiry_during_reservation_abandons_only_this_handle(tmp_path, monkeypat
         now[0] += 6.
         return result
     monkeypatch.setattr(pool.ResourceLedger, 'begin_acquire', delayed_begin)
-    assert q.claim(tags=[pb.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
     assert q.item_path(pool.READY, KEY).exists()
@@ -183,7 +184,7 @@ def test_expiry_during_intent_write_restores_moved_item_and_returns_own_reservat
         original(*args, **kwargs)
         now[0] += 6.
     monkeypatch.setattr(q, '_write_claim_intent', delay)
-    assert q.claim(tags=[pb.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
     assert q.item_path(pool.READY, KEY).exists()
@@ -270,6 +271,6 @@ def test_oversized_offer_timestamp_is_unknown_and_does_not_break_native_placemen
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(), now=1000.)
     evidence[field] = 10 ** 400
-    q.announce(host='malformed-time', tags=[pb.CONTAINER_IMAGE_TAG], has_gpu=False,
+    q.announce(host='malformed-time', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
                observed_images=[CONTENT], container_class_verdict=evidence)
     assert q.placeable(q.ready_items()[0]) is (not container)

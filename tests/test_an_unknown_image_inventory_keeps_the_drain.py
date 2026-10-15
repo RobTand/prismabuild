@@ -28,6 +28,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+from prismabuild import contracts
 from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool  # noqa: E402
 
 T0 = 2_000_000.0
@@ -118,7 +119,7 @@ def box(tmp_path: Path, monkeypatch):
 
     def claim(observed):
         item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
-                           has_gpu=True, tags=[pb.CONTAINER_IMAGE_TAG],
+                           has_gpu=True, tags=[contracts.CONTAINER_IMAGE_TAG],
                            observed_images=observed)
         return None if item is None else item["action_key"]
 

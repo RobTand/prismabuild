@@ -14,6 +14,7 @@ import sys
 
 import prismabuild.core as pb
 import prismabuild.pool as pool
+from prismabuild import contracts
 from prismabuild import publication_canary
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -37,7 +38,7 @@ def _offer(queue, host, *, generation, image=True, gpu=True):
     queue.announce(
         host=host, tags=[HOST, publication_canary.CAPABILITY,
                          f"runtime-generation:{generation}",
-                         *( [pb.CONTAINER_IMAGE_TAG] if image else [] )],
+                         *( [contracts.CONTAINER_IMAGE_TAG] if image else [] )],
         has_gpu=gpu, capacity=dict(CAPACITY),
         observed_images=[IMAGE] if image else [])
 
