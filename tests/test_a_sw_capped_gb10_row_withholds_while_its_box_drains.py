@@ -90,16 +90,16 @@ def box(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     monkeypatch.setattr(adaptive_gpu, "action_contract", lambda item, demand: (
         "shape", False, False, int(demand.get("mem_gb", 0)) * GIB))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [_device()],
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
@@ -133,7 +133,9 @@ def box(tmp_path: Path, monkeypatch):
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
-                                   tags=[pool.socket.gethostname()]))
+                                   tags=[pool.socket.gethostname()],
+                                   cpu_sampler=cpu_sampler,
+                                   gpu_sampler=gpu_sampler))
 
     return queue, clock, sample, publish, tick, claim
 

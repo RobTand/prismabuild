@@ -112,9 +112,9 @@ def box(tmp_path: Path, monkeypatch):
         return shape, False, exclusive, int(demand.get("mem_gb", 0)) * GIB
 
     monkeypatch.setattr(adaptive_gpu, "action_contract", contract)
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [{"uuid": "GPU-1", "name": "NVIDIA GB10", "power_w": 15.,
@@ -124,7 +124,7 @@ def box(tmp_path: Path, monkeypatch):
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
@@ -155,7 +155,7 @@ def box(tmp_path: Path, monkeypatch):
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
-                                   tags=[HOST, "gb10"]))
+                                   tags=[HOST, "gb10"], cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler))
 
     return queue, clock, contracts, publish, tick, claim
 
@@ -375,12 +375,12 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     host = {"psi_some": 0.}
 
-    def sample(self):
+    def sample():
         return {"sampled_unix": now[0], "cpu_count": cpus, "interval_s": 1.,
                 "psi_some": host["psi_some"], "busy_cpus": 0.,
                 "per_cpu_busy": {str(cpu): 0. for cpu in range(cpus)}}
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
+    cpu_sampler = sample
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
 
@@ -392,7 +392,7 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
         return key
 
     def claim():
-        item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+        item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
         return None if item is None else item["action_key"]
 
     # A CPU holder past the transient line with its declared end a day off.
