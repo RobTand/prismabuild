@@ -28,7 +28,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
-from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
 import pbstatus  # noqa: E402
 
 #: Loaded the same way the ``pbtest`` test files load it: a fresh module
@@ -249,11 +249,12 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     """
 
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
+    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG]
     r12, cas_root, checkout = _sealed(tmp_path, "r12", progress=True)
     clock[0] = T0 - 36_000
     _publish(queue, clock, r12, {"cpu": 9, "gpu": 1, "mem_gb": 100},
              cas_root=cas_root, checkout_root=checkout)
-    assert _key_of(queue.claim(capacity=capacity)) == r12
+    assert _key_of(queue.claim(tags=tags, capacity=capacity)) == r12
 
     clock[0] = T0
     shard = _publish(queue, clock, _key("12gb-shard"), {"cpu": 1, "mem_gb": 12})
@@ -262,7 +263,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
         queue.record_pass(shard)
     assert queue.withhold_age(shard) <= pool.WITHHOLD_CEILING_S
 
-    assert _key_of(queue.claim(capacity=capacity)) == small, (
+    assert _key_of(queue.claim(tags=tags, capacity=capacity)) == small, (
         "a day-long holder held the box shut for a shard that cannot fit beside it")
     assert queue.holder_bound(r12)["bound"] == "unbounded"
     denial = _denial(queue, shard)
