@@ -20,11 +20,11 @@ The discussion is append-only in
 | D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Retiring `--stage` awaits Rob and a live-writer drain. |
 | D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Hook retirement awaits Rob. The broader core/library extraction is still owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
-| D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad check and Claude's final delta review remain open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
+| D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
-| D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. Final Claude delta review and assembled funding qualification remain open. B08d alias validation and manifest binding are in progress. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
-| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | B09 public proof names are integrated at `1c94c9bd0119`; assembled qualification is pending. Strict UNKNOWN and proof acceptance remain unfinished. Profile membership awaits Rob. Root consumption requires a separately reviewed optional-member bridge. |
-| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | B10 pilots and mutation checks are owed. There is no blanket raw-write ban. |
+| D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
+| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | B09 public proof names are integrated at `1c94c9bd0119` and qualified in the 303-case assembled check. Strict UNKNOWN and proof acceptance remain unfinished. Profile membership awaits Rob. Root consumption requires a separately reviewed optional-member bridge. |
+| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | The three baseline pilot families passed 79 cases. Shared roles and two runnable prototype variants are in progress; mutation comparisons and wider caller migration remain owed. There is no blanket raw-write ban. |
 | D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
 
 The detailed agreement and source citations are in messages
@@ -52,7 +52,7 @@ No GitHub PR state or deployed behavior changed during this discussion.
 All execution used published PrismaBuild entrypoints. For each action below,
 the coordinator verified the source parent, terminal return code, immutable
 stdout/stderr hashes, and CAS receipt and payload. Failed RED work has no
-success receipt, as expected. There were no skips in these runs.
+success receipt, as expected. Skips are stated explicitly below.
 
 | Unit and source | Actual result | PB action |
 | --- | --- | --- |
@@ -73,6 +73,11 @@ success receipt, as expected. There were no skips in these runs.
 | Role correction, `bdf7e7663f1a` | 410 focused cases passed, including real HTTP retirement/respawn, prewarm cancellation, generation fences and adoption. | `407de0b91631d8f75b712e7c3442c35405b11e4b09cab3b594668aef3df16c66`, `2e380e7bccc2e2cebb80c24fab19ae43f480f7219f6f863dd6e46348b4a8d174` |
 | Roles assembled with prior owners, `4cd546acec53` | 94 merge-sensitive cases passed. Independent Git/AST checks preserved 1,318 unaffected paths and 45 role-only paths. All 43 source commits map to bounded integration units. | `c99bed6ea49a12ce0d5cf47bad31075e8036604d0138081b9229dae3d9686f5a`, `edc5abfbdc6896b299ffac97ba0b50e702c04a9aaec8719257bb887fc04d0307` |
 | Funding fallback, `d3f7c595d1ce` | 99 cases passed after one intended zero-byte-live-file RED failure. Shared byte selection preserves each reader's existing encoding and size policy. | `b3d2d4d012c6a4709442ad57928509643a4de68d0aa5886f0f363dbe6910001c` |
+| Role broad source, `bdf7e7663f1a` | 5,358 passed, three capability skips; 5,361 collected nodes. | `b7939cbedfc725c2e07db1e7b1b9d561b60ea7e386f5e672d3d4d10731685f0e`, `0e45970726da08686eb914d506cc35d3155593345bfc385970a80f8dbf62bef7`, `85b05ef5c6a395e27d280267c3cd8bcea4b3a91c168bd72130b311da86add11f`, `4aea6365c59ca863d9b8eaf2be49ecd7b373a0e68c99bf273bf384ece5209150` |
+| Roles, public proof names and funding assembled, `34ae6fedc87e` | 303 passed, no skips. | `063acbc0f336452239a2cd1c8b952a467bf44142bbd97f2e42deef81071f1d0f`, `261858b04f734198c72f48e85a6f05109c86e9ae0dfc6971f1c2ac471d6971b3` |
+| Alias and pinned candidate assembled, `30ca9a6f6041` | 191 passed, no skips, including the duplication guard. | `bf0c4310e7799c5a0421ad601d43b00bf945c98f7b8f7bdf42bafc12cedfa7a8`, `514c380497d7e2879199a4af8540f8bbc5a673c6cd005c74d5c182c7cb01a620` |
+| Required proof identity and key collision RED, `3ba0fbfe4d92` | 28 intended failures, 16 controls; no setup failures or skips. | `9ede53811ad1baf4d8953a7eadc94812c58f937d4be716032a5bc95a07201b57` |
+| Fixture pilot baseline, `34ae6fedc87e` | 79 passed across the three complete source families, no skips. | `df5c0a6aa37c189ef5c49093862d11ca0d39b8260fb454fc6081fad59e9329c3` |
 
 The combined 55-file cohort at `1943a388ecd1` passed all 1,264 cases. It covers
 registry producers, peer placement and all ten priority fault files. Its verified
@@ -88,12 +93,36 @@ Evidence artifacts are under
 New unit qualification does not replace
 the final integrated check or promote any deployment/workload-proof state.
 
-The current role broad check remains in progress, so its earlier failed broad
-runs remain failed evidence. Public proof-name integration also still needs its
-assembled-source check. The first alias RED had eight intended failures and two
-invalid-command fixture failures, not ten intended failures. The corrected RED
-has 12 confirmed failure-to-refuse cases and 19 passing controls. Its result is
-not a passing alias implementation check.
+The role broad check completed at `bdf7e7663f1a` with 5,358 passed and three
+skipped nodes across 384 files. Two skips require a readable NFS mount; one
+requires filesystem support for file-version proof. Six additional passing
+subtest reports are not collected nodes. Earlier failed broad runs remain
+failed evidence. The assembled role/proof/funding check at `34ae6fedc87e` passed
+303 cases. Alias and candidate-byte pinning at `30ca9a6f6041` passed 191 cases,
+including the duplication guard. Neither assembled check skipped a case.
+
+The first alias RED had eight intended failures and two invalid-command fixture
+failures, not ten intended failures. The corrected RED has 12 confirmed
+failure-to-refuse cases and 19 passing controls. Candidate-byte pinning then
+reproduced three intended failures with one passing control before its fix.
+These failure records remain distinct from the passing implementation checks.
+
+## New drain-identity finding
+
+The old marker spelling maps both `1e-20` and `1e+20` to `1e_20`. Real-process
+cases at `3ba0fbfe4d92` reproduce acceptance of the previous drain's marker in
+both directions. The same cohort proves unknown required drain facts can be
+accepted with an empty process census. Its clean result is 28 intended
+assertion failures and 16 passing controls, with no setup failures or skips.
+
+The proposed correction validates finite numeric drain facts, uses distinct
+exponent-sign bytes, preserves ordinary decimal spellings, and rejects the
+ambiguous legacy exponent spelling. Physical park proof stays independent of
+runtime receipt availability. Strict leaf/member implementation is in progress;
+the root consumer still needs the separately reviewed reader-first optional
+member bridge and fresh-process recovery proof. The independent bridge review
+and D11 source finding were sent to Claude in `20261015T030349Z`; no reply has
+arrived. This is not a mutually closed discussion or a completed B09 card.
 
 ## Remaining requeue observations
 
