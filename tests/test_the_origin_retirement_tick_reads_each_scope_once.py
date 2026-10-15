@@ -29,7 +29,6 @@ import collections
 import json
 from pathlib import Path
 import sys
-import time
 
 import pytest
 
@@ -38,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
+from kept_read_clock import after_paths  # noqa: E402
 from prismabuild import kept_reads, produced_output as po  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _bind_owner, _publish_consumer, _run_consumer,
@@ -100,11 +100,6 @@ class _World:
                 str(self.instance["output_prefix"])):
             change(self.commitments)
 
-    def settle(self) -> None:
-        """Let one clock tick pass, so a version may be kept (#1045)."""
-
-        time.sleep(0.05)
-
     def tick(self) -> list[dict]:
         return po.origin_retirement_tick(self.queue)
 
@@ -125,7 +120,7 @@ def _version_keepable(path: Path) -> bool:
     """
 
     fence = kept_reads.version_fence()
-    return kept_reads.keepable_version(path.stat(), fence) is not None
+    return kept_reads.keepable_version(path.stat(), fence, path=path) is not None
 
 
 class _Reads:
@@ -158,7 +153,7 @@ def test_a_quiet_scope_parses_its_commitments_once(tmp_path: Path,
 
     world = _World(tmp_path, batches=5)
     world.queue.finish(world.owner, status="executed")
-    world.settle()
+    after_paths(monkeypatch, world.commitments)
     if not _version_keepable(world.commitments):
         pytest.skip("this host's filesystem cannot vouch for a file version")
     reads = _Reads(monkeypatch, world.commitments)
