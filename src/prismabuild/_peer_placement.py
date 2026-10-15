@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -25,14 +25,9 @@ class PeerCapacity:
 
 @dataclass
 class PeerObservation:
-    raw: PeerCapacity
+    remaining: PeerCapacity
     denials: Mapping[str, object]
-    remaining: PeerCapacity = field(init=False)
     scratch_isolated: bool | None = None
-
-    def __post_init__(self) -> None:
-        self.remaining = PeerCapacity(dict(self.raw.available), dict(self.raw.observed),
-                                      self.raw.free_preferred)
 
     def charge(self, demand: Mapping[str, int]) -> None:
         for kind, need in demand.items():

@@ -5791,8 +5791,9 @@ charges that view, so a pass never leaves a host more rows than it fits.
 
 Peer placement now owns one lazy offer snapshot and one advisory ledger
 observation per peer per claim pass in `_peer_placement.PlacementPass`.
-Each observation retains raw capacity and capacity after CPU-host or scratch
-yields. These yields use one charge operation. CPU-host, cross-resource and
+Each observation owns the capacity remaining after CPU-host or scratch
+yields, initialized from copied ledger and offer dictionaries. These yields
+use one charge operation. CPU-host, cross-resource and
 scratch fits require measured capacity for every demanded kind;
 preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
@@ -5803,8 +5804,8 @@ This avoids a second timer wait after another rule has already left a peer
 as much work as it fits; timer-only yields can still name more rows than the
 peer fits. These are advisory placement decisions, not peer reservations.
 
-Reusing the first advisory observation deliberately changes observation timing: a peer
-ledger or offer replacement after that read is ordinarily observed on the
+Reusing the first advisory observation deliberately changes observation
+timing: a peer ledger or offer replacement after that read is ordinarily observed on the
 next claim pass, rather than on a later timer-rule read in this pass. The
 retained-base replay compares fixed observations and an explicit scratch
 replacement history, not arbitrary concurrent updates. Scratch still rereads
