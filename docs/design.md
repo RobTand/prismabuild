@@ -4606,8 +4606,12 @@ The storage prewarm role also checks the existing maintenance gate before each
 queue cycle. A closed, missing or unreadable gate parks the continuous process
 and records its PID/start-time marker through `role_session.post_park_marker`.
 `--once` returns 75 without starting a cycle under the same conditions, including
-with `--dry-run`. An in-progress cycle finishes before the process records a
-park; disk holds and filesystem waits can therefore delay parking. At the next
+with `--dry-run`. SIGTERM and SIGINT request cooperative stop through an Event.
+Readers stop between blocks, join, abort partial stage sinks and publish the
+cycle's accounting and result before the role exits or records a park marker.
+An unreturned filesystem read or write can therefore delay parking. A complete
+stage entry keeps its normal publication rules; a partial entry never becomes
+a visible stage object. At the next
 boundary a changed runtime commit or generation makes the process exit for
 supervisor replacement, even while parked. One-cycle invocations return 75
 on that transition so an unperformed cycle is not reported as complete.
@@ -4662,9 +4666,11 @@ daemon:
   is stopped when idle and respawned from the active generation once the
   census reports it gone (since #709; a SIGTERM request is not an exit, and
   an old generation's role holds no singleton lock that could keep the
-  replacement from serving beside it). The idle rule is every restart path's:
-  SIGTERM only, never a role mid-cycle, so a stale role finishes the service
-  cycle it is inside and cycles on a later tick.
+  replacement from serving beside it). Restart paths send SIGTERM only.
+  Workers drain their current action and tiers finish their composite cycle.
+  Prewarm cooperatively stops its readers, aborts partial sinks and publishes
+  accounting before it exits. A role's childless process census cannot prove
+  that its reader threads have finished.
 * **Every refusal is stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
   `prismabuild.role_session` (the module the roles and supervisor import as
@@ -4680,8 +4686,8 @@ daemon:
   mode relies on loops cycling at their own boundaries; the handshake sits
   at claim boundaries only, an executing action is atomic to the loop and
   finishes under the generation that claimed it, and a worker that refuses
-  leaves the ready record for a successor to claim. Nothing interrupts
-  work in flight, so the handshake cannot fight a converge.
+  leaves the ready record for a successor to claim. Prewarm's cooperative
+  cancellation settles its readers and accounting before replacement.
 
 ### The role singleton and stopped-role health (2026-09-19, #709)
 
@@ -4764,6 +4770,7 @@ Each role owns its work, idle waits, error handling, one-shot exit policy and
 completion boundary. `stop_requests` supplies an Event and restores the exact
 signal handlers each caller chose. The worker installs SIGTERM only. Tier and
 local tier install SIGTERM and SIGINT. Worker loops remain multi-instance;
+Prewarm also installs SIGTERM and SIGINT and passes that same Event to readers.
 storage, tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
 `generation_receipt` owns receipt parsing and identity comparison, while the

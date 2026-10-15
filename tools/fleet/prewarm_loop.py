@@ -4073,13 +4073,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _serve(args) -> int:
+    import signal
+
+    with runtime_gate.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
+        return _serve_cycles(args, stop)
+
+
+def _serve_cycles(args, stop: threading.Event) -> int:
     mounts = MountMap(list(args.mount_map))
     if not args.dry_run and not mounts.usable():
         raise SystemExit(
             "prewarm: no local mount from --mount-map exists on this host; "
             "this loop belongs on the storage host only")
     queue = None
-    stop = threading.Event()
     # One ledger for the life of the role: the pacer is rebuilt every cycle so
     # a replaced vdev is picked up, and hold time that reset with it would
     # answer "this poll" to an operator asking "since you started".
@@ -4097,9 +4103,8 @@ def _serve(args) -> int:
             loaded_generation=loaded_generation) is not None
 
     while True:
-        # Finish the current cycle before parking; a marker must never certify
-        # a reader that is still inside its file reads. Check rotation first so
-        # even a parked role leaves old imports for supervisor replacement.
+        # Reader threads, partial sinks and cycle accounting have completed
+        # before this boundary can acknowledge a stop or a drain.
         if runtime_moved():
             print("prewarm: runtime moved; exiting for supervisor reload",
                   file=sys.stderr, flush=True)
@@ -4109,10 +4114,14 @@ def _serve(args) -> int:
             runtime_gate.post_park_marker(gate)
             print("prewarm: maintenance gate closed; storage cycle deferred",
                   file=sys.stderr, flush=True)
+            if stop.is_set():
+                return 0
             if args.once:
                 return 75
             time.sleep(args.poll_s)
             continue
+        if stop.is_set():
+            return 0
         if queue is None:
             queue = pool.PoolQueue(Path(args.pool_root))
             probe = pacer_from_args(args)
@@ -4125,7 +4134,7 @@ def _serve(args) -> int:
         pacer.notify = announce
         # Topology discovery may block. Re-enter the boundary if its setup
         # outlived an open gate or the runtime it was preparing to serve.
-        if runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+        if stop.is_set() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
             continue
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)
@@ -4133,6 +4142,8 @@ def _serve(args) -> int:
         if args.log:
             with open(args.log, "a") as handle:
                 handle.write(line + "\n")
+        if stop.is_set():
+            continue
         if args.once:
             return 0
         time.sleep(args.poll_s)
