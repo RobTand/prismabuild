@@ -39,34 +39,34 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.interval_s <= 0:
         parser.error("interval must be positive")
-    loaded = runtime_gate.loaded_runtime_commit()
     try:
-        with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop, \
-                runtime_gate.role_singleton(Path(__file__)):
-            while not stop.is_set():
-                published = runtime_gate.published_commit()
-                if loaded and published and loaded != published:
-                    return 75 if args.once else 0
-                gate = runtime_gate.read_maintenance_gate()
-                if gate is not None:
-                    runtime_gate.post_park_marker(gate)
-                    if args.once:
-                        return 75
-                else:
-                    try:
-                        queue = pool.PoolQueue(args.pool_root)
-                        queue.ensure_layout()
-                        result = local_tier_cycle(queue, socket.gethostname(), resident_sets.read_policy(args.policy))
-                    except Exception as error:
-                        print(json.dumps({"event": "localtier-cycle-error",
-                            "host": socket.gethostname(), "error": f"{type(error).__name__}: {error}"}), flush=True)
+        with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
+            loaded = runtime_gate.loaded_runtime_commit()
+            with runtime_gate.role_singleton(Path(__file__)):
+                while not stop.is_set():
+                    published = runtime_gate.published_commit()
+                    if loaded and published and loaded != published:
+                        return 75 if args.once else 0
+                    gate = runtime_gate.read_maintenance_gate()
+                    if gate is not None:
+                        runtime_gate.post_park_marker(gate)
                         if args.once:
-                            return 1
+                            return 75
                     else:
-                        print(json.dumps(result), flush=True)
-                        if args.once:
-                            return 1 if any(row.get("error") for row in result.get("lease_pass", [])) else 0
-                stop.wait(args.interval_s)
+                        try:
+                            queue = pool.PoolQueue(args.pool_root)
+                            queue.ensure_layout()
+                            result = local_tier_cycle(queue, socket.gethostname(), resident_sets.read_policy(args.policy))
+                        except Exception as error:
+                            print(json.dumps({"event": "localtier-cycle-error",
+                                "host": socket.gethostname(), "error": f"{type(error).__name__}: {error}"}), flush=True)
+                            if args.once:
+                                return 1
+                        else:
+                            print(json.dumps(result), flush=True)
+                            if args.once:
+                                return 1 if any(row.get("error") for row in result.get("lease_pass", [])) else 0
+                    stop.wait(args.interval_s)
     except (runtime_gate.RoleLockHeld, runtime_gate.RoleLockUnavailable) as exc:
         print(f"localtier: {exc}", file=sys.stderr)
         return runtime_gate.ROLE_SINGLETON_HELD_EXIT

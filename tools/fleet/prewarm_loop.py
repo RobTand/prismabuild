@@ -4092,11 +4092,9 @@ def _serve(args) -> int:
               file=sys.stderr, flush=True)
 
     def runtime_moved() -> bool:
-        current = runtime_gate.published_commit()
-        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
-        return bool((current and current != loaded_commit) or (
-            loaded_generation and current_generation
-            and loaded_generation != current_generation))
+        return runtime_gate.generation_drift(
+            loaded_commit=loaded_commit,
+            loaded_generation=loaded_generation) is not None
 
     while True:
         # Finish the current cycle before parking; a marker must never certify

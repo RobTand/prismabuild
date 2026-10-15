@@ -11597,11 +11597,9 @@ def _serve_cycles(args, stop_requested) -> int:
     cycle_failed = False
 
     def runtime_moved() -> bool:
-        current = runtime_gate.published_commit()
-        current_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
-        return bool((current and current != loaded_commit) or (
-            loaded_generation and current_generation
-            and loaded_generation != current_generation))
+        return runtime_gate.generation_drift(
+            loaded_commit=loaded_commit,
+            loaded_generation=loaded_generation) is not None
 
     while True:
         # All adoption/cycle/final receipt and log writes have finished here.
