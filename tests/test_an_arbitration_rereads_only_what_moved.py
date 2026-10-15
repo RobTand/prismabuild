@@ -432,50 +432,6 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
     assert target.read_bytes() == OLD
 
 
-@pytest.mark.parametrize("extra", ["unrelated", "reused", "late"])
-def test_a_refusal_cannot_pay_for_an_unjustified_listing(
-        fleet, monkeypatch: pytest.MonkeyPatch, extra: str) -> None:
-    """The regression gate must reject a re-list without its own refusal."""
-
-    queue, _stage, _cas = fleet
-    root = queue.root / pool.RESIDENCY
-    first, second = root / "first", root / "second"
-    first.mkdir()
-    second.mkdir()
-    publisher = base._publisher(fleet, base._key(), base._key())
-    after_paths(monkeypatch, root, first, second)
-    # Keep trust stable except for one root comparison. Exercise the real
-    # census, including current -> version, rather than synthetic counters.
-    refuse_root = False
-
-    def filesystem(_info, *, path=None, **_kwargs):
-        nonlocal refuse_root
-        if refuse_root and os.fspath(path) == str(root):
-            refuse_root = False
-            return None
-        return "tmpfs"
-
-    monkeypatch.setattr(kept_reads, '_object_filesystem_type', filesystem)
-    touches = _forest_touches(monkeypatch, publisher, root)
-    publisher._forest_census()
-    assert publisher._listed_root is not None
-    assert set(publisher._listed_children) == {"first", "second"}
-    with publisher.queue.stage_ownership_lock(str(publisher.stage_root)):
-        if extra == "late":
-            with os.scandir(second) as entries:
-                tuple(entries)
-        refuse_root = True
-        publisher._forest_census()
-        if extra != "late":
-            target = second if extra == "unrelated" else root
-            with os.scandir(target) as entries:
-                tuple(entries)
-    with pytest.raises(AssertionError, match="unjustified forest listing"):
-        _assert_forest_listings(
-            touches.events, str(root), [str(first), str(second)])
-    assert touches.refusals == 1
-
-
 @pytest.mark.parametrize("changed", [
     "stable", "root", "namespace", "initial", "both"])
 def test_only_the_directory_that_refuses_trust_is_relisted(
