@@ -72,7 +72,9 @@ def rpc(endpoint, operation, **fields):
     Path(config['maintenance_gate']).write_text(json.dumps({
         'draining': backend['holder'] is not None, 'changed_unix': 458.0,
         'owner': backend['holder']}))
-    reply = dict(ok=True, health=True, draining=backend['holder'] is not None,
+    health = (not backend.get('fail_new_health', False)
+              or (install / 'resource_broker.py').read_bytes().startswith(b'old:'))
+    reply = dict(ok=True, health=health, draining=backend['holder'] is not None,
                  active_scopes=backend['active'], maintenance_protocol=2,
                  maintenance_durable_protocol=1,
                  installed_sha256=backend['loaded'])
@@ -205,7 +207,14 @@ updater.recover = recover
 lock = (Path(config['state_dir']) / 'upgrade.lock').open('a')
 fcntl.flock(lock, fcntl.LOCK_EX)
 try:
-    if mode == 'loaded':
+    if mode == 'trust':
+        try:
+            program['trusted'](install / 'park_proof.py')
+        except (OSError, ValueError) as error:
+            result = {'trusted': False, 'error': str(error)}
+        else:
+            result = {'trusted': True}
+    elif mode == 'loaded':
         result = {'loaded_matches': updater.loaded_matches(rpc(None, 'maintenance_status'))}
     else:
         result = updater.run()
@@ -223,6 +232,16 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def fixed_source_artifact(name, revision, path, expected_sha256):
+    staged = os.environ.get("PRISMABUILD_PROOF_ARTIFACT_ROOT")
+    if staged:
+        data = (Path(staged) / name).read_bytes()
+    else:
+        data = subprocess.check_output(["git", "show", f"{revision}:{path}"], cwd=ROOT)
+    assert _sha(data) == expected_sha256
+    return data
+
+
 @pytest.fixture
 def publication(tmp_path):
     generation = tmp_path / "generations" / "proof-bridge"
@@ -231,9 +250,9 @@ def publication(tmp_path):
     run = tmp_path / "run"
     for path in (generation, install, state, run):
         path.mkdir(parents=True)
-    historical = subprocess.check_output(
-        ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
-    assert _sha(historical) == PREBRIDGE_UPDATER_SHA256
+    historical = fixed_source_artifact(
+        "prebridge-upgrader.py", PREBRIDGE, "tools/fleet/upgrade_client.py",
+        PREBRIDGE_UPDATER_SHA256)
     for name in CLIENT_SOURCES:
         if name != "park_proof.py":
             (install / name).write_bytes(historical if name == "upgrade_client.py"
@@ -279,9 +298,9 @@ def _fresh(publication, mode="run"):
 @pytest.fixture
 def capable_publication(publication):
     _, install, _, _, _, _ = publication
-    code = subprocess.check_output(
-        ["git", "show", f"{CAPABLE_BRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
-    assert _sha(code) == CAPABLE_BRIDGE_SHA256
+    code = fixed_source_artifact(
+        "protocol-one-upgrader.py", CAPABLE_BRIDGE, "tools/fleet/upgrade_client.py",
+        CAPABLE_BRIDGE_SHA256)
     (install / "upgrade_client.py").write_bytes(code)
     return publication
 
