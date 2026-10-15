@@ -141,6 +141,21 @@ def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
 
 
 
+def generation_aliases(
+        boxes: Mapping[str, object]) -> dict[str, frozenset[str]]:
+    """Declared names per canonical box within one generation."""
+
+    declared = {}
+    for key in sorted(boxes):
+        entry = boxes[key]
+        names = {key}
+        alias = entry.get("_alias") if isinstance(entry, dict) else None
+        if isinstance(alias, str) and alias:
+            names.add(alias)
+        declared[key] = frozenset(names)
+    return declared
+
+
 def entry_for_host(boxes: Mapping[str, object], host: str) -> dict | None:
     """Prefer a canonical entry; otherwise require one declared alias match."""
     if host in boxes and isinstance(boxes[host], dict):

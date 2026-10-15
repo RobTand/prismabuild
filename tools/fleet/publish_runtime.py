@@ -1904,15 +1904,8 @@ def _roster_entries() -> list[tuple[str, frozenset[str], object]]:
             raise ValueError("no boxes declared")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
-    declared = []
-    for key in sorted(boxes):
-        entry = boxes[key]
-        names = {key}
-        alias = entry.get("_alias") if isinstance(entry, dict) else None
-        if isinstance(alias, str) and alias:
-            names.add(alias)
-        declared.append((key, frozenset(names), entry))
-    return declared
+    declared = fleet_roster.generation_aliases(boxes)
+    return [(key, names, boxes[key]) for key, names in declared.items()]
 
 
 def _roster_boxes() -> list[tuple[str, frozenset[str]]]:

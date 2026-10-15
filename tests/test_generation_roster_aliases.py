@@ -84,3 +84,33 @@ def test_barrier_accepts_an_alias_equal_to_its_own_key(fleet):
     _offer(fleet, "one")
     assert barrier_publisher._barrier_roster(
         _roster_pair(fleet, {"one": {"_alias": "one"}})) == ["one"]
+
+
+@pytest.mark.parametrize("alias", [None, "", 7, ["not-a-name"], "bad*name"])
+def test_candidate_preserves_its_alias_shape_policy(tmp_path, monkeypatch, alias):
+    checkout = _checkout(tmp_path / "checkout", {"boxes": {"one": {"_alias": alias}}})
+    mirror = _publish(tmp_path, monkeypatch, checkout, [])
+    assert candidate_publisher.main() == 0
+    assert mirror.is_symlink()
+
+
+@pytest.mark.parametrize("alias,accepted", [
+    (None, True), ("", True), (0, True), ([], True),
+    (7, False), (["not-a-name"], False), ("bad*name", False),
+])
+def test_barrier_preserves_its_alias_shape_policy(fleet, alias, accepted):
+    generations = _roster_pair(fleet, {"one": {"_alias": alias}})
+    _offer(fleet, "one")
+    if accepted:
+        assert barrier_publisher._barrier_roster(generations) == ["one"]
+    else:
+        with pytest.raises(SystemExit, match="invalid barrier roster"):
+            barrier_publisher._barrier_roster(generations)
+
+
+@pytest.mark.parametrize("document", [{}, {"boxes": []}, {"boxes": {}}])
+def test_candidate_preserves_its_roster_shape_policy(tmp_path, monkeypatch, document):
+    checkout = _checkout(tmp_path / "checkout", document)
+    mirror = _publish(tmp_path, monkeypatch, checkout, [])
+    assert candidate_publisher.main() == 0
+    assert mirror.is_symlink()
