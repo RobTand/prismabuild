@@ -633,10 +633,6 @@
    "tools/fleet/admission_shared_io.py",
    "tools/fleet/pbtest_outcomes.py"
   ],
-  "pool_mountpoint": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
   "promote": [
    "src/prismabuild/publication_canary.py",
    "tools/fleet/ram_promote.py"
