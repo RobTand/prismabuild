@@ -280,6 +280,10 @@ receipt MATCH. The loader is lazy: construction, current-member checks and
 transaction recovery do not require a trusted proof leaf. Another named holder
 and active rollout epochs retain their existing limits. Bridge qualification
 requires deterministic captured-byte replacement and fresh-process journal/copy/
-recovery histories. The private two-host transport qualifier still needs its
-actual-root/local-install and unprivileged shared-reader execution route proved;
-its fake broker and process census do not establish physical-fleet quiescence.
+recovery histories. The private two-host transport qualifier uses a root
+container with its installed updater and proof under private `/var/lib`.
+Its runtime and rollout reads and marker writes use the installed program's
+actual unprivileged subprocesses. The coordinator and fixture writes use worker
+filesystem credentials. Native ARM/NFS reader evidence and all four distinct-host
+scenario outcomes remain required before integration. Its fake broker and
+process census do not establish physical-fleet quiescence.

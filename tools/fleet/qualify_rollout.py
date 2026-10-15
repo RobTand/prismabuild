@@ -3,25 +3,32 @@
 
 This is deliberately an actor, not a local test runner.  ``--emit-manifest``
 creates paired x86/GB10 campaign rows; each admitted actor reads and writes
-only its fresh root below ``/mnt/shared/pb-qualification``.  The shared tree
-uses the real rollout marker transport and the real coordinator and participant
-algorithms.  The broker, systemctl result, and process census are narrow local
-simulations: PB actions cannot obtain host root.  They model gate state,
-installed-file health, and the versioned supervisor/worker/parked census.
+only its fresh root below ``/mnt/shared/pb-qualification``. Each actor uses a
+private root container for its trusted installed updater and real unprivileged
+reader subprocesses. Shared fixtures and the real coordinator run with worker
+filesystem credentials. The broker, systemctl result, and process census remain
+narrow simulations with no host-root service or live broker access.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
+import pwd
 import re
 import socket
 import stat
+import subprocess
 import sys
+import tempfile
+import threading
 import time
+from typing import NamedTuple
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -34,6 +41,38 @@ QUALIFICATION_ROOT = Path("/mnt/shared/pb-qualification")
 SCENARIOS = ("success", "missing", "rollback", "swap-crash")
 THREAD_ENV = {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
               "OPENBLAS_NUM_THREADS": "1"}
+SOURCE_FILES = ("tools/fleet/qualify_rollout.py", "tools/fleet/upgrade_client.py",
+                "tools/fleet/publish_runtime.py", "src/prismabuild/park_proof.py")
+
+
+class ActorContext(NamedTuple):
+    reader_uid: int
+    reader_gid: int
+    host: str
+    job_slice: str
+    affinity: tuple[int, ...]
+    owner: str
+    image: str
+    machine: str
+    source_sha256: dict[str, str]
+
+
+@contextmanager
+def credentials(uid, gid):
+    if os.getuid() != 0 or threading.active_count() != 1:
+        raise RuntimeError("credential scopes require a single-threaded container root actor")
+    previous = os.geteuid(), os.getegid(), os.getgroups()
+    try:
+        os.seteuid(0)
+        os.setgroups([])
+        os.setegid(gid)
+        os.seteuid(uid)
+        yield
+    finally:
+        os.seteuid(0)
+        os.setgroups(previous[2])
+        os.setegid(previous[1])
+        os.seteuid(previous[0])
 
 
 def _qualify_rollout_canonical(value):
@@ -243,34 +282,63 @@ class FakeBroker:
         return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
 
-def private_config(root, host):
-    local = Path(root) / "hosts" / host
+def private_config(root, local, reader_uid):
     return {"runtime": str(Path(root) / "repo"),
             "generation_store": str(Path(root) / "runtime-generations"),
             "rollout_root": str(Path(root) / "rollout"),
             "install_dir": str(local / "install"), "state_dir": str(local / "state"),
             "maintenance_gate": str(local / "run" / "maintenance.json"),
-            "reader_uid": os.getuid()}
+            "reader_uid": reader_uid}
 
 
-def make_upgrader(root, host, upgrade, *, fail_first_start=False):
-    config = private_config(root, host)
-    install, state = Path(config["install_dir"]), Path(config["state_dir"])
-    install.mkdir(parents=True, exist_ok=True)
-    state.mkdir(parents=True, exist_ok=True)
-    source = Path(config["runtime"]).resolve(strict=True)
-    for name, member in {**upgrade.MEMBERS,
-                         "park_proof.py": upgrade.OPTIONAL_MEMBERS["park_proof.py"]}.items():
-        (install / name).write_bytes((source / member).read_bytes())
-    broker = FakeBroker(root, config, upgrade, fail_first_start=fail_first_start)
-
-    def poster(relpath, content):
-        return upgrade.post_marker(Path(config["rollout_root"]), relpath, content)
-
-    return (upgrade.Upgrader(config, rpc=broker.rpc, command=broker.command,
-                             sleep=lambda _: None, reader=upgrade.desired,
-                             procs=broker.procs, poster=poster,
-                             rollout_reader=upgrade.read_rollout), broker)
+def make_upgrader(root, host, upgrade, *, local, reader_uid, fail_first_start=False):
+    with credentials(0, 0):
+        config = private_config(root, local, reader_uid)
+        install, state = Path(config["install_dir"]), Path(config["state_dir"])
+        install.mkdir(mode=0o755)
+        state.mkdir(mode=0o755)
+        source = Path(config["runtime"]).resolve(strict=True)
+        for name, member in {**upgrade.MEMBERS,
+                             "park_proof.py": upgrade.OPTIONAL_MEMBERS["park_proof.py"]}.items():
+            destination = install / name
+            destination.write_bytes((source / member).read_bytes())
+            destination.chmod(0o644)
+        config_path = local / "enrollment.json"
+        config_path.write_bytes(_qualify_rollout_canonical(config))
+        config_path.chmod(0o644)
+        installed = load(install / "upgrade_client.py", "qualification_installed_upgrader")
+        for path in (local, install, state, config_path, Path(installed.__file__)):
+            installed.trusted(path)
+        proof = installed.load_installed_park_proof(install)
+        broker = FakeBroker(local, config, installed, fail_first_start=fail_first_start)
+        upgrader = installed.Upgrader(
+            config, rpc=broker.rpc, command=broker.command, sleep=lambda _: None,
+            reader=lambda value: installed.desired_as_reader(config_path, value),
+            procs=broker.procs,
+            poster=lambda relpath, content: installed.post_as_reader(
+                config_path, config, relpath, content),
+            rollout_reader=lambda value, epoch=None: installed.rollout_as_reader(
+                config_path, value, epoch))
+        version, _blobs = upgrader.reader(config)
+        snapshot = upgrader.rollout_reader(config)
+        relpath = "qualification/" + host + ".json"
+        content = _qualify_rollout_canonical({"host": host, "reader_uid": reader_uid})
+        assert upgrader.poster(relpath, content) is True
+        assert upgrader.poster(relpath, content) is False
+        marker = Path(config["rollout_root"]) / relpath
+        info = marker.stat()
+        assert marker.read_bytes() == content
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (
+            reader_uid, pwd.getpwuid(reader_uid).pw_gid, 0o644)
+        route = {"host": host, "installed_program": installed.__file__,
+                 "installed_updater_sha256": upgrader.executing_sha256,
+                 "installed_proof_sha256": proof.sha256,
+                 "private_local_root": str(local), "reader_uid": info.st_uid,
+                 "reader_gid": info.st_gid, "reader_marker": str(marker),
+                 "runtime_generation": version["generation"],
+                 "rollout_epoch": snapshot["intent"]["epoch"] if snapshot else None}
+    event(root, "reader-route-" + host, **route)
+    return upgrader, broker
 
 
 def actor_ready(root, role, cgroup):
@@ -300,7 +368,7 @@ def initialise(root, source, upgrade, publisher, scenario, records):
         "schema": "prismabuild.rollout_qualification.run.v1", "scenario": scenario,
         "created_unix": time.time(), "boundary": {
             "real": "two independently admitted PB actors, distinct hosts, shared-NFS write-once markers and coordinator algorithm",
-            "simulated": "private broker gate/installed-file health, systemctl, and local process census; no host root or live fleet service"},
+            "simulated": "private broker gate/installed-file health, systemctl, and local process census; no host-root service or live fleet service"},
         "source": {"harness": sha256(Path(__file__).read_bytes()),
                    "upgrade_client": sha256((source / "tools/fleet/upgrade_client.py").read_bytes()),
                    "publish_runtime": sha256((source / "tools/fleet/publish_runtime.py").read_bytes())}}))
@@ -342,16 +410,15 @@ def host_marker(upgrade, snapshot, host, phase):
 
 
 def participant_tick(upgrader, broker, root, role):
-    try:
-        result = upgrader.run()
-    except Exception as exc:
-        # Match the installed service's error boundary and subsequent timer
-        # tick. Separate target/epoch reads can straddle a pointer move; an
-        # uncertain tick must retain its hold, then retry fresh observations.
-        # A persistent defect still fails the actor's terminal deadline.
-        assert broker.draining is True, "participant error released admission"
-        result = upgrader.report("error", error=str(exc),
-                                 recovery_pending=upgrader.journal.exists())
+    with credentials(0, 0):
+        try:
+            result = upgrader.run()
+        except Exception as exc:
+            # Match the installed timer's retry after separate pointer/epoch
+            # reads straddle a move. Uncertainty must retain the drain.
+            assert broker.draining is True, "participant error released admission"
+            result = upgrader.report("error", error=str(exc),
+                                     recovery_pending=upgrader.journal.exists())
     event(root, role + "-" + result["state"] + "-" + uuid.uuid4().hex,
           host=result["host"], state=result["state"],
           gate_closed=broker.draining, error=result.get("error"),
@@ -359,7 +426,7 @@ def participant_tick(upgrader, broker, root, role):
     return result
 
 
-def peer_actor(root, scenario, upgrade):
+def peer_actor(root, scenario, upgrade, *, local, reader_uid):
     cgroup = ensure_admitted(root)
     wait_for(lambda: Path(root) if Path(root).is_dir() else None,
              "coordinator private-root creation")
@@ -368,7 +435,8 @@ def peer_actor(root, scenario, upgrade):
              if (Path(root) / "events" / "initialized.json").is_file() else None,
              "coordinator initialisation")
     fail = scenario == "rollback"
-    upgrader, broker = make_upgrader(root, ready["host"], upgrade, fail_first_start=fail)
+    upgrader, broker = make_upgrader(root, ready["host"], upgrade, local=local,
+                                     reader_uid=reader_uid, fail_first_start=fail)
     wait_for(lambda: (Path(root) / "events" / "allow-peer-drain.json")
              if (Path(root) / "events" / "allow-peer-drain.json").is_file() else None,
              "coordinator drain permission")
@@ -389,7 +457,7 @@ def wait_marker(upgrade, publisher, epoch, host, phase):
                     else None, f"{host} {phase}")
 
 
-def coordinator_actor(root, scenario, source, upgrade, publisher):
+def coordinator_actor(root, scenario, source, upgrade, publisher, *, local, reader_uid):
     cgroup = ensure_admitted(root)
     root = Path(root)
     if root.exists():
@@ -410,7 +478,7 @@ def coordinator_actor(root, scenario, source, upgrade, publisher):
     initialise(root, source, upgrade, publisher, scenario, records)
     host = ready["host"]
     peer = next(item["host"] for item in records if item["role"] == "peer")
-    upgrader, broker = make_upgrader(root, host, upgrade)
+    upgrader, broker = make_upgrader(root, host, upgrade, local=local, reader_uid=reader_uid)
     # _arm_barrier invokes the real coordinator, returns 75 because no host can
     # have drained before the intent exists, and leaves every gate closed.
     assert publisher._activate_existing("new", dry_run=False, wait_s=0) == 75
@@ -481,31 +549,122 @@ def coordinator_actor(root, scenario, source, upgrade, publisher):
     print(json.dumps(result, sort_keys=True), flush=True)
 
 
-def actor(args):
+def source_identity(source):
+    return {name: sha256((source / name).read_bytes()) for name in SOURCE_FILES}
+
+
+def run_container(args):
     root = Path(args.root)
-    upgrade, publisher = harness_modules()
+    cgroup = ensure_admitted(root)
+    if os.getuid() <= 0 or os.geteuid() != os.getuid():
+        raise RuntimeError("outer qualification actor requires the ordinary worker UID")
+    if (root.name != args.scenario or root.parent.parent.resolve() != QUALIFICATION_ROOT.resolve()
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.parent.name)):
+        raise RuntimeError("qualification requires a private campaign/scenario root")
+    slices = set(re.findall(r"prismabuild-job[0-9a-f]{32}\.slice", cgroup))
+    if len(slices) != 1:
+        raise RuntimeError("outer qualification scope is ambiguous")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.image):
+        raise RuntimeError("qualification requires an immutable local image ID")
+    image, architecture = subprocess.check_output(
+        ["docker", "image", "inspect", args.image, "--format", "{{.Id}} {{.Architecture}}"],
+        text=True).strip().split()
+    machine = platform.machine()
+    if image != args.image or architecture != {"x86_64": "amd64", "aarch64": "arm64"}.get(machine):
+        raise RuntimeError("qualification image must match the native worker architecture")
     source = Path(__file__).resolve().parents[2]
-    if args.role == "coordinator":
-        coordinator_actor(root, args.scenario, source, upgrade, publisher)
-    else:
-        peer_actor(root, args.scenario, upgrade)
+    context = ActorContext(os.getuid(), os.getgid(), socket.gethostname(), slices.pop(),
+                           tuple(sorted(os.sched_getaffinity(0))),
+                           os.environ["PRISMABUILD_CONTAINER_OWNER"], image, machine,
+                           source_identity(source))
+    root.parent.mkdir(mode=0o755, exist_ok=True)
+    if root.parent.is_symlink() or root.parent.stat().st_uid != context.reader_uid:
+        raise RuntimeError("qualification campaign root must belong to the worker UID")
+    command = ["docker", "run", "--rm", "--network", "none", "--user", "0:0",
+               "--uts", "host", "--cgroupns", "host", "--entrypoint", "python3",
+               "--cpuset-cpus", ",".join(map(str, context.affinity)), "--memory", "2g",
+               "--pids-limit", "256", "--mount", f"type=bind,src={source},dst=/source,readonly",
+               "--mount", f"type=bind,src={root.parent},dst={root.parent}",
+               "--workdir", "/source", "--env", f"PRISMABUILD_CONTAINER_OWNER={context.owner}"]
+    for name, value in THREAD_ENV.items():
+        command.extend(["--env", f"{name}={value}"])
+    bootstrap = (
+        "import os, pathlib, runpy, sys; "
+        "assert os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0; "
+        "missing = not pathlib.Path('/usr/bin/python3').exists(); "
+        "missing and pathlib.Path('/usr/bin/python3').symlink_to(sys.executable); "
+        "os.environ['PB_QUALIFICATION_INTERPRETER_LINK'] = str(missing); "
+        "runpy.run_path('/source/tools/fleet/qualify_rollout.py', run_name='__main__')"
+    )
+    command.extend([image, "-B", "-c", bootstrap, "--role", args.role,
+                    "--scenario", args.scenario, "--root", str(root),
+                    "--container-context", _qualify_rollout_canonical(context._asdict()).decode("ascii")])
+    print(_qualify_rollout_canonical({"outer_actor": context._asdict(), "cgroup": cgroup}).decode("ascii"),
+          end="", flush=True)
+    return subprocess.run(command, check=False).returncode
 
 
-def emit_manifest(path, root):
+def container_actor(args):
+    raw = json.loads(args.container_context)
+    raw["affinity"] = tuple(raw["affinity"])
+    context = ActorContext(**raw)
+    root = Path(args.root)
+    cgroup = ensure_admitted(root)
+    source = Path(__file__).resolve().parents[2]
+    assert os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 0
+    assert type(context.reader_uid) is int and context.reader_uid > 0
+    assert type(context.reader_gid) is int and context.reader_gid >= 0
+    assert socket.gethostname() == context.host
+    assert platform.machine() == context.machine
+    assert set(re.findall(r"prismabuild-job[0-9a-f]{32}\.slice", cgroup)) == {context.job_slice}
+    assert tuple(sorted(os.sched_getaffinity(0))) == context.affinity
+    assert os.environ["PRISMABUILD_CONTAINER_OWNER"] == context.owner
+    assert source_identity(source) == context.source_sha256
+    assert sys.version_info >= (3, 12)
+    try:
+        account = pwd.getpwuid(context.reader_uid)
+    except KeyError:
+        with Path("/etc/passwd").open("a") as stream:
+            stream.write(f"pbqualification:x:{context.reader_uid}:{context.reader_gid}::/nonexistent:/usr/sbin/nologin\n")
+        account = pwd.getpwuid(context.reader_uid)
+    assert account.pw_gid == context.reader_gid
+    print(_qualify_rollout_canonical({
+        "container_actor": context._asdict(), "python": sys.version,
+        "cgroup": cgroup, "uid": os.getuid(), "gid": os.getgid(),
+        "interpreter_link_created": os.environ["PB_QUALIFICATION_INTERPRETER_LINK"],
+        "shared_mountinfo": [line for line in Path("/proc/self/mountinfo").read_text().splitlines()
+                             if str(root.parent) in line]}).decode("ascii"), end="", flush=True)
+    upgrade, publisher = harness_modules()
+    with tempfile.TemporaryDirectory(prefix="pb-rollout-qualification-", dir="/var/lib") as directory:
+        local = Path(directory)
+        local.chmod(0o755)
+        with credentials(context.reader_uid, context.reader_gid):
+            if args.role == "coordinator":
+                coordinator_actor(root, args.scenario, source, upgrade, publisher,
+                                  local=local, reader_uid=context.reader_uid)
+            else:
+                peer_actor(root, args.scenario, upgrade, local=local, reader_uid=context.reader_uid)
+    return 0
+
+
+def emit_manifest(path, root, *, x86_image, gb10_image):
     root = Path(root)
     if root.exists() or root.parent.resolve() != QUALIFICATION_ROOT.resolve():
         raise SystemExit("--run-root must be a fresh direct child of /mnt/shared/pb-qualification")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", root.name):
         raise SystemExit("--run-root has an unsafe name")
+    if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", image) for image in (x86_image, gb10_image)):
+        raise SystemExit("qualification images must be immutable local image IDs")
     script = "tools/fleet/qualify_rollout.py"
     rows = []
     for scenario in SCENARIOS:
         scenario_root = root / scenario
-        for role, tag in (("coordinator", "x86"), ("peer", "gb10")):
+        for role, tag, image in (("coordinator", "x86", x86_image), ("peer", "gb10", gb10_image)):
             rows.append({"argv": ["/usr/bin/python3", script, "--role", role,
-                                 "--scenario", scenario, "--root", str(scenario_root)],
+                                 "--scenario", scenario, "--root", str(scenario_root),
+                                 "--image", image], "container_images": [image],
                          "cwd": str(Path(__file__).resolve().parents[2]),
-                         "demand": {"cpu": 1, "mem_gb": 2}, "tags": [tag],
+                         "demand": {"cpu": 1, "mem_gb": 3}, "tags": [tag],
                          "env": THREAD_ENV, "priority": -10, "timeout_s": 240})
     Path(path).write_bytes(_qualify_rollout_canonical(rows))
     print(json.dumps({"manifest": str(path), "run_root": str(root), "rows": len(rows)}, sort_keys=True))
@@ -518,20 +677,33 @@ def main():
     parser.add_argument("--scenario", choices=SCENARIOS,
                         help="rollout scenario for this actor")
     parser.add_argument("--root", help="shared private directory for this scenario")
+    parser.add_argument("--image", help="immutable native Python image ID for this actor")
+    parser.add_argument("--container-context", help=argparse.SUPPRESS)
+    parser.add_argument("--x86-image", help="verified x86 Python image ID for the manifest")
+    parser.add_argument("--gb10-image", help="verified ARM Python image ID for the manifest")
     parser.add_argument("--emit-manifest", help="write the PB campaign manifest here")
     parser.add_argument("--run-root",
                         help="fresh direct child of /mnt/shared/pb-qualification "
                              "for the generated campaign")
     args = parser.parse_args()
     if args.emit_manifest:
-        if args.role or args.scenario or args.root or not args.run_root:
-            parser.error("--emit-manifest requires only --run-root")
-        emit_manifest(args.emit_manifest, args.run_root)
+        if (args.role or args.scenario or args.root or args.image or args.container_context
+                or not (args.run_root and args.x86_image and args.gb10_image)):
+            parser.error("--emit-manifest requires --run-root, --x86-image, and --gb10-image")
+        emit_manifest(args.emit_manifest, args.run_root,
+                      x86_image=args.x86_image, gb10_image=args.gb10_image)
         return 0
     if not (args.role and args.scenario and args.root):
         parser.error("actor requires --role, --scenario, and --root")
-    actor(args)
-    return 0
+    if args.run_root or args.x86_image or args.gb10_image:
+        parser.error("manifest options require --emit-manifest")
+    if args.container_context:
+        if args.image:
+            parser.error("inner actor cannot select a different image")
+        return container_actor(args)
+    if not args.image:
+        parser.error("outer actor requires --image")
+    return run_container(args)
 
 
 if __name__ == "__main__":

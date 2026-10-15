@@ -4415,6 +4415,26 @@ Ordinary owned zero-scope client repair remains independent of physical proof or
 receipt MATCH, including when the installed proof leaf itself requires repair.
 This is source contract work, not deployment or whole-fleet qualification.
 
+The private `qualify_rollout.py` adapter runs each admitted actor inside a
+native Python container. Its updater, proof sibling, enrollment, state and fake
+gate live under container-private `/var/lib` with real root ownership. The
+participant imports that installed updater and uses its actual permanent-drop
+runtime reader, rollout reader and marker writer subprocesses. Fixture creation
+and coordinator operations use the admitted worker's effective UID and GID.
+Only installation and participant ticks restore container root. These credential
+scopes require a single-threaded process and restore credentials after errors.
+
+Each actor checks the real host UTS identity, exact PB job slice, native machine,
+source hashes and admitted CPU affinity across the container boundary. The
+ordinary Docker shim supplies containment and ownership. The container has no
+network or live broker mount. The source is read-only, and only the private
+worker-owned campaign subtree is shared writable storage. Campaign rows declare
+their already-local immutable native image, CPU1, memory3GiB, GPU0, native
+threads1 and priority -10. The container memory limit is 2GiB within that total.
+The fake broker, systemctl and process census remain simulated. Source support
+does not establish ARM reader/NFS qualification or the four distinct-host
+scenario outcomes. Those gates remain required before public integration.
+
 The epoch records and `repo` pointer publish atomically but are read separately.
 If a valid pointer move falls between an updater's desired-receipt read and its
 next epoch refresh, the updater keeps its durable drain and retries with a fresh
