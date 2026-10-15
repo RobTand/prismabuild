@@ -70,7 +70,7 @@ def drain_offer_fields(gate: dict) -> dict:
     return fields
 
 
-def _proc_starttime(pid: int) -> str:
+def process_starttime(pid: int) -> str:
     """Field 22 of ``/proc/<pid>/stat``, which makes a marker survive pid reuse.
 
     ``comm`` is field 2, is parenthesised, and may itself contain spaces and
@@ -118,7 +118,7 @@ def write_park_marker(root: Path, gate: dict) -> Path | None:
     pid and the drain, and the create is exclusive.
     """
 
-    marker = root / (f"{os.getpid()}-{_proc_starttime(os.getpid())}"
+    marker = root / (f"{os.getpid()}-{process_starttime(os.getpid())}"
                             f"-{gate_key(gate)}")
     try:
         os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))

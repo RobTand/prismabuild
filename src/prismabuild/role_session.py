@@ -17,7 +17,7 @@ import time
 
 from . import adaptive_cpu, core as pb, generation_receipt, park_proof
 from .generation_receipt import commit_at as _commit_at
-from .park_proof import _proc_starttime, drain_offer_fields
+from .park_proof import drain_offer_fields
 from .digest_primitives import raw_sha256
 
 GENERATION_VERSION = Path(__file__).resolve().parents[2] / "RUNTIME_VERSION.json"

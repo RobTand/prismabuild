@@ -111,8 +111,8 @@ from prismabuild import contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology, dependency_digest,
-                         filesystem_floor, local_dependencies, local_scratch, pool,
-                         publication_canary, role_session, storage_tiers)
+                         filesystem_floor, local_dependencies, local_scratch,
+                         park_proof, pool, publication_canary, role_session, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -344,12 +344,12 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
 def _proc_starttime_or_none(pid: int) -> str | None:
     """The pid's starttime, or ``None`` when ``/proc`` cannot answer.
 
-    ``role_session._proc_starttime`` spells an unreadable ``/proc`` as ``"unknown"``, which
+    ``park_proof.process_starttime`` spells an unreadable ``/proc`` as ``"unknown"``, which
     is right for a marker filename but wrong for an ownership decision: a
     launch must not read "I could not ask" as "the writer is gone".
     """
 
-    observed = role_session._proc_starttime(pid)
+    observed = park_proof.process_starttime(pid)
     return None if observed == "unknown" else observed
 
 

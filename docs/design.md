@@ -4778,6 +4778,8 @@ metrics snapshot form `--once` keeps its existing singleton exemption.
 stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
+The public `park_proof.gate_key` and `park_proof.process_starttime` operations
+are imported directly from that owner. `role_session` does not re-export them.
 Production callers read generation identities through `loaded_generation()`
 and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without

@@ -69,7 +69,8 @@ def test_gate_stops_every_storage_invocation(role, contents, once):
     assert calls == []
     markers = list(parked.iterdir())
     assert len(markers) == 1
-    assert markers[0].name.startswith(f"{os.getpid()}-{role_session._proc_starttime(os.getpid())}-")
+    starttime = Path(f"/proc/{os.getpid()}/stat").read_text().rpartition(")")[2].split()[19]
+    assert markers[0].name.startswith(f"{os.getpid()}-{starttime}-")
     assert markers[0].name.endswith("-458.0" if contents and "458.0" in contents else "-unknown")
 
 
