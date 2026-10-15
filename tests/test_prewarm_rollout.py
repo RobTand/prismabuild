@@ -68,10 +68,13 @@ def test_gate_stops_every_storage_invocation(role, contents, once):
             loop.main(argv)
     assert calls == []
     markers = list(parked.iterdir())
-    assert len(markers) == 1
-    starttime = Path(f"/proc/{os.getpid()}/stat").read_text().rpartition(")")[2].split()[19]
-    assert markers[0].name.startswith(f"{os.getpid()}-{starttime}-")
-    assert markers[0].name.endswith("-458.0" if contents and "458.0" in contents else "-unknown")
+    if contents in (None, "{broken"):
+        assert markers == []
+    else:
+        assert len(markers) == 1
+        starttime = Path(f"/proc/{os.getpid()}/stat").read_text().rpartition(")")[2].split()[19]
+        assert markers[0].name.startswith(f"{os.getpid()}-{starttime}-")
+        assert markers[0].name.endswith("-458.0")
 
 
 @pytest.mark.parametrize("once", [False, True])
