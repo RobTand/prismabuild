@@ -72,9 +72,9 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
 
 
 def _claim_producer(queue: pool.PoolQueue, monkeypatch, owner: str) -> dict:
-    al._sample(monkeypatch, psi=0.)
+    cpu_sampler = al._sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=al.CAPACITY,
-                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True)
+                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     return claimed
 
@@ -225,9 +225,10 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     cas = core.PrismaBuildCAS(cas_root)
 
     foreign = al._foreign(spool, cas, "three-gib", {"cpu": 2, "mem_gb": 3})
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
     for _ in range(pool.STARVATION_FLOOR + 1):
-        assert al._claim(queue, spool.host) is None, "the foreign action took the export's room"
+        assert al._claim(queue, spool.host,
+        cpu_sampler=cpu_sampler) is None, "the foreign action took the export's room"
         if al._denial(queue, foreign)["reason"].endswith("_withholding"):
             break
     assert al._denial(queue, foreign)["reason"] == "reservation_unavailable_withholding"
@@ -235,8 +236,8 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     funded = []
     for batch in ("g0", "g1"):
         export_key = al._export(spool, batch)
-        al._running(spool, monkeypatch, psi=0.)
-        claim = al._claim(queue, spool.host)
+        cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+        claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
         if claim is None:
             denial = al._denial(queue, export_key)
             raise AssertionError(
@@ -253,7 +254,7 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
 
     unfunded = al._export(spool, "g2")
     bystander = al._foreign(spool, cas, "bystander", {"cpu": 1, "mem_gb": 1})
-    assert al._claim(queue, spool.host) is None
+    assert al._claim(queue, spool.host, cpu_sampler=cpu_sampler) is None
     assert al._denial(queue, foreign)["reason"] == "reservation_unavailable_withholding"
     denial = al._denial(queue, unfunded)
     assert denial["reason"] == "deferred_behind_withholding", denial

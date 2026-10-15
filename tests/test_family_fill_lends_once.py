@@ -57,9 +57,9 @@ def test_a_borrow_records_which_lenders_were_mid_copy(tmp_path, monkeypatch) -> 
     assert ledger.acquire(fam.EGRESS, {fam.FILL: 3})
     _landing_report(queue, fam.MOVER, started=2000.)
     export_key = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["borrowed"] == fam.OFFER and borrow["taken_free"] == 0
@@ -83,9 +83,9 @@ def test_a_report_from_before_the_lenders_claim_is_not_mid_copy(
                             {"action_key": fam.MOVER, "claimed_unix": 3000.,
                              "published_unix": 2999., "cas_root": str(spool.cas_root)})
     export_key = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["lenders_mid_copy"] == []
@@ -123,8 +123,8 @@ def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
     assert paced.sealed(spool, "g0")["params"]["demand"][paced.FILL_DEMAND] == 30
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["borrowed"] == 30 and borrow["taken_free"] == 0
@@ -133,21 +133,21 @@ def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
 
     second = al._export(spool, "g1")
     assert paced.sealed(spool, "g1")["params"]["demand"][paced.FILL_DEMAND] == 30
-    again = al._claim(queue, spool.host)
+    again = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert again is not None and again["action_key"] == second
     assert again["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 
     _announce_fill(queue, 50)
     third = al._export(spool, "g2")
     assert paced.sealed(spool, "g2")["params"]["demand"][paced.FILL_DEMAND] == 50
-    assert al._claim(queue, spool.host) is None
+    assert al._claim(queue, spool.host, cpu_sampler=cpu_sampler) is None
     denial = al._denial(queue, third)
     assert denial["reason"] == "tier_reservation_unavailable", denial
     shortage = denial["evidence"]["tier_shortage"]
     assert shortage["family_fill"] == "not_enough_family_fill", shortage
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    fourth = al._claim(queue, spool.host)
+    fourth = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert fourth is not None and fourth["action_key"] == third
     assert fourth["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 50}
 
@@ -161,12 +161,12 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     queue = spool.queue
     fam._hold_fill(queue, fam.MOVER)
     first = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
 
     second = al._export(spool, "g1")
-    again = al._claim(queue, spool.host)
+    again = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     if again is not None:
         raise AssertionError(
             "a second concurrent export must not borrow fill a live borrow "
@@ -177,7 +177,7 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     assert shortage["family_fill"] == "not_enough_family_fill", shortage
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    third = al._claim(queue, spool.host)
+    third = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert third is not None and third["action_key"] == second
     ended = pool._read_json(queue.item_path(pool.DONE, first))
     assert ended["tier_fill_borrowed"][fx.TIER]["borrowed"] == fam.OFFER
@@ -206,11 +206,11 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
     second = al._export(spool, "g1")
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
     assert claim["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
-    other = al._claim(queue, spool.host)
+    other = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert other is not None and other["action_key"] == second
     assert other["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 

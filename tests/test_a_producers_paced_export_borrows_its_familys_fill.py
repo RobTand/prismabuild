@@ -62,9 +62,9 @@ def _paced_producer(tmp_path: Path, monkeypatch):
                   checkout_root=str(tmp_path / "mover-checkout"),
                   resources={**al.PRODUCER_DEMAND, **po.owner_demand_terms(template)},
                   produced_output_template=template)
-    al._sample(monkeypatch, psi=0.)
+    cpu_sampler = al._sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=al.CAPACITY,
-                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True)
+                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     control = fx._broker_control(queue, owner)
     po.declare_template(queue.root, template)
@@ -110,9 +110,9 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
     _hold_fill(queue, MOVER)
     foreign = al._foreign(spool, cas, "paced-write", {"cpu": 1, "mem_gb": 1, FILL_DEMAND: OFFER})
     export_key = _paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     if claim is None or claim["action_key"] != export_key:
         denial = al._denial(queue, export_key)
         raise AssertionError(
@@ -154,9 +154,9 @@ def test_a_strangers_fill_is_never_borrowed(tmp_path, monkeypatch) -> None:
     queue = spool.queue
     _hold_fill(queue, STRANGER)
     export_key = _paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    assert al._claim(queue, spool.host) is None
+    assert al._claim(queue, spool.host, cpu_sampler=cpu_sampler) is None
     denial = al._denial(queue, export_key)
     assert denial["reason"] == "tier_reservation_unavailable", denial
     shortage = denial["evidence"]["tier_shortage"]
@@ -175,9 +175,9 @@ def test_the_export_takes_what_is_free_and_borrows_the_rest(
     ledger = queue.tier_ledger(fx.TIER)
     assert ledger.acquire(EGRESS, {FILL: 5})
     export_key = _paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["taken_free"] == 2 and borrow["borrowed"] == OFFER - 2
