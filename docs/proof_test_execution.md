@@ -109,7 +109,7 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
 ```
 
 The file-list command must succeed before submission. An empty list must never
-fall back to `pbtest`'s default full-suite selection. For a bounded 78-case family
+fall back to `pbtest`'s default full-suite selection. For the bounded 104-case native family
 qualification use `--paths native-family` in the formatter; the PB command stays
 the same. The complete native suite contains additional unrelated cases.
 Each action declares its actual resources, and PB chooses partition and eligible

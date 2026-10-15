@@ -10,9 +10,7 @@ from test_client_proof_prior_trust import tmp_path
 from test_installed_park_proof_loader import installed_leaf
 
 
-@pytest.fixture(autouse=True)
-def installed_rule_owner(installed_leaf):
-    return installed_leaf
+pytestmark = pytest.mark.usefixtures("installed_leaf")
 
 
 @pytest.mark.parametrize('script', [
