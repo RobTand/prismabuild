@@ -10,6 +10,7 @@ import pytest
 
 from test_pbtest import pbtest
 from test_pbrun_detach import _checkout, pbrun
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import core as pb, pool
 from pbtest_shard_output import ShardProcess, shard_output_for
@@ -49,9 +50,19 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
 def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     work, command = _generated(root, monkeypatch, extra=extra, python=python)
     queue = pool.PoolQueue(root / 'pb-queue')
-    queue.announce(host='qualified', tags=['x86', contracts.INTERPRETER_TAG],
-                   interpreters=[python], has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16}, timeout_ceiling_s=300)
+    queue.announce(
+        host='qualified',
+        tags=['x86', contracts.INTERPRETER_TAG],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [python],
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+        timeout_ceiling_s=300,
+    )
     with monkeypatch.context() as scoped:
         scoped.setattr(pbrun, 'SH', root)
         scoped.setattr(pbrun, 'RUNTIME_ROOT', PUBLISHED)
@@ -100,17 +111,36 @@ def test_untagged_generated_row_matches_all_and_only_capable_architectures(tmp_p
             ('x86', [contracts.INTERPRETER_TAG, 'x86'], [sys.executable]),
             ('missing', [contracts.INTERPRETER_TAG], []),
             ('legacy', [], None)]:
-        queue.announce(host=host, tags=tags, interpreters=answers,
-                       has_gpu=False, capacity={'cpu': 8, 'mem_gb': 16})
+        queue.announce(
+            host=host,
+            tags=tags,
+            capabilities=capability_eligibility.OfferCapabilities(
+                interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                    answers,
+                    None,
+                ),
+            ),
+            has_gpu=False,
+            capacity={'cpu': 8, 'mem_gb': 16},
+        )
     assert set(queue.placeable_hosts(row)) == {'qualified', 'arm', 'x86'}
 
 
 def test_explicit_architecture_constraint_survives_the_interpreter_requirement(tmp_path,
                                                                             monkeypatch):
     action, row, queue = _sealed(tmp_path, monkeypatch, extra=('--tag', 'x86'))
-    queue.announce(host='arm', tags=[contracts.INTERPRETER_TAG, 'gb10'],
-                   interpreters=[sys.executable], has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16})
+    queue.announce(
+        host='arm',
+        tags=[contracts.INTERPRETER_TAG, 'gb10'],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [sys.executable],
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+    )
     assert action['params']['placement']['required_tags'] == ['x86']
     assert row['tags'] == [contracts.INTERPRETER_TAG, 'x86']
     assert queue.placeable_hosts(row) == ['qualified']
@@ -137,9 +167,18 @@ def test_preflight_prices_the_same_cpu_demand_as_the_generated_request(tmp_path,
 def test_published_request_keeps_the_existing_three_state_path_verdict(
         tmp_path, monkeypatch, answers, absent, verdict):
     _, row, queue = _sealed(tmp_path, monkeypatch)
-    queue.announce(host='qualified', tags=[contracts.INTERPRETER_TAG],
-                   interpreters=answers, has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16})
+    queue.announce(
+        host='qualified',
+        tags=[contracts.INTERPRETER_TAG],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                answers,
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+    )
     path = queue.root / 'workers/qualified.json'
     document = json.loads(path.read_text())
     document['interpreters_absent'] = absent

@@ -12,6 +12,7 @@ import pbcanary
 import pbcanary_submission as handoff
 import pytest
 import pbrun
+from prismabuild import capability_eligibility
 from prismabuild import contracts, pool, publication_canary as slots
 from test_pbrun_detach import _checkout
 from test_publication_canary_slot import GENERATION
@@ -110,11 +111,20 @@ def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatc
     image = "example.invalid/canary@sha256:" + "a" * 64
     intent = {"generation": GENERATION, "host": host}
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.announce(host=host, tags=[host, slots.CAPABILITY,
+    q.announce(
+        host=host,
+        tags=[host, slots.CAPABILITY,
                               contracts.CONTAINER_IMAGE_TAG,
                               f"runtime-generation:{GENERATION}"],
-               has_gpu=True, capacity={"cpu": 4, "gpu": 1, "mem_gb": 16},
-               observed_images=[image])
+        has_gpu=True,
+        capacity={"cpu": 4, "gpu": 1, "mem_gb": 16},
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [image],
+                None,
+            ),
+        ),
+    )
     monkeypatch.setattr(pbrun, "SH", tmp_path)
 
     # Exercise the driver's argv and real pbrun publication in this process.

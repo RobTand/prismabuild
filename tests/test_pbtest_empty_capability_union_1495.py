@@ -27,6 +27,7 @@ import pbrun  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
@@ -59,10 +60,19 @@ def _config(checkout: Path, capabilities: dict) -> None:
 def _stub_queue(tmp_path: Path, monkeypatch, *, tags, answers=()):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
-    queue.announce(host="fenced-box", tags=list(tags), has_gpu=False,
-                   capacity=dict(CAPACITY),
-                   dependency_files=(list(answers) or None) if answers else None,
-                   dependency_files_absent=None)
+    queue.announce(
+        host="fenced-box",
+        tags=list(tags),
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                (list(answers) or None) if answers else None,
+                None,
+            ),
+        ),
+    )
     monkeypatch.setattr(pbtest, "fleet_queue", lambda: queue)
     return queue
 

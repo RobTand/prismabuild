@@ -31,6 +31,7 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
@@ -72,10 +73,19 @@ def _stub_queue(tmp_path: Path, monkeypatch, *, answers=(), absent=(),
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     tags = [TAG, "x86"] if capability else ["cpu"]
-    queue.announce(host="fenced-box", tags=tags, has_gpu=False,
-                   capacity=dict(CAPACITY),
-                   dependency_files=(list(answers) or None) if capability else None,
-                   dependency_files_absent=list(absent) or None)
+    queue.announce(
+        host="fenced-box",
+        tags=tags,
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                (list(answers) or None) if capability else None,
+                list(absent) or None,
+            ),
+        ),
+    )
     monkeypatch.setattr(pbtest, "fleet_queue", lambda: queue)
     return queue
 
