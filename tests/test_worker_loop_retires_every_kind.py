@@ -34,6 +34,9 @@ from prismabuild import pool  # noqa: E402
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _gpu_sample():
     return {
         "schema": "prismabuild.gpu_capacity.v1", "sample_id": "fresh",
@@ -84,8 +87,8 @@ def _run(tmp_path: Path, argv: list[str]):
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(wl.box_capacity, "trusted_gpu_sample",
                            side_effect=_gpu_sample), \
          mock.patch.object(sys, "argv",
@@ -183,8 +186,8 @@ def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
     wl = _worker_loop()
     with mock.patch.object(wl, "SH", tmp_path), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(wl, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(box_capacity.CapacityObserver, "offer",
                            side_effect=lambda declared, _held, **_kw: dict(declared)), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \

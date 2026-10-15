@@ -34,6 +34,9 @@ BASE = ["--class", "gb10", "--gpu", "--mem-gb", "72",
 LOOP = "/mnt/shared/prismabuild-fleet/runtime-generations/a98c/tools/worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _proc(root: Path, pid: int, argv: list[str]) -> None:
     """One process in a fake ``/proc``, exactly as the kernel presents one."""
 
@@ -75,8 +78,8 @@ def _run(tmp_path: Path, *, loops) -> pool.PoolQueue:
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(worker.box_capacity, "worker_loops", census), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=_sample()), \
          mock.patch.object(worker.box_capacity, "mem_available_gb", return_value=100), \

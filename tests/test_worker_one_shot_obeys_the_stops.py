@@ -23,6 +23,9 @@ from prismabuild import pool
 KEY = "c" * 64
 
 
+from prismabuild import role_session
+
+
 def exercise(tmp_path, *, draining, loaded, live):
     """Run worker.main() in a child against a private queue and gate."""
 
@@ -44,11 +47,12 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-wl.MAINTENANCE_GATE = Path({str(gate)!r})
+from prismabuild import role_session
+role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
-worker.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
-worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
+role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
+role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 seen = {{}}
 def serve_once(self, **kwargs):
     seen["containment"] = kwargs.get("containment")
@@ -115,11 +119,12 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-wl.MAINTENANCE_GATE = Path({str(gate)!r})
+from prismabuild import role_session
+role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
-worker.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
-worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
+role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
+role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 def serve_once(self, **kwargs):
     raise AssertionError("served with an unreadable maintenance gate")
 wl.pool.PoolQueue.serve_once = serve_once

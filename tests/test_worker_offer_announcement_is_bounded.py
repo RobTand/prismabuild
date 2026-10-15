@@ -12,6 +12,9 @@ from unittest.mock import patch
 WORKER = Path(__file__).resolve().parents[1] / 'tools/fleet/worker_loop.py'
 
 
+from prismabuild import role_session
+
+
 def test_blocked_offer_returns_without_admission(tmp_path):
     spec = importlib.util.spec_from_file_location('offer_regression_worker', WORKER)
     worker = importlib.util.module_from_spec(spec)
@@ -41,10 +44,10 @@ def test_blocked_offer_returns_without_admission(tmp_path):
                     '--cpu-slots', '1', '--all-cores', '--assume-idle',
                     '--once', '--poll-s', '0']
             with patch.object(worker.pool, 'PoolQueue', return_value=queue), \
-                 patch.object(worker, 'read_maintenance_gate', return_value=None), \
-                 patch.object(worker, 'loaded_runtime_commit', return_value='fixed'), \
-                 patch.object(worker, 'published_commit', return_value='fixed'), \
-                 patch.object(worker, '_generation_at', return_value='fixed'), \
+                 patch.object(role_session, 'read_maintenance_gate', return_value=None), \
+                 patch.object(role_session, 'loaded_runtime_commit', return_value='fixed'), \
+                 patch.object(role_session, 'published_commit', return_value='fixed'), \
+                 patch.object(role_session, '_generation_at', return_value='fixed'), \
                  patch.object(worker.cpu_topology, 'inherited_tiers', return_value=None), \
                  patch.object(sys, 'argv', argv):
                 result = {'returncode': worker._run_loop(lambda: False)}
