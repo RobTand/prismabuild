@@ -1,8 +1,8 @@
 """Read-only questions about records filed under a queue key.
 
 The leaf JSON readers remain in pool until the wider queue-I/O caller
-migration. Standing and mover polling own their layout and observation
-policies here. These reads acquire no lock and impose no deadline.
+migration. Standing, mover polling, and claim questions own their layout and
+observation policies here. These reads acquire no lock and impose no deadline.
 """
 
 from __future__ import annotations
@@ -54,6 +54,28 @@ type KeyStanding = ReadResult[QueueRow | Moving]
 class RecordStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
+
+    def claimed(self, key: str) -> ReadResult[JsonRecord]:
+        """Read one claimed record without refreshing a missing name."""
+        return self._plain("claimed", key)
+
+    def queued(self, key: str) -> ReadResult[JsonRecord]:
+        """Read ready only when the claimed record is missing or empty."""
+        claimed = self._plain("claimed", key)
+        if not isinstance(claimed, Absent):
+            return claimed
+        return self._plain("ready", key)
+
+    def _plain(self, state: QueueState, key: str) -> ReadResult[JsonRecord]:
+        from . import pool
+
+        path = self.root
+        try:
+            path = self.root / state / f"{key}.json"
+            record = pool.read_queue_record(path)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if record is None else Present(record)
 
     def mover(self, key: str) -> ReadResult[QueueRow]:
         """Poll claimed, ready, done, failed, then withdrawn for one key.

@@ -534,12 +534,12 @@ def declared_template(queue, action_key: str) -> dict[str, object]:
     refuses.
     """
 
-    from prismabuild import pool as pool_mod
-
     owner = _hex64(action_key, where="declared template action_key")
-    item = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
-    if item is None:
-        item = pool_mod._read_json(queue.item_path(pool_mod.READY, owner))
+    observed = RecordStore(queue.root).queued(owner)
+    if isinstance(observed, Unknown):
+        assert observed.error is not None
+        raise observed.error
+    item = None if isinstance(observed, Absent) else observed.value
     if not isinstance(item, Mapping):
         raise ProducedOutputError("no queued item for this action key")
     ref = item.get("produced_output")
@@ -679,7 +679,11 @@ def bind_instance(queue, template: Mapping[str, object], *,
         raise ProducedOutputError("instance binding needs the claim snapshot")
     if claim_snapshot.get("action_key") != owner:
         raise ProducedOutputError("foreign claim snapshot: action key mismatch")
-    live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+    observed = RecordStore(queue.root).claimed(owner)
+    if isinstance(observed, Unknown):
+        assert observed.error is not None
+        raise observed.error
+    live = None if isinstance(observed, Absent) else observed.value
     if live is None:
         raise ProducedOutputError("stale claim snapshot: no live claimed record")
     try:
@@ -822,13 +826,15 @@ def _require_live_owner(queue, checked_instance: Mapping[str, object]
     is gone.
     """
 
-    from prismabuild import pool as pool_mod
-
     owner = str(checked_instance["owner_action_key"])
     attempt = checked_instance["owner_attempt"]
     assert isinstance(attempt, dict)
     try:
-        live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        observed = RecordStore(queue.root).claimed(owner)
+        if isinstance(observed, Unknown):
+            assert observed.error is not None
+            raise observed.error
+        live = None if isinstance(observed, Absent) else observed.value
     except Exception as exc:
         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     if live is None:
@@ -1242,10 +1248,12 @@ def _claimed_nonce(queue, owner: str) -> str | None:
     names no attempt: unknown, which the gate treats as live.
     """
 
-    from prismabuild import pool as pool_mod
-
     try:
-        live = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+        observed = RecordStore(queue.root).claimed(owner)
+        if isinstance(observed, Unknown):
+            assert observed.error is not None
+            raise observed.error
+        live = None if isinstance(observed, Absent) else observed.value
     except Exception:
         return None
     if live is None:
@@ -4537,8 +4545,11 @@ def _producer_launch_context(queue, producer: str) -> dict[str, object]:
     from prismabuild import pool as pool_mod
 
     try:
-        producer_row = pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, producer))
+        observed = RecordStore(queue.root).claimed(producer)
+        if isinstance(observed, Unknown):
+            assert observed.error is not None
+            raise observed.error
+        producer_row = None if isinstance(observed, Absent) else observed.value
     except (OSError, pool_mod.PoolContractError) as exc:
         return {"ok": False, "step": "launch-context",
                 "refusal": f"producer-claim-unreadable: {exc}"}
@@ -10194,7 +10205,11 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         # With no live claim, only the accepted SDK containment predicate
         # over the exact nonce/scope authorizes.
         try:
-            live_claim = pool_mod._read_json(queue.item_path(pool_mod.CLAIMED, owner))
+            observed = RecordStore(queue.root).claimed(owner)
+            if isinstance(observed, Unknown):
+                assert observed.error is not None
+                raise observed.error
+            live_claim = None if isinstance(observed, Absent) else observed.value
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if isinstance(live_claim, Mapping):

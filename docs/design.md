@@ -18109,7 +18109,18 @@ publication stamps, and makes no second complete observation. Each caller
 keeps its existing publication, receipt, recovery, or retention policy and
 observation lifetime, including separate repeated polls within recovery.
 
-The other claim readers, plain and kept-read adapter closure, queue
+`RecordStore(root).claimed(key)` reads one plain claimed record, while
+`queued(key)` reads ready only when the claimed read is absent. Missing and
+empty records are absent under the existing plain transport. Neither question
+refreshes missing names, adds identity validation, or retains a memo. Read
+exceptions become `Unknown` with the original exception and path. The
+produced-output declaration, binding, live-owner, nonce, launch-context, and
+safe-release operations keep their original capture positions and domain
+policies. Operations that previously raised a read error re-raise that exact
+object inside their original error boundary. The public SDK claimed-record
+read retains its distinct empty-record policy.
+
+Claim readers outside produced-output, plain and kept-read adapter closure, queue
 publication, and the remaining liveness and prefix readers are unfinished c05
 work. The documented PoolQueue and SDK read APIs are preserved.
 
