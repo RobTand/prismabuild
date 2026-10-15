@@ -14727,25 +14727,16 @@ class PoolQueue:
         are untouched (per mover/tier path by construction).
         """
 
-        path = self.funding_output_path(mover_action_key, tier_id)
         try:
-            try:
-                handle = open(path, "rb")
-            except FileNotFoundError:
-                # A retired record answers at the same address: retirement
-                # moves a terminal record out of the census, never out of
-                # the per-mover reads that decide anything about it.
-                handle = open(self.funding_output_retired_path(
-                    mover_action_key, tier_id), "rb")
-            with handle:
-                raw_bytes = handle.read(1024 * 1024 + 1)
-        except FileNotFoundError:
+            raw_bytes = self._read_output_funding_bytes(
+                mover_action_key, tier_id, max_bytes=1024 * 1024)
+        except OSError:
+            return (None, "corrupt")
+        if raw_bytes is None:
             # Proven ENOENT only is absent. Any other failure (including
             # NotADirectoryError: a path component is a file, i.e. corrupt
             # namespace, never proof an intent never existed) is UNKNOWN.
             return (None, "absent")
-        except OSError:
-            return (None, "corrupt")
         if len(raw_bytes) > 1024 * 1024:
             return (None, "corrupt")
         try:
@@ -14757,6 +14748,26 @@ class PoolQueue:
             return (self.validate_output_funding(raw), "ok")
         except (PoolContractError, ValueError):
             return (None, "corrupt")
+
+    def _read_output_funding_bytes(
+            self, mover_action_key: str, tier_id: str, *,
+            max_bytes: int | None) -> bytes | None:
+        """Read live or ENOENT-selected retired bytes; None proves absence."""
+
+        try:
+            try:
+                handle = open(self.funding_output_path(
+                    mover_action_key, tier_id), "rb")
+            except FileNotFoundError:
+                # Retirement moves terminal funding out of the census, not
+                # out of the address used by per-mover decisions.
+                handle = open(self.funding_output_retired_path(
+                    mover_action_key, tier_id), "rb")
+            with handle:
+                return (handle.read() if max_bytes is None
+                        else handle.read(max_bytes + 1))
+        except FileNotFoundError:
+            return None
 
     def write_output_funding(self, record: Mapping[str, object], *,
                              expect_generation: str | None = None) -> Path:

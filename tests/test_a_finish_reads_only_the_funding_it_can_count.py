@@ -232,3 +232,24 @@ def test_unreadable_live_funding_does_not_read_retired(
     assert queue._output_funding_unretired(MOVER) is True
     assert queue.read_output_funding(MOVER, STAGE) is None
     assert len(denied_reads) == 3
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-32"])
+def test_output_funding_readers_preserve_their_json_encoding_policies(
+        tmp_path, encoding):
+    queue, record, _ = _retired_written_record(tmp_path)
+    retired = queue.funding_output_retired_path(MOVER, STAGE)
+    retired.write_bytes(retired.read_text().encode(encoding))
+    assert queue.read_output_funding(MOVER, STAGE) == record
+    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue._output_funding_unretired(MOVER) is True
+
+
+def test_output_funding_readers_preserve_their_byte_budgets(tmp_path):
+    queue, record, _ = _retired_written_record(tmp_path)
+    retired = queue.funding_output_retired_path(MOVER, STAGE)
+    raw = retired.read_bytes()
+    retired.write_bytes(raw + b" " * (1024 * 1024 + 1 - len(raw)))
+    assert queue.read_output_funding(MOVER, STAGE) == record
+    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue._output_funding_unretired(MOVER) is True
