@@ -44,9 +44,9 @@ def _private_checkout(tmp_path: Path) -> Path:
         shutil.copytree(ROOT / directory, checkout / directory,
                         ignore=shutil.ignore_patterns("__pycache__"))
     fleet = tmp_path / "fleet"
-    # Each exec loads these private paths from its own published script.
+    # Each exec loads these private paths from its published source owners.
     replacements = {
-        "supervise.py": {
+        "tools/fleet/supervise.py": {
             'MIRROR = Path("/mnt/shared/prismabuild-fleet")':
                 f"MIRROR = Path({str(fleet)!r})",
             'CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")':
@@ -54,17 +54,19 @@ def _private_checkout(tmp_path: Path) -> Path:
             'LOG_DIR = Path("/home/rob/tmp")':
                 f"LOG_DIR = Path({str(tmp_path / 'logs')!r})",
         },
-        "worker_loop.py": {
+        "tools/fleet/worker_loop.py": {
             'SH = Path("/mnt/shared/prismabuild-fleet")':
                 f"SH = Path({str(fleet)!r})",
-            'RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"':
-                "RUNTIME_VERSION = GENERATION_VERSION",
             'PUBLICATION_LOCK_ROOT = Path(f"/tmp/prismabuild-offer-publish-{os.getuid()}")':
                 f"PUBLICATION_LOCK_ROOT = Path({str(tmp_path / 'offer-publish')!r})",
         },
+        "src/prismabuild/role_session.py": {
+            'RUNTIME_VERSION = Path("/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")':
+                "RUNTIME_VERSION = GENERATION_VERSION",
+        },
     }
     for name, changes in replacements.items():
-        path = checkout / "tools/fleet" / name
+        path = checkout / name
         source = path.read_text()
         for original, replacement in changes.items():
             assert source.count(original) == 1
