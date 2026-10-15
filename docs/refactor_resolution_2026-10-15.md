@@ -17,7 +17,7 @@ The discussion is append-only in
 | D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Retiring `--stage` awaits Rob and a live-writer drain. |
 | D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Hook retirement awaits Rob. The broader core/library extraction is still owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
-| D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are in progress. Metrics has no existing handler deadline. A new stop-only grace is under review; expiry permits exit without a marker. Preserve worker `--once` drift exit 0. |
+| D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are in progress. Metrics gains an agreed 10-second stop-only grace; ordinary collection remains unbounded. Expiry permits exit without a marker. Preserve worker `--once` drift exit 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 is in progress. Extraction precedes orphan/manual-tag tightening. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08 is owed. The timer issue causes avoidable advisory waiting, not demonstrated overcommit. |
 | D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work or certify drain. Keep named proof profiles and retain resign's terminal, reader-reference and census checks. | B09 is owed. Profile membership awaits Rob. Reader-first publication needs an explicit optional-member bridge. |
@@ -59,6 +59,8 @@ success receipt, as expected. There were no skips in these runs.
 | Requeue fix, `08a41806b04c` | 21 focused cases passed. Independent Sol and Claude source reviews approved. | `fa2895f802314c6cef455c0fd781ddeeca47884776f663caa2956b21bf337959` |
 | Requeue integrated with manifest owner, `7be48621c2eb` | 195 queue/recovery/manifest cases passed. | `3c6c7b181c347a55d52fffe13ab6765bc23c4751aa8304afbc5e48891b71e7c7` |
 | Stage owner and mount discovery, `ced76121a23b` | 235 cases passed. Independent Sol and Claude source reviews approved. Integrated at `8625ec0048d2`. | `7ed8306f56249d982e6a6cd1f9e4e395c8196c9e18dcfe820d2936b25ea23c88` |
+| Manifest and residency comparison, `986cedeffae8` | 45 manifests, 2,115 equivalent results, including residency `remaining` and `accepted`. | `6f1fff5170bf933edd180cda2fd499e0f6af2d255e192323e8ab5cddcf3b45f5` |
+| Requeue crash cleanup, `1284fa330db3` | 31 cases passed, including ten real-crash/cleanup cases. Claude approved. Integrated at `1a0e1dd92534`. | `65b5b096c0ec8a0325168a9eab99cf578aba98fc7a0994da1370e570fb95e03c` |
 
 Evidence artifacts are under
 `/home/rob/tmp/prismabuild-refactor-mailbox-20261015/`, in `manifest-phase`,
@@ -73,22 +75,28 @@ successor and a distinct exit status. This is not an execution verdict or
 permission to follow the successor. B04 preserves this existing limitation
 while protecting the newer publication.
 
-F1 will clean only aged, exactly named requeue staging siblings after their
-authoritative tombstone disappears. Its proof must include a real process
-death, retained fresh/live evidence, idempotence and intact READY bytes.
+F1 cleans only aged, exactly named requeue staging siblings after their
+authoritative tombstone disappears. Its qualified cases include a real process
+death, retained fresh/live evidence, idempotence, ESTALE observations and intact
+READY bytes. A tombstone retired by this sweep leaves staging for the next pass.
 
 ## Completion accounting
 
-The full audit at `36cebfbcc189` has 31 cards and 111 requirement rows. It found
-nine partial cards, 21 unfinished cards and one product-choice card, with no
-complete cards at that revision. Later work is assessed separately; the old
-audit is never retroactively credited with newer changes.
+The full audit at `36cebfbcc189` has 31 cards and 111 requirement rows. Claude's
+review corrects its counts to eight partial cards, 22 unfinished cards and one
+product-choice card, with no complete cards at that revision. The earlier
+version incorrectly credited unchanged helpers toward card 30 and over-credited
+probe deduplication before the mountpoint helper moved. Later work is assessed
+separately; the old audit is never retroactively credited with newer changes.
 
 Frozen mailbox attachments are
 `20261015T003738Z-codex-to-claude-completion-ledger-884dbe.md` and `.json`.
 Their SHA-256 values are respectively
 `8215aa65f95b86d57fdba7c63eb022ac3835ef4f8db003153c3a3472e8d285ed` and
 `c065ae6b015333aedc858491f1f0206b07dd0f65ba9f8217400b8fed32f3d5e6`.
-Claude's separate row review is pending. A compact current requirement index
-will record corrections and later evidence without declaring touched cards
-complete.
+Claude's row review is
+`20261015T010609Z-claude-to-codex-b12-ledger-review.md`. Its attachment has SHA-256
+`8fbdaebe1ac20cb8119281341c95a1f850e5332c098093392ddb07d2023f4606`.
+A regenerated index at `986cedeffae8` is in progress. Card 22 is complete for
+the original structural and result-preservation scope. Test-fixture composition,
+other unfinished requirements and the five product choices remain explicit.
