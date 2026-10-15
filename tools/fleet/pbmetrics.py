@@ -889,7 +889,8 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
         # that stamp covers; a decision filed since moves that stamp.
         subdirectories = reader.fences(
             entry.path for entry in reader.history(decisions, select=_a_directory))
-        return None if subdirectories is None else taken + subdirectories
+        return (None if subdirectories is None else
+                kept_reads.EvidenceSet((*taken, *subdirectories)))
 
     rows, used = reader.memo(
         ("endings", os.fspath(queue_root), int(limit)), fences,
