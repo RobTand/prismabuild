@@ -67,12 +67,15 @@ def main():
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.name.startswith('test_')}
 
+    base_tests = set(git('ls-tree', '-r', '--name-only', args.base, '--', 'tests').decode().splitlines())
     assertions = []
     for name in git('diff', '--name-only', args.base, '--', 'tests').decode().splitlines():
-        if not name.endswith('.py') or name not in trees:
+        if not name.endswith('.py'):
             continue
-        prior = ast.parse(git('show', f'{args.base}:{name}').decode(), filename=name)
-        before, after = cases(prior), cases(trees[name])
+        prior = (ast.parse(git('show', f'{args.base}:{name}').decode(), filename=name)
+                 if name in base_tests else ast.parse(''))
+        before = cases(prior)
+        after = cases(trees[name]) if name in trees else {}
         for case in sorted(before.keys() | after.keys()):
             old, new = before.get(case), after.get(case)
             count = lambda node: sum(isinstance(item, ast.Assert) for item in ast.walk(node)) if node else 0
