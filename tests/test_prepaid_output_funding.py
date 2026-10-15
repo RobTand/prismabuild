@@ -71,54 +71,6 @@ def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
     return q
 
 
-def _publish_claim_owner(q: pool.PoolQueue, owner: str, template: dict) -> dict:
-    terms = po.owner_demand_terms(template)
-    q.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
-              checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, **terms},
-              produced_output_template=template)
-    claimed = q.claim(owner="w-owner")
-    assert claimed is not None and claimed["action_key"] == owner
-    return claimed
-
-
-def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
-    import secrets
-    from prismabuild import resource_scope
-    nonce = secrets.token_hex(16)
-    scope = resource_scope.ResourceScope(
-        owner, nonce, 1 * 1024 ** 3,
-        q.root / "telemetry" / f"{owner}.json")
-    token = secrets.token_hex(32)
-    unit = ("prismabuild-job"
-            + hashlib.sha256((owner + nonce).encode()).hexdigest()[:32]
-            + ".slice")
-    scope._adopt_created_scope({
-        "scope_id": unit, "token": token,
-        "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
-    })
-    control = scope.control_record()
-    path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
-    assert live is not None
-    live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
-    return control
-
-
-def _bind(q: pool.PoolQueue, template: dict, owner: str):
-    claimed = _publish_claim_owner(q, owner, template)
-    control = _broker_control(q, owner)
-    env = {"PRISMABUILD_ACTION_KEY": owner,
-           "PRISMABUILD_ACTION_NONCE": control["nonce"],
-           "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
-    po.declare_template(q.root, template)
-    inst = po.bind_instance(q, template, owner_action_key=owner,
-                            claim_snapshot=claimed, env=env)
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"] is True
-    return inst, claimed, control, env
-
-
 def _descriptors(tmp_path: Path, template: dict, inst: dict,
                  batch_payload: bytes = b"x" * 1024,
                  name: str = "a.bin") -> list[dict]:
@@ -436,13 +388,18 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker)
     q.finish(mover, status="executed")
 
 
-def test_owner_finish_race_serialized(tmp_path: Path) -> None:
-    """Two-thread fund-vs-finish: sum preserved, never double-charged."""
+@pytest.mark.parametrize("direction", ["fund-first", "finish-first"])
+def test_owner_finish_race_serialized(
+        tmp_path: Path, monkeypatch, broker, direction) -> None:
+    """Real funding/finish contention reaches both outcomes without losing tokens."""
+    from contextlib import contextmanager
+
     owner = _hexkey("race-owner")
     mover = _hexkey("race-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -455,42 +412,113 @@ def test_owner_finish_race_serialized(tmp_path: Path) -> None:
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     ledger = q.tier_ledger(TIER)
     total_cap = ledger.capacity().get(KIND)
+    intent = q.read_output_funding(mover, TIER)
+    assert intent is not None and intent["state"] == "reserved"
 
+    fund_parked, finish_parked = threading.Event(), threading.Event()
+    resume_fund, resume_finish = threading.Event(), threading.Event()
+    release_phase = threading.local()
+    owner_acquisitions, transfers, errors = [], [], []
     results: dict = {}
+    real_transfer = pool.ResourceLedger.transfer_tokens
+    real_transition = q._transition_locked
+    real_release = q._release_reservation
+
+    def observed_transfer(actual_ledger, from_key, to_key, names):
+        selected = (threading.current_thread() is fa
+                    and actual_ledger.base == ledger.base
+                    and (from_key, to_key) == (owner, mover))
+        if selected and direction == "fund-first":
+            fund_parked.set()
+            assert resume_fund.wait(30), "fund transfer gate timed out"
+        moved = real_transfer(actual_ledger, from_key, to_key, names)
+        if selected:
+            transfers.append(moved)
+        return moved
+
+    @contextmanager
+    def observed_transition(action_key, **kwargs):
+        is_owner = str(action_key) == owner
+        actor = threading.current_thread()
+        if is_owner and actor is fa and kwargs.get("blocking", True) is False:
+            if direction == "finish-first":
+                # Funding's live-owner preflight has passed before this lock.
+                fund_parked.set()
+                assert resume_fund.wait(30), "fund owner-lock gate timed out"
+        if (is_owner and actor is fb and direction == "fund-first"
+                and kwargs.get("blocking", True)):
+            # Scope-proof persistence can block here before finish's release.
+            finish_parked.set()
+        with real_transition(action_key, **kwargs) as acquired:
+            if is_owner and actor is fa:
+                owner_acquisitions.append(acquired)
+            if (is_owner and actor is fb and direction == "finish-first"
+                    and getattr(release_phase, "active", False)):
+                assert acquired is True
+                finish_parked.set()
+                assert resume_finish.wait(30), "finish release gate timed out"
+            yield acquired
+
+    def observed_release(action_key, **kwargs):
+        if threading.current_thread() is fb and str(action_key) == owner:
+            release_phase.active = True
+            try:
+                return real_release(action_key, **kwargs)
+            finally:
+                release_phase.active = False
+        return real_release(action_key, **kwargs)
 
     def do_fund():
-        for _ in range(20):
-            out = q.fund_output_batch(
+        try:
+            results["fund"] = q.fund_output_batch(
                 tier_id=TIER, owner_key=owner, mover_key=mover,
                 instance=inst, template=template, batch_id="b1",
                 descriptors=descs)
-            if out.get("ok") is True:
-                results["fund"] = out
-                return
-            if out.get("refusal") not in ("funding-race-deferred",
-                                          "transfer-short"):
-                results["fund"] = out
-                return
-        results["fund"] = {"ok": False, "refusal": "race-deferred-exhausted"}
+        except BaseException as exc:
+            errors.append(exc)
 
     def do_finish():
-        # Slight delay to interleave with fund's selection/publication.
-        import time as _t
-        _t.sleep(0.02)
         try:
-            p = q.finish(owner, status="executed")
-            results["finish"] = str(p)
-        except Exception as exc:  # fail closed, never lose tokens silently
-            results["finish"] = f"error: {exc!r}"
+            results["finish"] = q.finish(owner, status="executed")
+        except BaseException as exc:
+            errors.append(exc)
 
-    fa = threading.Thread(target=do_fund)
-    fb = threading.Thread(target=do_finish)
-    fa.start()
-    fb.start()
-    fa.join(30)
-    fb.join(30)
+    fa = threading.Thread(target=do_fund, name="fund", daemon=True)
+    fb = threading.Thread(target=do_finish, name="finish", daemon=True)
+    monkeypatch.setattr(pool.ResourceLedger, "transfer_tokens", observed_transfer)
+    monkeypatch.setattr(q.queue, "_transition_locked", observed_transition)
+    monkeypatch.setattr(q.queue, "_release_reservation", observed_release)
+    try:
+        fa.start()
+        assert fund_parked.wait(30), ("fund did not reach causal gate", errors)
+        fb.start()
+        assert finish_parked.wait(30), ("finish did not reach causal gate", errors)
+        resume_fund.set()
+        fa.join(30)
+        assert not fa.is_alive(), "fund did not complete under contention"
+        if direction == "finish-first":
+            assert owner_acquisitions == [False]
+            assert results["fund"] == {
+                "ok": False, "refusal": "funding-race-deferred"}
+        resume_finish.set()
+        fb.join(30)
+    finally:
+        resume_fund.set()
+        resume_finish.set()
+        for actor in (fa, fb):
+            if actor.ident is not None:
+                actor.join(30)
+            if actor.is_alive():
+                errors.append(TimeoutError(f"{actor.name} actor survived cleanup"))
+        if errors:
+            raise BaseExceptionGroup("fund/finish actors failed", errors)
     assert not fa.is_alive() and not fb.is_alive()
-    # Sum preserved under every interleaving (no free interval, no loss).
+    assert set(results) == {"fund", "finish"}, results
+    assert results["finish"] == q.item_path(pool.DONE, owner)
+    terminal = pool.read_queue_record(results["finish"])
+    assert terminal is not None and terminal["status"] == "executed"
+    assert not q.item_path(pool.CLAIMED, owner).exists()
+
     cap = ledger.capacity().get(KIND)
     avail = ledger.available().get(KIND)
     held_owner = ledger.holder_tokens(owner).get(KIND, 0)
@@ -498,10 +526,25 @@ def test_owner_finish_race_serialized(tmp_path: Path) -> None:
     assert cap == total_cap, (cap, total_cap)
     assert avail + held_owner + held_mover == cap, (avail, held_owner,
                                                    held_mover, cap)
-    # Either fund won (transferring/consumed, mover holds 1) or finish won
-    # (owner gone, fund refused closed). Never double-charged (mover never
-    # holds 2 for a 1-GiB batch via this path).
     assert held_mover in (0, 1), (held_mover, results)
+    rec = q.read_output_funding(mover, TIER)
+    assert rec is not None and rec["tokens"] == intent["tokens"]
+    if direction == "fund-first":
+        assert owner_acquisitions == [True]
+        assert transfers == [1]
+        assert results["fund"].get("ok") is True, results
+        assert results["fund"]["moved"] == 1
+        assert rec["state"] == "transferring"
+        assert rec["generation"] == results["fund"]["generation"]
+        assert (held_owner, held_mover, avail, cap) == (0, 1, 3, 4)
+    else:
+        assert transfers == []
+        assert rec == intent
+        assert (held_owner, held_mover, avail, cap) == (1, 0, 3, 4)
+        after_finish = q.fund_output_batch(
+            tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
+            template=template, batch_id="b1", descriptors=descs)
+        assert after_finish == {"ok": False, "refusal": "owner-not-running"}
 
 
 def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
