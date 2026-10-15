@@ -122,7 +122,10 @@ def _workers(fleet: Path) -> dict[int, tuple[str, ...]]:
             script = Path(os.fsdecode(argv[1])).resolve()
             if script.name != "worker_loop.py" or not script.is_relative_to(store):
                 continue
-            found[pid] = _identity(pid)
+            identity = _identity(pid)
+            if identity[1:3] != (str(pid), str(pid)):
+                continue
+            found[pid] = identity
         except (OSError, IndexError):
             continue
     return found
