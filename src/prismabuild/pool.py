@@ -5815,6 +5815,29 @@ class _DrainAccounting:
         return _PendingDrainNotes(key, self.ordinary, self.measurement)
 
 
+@dataclass(frozen=True)
+class _CandidateDemand:
+    sealed: dict[str, int]
+    sealed_host: dict[str, int]
+    host: dict[str, int]
+    reservation: dict[str, int]
+    tiers: dict[str, dict[str, int]]
+
+
+@dataclass(frozen=True)
+class _QualifiedClaim:
+    item: Mapping[str, object]
+    key: str
+    demand: _CandidateDemand
+    residency: dict[str, object]
+    declared_images: object
+    class_verdict: Mapping[str, object] | None
+    canary_exempt: bool
+    scratch_intent: dict[str, object] | None
+    dependent_owner: object
+    reservation: _ClaimReservation
+
+
 class _ClaimScanReads:
     def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
                  tags: frozenset[str], has_gpu: bool) -> None:
@@ -21041,6 +21064,262 @@ class PoolQueue:
                 _CLAIM_DIAGNOSTICS.reset(token)
                 self._write_claim_diagnostics(batch.denials, batch.passes)
 
+    def _qualify_claim(
+        self, item: Mapping[str, object], key: str, scan: candidate_policy.ScanOrder,
+        reads: _ClaimScanReads, *, tagset: frozenset[str], has_gpu: bool,
+        withdrawn: Container[str], capacity: Mapping[str, int] | None,
+        ledger: ResourceLedger | None, controller: cpu_admission.Controller | None,
+        gpu_controller: gpu_admission.Controller | None,
+        interpreter_host: capability_eligibility.LiveInterpreters,
+        dependency_host: capability_eligibility.LiveDependencies,
+        image_host: capability_eligibility.LiveImages,
+    ) -> _QualifiedClaim | candidate_policy.CandidateDenial | candidate_policy.ScanOrder:
+        if reads.claimed_hint(key):
+            return candidate_policy.CandidateDenial(
+                'already_claimed', None, scan)
+        if _is_hex64(key) and self._refuse_released_origin_consumer(
+                item, key):
+            # Before placement: failing the row is queue bookkeeping,
+            # not execution, so any box's scan may do it (#954).  The
+            # guard reads the index fresh here, under this key's
+            # transition lock, which a release holds while it files
+            # the entry and the record: the scan's earlier listing is
+            # a hint, never the authority (#964).  Only a 64-hex key
+            # can be named by the release index; an empty or foreign
+            # key takes the path it always took, without turning the
+            # confirmation into a malformed-record denial.
+            return scan
+        if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
+            if key:
+                return candidate_policy.CandidateDenial(
+                    'placement_mismatch', {'worker_tags': sorted(tagset), 'worker_has_gpu': has_gpu, 'required_tags': item.get('tags'), 'needs_gpu': item.get('needs_gpu')}, scan)
+            return scan
+        canary_exempt = False
+        if ("publication_canary" in item
+                or publication_canary.CAPABILITY in (item.get("tags") or [])):
+            if (not publication_canary.verified(self.root, item)
+                    or item["publication_canary"]["host"] != socket.gethostname()):
+                return candidate_policy.CandidateDenial(
+                    'publication_canary_authority_invalid', None, scan)
+            # The scan has already validated the exact generation
+            # this row's grant names (#1213).  That verified row, and
+            # only it, crosses foreign CPU load (#1239): the canary's
+            # verdict is correctness-only, and delaying it behind
+            # load no drain clears is the boundary loss.
+            canary_exempt = True
+        interpreter_refusal = interpreter_host.refusal(item)
+        if interpreter_refusal is not None:
+            return candidate_policy.CandidateDenial(
+                interpreter_refusal.reason, interpreter_refusal.evidence, scan)
+        dependency_refusal = dependency_host.refusal(item)
+        if dependency_refusal is not None:
+            return candidate_policy.CandidateDenial(
+                dependency_refusal.reason, dependency_refusal.evidence, scan)
+        declared_images = item.get("container_images")
+        image_check = image_host.check(item, clock=_now)
+        if isinstance(image_check, capability_eligibility.CapabilityRefusal):
+            evidence = dict(image_check.evidence)
+            if image_check.reason == "container_image_presence_unknown":
+                carried = None
+                if not scan.whole_box_held:
+                    carried = self._carried_withhold(
+                        reads.verdicts(), item, host=socket.gethostname(), now=_now())
+                    scan = scan.carry(key, carried)
+                if carried is not None:
+                    evidence["withhold_carried"] = carried
+            return candidate_policy.CandidateDenial(
+                image_check.reason, evidence, scan)
+        class_verdict = image_check.class_verdict
+        if self.withdrawal_covers(
+                item, action_key=key, withdrawn=withdrawn) is not None:
+            # Already filed under ``withdrawn``, and of the generation that
+            # was withdrawn: this record is the losing half of a race, not
+            # work.  Drop it rather than leave it at the head of ``ready``
+            # for every future poll to step over -- but FILE it first.  A
+            # queue that removes a record it will not run and says nothing
+            # anywhere is the shape ``quarantine_orphans`` names in its own
+            # docstring, and the reason this guard was a blocker.
+            #
+            # A record of a LATER generation falls through and is claimed:
+            # somebody asked for this work again after the cancellation,
+            # which a content-addressed key makes the ordinary way to ask.
+            cancelled = self._withdraw_ready(key)
+            if cancelled is not None:
+                self._file_superseded(
+                    cancelled, key=key, kind="dropped", status="dropped",
+                    dropped_unix=_now(), dropped_host=socket.gethostname(),
+                    reason="requeued into ready after the withdrawal that "
+                           "cancelled this generation",
+                )
+            return scan
+        # A lead's record that cannot be read -- corrupt bytes, or an
+        # ``ESTALE`` off a cold NFS handle -- must be a denial for the
+        # item naming that lead, not an escape out of the poll: this
+        # call is made before the admission try, and the caller is the
+        # worker loop, which has no handler to spare for it (#592).
+        # The wrap is here, at the one call site, rather than
+        # ``tolerate_stale`` inside the by-key readers, whose loudness
+        # is what turns a broken mount into a visible failure instead
+        # of a confident wrong verdict.
+        try:
+            residency = self.residency_verdict(item)
+        except (OSError, PoolContractError) as exc:
+            residency_block = item.get("residency")
+            leads = (residency_block.get("leads")
+                     if isinstance(residency_block, Mapping) else None)
+            if item.get("gang") is not None:
+                # A read that failed, not a verdict: it must not
+                # confirm an earlier terminal reading, so the wait
+                # starts over on the next pass (#1583 review).
+                self._gang_clear_terminal(item, key)
+            # A read that failed, not a verdict: this host's live
+            # withhold for the row holds for the pass (#1143).
+            carried = None
+            if not scan.whole_box_held:
+                carried = self._carried_withhold(
+                    reads.verdicts(), item, host=socket.gethostname(), now=_now())
+                scan = scan.carry(key, carried)
+            self.record_denial(item, "residency_lead_record_unreadable", {
+                "error": str(exc), "leads": leads,
+                **({"withhold_carried": carried}
+                   if carried is not None else {})})
+            return scan
+        reason = candidate_policy.residency_denial(residency)
+        if reason is not None:
+            # Before any token is taken, and without ``record_pass``:
+            # the bytes are not there, so this box should go do other
+            # work rather than age an item nothing on this box can
+            # advance.  Rob, #583: schedule compute when its
+            # dependencies are met, not while it spins on I/O.
+            # ``lead_unpinned`` is the same refusal for a lead that
+            # finished holding no tokens -- it moved nothing, it
+            # overran, or an egress has already taken its bytes back.
+            # ``map_not_composed`` is the refusal for bytes that are
+            # there and unreachable: without the map the action reads
+            # the pool and says nothing went wrong.  ``map_unreadable``
+            # is the same refusal when the mount would not say either
+            # way; both leave the item ready for the next scan.
+            # ``map_stale`` is the third of that family: the map is
+            # there and readable but was composed before this item's
+            # lead landed, so it addresses every range but the one the
+            # gate just waited for (#634).
+            # ``plan_unreadable`` is the one that does not resolve on
+            # its own: no coordinator can compose a map from a plan it
+            # refuses, so the item names the refusal rather than
+            # waiting out a cycle that will not come (#615).
+            # ``ram_epoch_stale`` is ``map_not_composed``'s sibling
+            # across a reboot: the map names ram paths from the epoch
+            # before the current one, so the bytes are gone and the
+            # loop's next recomposition drops the prior-epoch
+            # fragment (#640).
+            if item.get("gang") is not None:
+                if reason != "residency_lead_terminal":
+                    self._gang_clear_terminal(item, key)
+                elif self._gang_terminal_confirmed(item, key, residency):
+                    # This member can never start, so its gang cannot:
+                    # its elected siblings would fence their hosts
+                    # until someone withdrew the gang, because
+                    # elections never expire and the sweep tears a
+                    # gang down only on an unsuccessful member
+                    # (#1543).  The confirmation above proved the
+                    # verdict once more under the leads' locks and
+                    # filed the one-shot teardown marker there, so no
+                    # requeue can win between the proof and the
+                    # commit; the siblings are withdrawn here, after
+                    # the leads' locks are released, and this row's
+                    # lock is held, so the sweep withdraws it.
+                    self._gang_teardown_withdraw(
+                        item, by=key, exclude={key},
+                        reason=f"member {key[:12]} cannot start: residency_lead_terminal")
+            return candidate_policy.CandidateDenial(
+                reason, {'residency': residency}, scan)
+        if item.get("gang") is not None:
+            self._gang_clear_terminal(item, key)
+        try:
+            sealed_demand = self.demand_of(item)
+        except (TypeError, ValueError) as exc:
+            # The same class as the tier id below, one step earlier and
+            # for the same reason: ``publish`` refuses a ``resources``
+            # block that is not an object of counts, so one that
+            # reaches here arrived in a record this pool never wrote.
+            # It is a denial for the item carrying it, not a raise out
+            # of a poll whose only handler re-raises (#592).  ``int()``
+            # over a foreign value raises ``TypeError`` as readily as
+            # ``ValueError``, and ``demand_of`` raises
+            # ``PoolContractError`` for a non-object, which is both.
+            self.record_denial(item, "malformed_demand", {
+                "resources": item.get("resources"), "error": str(exc)})
+            return scan
+        try:
+            demand, tier_demand = storage_tiers.split_demand(sealed_demand)
+            # ``publish`` refuses these ids on the way in, so one that
+            # parses to ``split_demand`` yet fails ``_check_tier_id``
+            # arrived in a record this pool never wrote.  A foreign
+            # writer's mistake is a denial for that item, not a raise
+            # whose only handler re-raises and leaves every worker's
+            # loop dead on the same record (#592).  In-memory string
+            # checks over an already-parsed dict: nothing here adds
+            # work to an item with no tier demand.
+            for tier_id in tier_demand:
+                self._check_tier_id(tier_id)
+        except ValueError as exc:
+            self.record_denial(item, "malformed_tier_demand", {
+                "demand": sealed_demand, "error": str(exc)})
+            return scan
+        admission_refusal = candidate_policy.admission_denial(
+            demand, capacity_present=capacity is not None)
+        if admission_refusal is not None:
+            return candidate_policy.CandidateDenial(
+                admission_refusal, {'declared_demand': sealed_demand, 'host_demand': demand, 'required': 'positive declared host demand and observed capacity'}, scan)
+        # Historical slot counts expressed sharing, not device count.
+        # Preserve the sealed demand but reserve this worker's single
+        # physical GPU; the controller keeps multi-slot work exclusive.
+        reservation_demand = self._reservation_demand(
+            demand, gpu_controller=gpu_controller)
+        # The sealed host demand, before #985 adds a producer's export
+        # allowance to what this claim reserves (below).
+        sealed_host_demand = dict(demand)
+        dependent_owner: object = cpu_admission._UNREAD
+        reservation = _ClaimReservation(
+            self, key, ledger=ledger, controller=controller,
+            gpu_controller=gpu_controller, tier_demand=tier_demand)
+        scratch_intent = None
+        # The optional row is only a projection, including on legacy
+        # non-adaptive callers. No erased/forged carrier bypasses the
+        # actual sealed request, and opted-in work requires a ledger.
+        try:
+            request = _sealed_action_request(item["cas_root"], key)
+            scratch_intent = self._sealed_scratch_io(
+                request, tags=item.get("tags") or [], resources=sealed_demand)
+            if (item.get(local_scratch.IO_ENV) != scratch_intent
+                    or (scratch_intent is None and contracts.SCRATCH_IO_TAG in
+                        (item.get("tags") or []))):
+                raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
+            if scratch_intent is not None:
+                current = _read_json(self.item_path(READY, key))
+                if not self._scratch_record_matches(current, item, scratch_intent):
+                    raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
+                if ledger is None or not demand:
+                    raise PoolContractError("scratch I/O requires full host-ledger admission")
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            self.record_denial(item, "local_scratch_io_intent_invalid", {"error": str(exc)})
+            return scan
+        if controller is not None and not demand:
+            # Adaptive admission needs a durable reservation to make an
+            # unknown CPU consumer visible to subsequent measurements.
+            # Empty legacy demand has no holder; keep it queued instead.
+            self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
+            return candidate_policy.CandidateDenial(
+                'empty_demand', None, scan)
+        return _QualifiedClaim(
+            item=item, key=key,
+            demand=_CandidateDemand(sealed_demand, sealed_host_demand, demand,
+                                    reservation_demand, tier_demand),
+            residency=residency, declared_images=declared_images,
+            class_verdict=class_verdict, canary_exempt=canary_exempt,
+            scratch_intent=scratch_intent, dependent_owner=dependent_owner,
+            reservation=reservation)
+
     def _claim_pass(
         self,
         *,
@@ -21358,261 +21637,42 @@ class PoolQueue:
                         scan = denial.order_before
                         self.record_denial(item, denial.reason, denial.evidence)
                     continue
-                if reads.claimed_hint(key):
-                    self.record_denial(item, "already_claimed")
+                qualified = self._qualify_claim(
+                    item, key, scan, reads, tagset=tagset, has_gpu=has_gpu,
+                    withdrawn=withdrawn, capacity=capacity, ledger=ledger,
+                    controller=controller, gpu_controller=gpu_controller,
+                    interpreter_host=interpreter_host, dependency_host=dependency_host,
+                    image_host=image_host)
+                if isinstance(qualified, candidate_policy.CandidateDenial):
+                    scan = qualified.order_before
+                    if qualified.evidence is None:
+                        self.record_denial(item, qualified.reason)
+                    else:
+                        self.record_denial(item, qualified.reason, qualified.evidence)
                     continue
-                if _is_hex64(key) and self._refuse_released_origin_consumer(
-                        item, key):
-                    # Before placement: failing the row is queue bookkeeping,
-                    # not execution, so any box's scan may do it (#954).  The
-                    # guard reads the index fresh here, under this key's
-                    # transition lock, which a release holds while it files
-                    # the entry and the record: the scan's earlier listing is
-                    # a hint, never the authority (#964).  Only a 64-hex key
-                    # can be named by the release index; an empty or foreign
-                    # key takes the path it always took, without turning the
-                    # confirmation into a malformed-record denial.
+                if isinstance(qualified, candidate_policy.ScanOrder):
+                    scan = qualified
                     continue
-                if not key or not self._placement_matches(item, tags=tagset, has_gpu=has_gpu):
-                    if key:
-                        self.record_denial(item, "placement_mismatch", {
-                            "worker_tags": sorted(tagset), "worker_has_gpu": has_gpu,
-                            "required_tags": item.get("tags"), "needs_gpu": item.get("needs_gpu"),
-                        })
-                    continue
-                canary_exempt = False
-                if ("publication_canary" in item
-                        or publication_canary.CAPABILITY in (item.get("tags") or [])):
-                    if (not publication_canary.verified(self.root, item)
-                            or item["publication_canary"]["host"] != socket.gethostname()):
-                        self.record_denial(item, "publication_canary_authority_invalid")
-                        continue
-                    # The scan has already validated the exact generation
-                    # this row's grant names (#1213).  That verified row, and
-                    # only it, crosses foreign CPU load (#1239): the canary's
-                    # verdict is correctness-only, and delaying it behind
-                    # load no drain clears is the boundary loss.
-                    canary_exempt = True
-                interpreter_refusal = interpreter_host.refusal(item)
-                if interpreter_refusal is not None:
-                    self.record_denial(item, interpreter_refusal.reason,
-                                       interpreter_refusal.evidence)
-                    continue
-                dependency_refusal = dependency_host.refusal(item)
-                if dependency_refusal is not None:
-                    self.record_denial(item, dependency_refusal.reason,
-                                       dependency_refusal.evidence)
-                    continue
-                declared_images = item.get("container_images")
-                image_check = image_host.check(item, clock=_now)
-                if isinstance(image_check, capability_eligibility.CapabilityRefusal):
-                    evidence = dict(image_check.evidence)
-                    if image_check.reason == "container_image_presence_unknown":
-                        carried = None
-                        if not scan.whole_box_held:
-                            carried = self._carried_withhold(
-                                reads.verdicts(), item, host=socket.gethostname(), now=_now())
-                            scan = scan.carry(key, carried)
-                        if carried is not None:
-                            evidence["withhold_carried"] = carried
-                    self.record_denial(item, image_check.reason, evidence)
-                    continue
-                class_verdict = image_check.class_verdict
-                if self.withdrawal_covers(
-                        item, action_key=key, withdrawn=withdrawn) is not None:
-                    # Already filed under ``withdrawn``, and of the generation that
-                    # was withdrawn: this record is the losing half of a race, not
-                    # work.  Drop it rather than leave it at the head of ``ready``
-                    # for every future poll to step over -- but FILE it first.  A
-                    # queue that removes a record it will not run and says nothing
-                    # anywhere is the shape ``quarantine_orphans`` names in its own
-                    # docstring, and the reason this guard was a blocker.
-                    #
-                    # A record of a LATER generation falls through and is claimed:
-                    # somebody asked for this work again after the cancellation,
-                    # which a content-addressed key makes the ordinary way to ask.
-                    cancelled = self._withdraw_ready(key)
-                    if cancelled is not None:
-                        self._file_superseded(
-                            cancelled, key=key, kind="dropped", status="dropped",
-                            dropped_unix=_now(), dropped_host=socket.gethostname(),
-                            reason="requeued into ready after the withdrawal that "
-                                   "cancelled this generation",
-                        )
-                    continue
-                # A lead's record that cannot be read -- corrupt bytes, or an
-                # ``ESTALE`` off a cold NFS handle -- must be a denial for the
-                # item naming that lead, not an escape out of the poll: this
-                # call is made before the admission try, and the caller is the
-                # worker loop, which has no handler to spare for it (#592).
-                # The wrap is here, at the one call site, rather than
-                # ``tolerate_stale`` inside the by-key readers, whose loudness
-                # is what turns a broken mount into a visible failure instead
-                # of a confident wrong verdict.
-                try:
-                    residency = self.residency_verdict(item)
-                except (OSError, PoolContractError) as exc:
-                    residency_block = item.get("residency")
-                    leads = (residency_block.get("leads")
-                             if isinstance(residency_block, Mapping) else None)
-                    if item.get("gang") is not None:
-                        # A read that failed, not a verdict: it must not
-                        # confirm an earlier terminal reading, so the wait
-                        # starts over on the next pass (#1583 review).
-                        self._gang_clear_terminal(item, key)
-                    # A read that failed, not a verdict: this host's live
-                    # withhold for the row holds for the pass (#1143).
-                    carried = None
-                    if not scan.whole_box_held:
-                        carried = self._carried_withhold(
-                            reads.verdicts(), item, host=socket.gethostname(), now=_now())
-                        scan = scan.carry(key, carried)
-                    self.record_denial(item, "residency_lead_record_unreadable", {
-                        "error": str(exc), "leads": leads,
-                        **({"withhold_carried": carried}
-                           if carried is not None else {})})
-                    continue
-                reason = candidate_policy.residency_denial(residency)
-                if reason is not None:
-                    # Before any token is taken, and without ``record_pass``:
-                    # the bytes are not there, so this box should go do other
-                    # work rather than age an item nothing on this box can
-                    # advance.  Rob, #583: schedule compute when its
-                    # dependencies are met, not while it spins on I/O.
-                    # ``lead_unpinned`` is the same refusal for a lead that
-                    # finished holding no tokens -- it moved nothing, it
-                    # overran, or an egress has already taken its bytes back.
-                    # ``map_not_composed`` is the refusal for bytes that are
-                    # there and unreachable: without the map the action reads
-                    # the pool and says nothing went wrong.  ``map_unreadable``
-                    # is the same refusal when the mount would not say either
-                    # way; both leave the item ready for the next scan.
-                    # ``map_stale`` is the third of that family: the map is
-                    # there and readable but was composed before this item's
-                    # lead landed, so it addresses every range but the one the
-                    # gate just waited for (#634).
-                    # ``plan_unreadable`` is the one that does not resolve on
-                    # its own: no coordinator can compose a map from a plan it
-                    # refuses, so the item names the refusal rather than
-                    # waiting out a cycle that will not come (#615).
-                    # ``ram_epoch_stale`` is ``map_not_composed``'s sibling
-                    # across a reboot: the map names ram paths from the epoch
-                    # before the current one, so the bytes are gone and the
-                    # loop's next recomposition drops the prior-epoch
-                    # fragment (#640).
-                    if item.get("gang") is not None:
-                        if reason != "residency_lead_terminal":
-                            self._gang_clear_terminal(item, key)
-                        elif self._gang_terminal_confirmed(item, key, residency):
-                            # This member can never start, so its gang cannot:
-                            # its elected siblings would fence their hosts
-                            # until someone withdrew the gang, because
-                            # elections never expire and the sweep tears a
-                            # gang down only on an unsuccessful member
-                            # (#1543).  The confirmation above proved the
-                            # verdict once more under the leads' locks and
-                            # filed the one-shot teardown marker there, so no
-                            # requeue can win between the proof and the
-                            # commit; the siblings are withdrawn here, after
-                            # the leads' locks are released, and this row's
-                            # lock is held, so the sweep withdraws it.
-                            self._gang_teardown_withdraw(
-                                item, by=key, exclude={key},
-                                reason=f"member {key[:12]} cannot start: residency_lead_terminal")
-                    self.record_denial(item, reason, {"residency": residency})
-                    continue
-                if item.get("gang") is not None:
-                    self._gang_clear_terminal(item, key)
-                try:
-                    sealed_demand = self.demand_of(item)
-                except (TypeError, ValueError) as exc:
-                    # The same class as the tier id below, one step earlier and
-                    # for the same reason: ``publish`` refuses a ``resources``
-                    # block that is not an object of counts, so one that
-                    # reaches here arrived in a record this pool never wrote.
-                    # It is a denial for the item carrying it, not a raise out
-                    # of a poll whose only handler re-raises (#592).  ``int()``
-                    # over a foreign value raises ``TypeError`` as readily as
-                    # ``ValueError``, and ``demand_of`` raises
-                    # ``PoolContractError`` for a non-object, which is both.
-                    self.record_denial(item, "malformed_demand", {
-                        "resources": item.get("resources"), "error": str(exc)})
-                    continue
-                try:
-                    demand, tier_demand = storage_tiers.split_demand(sealed_demand)
-                    # ``publish`` refuses these ids on the way in, so one that
-                    # parses to ``split_demand`` yet fails ``_check_tier_id``
-                    # arrived in a record this pool never wrote.  A foreign
-                    # writer's mistake is a denial for that item, not a raise
-                    # whose only handler re-raises and leaves every worker's
-                    # loop dead on the same record (#592).  In-memory string
-                    # checks over an already-parsed dict: nothing here adds
-                    # work to an item with no tier demand.
-                    for tier_id in tier_demand:
-                        self._check_tier_id(tier_id)
-                except ValueError as exc:
-                    self.record_denial(item, "malformed_tier_demand", {
-                        "demand": sealed_demand, "error": str(exc)})
-                    continue
-                admission_refusal = candidate_policy.admission_denial(
-                    demand, capacity_present=capacity is not None)
-                if admission_refusal is not None:
-                    self.record_denial(item, admission_refusal, {
-                        "declared_demand": sealed_demand,
-                        "host_demand": demand,
-                        "required": "positive declared host demand and observed capacity",
-                    })
-                    continue
-                # Historical slot counts expressed sharing, not device count.
-                # Preserve the sealed demand but reserve this worker's single
-                # physical GPU; the controller keeps multi-slot work exclusive.
-                reservation_demand = self._reservation_demand(
-                    demand, gpu_controller=gpu_controller)
-                # The sealed host demand, before #985 adds a producer's export
-                # allowance to what this claim reserves (below).
-                sealed_host_demand = dict(demand)
+                sealed_demand = qualified.demand.sealed
+                demand = qualified.demand.host
+                tier_demand = qualified.demand.tiers
+                reservation_demand = qualified.demand.reservation
+                sealed_host_demand = qualified.demand.sealed_host
+                residency = qualified.residency
+                declared_images = qualified.declared_images
+                class_verdict = qualified.class_verdict
+                canary_exempt = qualified.canary_exempt
+                scratch_intent = qualified.scratch_intent
+                dependent_owner = qualified.dependent_owner
+                reservation = qualified.reservation
                 allowance = None
-                dependent_owner: object = cpu_admission._UNREAD
-                gang = gang_record = gang_entry = None  # #1517, read below
-                reservation = _ClaimReservation(
-                    self, key, ledger=ledger, controller=controller,
-                    gpu_controller=gpu_controller, tier_demand=tier_demand)
+                gang = gang_record = gang_entry = None
                 tier_borrowed: dict[str, object] | None = None
-                #: Pool fill the reader plan waived for a copy a claimed
-                #: consumer is blocked on (#1091): counted as covered, held
-                #: by nobody.
                 tier_fill_waived: dict[str, object] | None = None
                 adaptive = None
                 adaptive_gpu = None
-                scratch_intent = scratch_evidence = scratch_boundary = None
+                scratch_evidence = scratch_boundary = None
                 scratch_expired = scratch_changed = False
-                # The optional row is only a projection, including on legacy
-                # non-adaptive callers. No erased/forged carrier bypasses the
-                # actual sealed request, and opted-in work requires a ledger.
-                try:
-                    request = _sealed_action_request(item["cas_root"], key)
-                    scratch_intent = self._sealed_scratch_io(
-                        request, tags=item.get("tags") or [], resources=sealed_demand)
-                    if (item.get(local_scratch.IO_ENV) != scratch_intent
-                            or (scratch_intent is None and contracts.SCRATCH_IO_TAG in
-                                (item.get("tags") or []))):
-                        raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
-                    if scratch_intent is not None:
-                        current = _read_json(self.item_path(READY, key))
-                        if not self._scratch_record_matches(current, item, scratch_intent):
-                            raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
-                        if ledger is None or not demand:
-                            raise PoolContractError("scratch I/O requires full host-ledger admission")
-                except (ValueError, OSError, KeyError, TypeError) as exc:
-                    self.record_denial(item, "local_scratch_io_intent_invalid", {"error": str(exc)})
-                    continue
-                if controller is not None and not demand:
-                    # Adaptive admission needs a durable reservation to make an
-                    # unknown CPU consumer visible to subsequent measurements.
-                    # Empty legacy demand has no holder; keep it queued instead.
-                    self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
-                    self.record_denial(item, "empty_demand")
-                    continue
                 # From the reservation to ``commit_acquire`` the tokens exist
                 # only under a handle this frame holds: nothing else can name
                 # them, and no sweep will return them before
