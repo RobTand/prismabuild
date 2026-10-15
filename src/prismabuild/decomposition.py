@@ -103,6 +103,7 @@ __all__ = [
 ]
 
 DECOMPOSITIONS = "decompositions"
+_MAX_CHILD_RESULT_BYTES = 1024 * 1024
 
 LOGICAL_REQUEST_SCHEMA_V1 = "prismabuild.logical_request.v1"
 LOGICAL_TASK_ROSTER_SCHEMA_V1 = "prismabuild.logical_task_roster.v1"
@@ -1182,6 +1183,7 @@ def complete_group(request, plan, children, *, cas) -> tuple[dict, Path]:
             f"the group children do not match the frozen publication "
             f"index at {index_path}"
         )
+    index = _validate_publication_index(index, plan)
     manifests = []
     child_evidence = []
     prepared_batches = PreparedBatches(request, plan)
@@ -1194,29 +1196,19 @@ def complete_group(request, plan, children, *, cas) -> tuple[dict, Path]:
                 f"child {ordinal} does not seal the plan's exact batch "
                 f"membership and identity"
             )
-        child_receipt = cas.lookup(child)
-        if child_receipt is None:
+        result = _read_child_result(cas, child)
+        if result is None:
             raise MissingChildResult(ordinal, len(children))
-        raw = cas.result_path(child_receipt, child).read_bytes()
-        try:
-            manifest = json.loads(raw)
-        except ValueError as exc:
-            raise RecordError(
-                f"child {str(child['action_key'])[:12]} published a result that is "
-                f"not a JSON document: {exc}"
-            ) from None
-        if manifest is None:
-            raise MissingChildResult(ordinal, len(children))
-        checked = _validate_child_result_manifest(manifest)
-        if checked["child_ordinal"] != ordinal:
+        manifest = result.manifest
+        if manifest["child_ordinal"] != ordinal:
             raise RecordError(
                 f"child {ordinal}'s receipt carries a result manifest for "
-                f"ordinal {checked['child_ordinal']}"
+                f"ordinal {manifest['child_ordinal']}"
             )
         manifests.append(manifest)
         child_evidence.append({
             "action_key": child_keys[ordinal],
-            "receipt_sha256": document_sha256(child_receipt),
+            "receipt_sha256": document_sha256(result.receipt),
         })
     receipt = {
         **verify_exact_cover(request, plan, manifests),
@@ -1352,8 +1344,8 @@ def child_result_for_key(
 def read_child_request(
         child_key: str, *, cas_root: object,
         parent_key: str, plan_key: str,
-        plan: Mapping[str, object] | None = None,
-        publication: Mapping[str, object] | None = None,
+        plan: Mapping[str, object],
+        publication: Mapping[str, object],
 ) -> tuple[dict[str, object] | None, str]:
     """The child's sealed request when it carries the exact membership."""
 
@@ -1385,29 +1377,44 @@ def read_child_request(
     if (not isinstance(ordinal, int) or isinstance(ordinal, bool)
             or not isinstance(batch.get("ordered_task_ids"), list)):
         return None, "its sealed logical_batch carries no ordinal membership"
-    if plan is not None and publication is not None:
-        keys = publication.get("child_action_keys")
-        partitions = plan.get("partitions")
-        if not isinstance(keys, list) or not isinstance(partitions, list):
-            return None, "the stored publication names no children"
-        if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
-            return None, (
-                "its sealed ordinal is not its position in the stored "
-                "publication")
-        if not 0 <= ordinal < len(partitions):
-            return None, "its sealed ordinal is outside the stored plan"
-        if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
-            return None, (
-                "its sealed task set differs from the stored plan's "
-                "partition")
+    keys = publication.get("child_action_keys")
+    partitions = plan.get("partitions")
+    if not isinstance(keys, list) or not isinstance(partitions, list):
+        return None, "the stored publication names no children"
+    if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
+        return None, (
+            "its sealed ordinal is not its position in the stored "
+            "publication")
+    if not 0 <= ordinal < len(partitions):
+        return None, "its sealed ordinal is outside the stored plan"
+    if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
+        return None, (
+            "its sealed task set differs from the stored plan's "
+            "partition")
     return request, ""
+
+
+def _read_child_result(cas, request: Mapping[str, object]) -> ChildResult | None:
+    """Read one native receipt and its strict manifest under the result bound."""
+
+    receipt = cas._lookup_receipt_only(pb.validate_action(request))
+    if receipt is None:
+        return None
+    result = receipt["result"]
+    assert isinstance(result, Mapping)
+    payload = cas.read_declared_blob(
+        result, max_bytes=_MAX_CHILD_RESULT_BYTES, where="child result manifest")
+    value = pb._decode_strict_json(payload, where="child result manifest")
+    if value is None:
+        return None
+    return ChildResult(receipt, _validate_child_result_manifest(value))
 
 
 def child_result(
         cas, request: Mapping[str, object], *,
-        child_key: str | None = None,
-        plan: Mapping[str, object] | None = None,
-        publication: Mapping[str, object] | None = None,
+        child_key: str,
+        plan: Mapping[str, object],
+        publication: Mapping[str, object],
 ) -> ChildResult | None:
     """Verify one child's durable result through the native CAS (#1666).
 
@@ -1419,21 +1426,15 @@ def child_result(
     ``child_action_keys``, and its task set equals the plan's partition at
     that ordinal. A child with several tasks still counts one unit.
     Returns the verified receipt and manifest, or ``None`` when the child has
-    no verified durable result. Raises on unreadable or tampered bytes, like
-    any CAS verification.
+    no verified durable result, including a JSON null manifest. Raises on
+    unreadable or tampered bytes, like any CAS verification.
     """
 
-    receipt = cas.lookup(request)
-    if receipt is None:
+    result = _read_child_result(cas, request)
+    if result is None:
         return None
-    key = str(child_key or request.get("action_key") or "")
-    result = receipt.get("result")
-    assert isinstance(result, Mapping)
-    payload = cas.read_declared_blob(
-        result, max_bytes=pb.MAX_ACTION_PROGRESS_BYTES * 16,
-        where="child result manifest")
-    manifest = _validate_child_result_manifest(
-        pb._decode_strict_json(payload, where="child result manifest"))
+    key = child_key
+    manifest = result.manifest
     params = request.get("params")
     batch = (params.get("logical_batch")  # type: ignore[union-attr]
              if isinstance(params, Mapping) else None)
@@ -1451,33 +1452,26 @@ def child_result(
     if (not isinstance(tasks, list) or not tasks
             or any(not isinstance(entry, str) for entry in tasks)):
         return None
-    if plan is not None and publication is not None:
-        try:
-            checked_plan = _validate_plan(plan)
-            checked_index = _validate_publication_index(
-                publication, checked_plan)
-        except (ValueError, pb.ActionContractError):
-            return None
-        if (manifest["parent_key"] != checked_plan["parent_key"]
-                or manifest["plan_key"] != checked_plan["plan_key"]):
-            return None
-        ordinal = int(batch.get("child_ordinal"))
-        if not 0 <= ordinal < len(checked_index["child_action_keys"]):
-            return None
-        if checked_index["child_action_keys"][ordinal] != key:
-            return None
-        if list(checked_plan["partitions"][ordinal]) != list(tasks):
-            return None
-        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
-        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
-            return None
-    elif key:
-        manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
-        if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
-            return None
-    else:
+    try:
+        checked_plan = _validate_plan(plan)
+        checked_index = _validate_publication_index(
+            publication, checked_plan)
+    except (ValueError, pb.ActionContractError):
         return None
-    return ChildResult(receipt, manifest)
+    if (manifest["parent_key"] != checked_plan["parent_key"]
+            or manifest["plan_key"] != checked_plan["plan_key"]):
+        return None
+    ordinal = int(batch.get("child_ordinal"))
+    if not 0 <= ordinal < len(checked_index["child_action_keys"]):
+        return None
+    if checked_index["child_action_keys"][ordinal] != key:
+        return None
+    if list(checked_plan["partitions"][ordinal]) != list(tasks):
+        return None
+    manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+    if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+        return None
+    return result
 
 
 # --------------------------------------------------------------------------

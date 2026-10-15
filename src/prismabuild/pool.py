@@ -11094,8 +11094,8 @@ class PoolQueue:
     def _queued_child_queue_state(
             self, child_key: str, *, cas_root: object,
             request: Mapping[str, object],
-            plan: Mapping[str, object] | None = None,
-            publication: Mapping[str, object] | None = None,
+            plan: Mapping[str, object],
+            publication: Mapping[str, object],
     ) -> tuple[str, str]:
         """One awaited child's queue state, with durable CAS as durable."""
 
@@ -11397,8 +11397,8 @@ class PoolQueue:
 
     def _queued_child_durable(self, child_key: str, *, cas_root: object,
                               request: Mapping[str, object],
-                              plan: Mapping[str, object] | None = None,
-                              publication: Mapping[str, object] | None = None) -> bool:
+                              plan: Mapping[str, object],
+                              publication: Mapping[str, object]) -> bool:
         """Whether the CAS verifies this child's durable result (#1666)."""
 
         try:
