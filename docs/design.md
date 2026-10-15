@@ -4846,8 +4846,9 @@ behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
-Callers awaiting typed-receipt migration read generation identities through
-`loaded_generation()` and `published_generation_name()`, alongside commit readers.
+Worker, tier, local tier and prewarm admission use typed receipt observations.
+Scalar getter APIs remain until the remaining fixtures close in the private
+caller wave.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.
@@ -4882,6 +4883,13 @@ A failed cycle followed by stop returns 75 and never writes a park marker.
 Current cycles, final accounting and filesystem-floor work finish before the
 next receipt boundary. Tier writes no drift incidents.
 
+The one-shot worker adapter checks maintenance first and keeps that refusal's
+exit 0. Its typed preflight returns 75 for UNKNOWN without calling the loop or
+writing an incident. Complete generation drift keeps its declined message,
+exit 0 and no incident. Complete same-generation commit drift reaches the
+worker loop's existing incident writer. MATCH reaches the same loop admission,
+containment and outcome callback, with the adapter's existing CLI defaults.
+
 `generation_receipt.observe` reads both runtime identities from one receipt
 read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,
 unreadable, malformed and incomplete receipts remain distinct
@@ -4891,8 +4899,7 @@ boundary imposes no commit grammar or additional receipt schema.
 `Unknown(loaded, published)`. Drift requires two complete identities; an
 unavailable observation proves neither agreement nor movement. Each decision
 carries its evidence. Roles retain their own refusal, wait and retirement
-policies. The existing scalar paths remain for role callers awaiting migration
-in the closed caller wave.
+policies. Scalar API deletion remains part of the closed fixture caller wave.
 
 The worker observes the loaded receipt beside its imported source and the
 published receipt through `role_session.loaded_runtime` and `published_runtime`.

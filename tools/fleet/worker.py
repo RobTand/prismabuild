@@ -25,37 +25,33 @@ from runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 import worker_loop
-from prismabuild import role_session  # noqa: E402
-
-
-def refusal() -> str:
-    """Why this box may not admit right now, or "" when it may.
-
-    The generation check reads the same pair the loop compares at every idle
-    poll: the receipt beside the bytes this process imported, and the receipt
-    at the stable name the publisher moves.  A one-shot started from a path
-    that has since been superseded would otherwise claim live work under
-    retired code, which is the case a loop escapes by exiting.
-    """
-
-    if role_session.maintenance_requested():
-        return "resource broker draining for maintenance; admission paused"
-    loaded = role_session.loaded_generation()
-    live = role_session.published_generation_name()
-    if loaded and live and loaded != live:
-        return f"runtime moved {loaded} -> {live}; rerun from the live generation"
-    return ""
+from prismabuild import generation_receipt, role_session  # noqa: E402
 
 
 def main() -> int:
-    declined = refusal()
+    declined = ""
+    code = 0
+    if role_session.maintenance_requested():
+        declined = "resource broker draining for maintenance; admission paused"
+    else:
+        decision = generation_receipt.compare(role_session.loaded_runtime(), role_session.published_runtime())
+        if isinstance(decision, generation_receipt.Unknown):
+            reasons = {
+                name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+                for name, value in (("loaded", decision.loaded), ("published", decision.published))}
+            declined = f"runtime receipt unknown; {json.dumps(reasons)}; admission paused"
+            code = 75
+        elif (isinstance(decision, generation_receipt.Drift)
+              and decision.loaded.generation != decision.published.generation):
+            declined = (f"runtime moved {decision.loaded.generation} -> {decision.published.generation}; "
+                        "rerun from the live generation")
     if declined:
         print(json.dumps({
             "worker_host": socket.gethostname(),
             "declined": declined,
             "outcome": None,
         }, indent=1))
-        return 0
+        return code
     outcome = None
     def observe_result(value):
         nonlocal outcome

@@ -37,7 +37,7 @@ def exercise(tmp_path, *, draining, loaded, live):
         gate.write_text(json.dumps({
             "schema": "prismabuild.resource-maintenance.v1", "draining": draining}))
     for name, generation in (("loaded.json", loaded), ("live.json", live)):
-        (tmp_path / name).write_text(json.dumps({"generation": generation}))
+        (tmp_path / name).write_text(json.dumps({"commit": "a" * 40, "generation": generation}))
 
     script = tmp_path / "exercise.py"
     script.write_text(f'''
@@ -60,7 +60,7 @@ def serve_once(self, **kwargs):
     seen["claimed"] = item is not None
     return None
 wl.pool.PoolQueue.serve_once = serve_once
-def once(stop_requested, **options):
+def once(stop, **options):
     q = wl.pool.PoolQueue(Path({str(tmp_path / 'pb-queue')!r}))
     result = q.serve_once(tags=["gb10"], has_gpu=True,
                           capacity={{"cpu": 1}}, containment=True)
@@ -100,6 +100,14 @@ def test_an_admitting_host_serves_the_claim_in_front_of_the_broker(tmp_path):
         "an uncontained claim never reaches the broker's draining refusal")
 
 
+@pytest.mark.parametrize("draining", [True, None])
+def test_maintenance_refusal_takes_priority_over_unknown_receipts(tmp_path, draining):
+    queue, seen, stdout = exercise(tmp_path, draining=draining, loaded="", live="gen-b")
+    assert seen == {}
+    assert queue.item_path(pool.READY, KEY).exists()
+    assert "resource broker draining" in json.loads(stdout)["declined"]
+
+
 def test_an_unreadable_gate_stops_admission(tmp_path):
     """The loop fails closed on a corrupt gate; so must the one-shot."""
 
@@ -110,7 +118,7 @@ def test_an_unreadable_gate_stops_admission(tmp_path):
     gate = tmp_path / "maintenance.json"
     gate.write_text("{ this is not json")
     for name in ("loaded.json", "live.json"):
-        (tmp_path / name).write_text(json.dumps({"generation": "gen-a"}))
+        (tmp_path / name).write_text(json.dumps({"commit": "a" * 40, "generation": "gen-a"}))
     script = tmp_path / "exercise.py"
     script.write_text(f'''
 import sys
