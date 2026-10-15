@@ -154,6 +154,8 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, device_identity,
+                               is_nonnegative_number, memory_counters)
 from . import holder_census
 from .holder_census import ACQUIRING_PREFIX
 from . import container_images as image_inventory
@@ -7961,11 +7963,11 @@ class PoolQueue:
         try:
             if gpu_controller is not None:
                 sample = _gpu_sample_for(gpu_controller, {"gpu": 1})  # type: ignore[arg-type]
-                processes = sample.get("foreign_processes") if sample else None
-                sampled = sample.get("sampled_unix") if sample else None
-                if not (isinstance(processes, list) and not processes
-                        and type(sampled) in (int, float)
-                        and 0 <= _now() - sampled <= gpu_admission.MAX_SAMPLE_AGE_S):
+                facts = GpuSampleFacts(sample) if sample else None
+                foreign = facts.foreign if facts is not None else ForeignProcesses.UNKNOWN
+                stamp = facts.timestamp if facts is not None else None
+                if not (foreign is ForeignProcesses.CLEAR and stamp is not None
+                        and stamp.exact_type and stamp.within(_now(), gpu_admission.MAX_SAMPLE_AGE_S)):
                     return None
             images = capability_eligibility.LiveImages(
                 observed_images, policy=container_class_policy, inventory=container_inventory)
@@ -12833,13 +12835,14 @@ class PoolQueue:
             available = ledger.available()
             gpu_need = int(need.get("gpu", 0) or 0)
             gpu_clear = None
+            gpu_facts = None
             if gpu_need and gpu_sample is not None:
-                processes = gpu_sample.get("foreign_processes")
-                sampled = gpu_sample.get("sampled_unix")
-                gpu_clear = (isinstance(processes, list) and not processes
-                             and type(sampled) in (int, float)
-                             and 0 <= now - sampled <= gpu_admission.MAX_SAMPLE_AGE_S)
-                if isinstance(processes, list) and processes:
+                gpu_facts = GpuSampleFacts(gpu_sample)
+                foreign_state = gpu_facts.foreign
+                stamp = gpu_facts.timestamp
+                gpu_clear = (foreign_state is ForeignProcesses.CLEAR and stamp is not None
+                             and stamp.exact_type and stamp.within(now, gpu_admission.MAX_SAMPLE_AGE_S))
+                if foreign_state is ForeignProcesses.PRESENT:
                     foreign = True
             gpu_first = (mode != "gpu" and bool(gpu_need)
                          and available.get("gpu", 0) >= gpu_need
@@ -12885,9 +12888,7 @@ class PoolQueue:
             # A new, affirmative attribution may retire an old foreign veto;
             # mere absence of an error (or an incomplete GPU census) may not.
             gpu_foreign_clear = (not gpu_need or (gpu_clear is True
-                and gpu_sample.get("schema") == "prismabuild.gpu_capacity.v1"
-                and gpu_sample.get("complete") is True
-                and gpu_sample.get("attributed") is True))
+                and gpu_facts.schema_attribution_declared))
             clear_foreign = (measurement_wait and measurement_foreign_clear
                              and gpu_foreign_clear and not foreign)
             if clear_foreign:
@@ -20518,38 +20519,25 @@ class PoolQueue:
             return False
         # Congestion may be returned before the controller's final validity
         # check. Corroborate its existing sample contract, not merely its time.
-        devices = sample.get("devices")
-        if (sample.get("schema") != "prismabuild.gpu_capacity.v1"
-                or sample.get("complete") is not True or sample.get("attributed") is not True
-                or not isinstance(sample.get("sample_id"), str) or not sample["sample_id"]
-                or not isinstance(devices, list) or len(devices) != 1
-                or not isinstance(devices[0], dict)
-                or not isinstance(sample.get("foreign_processes"), list)
-                or not isinstance(sample.get("jobs"), list)):
+        facts = GpuSampleFacts(sample)
+        inventory = facts.single_device_inventory(fresh=True)
+        if inventory is None or facts.controller_host() is None:
             return False
-        number = gpu_admission._number
-        fields = ("host_total_bytes", "host_available_bytes", "memory_pressure_some",
-                  "memory_pressure_full", "cpu_pressure_some")
-        if (not all(number(sample.get(k)) for k in fields)
-                or not 0 < sample["host_total_bytes"] >= sample["host_available_bytes"]
-                or any(sample[k] > 100 for k in fields if "pressure" in k)):
-            return False
-        device = devices[0]
-        if (not isinstance(device.get("uuid"), str) or not device["uuid"]
-                or device.get("memory_domain") not in ("shared_system", "discrete")):
+        device = inventory.device
+        if device_identity(device) is None:
             return False
         if (device.get("telemetry_class") != gpu_admission.MEMORY_ONLY_TELEMETRY
-                and (not number(device.get("power_w")) or type(device.get("limited")) is not bool
-                     or not number(decision.get("power_reference_w"))
+                and (not is_nonnegative_number(device.get("power_w"))
+                     or type(device.get("limited")) is not bool
+                     or not is_nonnegative_number(decision.get("power_reference_w"))
                      or decision["power_reference_w"] <= 0)):
             return False
         # A discrete device's invalid memory observation is unknown even if
         # another gate returned congestion before reaching its memory check.
-        return (device["memory_domain"] != "discrete"
-                or (all(number(device.get(k)) for k in (
-                    "memory_total_bytes", "memory_free_bytes", "memory_used_bytes"))
-                    and device["memory_total_bytes"] > 0
-                    and device["memory_free_bytes"] + device["memory_used_bytes"] <= device["memory_total_bytes"]))
+        if device["memory_domain"] != "discrete":
+            return True
+        memory = memory_counters(device)
+        return memory is not None and memory.total > 0 and memory.free + memory.used <= memory.total
 
     def _scratch_placement(self, item, intent, demand, *, placement):
         """Independent worker choice; all shared offer/ledger reads precede admission."""

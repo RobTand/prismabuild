@@ -25,6 +25,8 @@ import time
 import uuid
 
 from . import adaptive_cpu
+from .gpu_sample_facts import (GpuSampleFacts, device_identity, is_nonnegative_number,
+                               memory_counters)
 from .holder_census import GPU_METADATA, HolderCensus
 
 METADATA = GPU_METADATA
@@ -116,15 +118,15 @@ def admission_power_reference(device, state):
     the sample invalid and refuses.
     """
     limit = device.get('power_limit_w')
-    if _number(limit) and limit:
+    if is_nonnegative_number(limit) and limit:
         return float(limit), 'gpu_power_limit', device.get('power_reference_source')
     if device.get('power_reference_scope') != 'soc_tdp':
         return None, None, None
     declared = DECLARED_GPU_POWER_REFERENCE_W.get(device.get('name'))
-    if not _number(declared) or not declared:
+    if not is_nonnegative_number(declared) or not declared:
         return None, None, None
     peak = (state.get('power_peaks') or {}).get(device.get('uuid'))
-    if _number(peak) and peak > declared:
+    if is_nonnegative_number(peak) and peak > declared:
         return float(peak), 'measured_peak', MEASURED_GPU_POWER_REFERENCE_SOURCE
     return float(declared), 'declared_fallback', DECLARED_GPU_POWER_REFERENCE_SOURCE
 
@@ -149,12 +151,12 @@ def reporting_power_reference(device, state):
     nobody scoped is still no reference at all.
     """
     watts, scope, source = admission_power_reference(device, state)
-    if _number(watts) and watts > 0:
+    if is_nonnegative_number(watts) and watts > 0:
         return watts, scope, source
     if device.get('power_reference_scope') != 'soc_tdp':
         return None, None, None
     published = device.get('power_reference_w')
-    if not _number(published) or not published:
+    if not is_nonnegative_number(published) or not published:
         return None, None, None
     return float(published), 'soc_tdp', device.get('power_reference_source')
 
@@ -192,15 +194,15 @@ def record_power_peak(state, device):
     otherwise have influenced, so a sample never widens its own headroom.
     """
     identity, power = device.get('uuid'), device.get('power_w')
-    if not isinstance(identity, str) or not identity or not _number(power):
+    if not isinstance(identity, str) or not identity or not is_nonnegative_number(power):
         return
     ceiling = device.get('power_reference_w')
-    if _number(ceiling) and ceiling and power > ceiling:
+    if is_nonnegative_number(ceiling) and ceiling and power > ceiling:
         return
     peaks = state.get('power_peaks')
     if not isinstance(peaks, dict):
         peaks = state['power_peaks'] = {}
-    if not _number(peaks.get(identity)) or power > peaks[identity]:
+    if not is_nonnegative_number(peaks.get(identity)) or power > peaks[identity]:
         peaks[identity] = float(power)
 
 
@@ -261,14 +263,14 @@ def sw_cap_idle_first_job(sample, device, reference, *, holders, measurement,
     if device.get('limited') is not True:
         return deny('not_limited')
     power = device.get('power_w')
-    if not _number(power) or not _number(reference) or not reference:
+    if not is_nonnegative_number(power) or not is_nonnegative_number(reference) or not reference:
         return deny('power_or_reference_unknown')
     diagnosis['power_ratio'] = power / reference
     if power > SW_CAP_IDLE_POWER_FRACTION * reference:
         return deny('power_above_idle_gate')
     sm = device.get('sm_clock_mhz')
     max_sm = device.get('max_sm_clock_mhz')
-    if not _number(sm) or not _number(max_sm) or not max_sm:
+    if not is_nonnegative_number(sm) or not is_nonnegative_number(max_sm) or not max_sm:
         return deny('clock_unknown')
     diagnosis['clock_ratio'] = sm / max_sm
     if sm > SW_CAP_IDLE_CLOCK_FRACTION * max_sm:
@@ -352,10 +354,6 @@ def memory_budget_bytes(value):
     if not 0 < result <= 2**63 - 1:
         raise ValueError('GPU budget must represent between 1 and 9223372036854775807 bytes')
     return result
-
-
-def _number(value):
-    return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
 def _power_estimate(rows):
@@ -544,22 +542,14 @@ class Controller:
                                                          or m.get('measurement') for _, m in holders)):
             return refuse("exclusive_holder", holders=len(holders), exclusive=exclusive,
                           measurement=measurement)
-        fresh = (_number(sample.get('sampled_unix'))
-                 and 0 <= now - sample['sampled_unix'] <= MAX_SAMPLE_AGE_S)
-        devices = sample.get('devices', [])
-        valid = (fresh and sample.get('schema') == 'prismabuild.gpu_capacity.v1'
-                 and sample.get('complete') is True and sample.get('attributed') is True
-                 and isinstance(sample.get('sample_id'), str) and bool(sample['sample_id'])
-                 and isinstance(devices, list) and len(devices) == 1
-                 and isinstance(devices[0], dict)
-                 and isinstance(sample.get('foreign_processes'), list)
-                 and isinstance(sample.get('jobs'), list))
-        device = devices[0] if valid else {}
-        host_fields = ('host_total_bytes', 'host_available_bytes', 'memory_pressure_some',
-                       'memory_pressure_full', 'cpu_pressure_some')
-        valid = (valid and all(_number(sample.get(k)) for k in host_fields)
-                 and 0 < sample['host_total_bytes'] >= sample['host_available_bytes']
-                 and all(sample[k] <= 100 for k in host_fields if 'pressure' in k))
+        facts = GpuSampleFacts(sample)
+        stamp = facts.timestamp
+        fresh = (stamp is not None and stamp.finite_nonnegative
+                 and stamp.within(now, MAX_SAMPLE_AGE_S))
+        inventory = facts.single_device_inventory(fresh=fresh)
+        device = inventory.device if inventory is not None else {}
+        host = facts.controller_host() if inventory is not None else None
+        valid = host is not None
         # Probe state is read before the reference because the reference is
         # derived from it: the published SoC envelope is display provenance,
         # and admission divides by the measured peak or the declared floor.
@@ -574,9 +564,9 @@ class Controller:
         # that declaration stays invalid, so this narrows one declared class of
         # device rather than weakening the contract for every sample.
         memory_only = device.get('telemetry_class') == MEMORY_ONLY_TELEMETRY
-        valid = (valid and isinstance(device.get('uuid'), str) and bool(device['uuid'])
-                 and device.get('memory_domain') in ('shared_system', 'discrete')
-                 and (memory_only or (_number(device.get('power_w')) and _number(reference)
+        valid = (valid and device_identity(device) is not None
+                 and (memory_only or (is_nonnegative_number(device.get('power_w'))
+                                      and is_nonnegative_number(reference)
                                       and reference > 0)))
         low = False
         feedback_allowed = False
@@ -588,8 +578,8 @@ class Controller:
                 state.get('idle_baseline'), sample, holders=occupied,
                 identity=device['uuid'], fields=IDLE_PRESSURE_FIELDS, interval_s=PSI_AVG10_S,
                 prior_rule=_prior_pressure)
-            reserve = max(2 * GIB, .02 * sample['host_total_bytes'])
-            short = sample['host_available_bytes'] < reserve + demand.get('mem_gb', 0) * GIB
+            reserve = max(2 * GIB, .02 * host.total_bytes)
+            short = host.available_bytes < reserve + demand.get('mem_gb', 0) * GIB
             if measurement:
                 # A measurement needs the host idle, and idle is what this
                 # host shows with nothing of the pool's running (#997).
@@ -597,9 +587,9 @@ class Controller:
             else:
                 # Sharing congestion: judged with holders present, where a
                 # no-holder baseline has nothing to say.
-                pressure = (sample['memory_pressure_some'] >= 1.
-                            or sample['memory_pressure_full'] >= .1
-                            or sample['cpu_pressure_some'] >= 10.
+                pressure = (host.memory_some >= 1.
+                            or host.memory_full >= .1
+                            or host.cpu_some >= 10.
                             or short)
             # ``gpu_idle`` (clocks dropping because nothing runs) is normal.
             # Software power cap, thermal, power-brake, HW slowdown, SW thermal
@@ -652,16 +642,16 @@ class Controller:
                               sw_cap_idle_exception=sw_cap_exception,
                               **({'baseline': idle} if measurement else {}))
             if device.get('memory_domain') == 'discrete':
-                fields = ('memory_total_bytes', 'memory_free_bytes', 'memory_used_bytes')
-                if not all(_number(device.get(k)) for k in fields):
+                memory = memory_counters(device)
+                if memory is None:
                     return refuse("gpu_memory_sample_invalid", device=device)
-                total = device['memory_total_bytes']
+                total = memory.total
                 used = sum(m.get('gpu_memory_budget_bytes', 0) for _, m in holders)
                 if (not total or budget <= 0 or used + budget > total
-                        or device['memory_free_bytes'] < budget
-                        or device['memory_free_bytes'] + device['memory_used_bytes'] > total):
+                        or memory.free < budget
+                        or memory.free + memory.used > total):
                     return refuse("gpu_memory_budget", memory_total_bytes=total,
-                                  memory_free_bytes=device['memory_free_bytes'],
+                                  memory_free_bytes=memory.free,
                                   requested_budget_bytes=budget, held_budget_bytes=used)
         if not valid:
             return refuse("sample_invalid_or_stale")
@@ -685,7 +675,7 @@ class Controller:
                         or job.get('complete') is not True
                         or job.get('nonce') != record.get('nonce') or not job.get('nonce')
                         or job.get('scope_id') != record.get('scope_unit')
-                        or not _number(record.get('sampled_unix'))
+                        or not is_nonnegative_number(record.get('sampled_unix'))
                         or not 0 <= now - record['sampled_unix'] <= MAX_SAMPLE_AGE_S
                         or record['sampled_unix'] < meta['admitted_unix']
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):

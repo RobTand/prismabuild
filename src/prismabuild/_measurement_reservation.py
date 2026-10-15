@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from . import adaptive_cpu, core, local_scratch, storage_tiers
 from .holder_census import HolderKind
+from .gpu_sample_facts import GpuSampleFacts
 from . import _bounded_reader as reader
 
 if TYPE_CHECKING:
@@ -1118,12 +1119,12 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
                 or not 0 <= pool._now() - sampled_unix <= adaptive_cpu.MAX_SAMPLE_AGE_S):
             return None
         if item.get("needs_gpu"):
-            stamp = gpu_sample.get("sampled_unix") if gpu_sample is not None else None
-            if (gpu_sample is None or gpu_sample.get("schema") != "prismabuild.gpu_capacity.v1"
-                    or gpu_sample.get("complete") is not True or gpu_sample.get("attributed") is not True
+            facts = GpuSampleFacts(gpu_sample) if gpu_sample is not None else None
+            stamp = facts.timestamp if facts is not None else None
+            if (facts is None or not facts.schema_attribution_declared
                     or gpu_sample.get("foreign_processes") != []
-                    or not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
-                    or not 0 <= pool._now() - stamp <= adaptive_cpu.MAX_SAMPLE_AGE_S):
+                    or stamp is None
+                    or not stamp.within(pool._now(), adaptive_cpu.MAX_SAMPLE_AGE_S)):
                 return None
         if (verdict.get("withhold") is not True or verdict.get("why") != "draining_for_measurement"
                 or not isinstance(holders, list) or not holders):
