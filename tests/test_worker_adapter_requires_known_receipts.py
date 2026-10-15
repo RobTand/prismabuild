@@ -82,6 +82,7 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         **{name: str(REPOSITORY / "src" / "prismabuild" / (name + ".py"))
            for name in ("role_session", "generation_receipt", "pool", "core")},
     }
+    assert child.stdout, diagnostics
     output = json.loads(child.stdout)
     drifts = list((queue.root / "generation-drift").glob("*.json"))
     receipt = cas.lookup(action)
