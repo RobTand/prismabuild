@@ -140,6 +140,7 @@ import time
 import uuid
 
 from . import contracts
+from . import capability_eligibility
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
@@ -6533,22 +6534,8 @@ class PoolQueue:
                 {str(entry) for entry in observed_images})
         if container_class_verdict is not None:
             record["container_class_verdict"] = dict(container_class_verdict)
-        if interpreters is not None:
-            # The absolute interpreter paths this box positively answers for,
-            # looked up per poll from exactly the paths READY items name
-            # (#1263): present is positive evidence only -- a loop from before
-            # the field, or a poll that could not read the queue, publishes no
-            # list, and an item that names an interpreter reads that absence
-            # as unknown, never as capable (the #714 rule).
-            record["interpreters"] = sorted({str(p) for p in interpreters})
-        if interpreters_absent is not None:
-            # The paths this box was asked about and does not have (#1266
-            # review): the submission-time verdict refuses only on a
-            # unanimous absent, so a first submission -- a path no READY row
-            # named when the offers were written -- is unknown and publishes
-            # with a notice rather than a deadlock.
-            record["interpreters_absent"] = sorted(
-                {str(p) for p in interpreters_absent})
+        record.update(capability_eligibility.InterpreterAnswers.from_observed(
+            interpreters, interpreters_absent).offer_fields())
         if local_dependency_answers is not None:
             record["local_dependencies"] = dict(local_dependency_answers)
         if dependency_files is not None:
@@ -6696,12 +6683,9 @@ class PoolQueue:
                 if image_inventory.missing(declared_images, present):
                     continue
             if declared_interpreter:
-                # Same rule, one path (#1263): an offer that reports no
-                # interpreter answers is unknown, and unknown is not capable.
-                offered_paths = offer.get("interpreters")
-                if not isinstance(offered_paths, list) or \
-                        declared_interpreter not in {
-                            str(entry) for entry in offered_paths}:
+                answers = capability_eligibility.InterpreterAnswers.from_offer(offer)
+                if (answers.answer(declared_interpreter)
+                        is not capability_eligibility.InterpreterAnswer.PRESENT):
                     continue
             if local_dependencies.missing(dependencies, offer.get("local_dependencies")):
                 continue
@@ -6794,22 +6778,9 @@ class PoolQueue:
             offer for offer in eligible
             if contracts.INTERPRETER_TAG in {
                 str(t) for t in (offer.get("tags") or [])}]
-        if not capable:
-            return "unknown"
-        unanimous_absent = True
-        for offer in capable:
-            answers = offer.get("interpreters")
-            if isinstance(answers, list) and interpreter in {
-                    str(entry) for entry in answers}:
-                return "present"
-            missing = offer.get("interpreters_absent")
-            if not (isinstance(missing, list) and interpreter in {
-                    str(entry) for entry in missing}):
-                # A capable box that has not answered for the path may still
-                # have it: offers are written at different moments, so one
-                # absent beside a silent box is unknown (#1266 review r2).
-                unanimous_absent = False
-        return "absent" if unanimous_absent else "unknown"
+        return capability_eligibility.interpreter_answer(
+            interpreter, [capability_eligibility.InterpreterAnswers.from_offer(offer)
+                          for offer in capable]).value
 
     def dependency_placement_verdict(
             self, item: Mapping[str, object], *,
@@ -7268,21 +7239,10 @@ class PoolQueue:
                 image_refs = list(image_inventory.normalize_refs(container_images))
             except ValueError as exc:
                 raise PoolContractError(f"container_images: {exc}") from exc
-        declared_interpreter: str | None = None
-        if interpreter is not None:
-            # The requirement is one absolute path.  It is validated here for
-            # the same reason ``container_images`` is: so a producer cannot
-            # publish a requirement the matcher and the claim would each have
-            # to treat as malformed.  Relative paths are refused because the
-            # matcher's question -- "does this exact path exist on that box"
-            # -- has no meaning for one.
-            if (not isinstance(interpreter, str) or not interpreter
-                    or "\x00" in interpreter or not interpreter.startswith("/")
-                    or interpreter == "/"):
-                raise PoolContractError(
-                    "interpreter must be an absolute path to an executable "
-                    f"(got {interpreter!r})")
-            declared_interpreter = interpreter
+        try:
+            declared_interpreter = capability_eligibility.normalize_interpreter(interpreter)
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         # The required map is class-default eligibility; queries alone are
         # advisory questions from a conservative host-pinned first use.
         from . import local_dependencies as dependency_contract
@@ -22126,9 +22086,9 @@ class PoolQueue:
         #: instead of two per mover.  A non-dead hint only skips the check;
         #: a dead hint still pays for the full proof under the key's lock.
         dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
-        interpreter_cache: dict[str, bool] = {}
+        interpreter_host = capability_eligibility.LiveInterpreters()
         #: Digest-pinned dependency answers, one stat and one hash per
-        #: distinct path per pass (#1495), the interpreter_cache shape: the
+        #: distinct path per pass (#1495): the
         #: claim gate reads the actual bytes once, whatever passes over it.
         requirement_present_cache: dict[str, bool] = {}
         requirement_digest_cache: dict[str, str | None] = {}
@@ -22338,29 +22298,11 @@ class PoolQueue:
                     # verdict is correctness-only, and delaying it behind
                     # load no drain clears is the boundary loss.
                     canary_exempt = True
-                declared_interpreter = item.get("interpreter")
-                if declared_interpreter is not None:
-                    if not isinstance(declared_interpreter, str) or \
-                            not declared_interpreter.startswith("/"):
-                        self.record_denial(item, "malformed_interpreter", {
-                            "interpreter": item.get("interpreter")})
-                        continue
-                    # One stat per distinct path per pass (#1266 review): the
-                    # venvs live on NFS in practice, and a wide pbtest would
-                    # otherwise pay a stat per candidate per pass per box.
-                    runs_here = interpreter_cache.get(declared_interpreter)
-                    if runs_here is None:
-                        runs_here = bool(
-                            os.path.isfile(declared_interpreter)
-                            and os.access(declared_interpreter, os.X_OK))
-                        interpreter_cache[declared_interpreter] = runs_here
-                    if not runs_here:
-                        # This box cannot run the command; another box may.
-                        # The denial names the path so a submitter reading
-                        # the ring sees which interpreter was missing where.
-                        self.record_denial(item, "interpreter_not_present", {
-                            "interpreter": declared_interpreter})
-                        continue
+                interpreter_refusal = interpreter_host.refusal(item)
+                if interpreter_refusal is not None:
+                    self.record_denial(item, interpreter_refusal.reason,
+                                       interpreter_refusal.evidence)
+                    continue
                 try:
                     dependencies = local_dependencies.normalize(item.get("local_dependencies", {}))
                     if local_dependencies.TAG in (item.get("tags") or []) and not dependencies:

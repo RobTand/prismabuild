@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-from prismabuild import contracts
+from prismabuild import capability_eligibility, contracts
 from prismabuild import core as pb, pool
 
 CAPACITY = {"cpu": 4, "mem_gb": 16}
@@ -166,10 +166,6 @@ def test_the_offer_records_only_what_it_positively_answers(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
-                           / "tools" / "fleet"))
-    import worker_loop
-
     def make(name, *, executable=True):
         path = tmp_path / name
         path.write_text("#!/bin/sh\n")
@@ -188,10 +184,10 @@ def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
         {},
     ]
 
-    present, absent = worker_loop.interpreter_lookup(items)
-    assert present == [present_a, present_b]
-    assert absent == [str(tmp_path / "missing" / "bin" / "python"),
-                      "relative/bin/python"]
+    answers = capability_eligibility.observe_interpreters(items).offer_fields()
+    assert answers["interpreters"] == [present_a, present_b]
+    assert answers["interpreters_absent"] == [str(tmp_path / "missing" / "bin" / "python"),
+                                              "relative/bin/python"]
 
 
 def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):

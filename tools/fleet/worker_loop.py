@@ -107,7 +107,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import contracts
+from prismabuild import capability_eligibility, contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology, dependency_digest,
@@ -516,32 +516,6 @@ def _retained_reader(abandoned: list) -> tuple[int, str] | None:
     """
 
     return _retained_publisher(abandoned)
-
-
-def interpreter_lookup(items) -> tuple[list[str], list[str]]:
-    """The paths READY items name, split into this box's ``(present, absent)``.
-
-    The lookup design (#1263): no directory scan and no configured roots --
-    the offer answers exactly the paths the queue asks about, each with one
-    stat.  Present is positive evidence only, and absent is an ANSWER, not a
-    guess (#1266 review): the submission-time verdict refuses a path only
-    when every capable eligible offer named it absent, which is what makes a
-    first submission -- a path no offer was asked about yet -- publish with a
-    notice instead of deadlocking the tool on its own first use.
-    """
-
-    paths = sorted({
-        str(item.get("interpreter"))
-        for item in items
-        if isinstance(item, dict)
-        and isinstance(item.get("interpreter"), str)})
-    present, absent = [], []
-    for path in paths:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            present.append(path)
-        else:
-            absent.append(path)
-    return present, absent
 
 
 def local_dependency_lookup(items, *, python: str) -> dict[str, str]:
@@ -1483,7 +1457,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # snapshot asks about, statted on this box.  One bounded set per poll;
         # a snapshot that could not be read publishes nothing, which is the
         # fail-closed answer rather than a guess.
-        offered_interpreters, absent_interpreters = interpreter_lookup(
+        interpreter_answers = capability_eligibility.observe_interpreters(
             discovery.snapshot or [])
         dependency_answers = local_dependency_lookup(discovery.snapshot or [], python=args.python)
         # And the digest-contract answers (#1495): the requirement paths this
@@ -1502,14 +1476,11 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
                            observed_images=observed_images, class_verdict=class_verdict,
-                           interpreters=offered_interpreters,
-                           interpreters_absent=absent_interpreters,
+                           interpreter_answers=interpreter_answers,
                            dependency_answers=dependency_answers,
                            dependency_files=offered_dependencies,
                            dependency_files_absent=absent_dependencies,
                            observed_detail=observed_detail):
-            # (``interpreters`` binds the poll's lookup; the announce call
-            # below receives it under that closure-local name.)
             """The exact advisory record this poll offers the queue.
 
             A closure, not a kwargs dict, so the publisher's child runs the
@@ -1549,8 +1520,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # (#1263): the paths this poll's ready items ask about, statted
                 # here.  Absent says it could not answer, and an item naming
                 # an interpreter reads that as unknown, never capable.
-                interpreters=interpreters,
-                interpreters_absent=interpreters_absent,
+                interpreters=sorted(interpreter_answers.present or ()),
+                interpreters_absent=sorted(interpreter_answers.absent or ()),
                 local_dependency_answers=dependency_answers,
                 dependency_files=dependency_files,
                 dependency_files_absent=dependency_files_absent,
