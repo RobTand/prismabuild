@@ -339,6 +339,35 @@ receipts, the privileged proof consumer and broader RecordStore work are still
 isolated or unfinished. No final complete-brief or full-current-suite result,
 push, PR state change or deployment is claimed.
 
+## Qualified refusal composition and flock owner
+
+Candidate refusal composition at
+`29bc2140b6aab1f07381b76a99ea543a65ed7221` passed 1,117 tests across 68 files.
+All 1,098 baseline cases remain, with 19 new behavior cases. The moved refusal
+classifiers retain publication, counting, room and withholding order. Measurement
+identity and suspension observations still occur after denial publication.
+Independent review found no actionable issue. The eleven integrated files match
+the qualified source through `ad3898b87b2778cb45d4f20387ae2c82d0558aba`.
+The subsequent test-only `bb8f41425b737df574a4cda3f9d0f79f31746ff3`
+removes an exact truth-conversion counter while retaining the real falsey identity,
+publication and history consequences. Its complete 19-case file passed. The
+larger claim-driver decomposition remains unfinished.
+
+The shared `flock_owner` module moves the existing procfs parser and holder
+diagnostic without changing lock acquisition. Adaptive admission and role
+singleton callers use that owner directly. The closed source
+`1bce1ed3daf4eac81bb1e645a196eda1c287404f` passed 536 tests across 15 files,
+retaining all 535 earlier cases and adding a mixed OFD/FLOCK positive-holder case.
+Independent review found no actionable issue. All eight integrated files match
+the qualified source at `54387776974f2d3efb31dd78de091ced7c21784b`.
+This extraction does not establish the ordinary package or role import boundary.
+The immutable file owner, record transport and package bootstrap steps remain.
+
+Each qualification above has verified source, terminal, retained logs and CAS
+receipt/payload. The corresponding `refusal-wave` and `flock-owner` artifacts
+also retain exact old-node comparisons and source integration checks. These
+overlapping scoped runs are separate from the pending final current-source suite.
+
 The combined qualification at `a230804e91b65011ccb8f082b770da77bd313c0b`
 passed all 5,230 unique tests across 356 files and eight actions. It retains
 every one of the 5,229 nodes in the earlier receipt, drain and mover runs.
