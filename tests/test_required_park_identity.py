@@ -1,4 +1,4 @@
-"""A matching filename cannot replace a concrete current drain identity."""
+"""Legacy matching markers cannot certify unknown required drain identity."""
 import json
 
 import pytest
@@ -8,21 +8,25 @@ from test_park_proof_real_writer import parked_role
 
 
 @pytest.fixture(params=[
-    pytest.param(("stamp", True), id="bool-true"),
-    pytest.param(("stamp", False), id="bool-false"),
-    pytest.param(("stamp", "101.5"), id="numeric-string"),
-    pytest.param(("stamp", "epoch"), id="opaque-string"),
-    pytest.param(("stamp", float("nan")), id="nan"),
-    pytest.param(("stamp", float("inf")), id="positive-infinity"),
-    pytest.param(("stamp", float("-inf")), id="negative-infinity"),
-    pytest.param(("stamp", None), id="null"),
-    pytest.param(("missing-key", None), id="missing-key"),
-    pytest.param(("missing-file", None), id="missing-file"),
-    pytest.param(("malformed-file", None), id="malformed-file"),
+    pytest.param(("stamp", True, "True"), id="bool-true"),
+    pytest.param(("stamp", False, "False"), id="bool-false"),
+    pytest.param(("stamp", "101.5", "101.5"), id="numeric-string"),
+    pytest.param(("stamp", "epoch", "epoch"), id="opaque-string"),
+    pytest.param(("stamp", float("nan"), "nan"), id="nan"),
+    pytest.param(("stamp", float("inf"), "inf"), id="positive-infinity"),
+    pytest.param(("stamp", float("-inf"), "_inf"), id="negative-infinity"),
+    pytest.param(("stamp", None, "unknown"), id="null"),
+    pytest.param(("missing-key", None, "unknown"), id="missing-key"),
+    pytest.param(("missing-file", None, "unknown"), id="missing-file"),
+    pytest.param(("malformed-file", None, "unknown"), id="malformed-file"),
 ])
 def invalid_drain(request, parked_role):
-    kind, stamp = request.param
+    kind, stamp, historical_key = request.param
     with parked_role() as role:
+        pid, starttime, _ = role.census[0]
+        valid = role.parked / f"{pid}-{starttime}-101.5"
+        assert role.post() == valid.name
+        inode = valid.stat().st_ino
         if kind == "stamp":
             role.set_gate(stamp)
         elif kind == "missing-key":
@@ -31,7 +35,9 @@ def invalid_drain(request, parked_role):
             role.gate.unlink()
         else:
             role.gate.write_text("{not JSON")
-        role.post()
+        retained = role.parked / f"{pid}-{starttime}-{historical_key}"
+        valid.rename(retained)
+        assert retained.stat().st_ino == inode
         yield role
 
 
