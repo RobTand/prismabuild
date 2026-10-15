@@ -54,7 +54,7 @@ def child(args):
     tiers = {'preferred': list(range(cpus)), 'fallback': []}
     capacity = {'cpu': cpus, 'mem_gb': cpus, 'gpu': 1}
     clock = [time.time()]
-    adaptive_cpu.Controller.sample = lambda self: {
+    cpu_sampler = lambda: {
         'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
         'cpu_count': cpus, 'interval_s': 1.}
     adaptive_cpu.action_identity = lambda item: ('shape', False)
@@ -69,10 +69,11 @@ def child(args):
               'host_available_bytes': 100 * adaptive_gpu.GIB,
               'memory_pressure_some': 0., 'memory_pressure_full': 0.,
               'cpu_pressure_some': 0., 'foreign_processes': [], 'jobs': []}
+    gpu_sampler = None
     if gpu:
         adaptive_gpu.action_contract = lambda item, demand: (
             'shape', False, False, demand['mem_gb'] * adaptive_gpu.GIB)
-        adaptive_gpu.Controller.sample = lambda self: dict(sample)
+        gpu_sampler = lambda: dict(sample)
     local_dir = adaptive_cpu.local_state_base(queue.ledger().base) / 'telemetry'
 
     def publish(index):
@@ -97,7 +98,9 @@ def child(args):
                                    'scope_id': record['scope_unit'], 'complete': True})
 
     def claim():
-        return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, has_gpu=gpu)
+        return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, has_gpu=gpu,
+            cpu_sampler=cpu_sampler,
+            gpu_sampler=gpu_sampler)
 
     original = pool.PoolQueue._claim
     passes = []
