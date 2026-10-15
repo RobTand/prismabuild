@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core as pb
+from . import immutable_files
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the
 # frozen half a parent is keyed on can refuse to contain them: ownership is a
@@ -68,6 +69,7 @@ __all__ = [
     "PLAN_SCHEMA_V1",
     "PUBLICATION_INDEX_SCHEMA_V1",
     "RESULT_MANIFEST_INPUT_ID",
+    "RecordError",
     "TASK_BATCH_INPUT_ID",
     "ROSTER_BATCH_POLICY_SCHEMA_V1",
     "TASK_BATCH_PLACEHOLDER",
@@ -81,10 +83,12 @@ __all__ = [
     "write_document",
     "build_plan",
     "freeze_common",
+    "freeze_plan",
     "logical_batch_param",
     "parent_key",
     "partition_roster",
     "publication_index",
+    "publish_children",
     "resolve_task_batch",
     "validate_batch_policy",
     "validate_common_spec",
@@ -1056,6 +1060,74 @@ def validate_publication_index(value: object, plan: Mapping[str, Any] | None = N
 def record_dir(cas_root: str | Path, parent_key: str) -> Path:
     """The retained plan and publication namespace for one logical parent."""
     return Path(cas_root) / DECOMPOSITIONS / parent_key[:2] / parent_key
+
+
+class RecordError(Exception):
+    """A retained decomposition record cannot be read or adopted."""
+
+
+def _stored_record(path: Path) -> object | None:
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RecordError(f"cannot read {path}: {exc}") from None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise RecordError(
+            f"{path} is published but is not JSON: {exc}.  It is immutable, "
+            f"so this is damage rather than drift; move it aside deliberately "
+            f"before re-running this campaign"
+        ) from None
+
+
+def freeze_plan(request, frozen_common, *, cas_root: str | Path) -> dict:
+    """Read first, derive only if absent, and adopt the first valid writer."""
+
+    key = parent_key(
+        frozen_common, request["roster"], request["batch_policy"])
+    path = record_dir(cas_root, key) / "plan.json"
+    stored = _stored_record(path)
+    if stored is None:
+        plan = build_plan(request, frozen_common)
+        if not immutable_files.publish_immutable(path, document_bytes(plan)):
+            stored = _stored_record(path)
+        else:
+            return plan
+    plan = validate_plan(stored)
+    if plan["parent_key"] != key:
+        raise RecordError(
+            f"the plan published at {path} is keyed on parent "
+            f"{plan['parent_key'][:12]}, not on {key[:12]}"
+        )
+    return plan
+
+
+def publish_children(
+    plan: Mapping[str, Any], *, cas_root: str | Path,
+    batch_input_digests: Sequence[str], child_action_keys: Sequence[str],
+) -> None:
+    """Freeze this plan's authorized children, refusing a different first writer."""
+
+    index = publication_index(
+        plan, batch_input_digests=batch_input_digests,
+        child_action_keys=child_action_keys)
+    path = record_dir(cas_root, plan["parent_key"]) / "publication.json"
+    raw = document_bytes(index)
+    stored = _stored_record(path)
+    if stored is None:
+        if immutable_files.publish_immutable(path, raw):
+            return
+        stored = _stored_record(path)
+    if document_bytes(stored) != raw:
+        raise RecordError(
+            f"the publication index at {path} names different children than "
+            f"this run sealed.  The index is a function of the plan and the "
+            f"roster, so nothing that can legitimately vary produced this; "
+            f"read both before touching either"
+        )
 
 
 def read_membership(

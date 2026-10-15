@@ -12,6 +12,7 @@ declared, from this plan and no other.  Anything else fails closed.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -227,18 +228,27 @@ def test_the_batch_envelope_and_the_sealed_param_name_the_same_tasks(planned) ->
         assert envelope["plan_key"] == param["plan_key"] == plan["plan_key"]
 
 
-def test_the_publication_index_must_cover_every_planned_child(planned) -> None:
+def test_the_publication_index_must_cover_every_planned_child(planned, tmp_path: Path) -> None:
     """It is frozen before the first publish, so it cannot be short."""
 
     _, plan, _ = planned
     count = len(plan["partitions"])
     digests = [dc.canonical_sha256({"batch": index}) for index in range(count)]
     keys = [dc.canonical_sha256({"child": index}) for index in range(count)]
-    index = dc.publication_index(
-        plan, batch_input_digests=digests, child_action_keys=keys,
+    dc.publish_children(
+        plan, cas_root=tmp_path, batch_input_digests=digests, child_action_keys=keys,
     )
+    path = dc.record_dir(tmp_path, plan["parent_key"]) / "publication.json"
+    index = json.loads(path.read_bytes())
     assert index["child_action_keys"] == keys
+    retained = json.dumps(dict(reversed(list(index.items()))), indent=3).encode()
+    path.unlink()
+    path.write_bytes(retained)
+    dc.publish_children(
+        plan, cas_root=tmp_path, batch_input_digests=digests, child_action_keys=keys)
+    assert path.read_bytes() == retained
     with pytest.raises(dc.ActionContractError, match="one batch digest and one"):
-        dc.publication_index(
-            plan, batch_input_digests=digests[:-1], child_action_keys=keys,
+        dc.publish_children(
+            plan, cas_root=tmp_path, batch_input_digests=digests[:-1], child_action_keys=keys,
         )
+    assert path.read_bytes() == retained

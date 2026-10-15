@@ -108,7 +108,7 @@ def _published_plan(tmp_path: Path) -> dict:
     root = tmp_path / "cas" / dc.DECOMPOSITIONS
     plans = sorted(root.glob("*/*/plan.json"))
     assert len(plans) == 1, f"expected one plan, found {plans!r}"
-    return dc.validate_plan(json.loads(plans[0].read_text(encoding="utf-8")))
+    return json.loads(plans[0].read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------

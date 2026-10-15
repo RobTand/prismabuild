@@ -18055,7 +18055,13 @@ that preflight before its membership can be claimed to match the publication
 manifest. Per-generation alias checks do not establish that binding.
 
 `decomposition.py` owns decomposition addressing, membership capture and durable
-child verification. Reporter capture stops after an invalid plan; queue capture
+child verification. It also owns plan freezing and child-index publication through
+`freeze_plan` and `publish_children`. Recovery reads before deriving and adopts
+the valid first writer, including a plan from an older partition algorithm.
+Index collisions compare canonical document values, preserving accepted retained
+formatting. Campaign adapts record read and collision errors to its existing
+`ManifestError` boundary. The direct immutable-file owner publishes both records.
+Reporter capture stops after an invalid plan; queue capture
 retains both document diagnostics. Campaign closure keeps its publication-only
 read against the already frozen plan. Stored paths, schemas, canonical bytes
 and freeze-before-publication ordering retain their existing contracts.

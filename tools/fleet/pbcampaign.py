@@ -1114,71 +1114,6 @@ def _stored_document(path: Path) -> object | None:
         ) from None
 
 
-def frozen_plan(request, frozen_common, *, cas) -> dict:
-    """The one partition of this parent, derived once and thereafter read.
-
-    Read before build, on purpose.  A resumed campaign must not call the
-    batcher again: the roster and the policy are the same bytes, so a second
-    call would have to produce the same cut to be correct, and nothing but the
-    published plan can prove that it did.  Reading it back instead makes the
-    cut a fact about the parent rather than a property of whichever version of
-    the batcher happened to run.
-
-    The first writer wins the hard link; a loser reads the winner's bytes and
-    validates them, including that the key they name is the parent asked for.
-    """
-
-    key = dc.parent_key(
-        frozen_common, request["roster"], request["batch_policy"])
-    path = dc.record_dir(cas.root, key) / "plan.json"
-    stored = _stored_document(path)
-    if stored is None:
-        plan = dc.build_plan(request, frozen_common)
-        if not immutable_files.publish_immutable(path, dc.document_bytes(plan)):
-            stored = _stored_document(path)
-        else:
-            return plan
-    plan = dc.validate_plan(stored)
-    if plan["parent_key"] != key:
-        raise ManifestError(
-            f"the plan published at {path} is keyed on parent "
-            f"{plan['parent_key'][:12]}, not on {key[:12]}"
-        )
-    return plan
-
-
-def publish_index(index, *, cas, parent_key: str) -> None:
-    """Record which children this plan authorizes, before publishing any.
-
-    Written first so that a crash in the middle of a campaign leaves behind a
-    statement of which keys were meant to exist; the next run fills the gaps
-    and publishes nothing else.  Everything upstream of it is pure or
-    content-addressed, so this is the first byte that says these children are
-    real.
-
-    A differing index under one parent is refused rather than replaced.  Every
-    input to it -- the plan, the envelopes, their digests, the sealed child
-    keys -- is a deterministic function of bytes already fixed, so two runs
-    that disagree here disagree about something that cannot vary, and the
-    honest answer is to stop and say so.
-    """
-
-    path = dc.record_dir(cas.root, parent_key) / "publication.json"
-    raw = dc.document_bytes(index)
-    stored = _stored_document(path)
-    if stored is None:
-        if immutable_files.publish_immutable(path, raw):
-            return
-        stored = _stored_document(path)
-    if dc.document_bytes(stored) != raw:
-        raise ManifestError(
-            f"the publication index at {path} names different children than "
-            f"this run sealed.  The index is a function of the plan and the "
-            f"roster, so nothing that can legitimately vary produced this; "
-            f"read both before touching either"
-        )
-
-
 def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
     """Publish one child, or attach to what is already answering for it.
 
@@ -1375,7 +1310,10 @@ def decompose(
         request["common"],
         action_common=pbrun.template_action_common(template),
     )
-    plan = frozen_plan(request, frozen, cas=cas)
+    try:
+        plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
+    except dc.RecordError as exc:
+        raise ManifestError(str(exc)) from None
     roster_input, _ = cas.ingest_bytes(
         dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
 
@@ -1413,15 +1351,12 @@ def decompose(
         portable_checkout=prepared["portable_checkout"],
     )
 
-    publish_index(
-        dc.publication_index(
-            plan,
-            batch_input_digests=digests,
-            child_action_keys=[str(child["action_key"]) for child in children],
-        ),
-        cas=cas,
-        parent_key=plan["parent_key"],
-    )
+    try:
+        dc.publish_children(
+            plan, cas_root=cas.root, batch_input_digests=digests,
+            child_action_keys=[str(child["action_key"]) for child in children])
+    except dc.RecordError as exc:
+        raise ManifestError(str(exc)) from None
     print(f"pbcampaign: parent {plan['parent_key'][:pbwait.KEY_WIDTH]} "
           f"cut into {len(children)} children", file=sys.stderr, flush=True)
 
