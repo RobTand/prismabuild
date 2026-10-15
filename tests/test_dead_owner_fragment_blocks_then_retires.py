@@ -31,6 +31,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
+from fleet_fixture import actions, damage, queue, stages  # noqa: F401
 
 TIER = "prismabuild-stage:dl380g10"
 NAMES = ["model-00087-range.bin", "model-00090-prefix.bin"]
@@ -139,7 +140,7 @@ def _publisher(fleet, mover: str, consumer: str) -> stage_move._StagedPublisher:
         tier_id=TIER, cas_root=cas, consumer_action_key=consumer)
 
 
-def test_dead_owner_fragment_blocks_a_same_path_mover(fleet) -> None:
+def test_dead_owner_fragment_blocks_a_same_path_mover(queue, stages, actions) -> None:
     """The gap, characterized: real refusal, and reconcile keeps the files.
 
     The held-key sweep cannot see the owner (no tokens, no receipt) and
@@ -147,9 +148,10 @@ def test_dead_owner_fragment_blocks_a_same_path_mover(fleet) -> None:
     publisher refuses replacement after the grace.  All three halves are
     pinned here; the retirement itself belongs to the test below.
     """
-    queue, stage, _cas = fleet
-    consumer, mover = _dead_owner(fleet)
-    publisher = _publisher(fleet, _key(), _key())
+    stage_role = stages.register(TIER)
+    stage = stage_role.root
+    consumer, mover = stage_role.dead_owner_fragment(names=NAMES, size=SIZE)
+    publisher = stage_role.publisher(mover=actions.key(), consumer=actions.key())
     verdict = publisher._decide(stage / NAMES[0], SIZE, "c" * 64,
                                 computed=None, source_id=None, heal=True)
     assert verdict[0] == "refuse"

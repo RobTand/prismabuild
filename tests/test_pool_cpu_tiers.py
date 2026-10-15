@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool
+from fleet_fixture import actions, clock, hosts, queue  # noqa: F401
 
 
 def publish(queue, tmp_path, index, cpus=1, tags=()):
@@ -124,32 +125,23 @@ def remote_offer(queue, *, tags=(), cpus=2):
                    capacity={'cpu': cpus}, cpu_tiers=tiers)
 
 
-def test_remote_preferred_deferral_is_compatible_whole_demand_and_bounded(tmp_path, monkeypatch):
-    queue = pool.PoolQueue(tmp_path / 'queue')
-    remote_offer(queue, tags=['portable'])
-    key = publish(queue, tmp_path, 0, cpus=2, tags=['portable'])
-    tiers = {'preferred': [4], 'fallback': [5]}
-    remote = queue.ledger('another-host')
-    reads = []
-    original = pool.ResourceLedger.free_preferred
-    def free_preferred(ledger, cpu_tiers):
-        if ledger.base == remote.base:
-            reads.append(ledger.base)
-        return original(ledger, cpu_tiers)
-    monkeypatch.setattr(pool.ResourceLedger, 'free_preferred', free_preferred)
-    monkeypatch.setattr(pool.time, 'monotonic', lambda: 10.)
+def test_remote_preferred_deferral_is_compatible_whole_demand_and_bounded(queue, hosts, actions, clock):
+    hosts.announce("another-host", capacity={"cpu": 2},
+                   preferred=[0, 1], tags=["portable"])
+    key = actions.publish(0, cpus=2, tags=["portable"])
+    tiers = {"preferred": [4], "fallback": [5]}
+    reads = hosts.preferred_reads("another-host")
+    clock.set(monotonic=10.)
     assert queue.claim(tags=['portable'], capacity={'cpu': 2}, cpu_tiers=tiers) is None
     assert queue.ledger().available()['cpu'] == 2
-    local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
-    denial = next(value for value in json.loads(local.read_text())['records'].values()
-                  if value['action_key'] == key)
+    denial = queue.latest_denials({key})[key][0]
     assert denial['reason'] == 'deferred_for_preferred_cpu'
     assert denial['evidence']['remote_offer'] == {
         'host': 'another-host', 'free_preferred': 2, 'available': {'cpu': 2},
         'observed_capacity': {}, 'demand': {'cpu': 2},
     }
     assert len(reads) == 1, 'diagnostic evidence must reuse the admission read'
-    monkeypatch.setattr(pool.time, 'monotonic', lambda: 31.)
+    clock.set(monotonic=31.)
     assert queue.claim(tags=['portable'], capacity={'cpu': 2}, cpu_tiers=tiers)
 
 

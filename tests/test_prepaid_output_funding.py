@@ -31,6 +31,7 @@ from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from fleet_fixture import broker, damage, outputs, queue  # noqa: F401
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -903,30 +904,17 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path) -> None:
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
 
 
-def test_required_corrupt_intent_gets_no_free_credit(tmp_path: Path) -> None:
+def test_required_corrupt_intent_gets_no_free_credit(queue, outputs, damage) -> None:
     """Corrupt required intent file: claim defers as UNKNOWN, never fresh."""
-    owner = _hexkey("cor2-owner")
-    mover = _hexkey("cor2-mover")
-    q = _queue(tmp_path)
+    q = queue
+    batch = outputs.fund_ready(tier=TIER, owner_seed="cor2-owner",
+                               mover_seed="cor2-mover")
+    mover = batch.mover
     ledger = q.tier_ledger(TIER)
-    template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
-    descs = _descriptors(tmp_path, template, inst)
-    _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
-    total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
-        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
-        template=template, batch_id="b1", descriptors=descs)
+    staged, funded = batch.staged, batch.funded
     assert staged.get("ok") is True, staged
-    ref = _ref(inst, template, "b1", descs)
-    _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
-        tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
-        template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
-    _file_batch(q, inst, template, "b1", descs, mover)
-    q.funding_output_path(mover, TIER).write_text("{corrupt", encoding="utf-8")
+    damage.malformed_output_funding(mover, TIER)
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-cor2") is None
     assert q.item_path(pool.READY, mover).exists()
