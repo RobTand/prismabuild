@@ -141,6 +141,17 @@ import uuid
 
 from . import contracts
 from . import capability_eligibility
+from . import denial_records
+from .denial_records import (
+    CLAIM_DENIALS_SCHEMA_V1,
+    DENIAL_TRANSITIONS_SCHEMA_V1,
+    MAX_CLAIM_DENIALS,
+    MAX_CLAIM_PASS_LOOPS,
+    MAX_DENIAL_TRANSITIONS,
+    MAX_DENIAL_VALUE_DEPTH,
+    MAX_DENIAL_VALUE_ITEMS,
+    MAX_DENIAL_VALUE_TEXT,
+)
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
@@ -867,26 +878,15 @@ PASSES = "passes"
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
 CLAIM_DENIALS = "claim-denials.json"
-CLAIM_DENIALS_SCHEMA_V1 = "prismabuild.claim_denials.v1"
 #: Per-ledger report of holders a census could not read (#936): written by
 #: every inexact retire, removed by the next exact one.
 CENSUS_UNREADABLE = "census-unreadable.json"
 CENSUS_UNREADABLE_SCHEMA_V1 = "prismabuild.ledger_census_unreadable.v1"
-MAX_CLAIM_DENIALS = 256
-MAX_DENIAL_VALUE_DEPTH = 6
-MAX_DENIAL_VALUE_ITEMS = 32
-MAX_DENIAL_VALUE_TEXT = 256
 #: Per action, the reasons its claim denials changed through (#991): one
 #: small file per key in the queue root, beside ``passes``, written only when
 #: a host's reason for the key changes.  ``claim-denials.json`` keeps the
 #: latest verdict; this keeps the sequence that diagnoses a starvation.
 DENIAL_TRANSITIONS = "denial-transitions"
-DENIAL_TRANSITIONS_SCHEMA_V1 = "prismabuild.denial_transitions.v1"
-#: The ring's length: the newest reason transitions kept per action (the
-#: WS-DA audit's finding 5 sized it at 16).  A starvation that changed reason
-#: more often than this in one generation is flapping, and its newest
-#: transitions are the ones that name what it died on.
-MAX_DENIAL_TRANSITIONS = 16
 #: How long a ring outlives a key that no state directory names any more,
 #: when no terminal or withdrawal record says why.  The same safety valve,
 #: for the same reason, as ``PREWARM_RECEIPT_RETENTION_S`` (defined below).
@@ -5924,15 +5924,6 @@ class _TransitionHolds:
                 "transition_held_max_key": self.max_key}
 
 
-#: Loops per host whose last claim pass ``claim-denials.json`` keeps (#1029).
-MAX_CLAIM_PASS_LOOPS = 64
-
-
-def _diagnostic_stamp(record: object, field: str) -> float:
-    value = record.get(field, 0) if isinstance(record, Mapping) else 0
-    return float(value) if isinstance(value, (int, float)) else 0.0
-
-
 class _ClaimDiagnostics:
     """Bounded, context-local latest observations, never reason-ring state."""
 
@@ -5947,7 +5938,7 @@ class _ClaimDiagnostics:
             # Reverse ties match stable newest-first truncation: an older
             # insertion survives a new equally timestamped observation.
             oldest = min(reversed(self.denials), key=lambda key:
-                         _diagnostic_stamp(self.denials[key], "denied_unix"))
+                         denial_records.diagnostic_stamp(self.denials[key], "denied_unix"))
             del self.denials[oldest]
 
 
@@ -9793,23 +9784,6 @@ class PoolQueue:
         _write_json_atomic(self.passes_path(action_key), record)
         return count
 
-    @staticmethod
-    def _bounded_denial_value(value: object, depth: int = 0) -> object:
-        """Keep host-local denial evidence useful without making it a log."""
-        if depth >= MAX_DENIAL_VALUE_DEPTH:
-            return "<truncated>"
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if isinstance(value, str):
-            return value[:MAX_DENIAL_VALUE_TEXT]
-        if isinstance(value, Mapping):
-            return {str(key)[:MAX_DENIAL_VALUE_TEXT]: PoolQueue._bounded_denial_value(value[key], depth + 1)
-                    for key in list(sorted(value, key=str))[:MAX_DENIAL_VALUE_ITEMS]}
-        if isinstance(value, (list, tuple, set)):
-            return [PoolQueue._bounded_denial_value(item, depth + 1)
-                    for item in list(value)[:MAX_DENIAL_VALUE_ITEMS]]
-        return repr(value)[:MAX_DENIAL_VALUE_TEXT]
-
     def record_denial(
         self, item: Mapping[str, object], reason: str, evidence: Mapping[str, object] | None = None,
     ) -> None:
@@ -9853,20 +9827,13 @@ class PoolQueue:
                 decision_reason=decision_reason if isinstance(decision_reason, str) else None,
                 decision=decision if isinstance(decision, Mapping) else None)
         try:
-            key = str(item.get("action_key", ""))
-            identity = f"{key}:{repr(float(item['published_unix']))}"
-            evidence = dict(evidence or {})
-            if item.get("dependent_of") is not None:
-                evidence.setdefault("dependent_of", item.get("dependent_of"))
-            record = {
-                "action_key": key, "published_unix": float(item["published_unix"]),
-                "host": host, "reason": reason, "attempts": item.get("attempts", 0),
-                "evidence": self._bounded_denial_value(evidence), "denied_unix": _now()}
+            prepared = denial_records.PreparedDenial.from_item(item, reason, evidence, host=host)
+            record = prepared.stamped(_now())
             batch = _CLAIM_DIAGNOSTICS.get()
             if batch is not None and batch.queue is self:
-                batch.add_denial(identity, record)
+                batch.add_denial(prepared.identity, record)
             else:
-                self._write_claim_diagnostics({identity: record}, {})
+                self._write_claim_diagnostics({prepared.identity: record}, {})
         except (OSError, ValueError, TypeError, OverflowError):
             return
 
@@ -9910,20 +9877,7 @@ class PoolQueue:
                 return
             path = base / CLAIM_DENIALS
             existing = cpu_admission.read_json(path)
-            document: dict[str, object] = {"schema": CLAIM_DENIALS_SCHEMA_V1}
-            for name, updates, stamp, limit in (
-                    ("records", denials, "denied_unix", MAX_CLAIM_DENIALS),
-                    ("claim_passes", summaries, "passed_unix", MAX_CLAIM_PASS_LOOPS)):
-                prior = existing.get(name)
-                records = dict(prior) if isinstance(prior, Mapping) else {}
-                for identity, record in updates.items():
-                    if (identity not in records or _diagnostic_stamp(record, stamp)
-                            >= _diagnostic_stamp(records[identity], stamp)):
-                        records[identity] = record
-                if name == "records" or records or isinstance(prior, Mapping):
-                    newest = sorted(records.items(), key=lambda entry:
-                                    _diagnostic_stamp(entry[1], stamp), reverse=True)
-                    document[name] = dict(newest[:limit])
+            document = denial_records.diagnostic_document(existing, denials, summaries)
             cpu_admission.write_json(path, document)
             cpu_admission.adaptive_snapshot.publish(base, ledger.base / "adaptive")
         except (OSError, ValueError, TypeError, OverflowError, RuntimeError,
@@ -9989,11 +9943,11 @@ class PoolQueue:
         passes of ``host_pressure`` -- could not be diagnosed from it after
         the fact: the foreign/held CPU split and measured pressure lived only
         in the latest-only record, which overwrites itself every pass.  The
-        snapshot passes through :meth:`_bounded_denial_value` exactly like
-        the latest-only evidence, so an entry stays within the cost the ring
-        already pays per key; a damped repeat keeps the first snapshot, on
-        the same principle as #1006 -- the transition that matters is where
-        the starvation began, and the latest verdict has its own record.
+        snapshot uses the same bounds as the latest-only evidence, so an entry
+        stays within the cost the ring already pays per key; a damped repeat
+        keeps the first snapshot, on the same principle as #1006 -- the
+        transition that matters is where the starvation began, and the latest
+        verdict has its own record.
 
         Survives contention by construction.  It shares no lock with the
         latest-only file's ``flock``; pool callers hold the key's transition lock.
@@ -10018,38 +9972,14 @@ class PoolQueue:
                 prior = _read_json(path) or {}
             except PoolContractError:
                 prior = {}    # an unparsable ring is replaced, not trusted
-            ring = [dict(value) for value in prior.get("transitions", [])
-                    if isinstance(value, Mapping)] if isinstance(prior, Mapping) else []
-            on_host = [value for value in ring
-                      if value.get("host") == host
-                      and value.get("published_unix") == generation]
-            last = max(
-                on_host,
-                key=lambda value: (value.get("last_unix", value.get("unix", 0.0))
-                                   if isinstance(value.get("last_unix", value.get("unix")),
-                                                 (int, float)) else 0.0),
-                default=None)
-            if last is not None and (last.get("reason"), last.get("decision_reason")) == verdict:
+            document = denial_records.transition_document(
+                prior, key=key, generation=generation, host=host, reason=reason,
+                decision_reason=decision_reason, decision=decision, now=now)
+            if document is None:
                 _DENIAL_SEEN[memo] = verdict
                 return  # unchanged from the newest transition on file
-            repeat = next((value for value in on_host
-                          if (value.get("reason"), value.get("decision_reason")) == verdict),
-                         None)
-            if repeat is not None:
-                repeat["count"] = int(repeat.get("count") or 1) + 1
-                repeat["last_unix"] = now
-            else:
-                ring.append({"unix": now, "host": host, "reason": reason,
-                            "decision_reason": decision_reason,
-                            "decision": (self._bounded_denial_value(decision)
-                                         if isinstance(decision, Mapping) else None),
-                            "published_unix": generation, "count": 1,
-                            "last_unix": now})
-                ring = ring[-MAX_DENIAL_TRANSITIONS:]
             path.parent.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(path, {
-                "schema": DENIAL_TRANSITIONS_SCHEMA_V1, "action_key": key,
-                "transitions": ring})
+            _write_json_atomic(path, document)
         except (OSError, PoolContractError, TypeError, ValueError):
             return
         _DENIAL_SEEN[memo] = verdict
