@@ -11,6 +11,9 @@ them answers as before.
 """
 from __future__ import annotations
 
+import builtins
+import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -172,3 +175,60 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
     assert counts["retired"] == 0 and counts["kept"] == 1
     assert path.exists()
     assert not queue.funding_output_retired_path(MOVER, STAGE).exists()
+
+
+def _retired_written_record(tmp_path):
+    queue = _queue(tmp_path)
+    record = _record(state="reserved")
+    path = queue.write_output_funding(record)
+    record = dict(record, state="released")
+    queue.write_output_funding(record, expect_generation=record["generation"])
+    _row(queue, pool.DONE, MOVER)
+    assert queue.retire_terminal_output_funding()["retired"] == 1
+    assert not path.exists()
+    return queue, record, path
+
+
+def test_absent_live_funding_reads_the_retired_record(tmp_path):
+    queue, record, _ = _retired_written_record(tmp_path)
+    assert queue.output_funding_file_state(MOVER, STAGE) == (record, "ok")
+    assert queue.read_output_funding(MOVER, STAGE) == record
+    assert queue._output_funding_unretired(MOVER) is False
+
+
+@pytest.mark.parametrize("damage", [
+    pytest.param(b"", id="zero-bytes"),
+    pytest.param(b"{}", id="empty-object"),
+    pytest.param(b"{not json", id="malformed-json"),
+    pytest.param(b"[]", id="nonobject-json"),
+    pytest.param(b"\xff", id="invalid-utf8"),
+])
+def test_present_corrupt_live_funding_does_not_read_retired(tmp_path, damage):
+    queue, _, path = _retired_written_record(tmp_path)
+    path.write_bytes(damage)
+    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue._output_funding_unretired(MOVER) is True
+    assert queue.read_output_funding(MOVER, STAGE) is None
+
+
+@pytest.mark.parametrize("read_errno", [errno.EACCES, errno.ESTALE, errno.ENOTDIR])
+def test_unreadable_live_funding_does_not_read_retired(
+        tmp_path, monkeypatch, read_errno):
+    queue, _, path = _retired_written_record(tmp_path)
+    path.write_bytes(b"live-record-unreadable")
+    denied_reads = []
+
+    def deny_live_open(original):
+        def opened(file, *args, **kwargs):
+            if Path(file) == path:
+                denied_reads.append(path)
+                raise OSError(read_errno, os.strerror(read_errno), str(path))
+            return original(file, *args, **kwargs)
+        return opened
+
+    monkeypatch.setattr(builtins, "open", deny_live_open(builtins.open))
+    monkeypatch.setattr(io, "open", deny_live_open(io.open))
+    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue._output_funding_unretired(MOVER) is True
+    assert queue.read_output_funding(MOVER, STAGE) is None
+    assert len(denied_reads) == 3
