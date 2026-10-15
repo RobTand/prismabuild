@@ -141,6 +141,8 @@ import uuid
 
 from . import contracts
 from . import capability_eligibility
+from . import candidate_policy
+from .candidate_policy import WITHHOLD_KINDS
 from . import denial_records
 from .denial_records import (
     CLAIM_DENIALS_SCHEMA_V1,
@@ -587,10 +589,6 @@ DRAIN_SW_CAP_IDLE: dict[str, str] = {
     "holders_present_no_sharing_exception": "gpu",
     "broker_jobs_present": "exclusive",
 }
-#: What each withhold mode holds back from the rows behind the item: the
-#: resource kinds a later row must demand to be held back, or ``None`` for
-#: every row (the whole box), which is what every mode but ``gpu`` does.
-WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
 #: *Tokens*: under adaptive admission a CPU token shortage never reaches the
 #: ledger -- ``available < declared`` routes it through borrowing, so it is
 #: refused as one of these before ``begin_acquire`` runs.  They are a token
@@ -8020,8 +8018,9 @@ class PoolQueue:
         ``None`` otherwise.  The room need not fit the free tokens when it is
         read (#1240): a holder that releases after this read and before a row
         behind is decided is the drain boundary itself, and
-        :meth:`_room_taken_by` asks whether each room fits the free tokens at
-        the moment it is asked, so a room that does not fit binds nothing.
+        :func:`candidate_policy.room_taken` asks whether each room fits the
+        free tokens at the moment it is asked, so a room that does not fit
+        binds nothing.
         """
 
         try:
@@ -8050,51 +8049,6 @@ class PoolQueue:
         except (OSError, TypeError, ValueError, pb.PrismaBuildError):
             return None
         return {"action_key": str(item.get("action_key", "")), "room": reservation}
-
-    @staticmethod
-    def _room_fits(available: Mapping[str, int], room: Mapping[str, object]) -> bool:
-        """Whether ``room`` fits the free tokens ``available``: the one test a
-        kept room binds on (:meth:`_room_taken_by`) and a refused row's room is
-        kept on (#1240)."""
-
-        return all(available.get(kind, 0) >= int(need)          # type: ignore[call-overload]
-                   for kind, need in room.items())
-
-    @staticmethod
-    def _room_taken_by(ledger: "ResourceLedger", rooms: Sequence[Mapping[str, object]],
-                       demand: Mapping[str, int]) -> dict[str, object] | None:
-        """The first kept room ``demand`` would stop fitting in this box's free tokens.
-
-        Called under host admission, just before a row takes its tokens,
-        for the rooms it is bound by: every kept room when the row demands
-        no GPU (#1169), and the rooms marked ``binds: all`` when it demands
-        one -- a busy row's with no live withhold carry (#1217), and a row's
-        refused on holders a drain releases (#1240).  The answer names the
-        reason the room was kept (``kept_for``), so the deferred row's own
-        record, and its reason ring, attribute the wait.  A room that
-        no longer fits the free tokens
-        without the row -- the GPU row's own claim or a sibling's admission
-        has taken them since -- is left to that row's own verdict.  ``None``
-        when the row fits beside every kept room, and when the free tokens do
-        not list: fairness that cannot read leaves the row to be admitted as
-        before, and ``begin_acquire`` decides.
-        """
-
-        try:
-            available = ledger.available()
-        except OSError:
-            return None
-        for kept in rooms:
-            room = kept["room"]
-            if not PoolQueue._room_fits(available, room):           # type: ignore[arg-type]
-                continue
-            if all(available.get(kind, 0) - int(demand.get(kind, 0)) >= int(need)
-                   for kind, need in room.items()):                  # type: ignore[union-attr]
-                continue
-            return {"gpu_row": str(kept["action_key"])[:12], "room": dict(room),  # type: ignore[call-overload]
-                    "kept_for": kept.get("reason"),
-                    "available": available, "demand": dict(demand)}
-        return None
 
     def _host_denial_records(self) -> Mapping[str, object]:
         """This host's latest verdict per ready row, as :meth:`record_denial`
@@ -20857,7 +20811,7 @@ class PoolQueue:
                     continue
                 reservation = self._reservation_demand(
                     host_demand, gpu_controller=gpu_controller)
-                if not self._room_fits(total, reservation):
+                if not candidate_policy.room_fits(total, reservation):
                     continue
                 if local is None:
                     host = socket.gethostname()
@@ -21772,32 +21726,8 @@ class PoolQueue:
             gpu_controller=gpu_controller, offers=placement.offers,
             observed_images=observed_images, verdicts=verdict_snapshot)
         host = socket.gethostname()
-        #: The rooms of those rows this pass could not evaluate because another
-        #: loop held their transition lock (#1169, :meth:`_ready_gpu_row_room`).
-        #: A row behind one that demands no GPU is admitted only beside them.
-        gpu_rooms: list[dict[str, object]] = []
+        scan = candidate_policy.ScanOrder()
         preempted = False
-        #: The item withholding this box, once one does (#924).  The scan used
-        #: to end there; it now goes on for the rows that can run without
-        #: taking anything that item waits for -- a dependent on its
-        #: producer's allowance (#985), and, behind a GPU-kind withhold, a row
-        #: that demands no GPU (#1085) -- and for nothing else.
-        withheld_for: str | None = None
-        #: What that withhold holds back (#1085): the resource kinds a later
-        #: row must demand to be held back (:data:`WITHHOLD_KINDS`), or
-        #: ``None`` for every row, which is what every withhold but a GPU
-        #: refusal's does.
-        withheld_kinds: frozenset[str] | None = None
-        #: The rows among them withholding as a waiting measurement (#1419).
-        #: Their wait ends when this host's incumbents finish, so it never
-        #: holds back work an incumbent itself depends on.
-        measurement_withholds: set[str] = set()
-        #: The carried ones among them (#1579): a measurement's episode carried
-        #: from an earlier pass, recognised by the drain deadline it snapshots.
-        #: Only the gang precedence reads this set. The rule that serves an
-        #: incumbent's dependents reads ``measurement_withholds`` alone, as it
-        #: always did, so no host's other admission changes.
-        carried_measurement_withholds: set[str] = set()
         #: Each ready row's priority, so a gang member past the reservation bound
         #: is released from a measurement withhold only when that measurement is
         #: not of strictly higher priority (#1579): higher priority goes first.
@@ -21823,80 +21753,6 @@ class PoolQueue:
                 bootstrap_authority.append(drained)
             return bootstrap_authority[0]
 
-        #: Whether a row this pass already withheld the whole box for (#1230
-        #: review): ``carry_withhold``'s None then means "held elsewhere in
-        #: this pass", not "no live carry", and the busy-row room must not
-        #: read it as an expired episode to bind every row.
-        whole_box_held = False
-
-        def withhold(key: str, kinds: frozenset[str] | None) -> None:
-            nonlocal withheld_for, withheld_kinds
-            if withheld_for is not None and withheld_kinds is None:
-                return                      # the whole box is held already
-            if withheld_for is None or kinds is None:
-                withheld_for, withheld_kinds = key, kinds
-            else:
-                withheld_kinds = withheld_kinds | kinds
-
-        def carry_withhold(item: Mapping[str, object], key: str) -> dict[str, object] | None:
-            # A row this pass cannot evaluate for a transient reason
-            # (:data:`WITHHOLD_CARRYING_REASONS`) still withholds for the
-            # pass when this host's last word on it is a withhold inside its
-            # episode (#1085, #1143).  The caller records the carried episode
-            # as ``withhold_carried`` in its denial, so the next such pass
-            # reads the same start.  Read before that denial overwrites the
-            # host's record.
-            nonlocal whole_box_held
-            if withheld_for is not None and withheld_kinds is None:
-                whole_box_held = True
-                return None                 # the whole box is held already
-            carried = self._carried_withhold(
-                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
-            if carried is not None:
-                withhold(key, WITHHOLD_KINDS.get(str(carried["mode"])))
-                if "drain_until_unix" in carried:
-                    # A measurement's carried episode (it snapshots its drain
-                    # deadline): the gang precedence reads it like a fresh one.
-                    carried_measurement_withholds.add(key)
-            return carried
-
-        def keep_refused_room(key: str, reservation: Mapping[str, object],
-                              reason: str, evidence: dict[str, object],
-                              free: Mapping[str, int] | None) -> None:
-            # A GPU row refused while holders' tokens stand between it and
-            # its claim -- the room its claim would take does not fit the
-            # free tokens the refusal was decided against (``free``) -- keeps
-            # that room, binding every row behind it (#1240).  It binds only
-            # at the drain boundary: while the holders hold, the room still
-            # does not fit, binds nothing, and the box fills as the verdict
-            # allows (#924, #1085); when they release before a row behind is
-            # decided -- 90 ms in the incident -- the room fits, and a row
-            # behind is admitted only beside it: CPU work that fits beside
-            # still runs (#1169), a GPU row does not take the boundary.  The
-            # next pass decides the refused row first.  A room that already
-            # fit when the row was refused keeps nothing: tokens were not
-            # what refused it (measured pressure, a device state), and its
-            # verdict -- withhold or starved -- stands alone, as before;
-            # binding there would idle the GPU behind a row starved by
-            # definition.  So would a refusal whose free tokens did not
-            # read.  Recorded on the refused row's denial, and named
-            # (``kept_for``) on each row it defers.
-            if ledger is None or free is None:
-                return
-            try:
-                room = {str(kind): int(need)  # type: ignore[call-overload]
-                        for kind, need in reservation.items()}
-            except (TypeError, ValueError):
-                return
-            if not room.get("gpu"):
-                return
-            if self._room_fits(free, room):
-                evidence["gpu_room_fit_at_refusal"] = True
-                return
-            gpu_rooms.append({"action_key": key, "room": room, "binds": "all",
-                              "reason": reason})
-            evidence["gpu_room_kept"] = dict(room)
-            evidence["gpu_room_binds_all"] = True
         #: ``claimed/`` as this pass listed it, once (#993).  Listed under the
         #: first transition lock the pass takes, not before it, and a
         #: ``READDIR`` is itself the revalidation a cached negative lookup
@@ -21943,15 +21799,15 @@ class PoolQueue:
         for item in ready:
             key = str(item.get("action_key", ""))
             measurement_suspended = False
-            held_back = withheld_for is not None and (
-                withheld_kinds is None
-                or self._demands_withheld_kind(item, withheld_kinds))
+            held_back = scan.withheld_for is not None and (
+                scan.withheld_kinds is None
+                or self._demands_withheld_kind(item, scan.withheld_kinds))
             reserving_gang = (self._gang_reservation_priority(item, authority=movement_authority())
-                              if held_back and (withheld_for in measurement_withholds
-                                                or withheld_for in carried_measurement_withholds)
+                              if held_back and (scan.withheld_for in scan.measurement_withholds
+                                                or scan.withheld_for in scan.carried_measurement_withholds)
                               else None)
             if (reserving_gang is not None
-                    and ready_priority.get(withheld_for, 0) <= reserving_gang):
+                    and ready_priority.get(scan.withheld_for, 0) <= reserving_gang):
                 # The reservation wins over a measurement withhold (#1579): a
                 # gang member whose gang reserves its hosts is not held back
                 # behind a waiting measurement of the gang's priority or lower,
@@ -21960,13 +21816,13 @@ class PoolQueue:
                 # has started.
                 held_back = False
             producer = held_back and self._may_serve_a_producer(item)
-            if held_back and withheld_kinds is None and not producer:
+            if held_back and scan.withheld_kinds is None and not producer:
                 # Held back unevaluated behind the whole-box withhold.
                 # Recorded: this host has passed on the row for now, and a
                 # GPU host leaving CPU-only work to it reads that here
                 # (#1262 review).  Buffered once per pass, off the ring.
                 self.record_denial(item, "deferred_behind_withheld_row", {
-                    "withheld_for": withheld_for, "withheld_kinds": None})
+                    "withheld_for": scan.withheld_for, "withheld_kinds": None})
                 continue
             if (key and key not in released
                     and not self._placement_matches(item, tags=tagset, has_gpu=has_gpu)):
@@ -22001,8 +21857,8 @@ class PoolQueue:
                 # CPU-only rows beside it are admitted and a reader of this
                 # host's denials would otherwise see it wait with no reason.
                 self.record_denial(item, "deferred_behind_withheld_row", {
-                    "withheld_for": withheld_for,
-                    "withheld_kinds": sorted(withheld_kinds or ())})
+                    "withheld_for": scan.withheld_for,
+                    "withheld_kinds": sorted(scan.withheld_kinds or ())})
                 continue
             if (isinstance(item.get("produced_output_batch"), Mapping)
                     and key
@@ -22035,7 +21891,11 @@ class PoolQueue:
                         # no GPU (#1217): a later row claiming now would take
                         # the boundary it waited for, which is the inversion
                         # the pool's band order exists to prevent.
-                        carried = carry_withhold(item, key)
+                        carried = None
+                        if not scan.whole_box_held:
+                            carried = self._carried_withhold(
+                                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                            scan = scan.carry(key, carried)
                         # A GPU row moved ahead for the free GPU keeps its
                         # room for the rows behind it (#1169): the loop
                         # deciding it may be about to claim it.  A busy GPU
@@ -22055,7 +21915,7 @@ class PoolQueue:
                         room = None
                         if ledger is not None and (
                                 key in gpu_first
-                                or (carried is None and not whole_box_held)):
+                                or (carried is None and not scan.whole_box_held)):
                             # Unlike a ``gpu_first`` row, this one's demand
                             # was never read this pass: a row the loop holding
                             # it will refuse as malformed keeps no room here,
@@ -22074,16 +21934,16 @@ class PoolQueue:
                                     container_class_policy=container_class_policy,
                                     container_inventory=container_inventory)
                         if room is not None:
-                            if carried is None and not whole_box_held:
-                                room["binds"] = "all"
-                            room["reason"] = "transition_busy"
-                            gpu_rooms.append(room)
+                            kept = candidate_policy.KeptRoom(
+                                cast(str, room["action_key"]), cast(Mapping[str, int], room["room"]),
+                                "transition_busy", binds_all=carried is None and not scan.whole_box_held)
+                            scan = scan.keep(kept)
                         busy_evidence: dict[str, object] = {}
                         if carried is not None:
                             busy_evidence["withhold_carried"] = carried
                         if room is not None:
                             busy_evidence["gpu_room_kept"] = room["room"]
-                            if room.get("binds") == "all":
+                            if kept.binds_all:
                                 busy_evidence["gpu_room_binds_all"] = True
                         self.record_denial(item, "transition_busy", busy_evidence or None)
                     continue
@@ -22144,7 +22004,11 @@ class PoolQueue:
                 if isinstance(image_check, capability_eligibility.CapabilityRefusal):
                     evidence = dict(image_check.evidence)
                     if image_check.reason == "container_image_presence_unknown":
-                        carried = carry_withhold(item, key)
+                        carried = None
+                        if not scan.whole_box_held:
+                            carried = self._carried_withhold(
+                                verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                            scan = scan.carry(key, carried)
                         if carried is not None:
                             evidence["withhold_carried"] = carried
                     self.record_denial(item, image_check.reason, evidence)
@@ -22194,7 +22058,11 @@ class PoolQueue:
                         self._gang_clear_terminal(item, key)
                     # A read that failed, not a verdict: this host's live
                     # withhold for the row holds for the pass (#1143).
-                    carried = carry_withhold(item, key)
+                    carried = None
+                    if not scan.whole_box_held:
+                        carried = self._carried_withhold(
+                            verdict_snapshot(), item, host=socket.gethostname(), now=_now())
+                        scan = scan.carry(key, carried)
                     self.record_denial(item, "residency_lead_record_unreadable", {
                         "error": str(exc), "leads": leads,
                         **({"withhold_carried": carried}
@@ -22742,7 +22610,7 @@ class PoolQueue:
                                           if int(need) - covered.get(kind, 0) > 0}
                                 reservation_demand = dict(demand)
                             elif held_back and not (serves_incumbent
-                                                    and withheld_for in measurement_withholds):
+                                                    and scan.withheld_for in scan.measurement_withholds):
                                 # An earlier item is withholding what this row
                                 # takes.  A measurement's wait does not hold
                                 # back its host's incumbents' own dependents
@@ -22754,9 +22622,9 @@ class PoolQueue:
                                 refused = True
                                 refusal_source = "deferred_behind_withholding"
                                 adaptive = None
-                            if (not refused and gpu_rooms and ledger is not None
+                            if (not refused and scan.rooms and ledger is not None
                                     and (not int(reservation_demand.get("gpu", 0) or 0)
-                                         or any(kept.get("binds") == "all" for kept in gpu_rooms))):
+                                         or any(kept.binds_all for kept in scan.rooms))):
                                 # A GPU row ahead of this one that fits the
                                 # free GPU could not be decided this pass
                                 # (#1169): admit this row only beside it.
@@ -22767,11 +22635,16 @@ class PoolQueue:
                                 # it waited for.
                                 demanding_gpu = bool(
                                     int(reservation_demand.get("gpu", 0) or 0))
-                                bound = ([kept for kept in gpu_rooms
-                                          if kept.get("binds") == "all"]
-                                         if demanding_gpu else list(gpu_rooms))
-                                room_taken = self._room_taken_by(
-                                    ledger, bound, reservation_demand)
+                                bound = ([kept for kept in scan.rooms
+                                          if kept.binds_all]
+                                         if demanding_gpu else list(scan.rooms))
+                                try:
+                                    available = ledger.available()
+                                except OSError:
+                                    room_taken = None
+                                else:
+                                    room_taken = candidate_policy.room_taken(
+                                        available, bound, reservation_demand)
                                 if room_taken is not None:
                                     refused = True
                                     refusal_source = "deferred_for_ready_gpu_row"
@@ -22892,9 +22765,9 @@ class PoolQueue:
                                 # producer is waiting on it; any other row the
                                 # scan looked at stays as silent as before.
                                 if isinstance(dependent_owner, str):
-                                    evidence["withheld_for"] = withheld_for
-                                    if withheld_kinds is not None:
-                                        evidence["withheld_kinds"] = sorted(withheld_kinds)
+                                    evidence["withheld_for"] = scan.withheld_for
+                                    if scan.withheld_kinds is not None:
+                                        evidence["withheld_kinds"] = sorted(scan.withheld_kinds)
                                     self.record_denial(item, reason, evidence)
                                 continue
                             if refusal_source == "deferred_for_ready_gpu_row":
@@ -22931,18 +22804,23 @@ class PoolQueue:
                                         evidence["withheld_kinds"] = sorted(kinds)
                                     reason = f"{reason}_withholding"
                                     if drain_resolves:
-                                        keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
+                                        if ledger is not None:
+                                            scan, room_evidence = scan.keep_refused_room(
+                                                key, reservation_demand, reason, free_at_refusal)
+                                            evidence.update(room_evidence)
                                     self.record_denial(item, reason, evidence)
                                     if not (measurement_suspended and identity and identity[1]):
-                                        withhold(key, kinds)
-                                        if identity and identity[1]:
-                                            measurement_withholds.add(key)
+                                        scan = scan.withhold(
+                                            key, kinds, measurement=bool(identity and identity[1]))
                                     continue
                                 reason = f"{reason}{_starved_suffix(verdict)}"
                                 evidence["starved"] = {"why": verdict["why"],
                                                        "holders": verdict.get("holders")}
                             if drain_resolves:
-                                keep_refused_room(key, reservation_demand, reason, evidence, free_at_refusal)
+                                if ledger is not None:
+                                    scan, room_evidence = scan.keep_refused_room(
+                                        key, reservation_demand, reason, free_at_refusal)
+                                    evidence.update(room_evidence)
                             self.record_denial(item, reason, evidence)
                             continue
                         if reservation.host_handle is None:
@@ -22986,15 +22864,15 @@ class PoolQueue:
                                 "withhold": verdict,
                             }
                             if withholding and verdict["withhold"]:
-                                keep_refused_room(
-                                    key, asked, "reservation_unavailable_withholding", evidence,
-                                    free_at_refusal)
+                                if ledger is not None:
+                                    scan, room_evidence = scan.keep_refused_room(
+                                        key, asked, "reservation_unavailable_withholding", free_at_refusal)
+                                    evidence.update(room_evidence)
                                 self.record_denial(
                                     item, "reservation_unavailable_withholding", evidence)
                                 if not (measurement_suspended and identity and identity[1]):
-                                    withhold(key, None)
-                                    if identity and identity[1]:
-                                        measurement_withholds.add(key)
+                                    scan = scan.withhold(
+                                        key, None, measurement=bool(identity and identity[1]))
                                 continue
                             if withholding:
                                 # Keep its passes, and so its place, but let the
@@ -23007,7 +22885,10 @@ class PoolQueue:
                             # A token shortage is what holders releasing
                             # resolves: the room is kept at every verdict
                             # (#1240, ``keep_refused_room``).
-                            keep_refused_room(key, asked, reason, evidence, free_at_refusal)
+                            if ledger is not None:
+                                scan, room_evidence = scan.keep_refused_room(
+                                    key, asked, reason, free_at_refusal)
+                                evidence.update(room_evidence)
                             self.record_denial(item, reason, evidence)
                             continue
                     allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
