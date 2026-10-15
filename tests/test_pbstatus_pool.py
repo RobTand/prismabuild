@@ -69,17 +69,32 @@ def live_pool(tmp_path, monkeypatch, controlled_clock):
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 32, "gpu": 2},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
-    for host, key, demand in [
-        ("cpu-box", "a" * 64, {"cpu": 4, "mem_gb": 8}),
-        ("gpu-box", "b" * 64, {"cpu": 2, "gpu": 1, "mem_gb": 16}),
-    ]:
-        monkeypatch.setattr(pool.socket, "gethostname", lambda host=host: host)
-        queue.announce(host=host, tags=[host], has_gpu="gpu" in demand,
-                       capacity=demand, observed_capacity=demand)
-        queue.publish(action_key=key, cas_root=tmp_path / "cas",
-                      checkout_root=tmp_path, worker_script=ROOT / "tools/prismabuild_worker.py",
-                      resources=demand, tags=[host], needs_gpu="gpu" in demand)
-        assert queue.claim(tags=[host], has_gpu="gpu" in demand, owner=host)
+    publishers = []
+    publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
+
+    def publish_and_track(local, shared):
+        child = publish_snapshot(local, shared)
+        if child is not None:
+            publishers.append(child)
+        return child
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.cpu_admission.adaptive_snapshot, "publish", publish_and_track)
+        try:
+            for host, key, demand in [
+                ("cpu-box", "a" * 64, {"cpu": 4, "mem_gb": 8}),
+                ("gpu-box", "b" * 64, {"cpu": 2, "gpu": 1, "mem_gb": 16}),
+            ]:
+                monkeypatch.setattr(pool.socket, "gethostname", lambda host=host: host)
+                queue.announce(host=host, tags=[host], has_gpu="gpu" in demand,
+                               capacity=demand, observed_capacity=demand)
+                queue.publish(action_key=key, cas_root=tmp_path / "cas",
+                              checkout_root=tmp_path, worker_script=ROOT / "tools/prismabuild_worker.py",
+                              resources=demand, tags=[host], needs_gpu="gpu" in demand)
+                assert queue.claim(tags=[host], has_gpu="gpu" in demand, owner=host)
+        finally:
+            for publisher in publishers:
+                assert publisher.wait(timeout=10) == 0
     return queue
 
 
