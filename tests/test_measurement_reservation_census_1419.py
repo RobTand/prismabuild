@@ -1,5 +1,6 @@
 """Exact publication/lock/restart boundary for the UNKNOWN-first #1419 slice."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import ContextVar
 import os
 import threading
@@ -39,6 +40,50 @@ def test_stale_prefetch_cannot_omit_an_elected_measurement(fleet):
     assert refusal["evidence"]["candidate_release_bound"] == "UNKNOWN"
     assert refusal["evidence"]["selection"] == _chosen(queue, measurement)
     assert queue.ledger().held_keys() == [holder]
+
+
+def test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_election(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    original_census = reservation.locked_census
+    original_elect = reservation.elect
+    original_scan = pool.ResourceLedger._scan_names
+    electing = [False]
+    election_body = [False]
+    arrived = [False]
+
+    @contextmanager
+    def census_with_arrival_window(*args, **kwargs):
+        with original_census(*args, **kwargs) as current:
+            election_body[0] = electing[0]
+            try:
+                yield current
+            finally:
+                election_body[0] = False
+
+    def elect_with_arrival_window(*args, **kwargs):
+        electing[0] = True
+        try:
+            return original_elect(*args, **kwargs)
+        finally:
+            electing[0] = False
+
+    def scan_then_arrive(self, directory, **kwargs):
+        names = original_scan(self, directory, **kwargs)
+        if election_body[0] and not arrived[0] and directory == self.held_dir:
+            arrived[0] = True
+            assert queue.hold_tier_host_memory(self.host, 'election-gap', 1) == ('taken', '')
+        return names
+
+    monkeypatch.setattr(reservation, 'locked_census', census_with_arrival_window)
+    monkeypatch.setattr(reservation, 'elect', elect_with_arrival_window)
+    monkeypatch.setattr(pool.ResourceLedger, '_scan_names', scan_then_arrive)
+    holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
+    assert arrived[0]
+    assert reservation.selection(pool._read_json(queue.passes_path(measurement))) is None
+    assert queue.ledger().holder_tokens('ram-host:election-gap') == {'mem_gb': 1}
+    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.ledger().holds_gpu(holder)
+    assert queue.release_tier_host_memory(queue.ledger().host, 'election-gap') == 1
 
 
 def test_new_unlocked_measurement_at_refresh_restarts_without_tokens(fleet, monkeypatch):

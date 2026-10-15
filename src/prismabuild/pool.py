@@ -154,6 +154,8 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import holder_census
+from .holder_census import ACQUIRING_PREFIX
 from . import container_images as image_inventory
 from . import local_dependencies
 from . import dependency_digest
@@ -3762,12 +3764,6 @@ class _Insufficient(Exception):
     """Internal: a demand could not be met in full."""
 
 
-#: Prefix of a claimant-private acquisition directory under ``held/``.  An
-#: action key is 64 hex characters, so a name carrying a dot cannot collide
-#: with one, and every reader that addresses a holder by key sees nothing.
-ACQUIRING_PREFIX = "claiming."
-
-
 #: What makes two readings of ``claimed/<key>.json`` the same claim.  The owner
 #: alone would be enough for two different workers, but not for one worker's
 #: two attempts at the same action, which is the case the reaper creates.
@@ -3965,18 +3961,6 @@ def _check_claim_lease_identity(
         )
 
 
-def _is_acquisition(name: str) -> bool:
-    """Whether a holder directory belongs to a claimant rather than an action.
-
-    One predicate for both readers, because the two must agree exactly.  A name
-    the sweep declines to recognise but ``held_keys`` reports as an action key
-    is a leak nothing owns: no queue directory holds that name, so no reaper
-    looks for it, and no sweep frees it.
-    """
-
-    return name.startswith(ACQUIRING_PREFIX)
-
-
 def _acquisition_clock(holder: Path) -> float | None:
     """When a claimant began this acquisition, in seconds since the epoch.
 
@@ -4030,7 +4014,7 @@ def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | Non
     """
 
     parts = name.split(".")
-    if len(parts) < 6 or parts[0] != "claiming" or parts[2] != holder:
+    if len(parts) < 6 or not holder_census.is_private_holder(name) or parts[2] != holder:
         return None
     usec, pid, nonce = parts[1], parts[-2], parts[-1]
     if (not usec or any(c not in "0123456789" for c in usec)
@@ -4305,7 +4289,7 @@ class ResourceLedger:
         admission loop does not open the same shared file twice per holder.
         """
         if metadata is None:
-            metadata = _read_json(self.held_dir / holder / cpu_admission.METADATA)
+            metadata = self.holder_census().cpu_record(holder).value
         if metadata is not None and "allocation" in metadata:
             return metadata["allocation"]
         cpus = self.cpu_ids(_glob(self.held_dir / holder, "cpu-*"), tiers)
@@ -5196,7 +5180,8 @@ class ResourceLedger:
 
         if not from_key or not to_key or from_key == to_key:
             return 0
-        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+        if (holder_census.is_private_holder(str(from_key))
+                or holder_census.is_private_holder(str(to_key))):
             raise PoolContractError(
                 "a reservation transfer names two action keys, never a "
                 "claimant-private acquisition")
@@ -5263,7 +5248,8 @@ class ResourceLedger:
 
         if not from_key or not to_key or from_key == to_key:
             return 0
-        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+        if (holder_census.is_private_holder(str(from_key))
+                or holder_census.is_private_holder(str(to_key))):
             raise PoolContractError(
                 "a reservation transfer names two action keys, never a "
                 "claimant-private acquisition")
@@ -5337,7 +5323,8 @@ class ResourceLedger:
         if not from_key or not to_key or from_key == to_key:
             raise PoolContractError(
                 "a token-subset transfer names two distinct holders")
-        if _is_acquisition(str(from_key)) or _is_acquisition(str(to_key)):
+        if (holder_census.is_private_holder(str(from_key))
+                or holder_census.is_private_holder(str(to_key))):
             raise PoolContractError(
                 "a reservation transfer names two action keys, never a "
                 "claimant-private acquisition")
@@ -5443,7 +5430,7 @@ class ResourceLedger:
         for entry in self._scan_names(self.held_dir):
             if not entry.is_dir():
                 continue
-            if not entry.name.startswith(ACQUIRING_PREFIX):
+            if not holder_census.is_private_holder(entry.name):
                 continue
             if _acquisition_handle_of(entry.name, holder) is not None:
                 continue
@@ -5530,7 +5517,7 @@ class ResourceLedger:
         now = _now()
         local = socket.gethostname()
         for holder in self._scan_names(self.held_dir):
-            if not _is_acquisition(holder.name) or not holder.is_dir():
+            if not holder_census.is_private_holder(holder.name) or not holder.is_dir():
                 continue
             started = _acquisition_clock(holder)
             if started is None:
@@ -5661,8 +5648,15 @@ class ResourceLedger:
             pass
         return released
 
+    def holder_census(self) -> holder_census.HolderCensus:
+        """Fresh holder observations with this ledger's existing read adapters."""
+
+        return holder_census.HolderCensus(
+            self.held_dir, _read_json, scan=self._scan_names,
+            token_paths=self._glob_names)
+
     def held(self) -> dict[str, int]:
-        """Tokens of each kind a running action currently holds on this host.
+        """Tokens of each kind currently held on this host.
 
         This is the pool's own statement of what it is consuming here, and it
         is what ``box_capacity`` subtracts from the box's live load: the set of
@@ -5670,17 +5664,10 @@ class ResourceLedger:
         docker or ``setsid`` is involved, but the reservation always is.
         """
 
-        counts: dict[str, int] = {}
-        for holder in self._scan_names(self.held_dir):
-            if not holder.is_dir():
-                continue
-            for path in self._glob_names(holder, "*-*"):
-                kind = path.name.rsplit("-", 1)[0]
-                counts[kind] = counts.get(kind, 0) + 1
-        return counts
+        return self.holder_census().token_totals()
 
     def holder_tokens(self, action_key: str) -> dict[str, int]:
-        """Tokens of each kind ONE action holds here.
+        """Tokens of each kind one holder has here.
 
         :meth:`held` is the box's total; this is one holder's share of it, and
         it is what says whether releasing that holder closes a denied item's
@@ -5690,14 +5677,10 @@ class ResourceLedger:
         promise capacity the release does not actually return.
         """
 
-        counts: dict[str, int] = {}
-        for path in self._glob_names(self.held_dir / action_key, "*-*"):
-            kind = path.name.rsplit("-", 1)[0]
-            counts[kind] = counts.get(kind, 0) + 1
-        return counts
+        return self.holder_census().token_counts(action_key)
 
     def holds_gpu(self, action_key: str) -> bool:
-        """Whether ONE action is on this box's GPU (#1085).
+        """Whether one holder reserves this box's GPU (#1085).
 
         The same test ``adaptive_gpu.Controller.decision`` applies to a
         holder: a GPU token, or GPU admission's metadata.  A probe that
@@ -5706,23 +5689,18 @@ class ResourceLedger:
         see it, and it keeps the device occupied all the same.
         """
 
-        directory = self.held_dir / action_key
-        return (bool(_glob(directory, "gpu-*"))
-                or bool(cpu_admission.read_json(directory / gpu_admission.METADATA)))
+        census = holder_census.HolderCensus(
+            self.held_dir, cpu_admission.read_json, token_paths=_glob)
+        return census.has_gpu_reservation(action_key)
 
     def held_keys(self) -> list[str]:
-        """Which actions hold tokens here.
+        """Non-private holder names, including mirrors and unknown reservations.
 
-        Claimant-private acquisitions are excluded: they are named for the
-        claimant, not for an action, and the contender that will own the action
-        is not decided until its rename.  A caller asking which actions hold
-        capacity would otherwise be handed a name no queue directory has.
+        Private acquisitions still contribute to ``held()`` but are excluded
+        from this name query. A returned name does not prove action liveness.
         """
 
-        return sorted(
-            path.name for path in self._scan_names(self.held_dir)
-            if path.is_dir() and not _is_acquisition(path.name)
-        )
+        return [holder.name for holder in self.holder_census().non_private_holders]
 
 
 def _serialized_key(method):
@@ -12957,7 +12935,8 @@ class PoolQueue:
                     raise ValueError("a held_cpus drain names no CPUs or no CPU tiers")
                 wanted_cpus = {int(cpu) for cpu in held_cpus}
                 verdict["held_cpus"] = sorted(wanted_cpus)
-            for holder in ledger.held_keys():
+            for identity in ledger.holder_census().non_private_holders:
+                holder = identity.name
                 counts: dict[str, int] = {}
                 if mode == "gpu" and not ledger.holds_gpu(holder):
                     continue
@@ -20705,12 +20684,13 @@ class PoolQueue:
     def _scratch_isolated(self, host, view):
         if view.scratch_isolated is None:
             ledger = self.ledger(host)
+            census = ledger.holder_census()
             isolated = False
-            for key in ledger.held_keys():
-                if key.startswith(cpu_admission.RAM_HOST_MEMORY_PREFIX):
+            for holder in census.non_private_holders:
+                if holder.kind is holder_census.HolderKind.HOST_MEMORY_MIRROR:
                     continue
-                cpu = _read_json(ledger.held_dir / key / cpu_admission.METADATA) or {}
-                gpu = _read_json(ledger.held_dir / key / gpu_admission.METADATA) or {}
+                cpu = census.cpu_record(holder.name).fields
+                gpu = census.gpu_record(holder.name).fields
                 if (cpu.get("measurement") or cpu.get("unbounded_cpu")
                         or gpu.get("measurement") or gpu.get("exclusive")):
                     isolated = True
@@ -23313,10 +23293,10 @@ class PoolQueue:
                         # below release by key and the guard must stop trying
                         # to abandon a handle that owns nothing.
                         if (filed < sum(reservation_demand.values())
-                                or (adaptive is not None and _read_json(
-                                    ledger.held_dir / key / cpu_admission.METADATA) is None)
-                                or (adaptive_gpu is not None and _read_json(
-                                    ledger.held_dir / key / gpu_admission.METADATA) is None)):
+                                or (adaptive is not None and not
+                                    ledger.holder_census().cpu_record(key).present)
+                                or (adaptive_gpu is not None and not
+                                    ledger.holder_census().gpu_record(key).present)):
                             incomplete = True
 
                     if incomplete:
@@ -23442,7 +23422,7 @@ class PoolQueue:
                 if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
                     claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
                 if adaptive_gpu is not None:
-                    claimed["gpu_admission"] = _read_json(ledger.held_dir / key / gpu_admission.METADATA)
+                    claimed["gpu_admission"] = ledger.holder_census().gpu_record(key).as_record()
                 if adaptive is not None and adaptive.get("idle_baseline"):
                     # The host baseline an exclusive claim was judged idle
                     # against (#997): measurements compare on it afterwards.

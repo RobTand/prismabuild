@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import adaptive_cpu, holder_census, pool  # noqa: E402
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -241,7 +241,7 @@ def test_losing_claimant_returns_only_its_own_tier_handle(queue: pool.PoolQueue)
     assert queue.tier_holdings(KEY_A) == {TIER: {"stage_gib": 1}}
     assert queue.tier_ledger(TIER).held_keys() == [KEY_A]
     assert not [p for p in queue.tier_ledger(TIER).held_dir.iterdir()
-                if pool._is_acquisition(p.name)], "no private handle may survive"
+                if holder_census.is_private_holder(p.name)], "no private handle may survive"
 
 
 def test_reap_stale_returns_tier_tokens_with_the_host_tokens(queue: pool.PoolQueue) -> None:

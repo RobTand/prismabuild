@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING
 
 from . import adaptive_cpu, core, local_scratch, storage_tiers
+from .holder_census import HolderKind
 from . import _bounded_reader as reader
 
 if TYPE_CHECKING:
@@ -785,7 +786,8 @@ class PassCensus:
             kept = current.get("selections", {}).get(key, prior)
             if kept is not None:
                 elections[key] = kept
-        for key in self._ledger.held_keys():
+        for holder in self._ledger.holder_census().non_private_holders:
+            key = holder.name
             chosen = current.get("selections", {}).get(key)
             if (isinstance(chosen, dict)
                     and chosen.get("host") == self._ledger.base.name):
@@ -837,7 +839,8 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
                 current["elections"][key] = chosen
             # A success/cancellation slot is not physical ownership settlement.
             # Under H, retained tokens on this elected host still prevent refill.
-            for key in ledger.held_keys():
+            for holder in ledger.holder_census().non_private_holders:
+                key = holder.name
                 chosen = current["selections"].get(key)
                 if chosen is not None and chosen["host"] == here:
                     current["elections"][key] = chosen
@@ -1138,8 +1141,8 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         # starved the measurement (#1419). A RAM-tier fill hold (#1222) or a
         # raw holder with no readable claim is not an action lifetime: no
         # election, exactly as before, so the bounded episode still lapses.
-        holders = [key for key in ledger.held_keys()
-                   if not key.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX)]
+        holders = [holder.name for holder in ledger.holder_census().non_private_holders
+                   if holder.kind is not HolderKind.HOST_MEMORY_MIRROR]
         if not holders or len(holders) != len(ledger.held_keys()):
             return None
         ends = []
