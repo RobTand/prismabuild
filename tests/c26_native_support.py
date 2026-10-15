@@ -129,7 +129,13 @@ def consume(tmp_path: Path, report: Path, files: list[str], code: int):
     runner = mq.Runner(config(tmp_path), mq.Store(tmp_path / 'mq-state'))
     log = tmp_path / 'client.log'
     log.write_text('native producer observations are in report.json\n')
-    return runner.read_result(report, files, log=log, returncode=code)
+    invocation = None
+    companion = Path(str(report) + '.progress.json')
+    if companion.exists():
+        state = json.loads(companion.read_text())
+        invocation = {'run_id': state['run_id'], 'launch_entrypoint': state['launch_entrypoint'],
+                      'generation': str(ROOT)}
+    return runner.read_result(report, files, log=log, returncode=code, invocation=invocation)
 
 
 def record(output: str, prefix: str = 'pbtest-outcomes: ') -> dict:
