@@ -4118,7 +4118,7 @@ def _serve_cycles(args, stop: threading.Event) -> int:
                 return 0
             if args.once:
                 return 75
-            time.sleep(args.poll_s)
+            stop.wait(args.poll_s)
             continue
         if stop.is_set():
             return 0
@@ -4146,7 +4146,7 @@ def _serve_cycles(args, stop: threading.Event) -> int:
             continue
         if args.once:
             return 0
-        time.sleep(args.poll_s)
+        stop.wait(args.poll_s)
 
 
 def main(argv: list[str] | None = None) -> int:
