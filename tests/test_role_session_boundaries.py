@@ -94,8 +94,9 @@ def _metrics_request(port, errors):
 
 
 @pytest.mark.parametrize("release_before_deadline", [True, False])
-def test_metrics_sigterm_waits_for_real_handlers_before_park(
-        boundary, monkeypatch, release_before_deadline):
+@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
+def test_metrics_stop_waits_for_real_handlers_before_park(
+        boundary, monkeypatch, release_before_deadline, stop_signal):
     entered, ready, closed = (CONTEXT.Event() for _ in range(3))
     release = threading.Event()
     receiver, sender = CONTEXT.Pipe(duplex=False)
@@ -133,9 +134,9 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         request.start()
         assert entered.wait(5), "real HTTP handler never entered collection"
         _close_gate(boundary)
-        os.kill(process.pid, signal.SIGTERM)
+        os.kill(process.pid, stop_signal)
         process.join(0.15)
-        assert process.is_alive(), "SIGTERM exited before the handler completed"
+        assert process.is_alive(), "stop signal exited before the handler completed"
         assert list(boundary.parked.iterdir()) == [], "in-flight handler earned a marker"
         assert closed.wait(3), "stop did not close the listener before waiting for handlers"
         with pytest.raises(OSError):
@@ -234,12 +235,12 @@ def test_local_tier_unknown_loaded_commit_keeps_its_existing_policy(boundary, mo
     assert calls == [True]
 
 
-@pytest.mark.parametrize("gate_state", ["closed", "missing"])
-def test_metrics_serves_under_a_held_or_uninitialized_gate(
+@pytest.mark.parametrize("gate_state", ["open", "closed", "missing"])
+def test_metrics_serves_until_explicit_stop_for_each_gate_state(
         boundary, monkeypatch, gate_state):
     if gate_state == "closed":
         _close_gate(boundary)
-    else:
+    elif gate_state == "missing":
         boundary.gate.unlink()
     ready = CONTEXT.Event()
     port = CONTEXT.Value("i", 0)
@@ -268,7 +269,7 @@ def test_metrics_serves_under_a_held_or_uninitialized_gate(
         os.kill(process.pid, signal.SIGTERM)
         process.join(3)
         assert process.exitcode == 0, (boundary.root / "gate-metrics.log").read_text()
-        assert len(list(boundary.parked.iterdir())) == 1
+        assert len(list(boundary.parked.iterdir())) == int(gate_state != "open")
     finally:
         _finish(process)
 

@@ -4609,6 +4609,7 @@ and records its PID/start-time marker through `role_session.post_park_marker`.
 with `--dry-run`. SIGTERM and SIGINT request cooperative stop through an Event.
 Readers stop between blocks, join, abort partial stage sinks and publish the
 cycle's accounting and result before the role exits or records a park marker.
+The stop Event also interrupts both gate and post-cycle idle waits.
 An unreturned filesystem read or write can therefore delay parking. A complete
 stage entry keeps its normal publication rules; a partial entry never becomes
 a visible stage object. At the next
@@ -4777,6 +4778,8 @@ metrics snapshot form `--once` keeps its existing singleton exemption.
 stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
+Production callers read generation identities through `loaded_generation()`
+and `published_generation()`, alongside the commit readers.
 
 Local tier now compares the runtime generation as well as the commit before
 each pass, so republication of the same commit retires the old role. A one-shot
@@ -9031,7 +9034,13 @@ loop there.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
-The continuous exporter checks maintenance and runtime identity between accepts.
+The continuous exporter keeps serving under a closed or missing maintenance
+gate and posts no marker while serving. It checks runtime identity at startup
+and then at most once every five seconds, independently of its 0.1-second
+accept timeout or incoming request rate. Each check reads the published receipt
+once and compares both commit and generation through `generation_receipt`.
+Drift retires the exporter without a marker so its supervisor can reload it.
+
 SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
 the listener closes before any park proof, and the exporter joins every request
 thread it started. `ThreadingHTTPServer` uses daemon request threads, so
@@ -9039,11 +9048,14 @@ thread it started. `ThreadingHTTPServer` uses daemon request threads, so
 
 The shutdown grace is 10 seconds in total, starting when accepts stop. This is
 a new stop-only bound, using the same operational patience as pbstatus's default
-read timeout. Ordinary metrics collection remains unbounded. If every request
-joins, the exporter can post the current gate's marker and exit 0. If the grace
+read timeout. Ordinary metrics collection remains unbounded. After an explicit
+stop, if every request joins, the exporter posts the current gate's marker when
+one is in force and exits 0. With an open gate it exits without a marker. If the grace
 expires, it exits 0 without a marker or a request-completion claim; the process
 census must observe its exit before treating it as gone. The grace does not
-change the drain observer's required role set. `--once` retains its snapshot
+change the drain observer's required role set. If a future profile includes
+metrics, gate handling must park in place rather than retire the exporter.
+`--once` retains its snapshot
 behavior and singleton exemption.
 
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
@@ -9071,8 +9083,8 @@ local filesystem, and `/mnt/shared` is a local ZFS dataset on dl380g10.
 The role is supervised like `storage` and `tiers`. The supervisor spawns it
 from the active generation, and `ensure_roles` stops and respawns it when its
 argv drifts from the declaration or when a publish retires its generation. The
-role holds no work, so it is always idle for that purpose, and SIGTERM ends
-`serve_forever`. The server takes the role's singleton lock
+role holds no admitted work and is idle for that purpose. SIGTERM requests the
+bounded request-thread shutdown described above. The server takes the role's singleton lock
 (`role_session.role_singleton`) before it binds the port, so a second exporter
 on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
