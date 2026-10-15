@@ -89,7 +89,7 @@ def role_lock_path(script: str | Path) -> Path:
 
 
 
-def _role_lock_directory() -> Path:
+def role_lock_directory() -> Path:
     """The private per-uid directory the role locks live in.
 
     The admission lock's discipline: host-local, private to this uid,
@@ -130,7 +130,7 @@ def take_role_singleton(script: str | Path) -> int:
 
     role = Path(script).stem
     try:
-        directory = _role_lock_directory()
+        directory = role_lock_directory()
         descriptor = os.open(directory / f"{role}.lock",
                              os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
                              | os.O_CLOEXEC, 0o600)

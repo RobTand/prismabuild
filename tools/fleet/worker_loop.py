@@ -310,7 +310,7 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
     from prismabuild import produced_spool
 
     now = time.time() if now is None else float(now)
-    directory = role_session._role_lock_directory()
+    directory = role_session.role_lock_directory()
     descriptor = os.open(directory / SPOOL_RETIRE_LOCK,
                          os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
