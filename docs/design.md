@@ -4672,7 +4672,7 @@ daemon:
   Prewarm cooperatively stops its readers, aborts partial sinks and publishes
   accounting before it exits. A role's childless process census cannot prove
   that its reader threads have finished.
-* **Every refusal is stamped.** One `generation-drift/` record namespace
+* **Worker refusals and supervisor restarts are stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
   `prismabuild.role_session` (the module the roles and supervisor import as
   `runtime_gate`), following the queue's immutable
@@ -4780,6 +4780,9 @@ behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
 Production callers read generation identities through `loaded_generation()`
 and `published_generation()`, alongside the commit readers.
+Tier, prewarm and local tier retain their runtime-moved diagnostics without
+adding a drift-record writer. Worker refusals and supervisor role restarts own
+the immutable incident records.
 
 Local tier now compares the runtime generation as well as the commit before
 each pass, so republication of the same commit retires the old role. A one-shot
@@ -9035,11 +9038,11 @@ loop there.
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 The continuous exporter keeps serving under a closed or missing maintenance
-gate and posts no marker while serving. It checks runtime identity at startup
-and then at most once every five seconds, independently of its 0.1-second
-accept timeout or incoming request rate. Each check reads the published receipt
-once and compares both commit and generation through `generation_receipt`.
-Drift retires the exporter without a marker so its supervisor can reload it.
+gate and posts no marker while serving. Metrics is the sole observer role.
+It does not read runtime receipts or retire itself on generation drift. The
+supervisor owns its generation retirement and drift record, then respawns an
+exporter from the active generation. A direct exporter whose loaded receipt is
+unknown keeps serving until explicitly stopped, as it did before this change.
 
 SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
 the listener closes before any park proof, and the exporter joins every request
@@ -9057,8 +9060,7 @@ expires, it exits 0 without a marker or a request-completion claim; the process
 census must observe its exit before treating it as gone. The grace does not
 change the drain observer's required role set. If a future profile includes
 metrics, gate handling must park in place rather than retire the exporter.
-`--once` retains its snapshot
-behavior and singleton exemption.
+`--once` retains its snapshot behavior and singleton exemption.
 
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
 as an installed unit on three boxes, sparky, sparklina and dl380g10, and every

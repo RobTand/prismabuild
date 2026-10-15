@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
-from prismabuild import generation_receipt, local_tier, pool, resident_sets, role_session
+from prismabuild import generation_receipt, local_tier, pool, resident_sets
 
 
 def local_tier_cycle(queue, host, policy):
@@ -40,7 +40,7 @@ def main(argv=None):
     if args.interval_s <= 0:
         parser.error("interval must be positive")
     try:
-        with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
+        with runtime_gate.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
             loaded = runtime_gate.loaded_runtime_commit()
             loaded_generation = runtime_gate.loaded_generation()
             with runtime_gate.role_singleton(Path(__file__)):
