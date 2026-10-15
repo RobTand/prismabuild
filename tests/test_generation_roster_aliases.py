@@ -1,6 +1,8 @@
 """Publication rejects ambiguity within a generation, preserving rename unions."""
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from test_publication_refuses_a_dropped_roster_option_1664 import (
@@ -30,6 +32,10 @@ def test_ambiguous_candidate_refuses_before_publication(
         tmp_path, monkeypatch, boxes, host, extra):
     checkout = _checkout(tmp_path / "checkout", {"boxes": boxes})
     mirror = _publish(tmp_path, monkeypatch, checkout, extra)
+    if "--stage-only" in extra:
+        monkeypatch.setattr(sys, "argv", [
+            "publish_runtime.py", "--rollout", "barrier", "--stage-only",
+            "--shape-gate-waiver", "fixture publication"])
     with pytest.raises(SystemExit, match=f"ambiguous.*{host}"):
         candidate_publisher.main()
     assert not mirror.exists()
