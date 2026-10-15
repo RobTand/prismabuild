@@ -39,8 +39,19 @@ complete files, with six auxiliary subtests separate. The failures were the
 namespace guard and the large arbitration case exceeding its 180-second bound.
 The latter also timed out in an isolated full-file run at `566892fc1dc7`, while
 its other nine cases passed. Root checked every terminal, retained log and
-receipt or expected receipt absence. A fresh 1,001-file run at `09a4dd3f6c15` is
-pending; it does not retroactively change the baseline.
+receipt or expected receipt absence. The fresh 1,001-file run at
+`09a4dd3f6c151f18f63a78f567c410a57755d6c9` passed: 14,711 passed and 24 skipped
+among 14,735 unique cases, with six auxiliary subtests separate. All twelve
+source, terminal, retained-log and CAS receipt/payload chains verified. The
+24 skip node IDs are identical to the failed baseline: eighteen map_files
+privilege requirements, two missing readable-NFS mounts, two opt-in SLURM
+smokes, one optional Dagster package and one opt-in claim profile. The exact
+node map records one renamed real arbitration case, three deleted helper
+self-tests and eight added installed-wheel cases; every other baseline node
+remains. Evidence and the code identity at the later documentation-only head
+are under `current-full-after-boundaries/` in the refactor evidence directory.
+This current-code pass does not change the failed baseline or complete the
+31-card brief.
 
 The arbitration regression now uses sixteen names and seven other namespaces.
 Its real byte, ownership, refusal and filesystem-operation assertions are
@@ -57,11 +68,18 @@ node audits, actual mutation diffs and evidence are under
 
 C01 T-qualification remains isolated at `503fb73a059ecd20a96af83c543b06a88df154d0`:
 all 3,268 cases across 159 full files passed, retaining all 3,204 Unit A nodes
-plus 64. The pre-H unit, decomposition operations and shared directory captures
-are still in progress. C11's full 47-file baseline contains 811 passes and two
-observed consumer assertion failures; those explicit tightenings and their
-positive controls precede implementation. These checkpoints do not change the
-frozen 93424 requirement assessment or close the complete brief.
+plus 64. All nine pre-H characterization cases subsequently passed at
+`d71bcf04d52b85bb4a846c3f20f576c984fb6fe9`; their protocol move is in progress.
+The decomposition null-result preservation control passed at
+`34a92654f3d936e393c28d175f03f97c82f971c2`, alongside exactly the eleven earlier
+intended call failures. C11's expanded 47-file baseline at
+`75dc5fc42d3cb4d6f5547af46f661ab16e85eea4` contains 812 passes and five observed
+consumer assertion failures. These cover current trust loss, failed scan or
+acquisition, an older capture replacing a newer capture, and a late result
+surviving invalidation. Its older-reader abort control passes. The shared
+capture implementation and final decomposition reader remain unqualified.
+These checkpoints do not change the frozen 93424 requirement assessment or
+close the complete brief.
 
 ## Agreed engineering choices
 
