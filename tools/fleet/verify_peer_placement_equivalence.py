@@ -5,15 +5,19 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 
 
 def replay(source, history):
+    runner = source / "tests" / history.name
+    if runner != history:
+        shutil.copyfile(history, runner)
     environment = dict(os.environ, PYTHONPATH=os.pathsep.join(
         (str(source / "src"), str(source / "tests"))))
-    result = subprocess.run([sys.executable, str(history)], cwd=source, env=environment,
+    result = subprocess.run([sys.executable, str(runner)], cwd=source, env=environment,
                             capture_output=True, text=True)
     if result.returncode:
         print(f"peer replay failed for {source}", file=sys.stderr)
@@ -36,12 +40,14 @@ def main():
         subprocess.run(["git", "archive", "--format=tar", "--output", str(archive), args.base],
                        cwd=source, check=True)
         subprocess.run(["tar", "-xf", str(archive), "-C", str(base)], check=True)
-        before = replay(base, history)
-        after = replay(source, history)
+        retained = replay(base, history)
+        candidate = replay(source, history)
+    before, after = retained["histories"], candidate["histories"]
     differences = {name: {"base": before.get(name), "candidate": after.get(name)}
                    for name in sorted(before.keys() | after.keys())
                    if before.get(name) != after.get(name)}
     report = {"base": args.base, "histories": len(before), "differences": differences,
+              "origins": {"base": retained["origins"], "candidate": candidate["origins"]},
               "scope": "fixed observations plus explicit scratch replacement; no concurrent equivalence claim"}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

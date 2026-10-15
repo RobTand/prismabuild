@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import socket
+import sys
 import tempfile
 import time
 
@@ -212,7 +213,29 @@ def test_timer_only_yields_do_not_charge_peer_capacity(tmp_path, monkeypatch):
     assert steps[0]["reason"] == steps[0]["other_reason"] == "deferred_for_cross_resource_placement"
 
 
+def _replay_origins():
+    source = Path(__file__).resolve().parents[1]
+    origins = {}
+    for name, module in tuple(sys.modules.items()):
+        if name == "prismabuild" or name.startswith("prismabuild."):
+            path = Path(module.__file__).resolve()
+            if not path.is_relative_to(source / "src"):
+                raise RuntimeError(f"replay import outside selected source: {name}={path}")
+            origins[name] = path.relative_to(source).as_posix()
+    for name, relative in (
+        ("test_local_scratch_measured_placement", "tests/test_local_scratch_measured_placement.py"),
+        ("pbrun", "tools/fleet/pbrun.py"), ("worker_loop", "tools/fleet/worker_loop.py"),
+    ):
+        if name in sys.modules:
+            path = Path(sys.modules[name].__file__).resolve()
+            if path != source / relative:
+                raise RuntimeError(f"replay fixture import outside selected source: {name}={path}")
+            origins[name] = relative
+    return {"source": str(source), "modules": origins}
+
+
 def replay():
+    _replay_origins()
     histories = {}
     for rule in RULES:
         for observation in OBSERVATIONS:
@@ -224,7 +247,7 @@ def replay():
     for rule in ("cpu_host", "cross_resource"):
         with tempfile.TemporaryDirectory() as root, pytest.MonkeyPatch.context() as patch:
             histories[f"mixed/{rule}"] = _history(Path(root), patch, rule, "fresh", mixed=True)
-    return histories
+    return {"histories": histories, "origins": _replay_origins()}
 
 
 if __name__ == "__main__":
