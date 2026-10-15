@@ -2670,6 +2670,17 @@ Scheduler placement is intent, not producer identity. `run-local` accepts no
 miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
 `prismaquant.prismabuild.worker_attestation.v2` record bound to the action key:
 
+The runtime body includes the exact `immutable_files` source identity alongside
+Core, the digest owner and any launcher. Core captures its sibling at module
+initialization, includes it in `runtime_sha256`, and rechecks it before execution
+and receipt publication. A current worker cannot publish without that member.
+Historical runtime bodies retain their original optional-member set and hash;
+readers do not invent a source identity for them. A listed retained-generation
+member must pass its sealed source check before a broker proxy can launch.
+Native-result proof reopens a listed immutable owner under the attested helper
+root on both existing proof passes. This adds no claim about historical bodies
+without the member or the ordinary package import boundary.
+
 - `platform_key` is derived from the live lower-case OS and machine plus the
   single visible NVIDIA compute capability, when present (for example,
   `linux-aarch64-sm121`). Heterogeneous visible capabilities are ambiguous and
@@ -3196,10 +3207,21 @@ close over worker result statuses need upgrading before consuming these results.
 
 Receipt publication fsyncs the candidate, runs the potentially longer
 action-closure and executable callback first, then rehashes the core and
-launcher as the final userspace check before the first-writer-wins hard link.
+its attested source owners and launcher as the final userspace check before
+the first-writer-wins hard link.
 There remains an unavoidable sequential interval between that final check
 returning and the `os.link` syscall; this design minimizes that interval rather
 than claiming a zero-gap filesystem snapshot.
+`immutable_files.publish_immutable` owns that byte-publication recipe and the
+shared no-follow directory operations. Its temporary inode is mode 0444 and
+fsynced before linking through the held parent descriptor. It fsyncs the parent,
+checks the winning inode and directory identity, and removes its temporary name.
+Core retains its stable regular-read algorithms and exports the actual shared
+CASTamperError and CASUnavailableError classes. With no `where`, publication's
+body retains raw OSError; a supplied name retains its existing adaptation and
+cause. The directory-open and cleanup boundaries keep their own current errors.
+The isolated local-scratch producer seals the new sibling with recorder,
+local_scratch, Core and digest source, making five actual source files.
 Result-blob publication uses the same consumed-inode rule as input ingestion.
 The successful publisher already computed SHA-256 while copying into a
 private read-only staging inode. After the canonical hard link is durable, it

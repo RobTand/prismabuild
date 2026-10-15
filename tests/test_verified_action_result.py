@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import client, movement_actions, pool  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 
 import pbmcp_fixture as fx  # noqa: E402
 
@@ -197,7 +198,7 @@ def test_a_newer_failed_generation_refuses(tmp_path: Path):
               "status": "failed",
               "published_unix": float(record["published_unix"]) + 5,
               "finished_unix": 1.0, "finished_host": "box", "detail": {}}
-    pb._atomic_publish(queue.item_path(pool.FAILED, key),
+    immutable_files.publish_immutable(queue.item_path(pool.FAILED, key),
                        pb._canonical_file_bytes(failed))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -213,7 +214,7 @@ def test_a_newer_withdrawn_or_contested_ending_refuses(tmp_path: Path):
                  "status": "withdrawn", "published_unix": generation,
                  "withdrawn_unix": generation + 5, "finished_host": "box",
                  "detail": {}}
-    pb._atomic_publish(queue.item_path(pool.WITHDRAWN, key),
+    immutable_files.publish_immutable(queue.item_path(pool.WITHDRAWN, key),
                        pb._canonical_file_bytes(withdrawn))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -226,7 +227,7 @@ def test_a_newer_withdrawn_or_contested_ending_refuses(tmp_path: Path):
                  "status": "failed", "published_unix": generation,
                  "finished_unix": generation + 1, "finished_host": "box",
                  "detail": {}}
-    pb._atomic_publish(queue.item_path(pool.FAILED, key),
+    immutable_files.publish_immutable(queue.item_path(pool.FAILED, key),
                        pb._canonical_file_bytes(contested))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -998,7 +999,7 @@ def test_native_last_proof_read_cannot_return_before_terminal_recheck(
                         "published_unix": record["published_unix"],
                         "withdrawn_unix": record["published_unix"] + 5,
                         "finished_host": "box", "detail": {}}
-                    pb._atomic_publish(queue.item_path(pool.WITHDRAWN, key),
+                    immutable_files.publish_immutable(queue.item_path(pool.WITHDRAWN, key),
                                        pb._canonical_file_bytes(withdrawn))
                 else:
                     replacement = {**record, "published_unix": record["published_unix"] + 5}

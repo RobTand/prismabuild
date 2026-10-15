@@ -353,10 +353,6 @@
    "src/prismabuild/residency_map.py",
    "src/prismabuild/residency_plan.py"
   ],
-  "_assert_directory_identity": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/slurm.py"
-  ],
   "_cell": [
    "tools/fleet/pbstatus.py",
    "tools/fleet/pbwait.py"
@@ -455,10 +451,6 @@
   "_observe": [
    "src/prismabuild/produced_spool.py",
    "tools/fleet/stage_move.py"
-  ],
-  "_open_directory_nofollow": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/slurm.py"
   ],
   "_parser": [
    "tools/fleet/prewarm_loop.py",

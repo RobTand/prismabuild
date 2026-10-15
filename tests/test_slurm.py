@@ -20,6 +20,7 @@ import pytest
 
 from prismabuild import core as pb
 from prismabuild import slurm as ps
+from prismabuild import immutable_files
 
 
 
@@ -1818,7 +1819,7 @@ def test_atomic_publish_syncs_readonly_mode_after_chmod(
 
     monkeypatch.setattr(ps.os, "fchmod", recording_fchmod)
     monkeypatch.setattr(ps.os, "fsync", recording_fsync)
-    assert pb._atomic_publish(target, b"{}\n", where="test claim")
+    assert immutable_files.publish_immutable(target, b"{}\n", where="test claim")
 
     assert events[0][0] == "fchmod"
     assert events[1] == ("fsync", events[0][1])

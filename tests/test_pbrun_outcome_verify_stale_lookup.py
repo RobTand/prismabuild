@@ -4,7 +4,7 @@
 ending landed and its ``done/`` or ``failed/`` row read fine, then outcome
 verification failed with ``FileNotFoundError: [Errno 2] No such file or
 directory: '<action key>'`` and ``pbrun`` exited 74.  The name is the
-``attempts/<key>`` component that ``core._open_directory_nofollow`` opens
+``attempts/<key>`` component that ``immutable_files.open_directory_nofollow`` opens
 relative to the held ``attempts/`` descriptor.  The waiter's own poll looked
 that name up before the other box created it (``archived_generation_outcomes``
 walks ``attempts/<key>/<generation>`` on every poll that has no ending yet),
