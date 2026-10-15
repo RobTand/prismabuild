@@ -1574,11 +1574,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         one box -- which is every action whose checkout is a box-local worktree
         rather than shared storage -- matches no worker and never runs.
 
-        The progress tags ride the same subset rule as capabilities rather than
-        a place, exactly as ``cpu`` does below.  The watchdog and helper have
-        separate tags: a previous v1 loop can still run an already-sealed
-        watchdog action, but cannot claim a new action that depends on its
-        helper environment.
+        Code contracts use the same subset rule. The registry decides which
+        loaded contracts are enabled; ``cpu`` remains a host fact here.
 
         Built from a name passed in rather than read here, because the name can
         change while this loop runs; see the re-read at the top of the poll.
@@ -1590,44 +1587,9 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
-        tags.extend((contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.PROGRESS_CYCLE_TAG,
-                     contracts.POOL_CONTENTION_TAG, contracts.EGRESS_PROGRESS_TAG,
-                     contracts.QUEUED_CHILD_TAG))
-        # This loop's code performs the declared-image claim check, so it may
-        # take image-pinned work.  A loop from before the check does not offer
-        # the tag and therefore cannot claim that work and die inside it
-        # (#714).  Docker being absent does not remove the capability: the
-        # check then finds presence unknown and refuses, leaving the item
-        # ready for a box that can see it.
-        tags.append(contracts.CONTAINER_IMAGE_TAG)
-        # Same fence for a named interpreter (#1263): this loop's claim checks
-        # the item's absolute path on this box before it spends an attempt,
-        # and its offer answers for the paths READY items name.  A loop from
-        # before the field offers neither, so an interpreter-naming item waits
-        # for a box that can run it instead of dying with 127 there.
-        tags.append(contracts.INTERPRETER_TAG)
-        tags.append(local_dependencies.TAG)
-        # And for digest-pinned dependencies (#1495): this loop's claim
-        # hashes the row's required bytes on this box before it spends an
-        # attempt, and its offer answers for the paths READY items name.  A
-        # loop from before the contract offers neither, so a row whose
-        # dependencies it would silently ignore waits for a box that can
-        # read the requirement instead of dying inside it.
-        tags.append(contracts.DEPENDENCY_DIGEST_TAG)
-        # Code capability only; configured executed profiles and current root
-        # observations separately decide admission. Old workers cannot ignore
-        # opted-in sealed traffic during a rolling publication.
-        tags.append(contracts.SCRATCH_IO_TAG)
-        # Versioned lifetime actions cannot run on declaration-only workers.
-        tags.append(contracts.SCRATCH_LIFETIME_TAG)
-        if args.gang_admission:
-            # Default off (#1517): without this no box offers the tag, so no
-            # gang member is ever claimed and no gang code runs in a pass.
-            from prismabuild import _gang
-            tags.append(_gang.TAG)
-        if loaded_generation:
-            tags.extend((publication_canary.CAPABILITY,
-                         f"runtime-generation:{loaded_generation}"))
+        tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
+            gang_admission=args.gang_admission,
+            loaded_generation=loaded_generation)))
         return tags
 
     host = socket.gethostname()

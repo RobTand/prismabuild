@@ -615,15 +615,15 @@ def _fleet(tmp_path, boxes, *, helper_hosts=None):
             host for host, contracts in boxes.items()
             if contracts and pb.PROGRESS_RECORD_SCHEMA_V1 in contracts
         }
-    for host, contracts in boxes.items():
+    for host, announced in boxes.items():
         tags = ["cpu", host, "x86"]
-        if contracts and pb.PROGRESS_RECORD_SCHEMA_V1 in contracts:
+        if announced and pb.PROGRESS_RECORD_SCHEMA_V1 in announced:
             tags.append(contracts.PROGRESS_TAG)
             if host in helper_hosts:
                 tags.append(contracts.PROGRESS_HELPER_TAG)
         queue.announce(host=host, tags=tags, has_gpu=False,
                        capacity={"gpu": 0, "mem_gb": 60, "cpu": 80},
-                       timeout_ceiling_s=7200.0, progress_contracts=contracts)
+                       timeout_ceiling_s=7200.0, progress_contracts=announced)
     return queue
 
 

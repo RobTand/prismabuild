@@ -7075,10 +7075,15 @@ class PoolQueue:
             declared_gang = _gang.declaration(gang)
         except _gang.GangContractError as exc:
             raise PoolContractError(str(exc)) from exc
+        declared_contracts = contracts.declared_contract_tags(contracts.Publication(
+            gang=declared_gang is not None,
+            interpreter=declared_interpreter is not None,
+            local_dependencies=bool(dependencies),
+            requires_files=declared_requirements is not None,
+            container_images=bool(image_refs)))
         if declared_gang is not None:
             # Default off (#1517): only a box offering the gang capability
             # places a member, so an old or disabled worker never claims one.
-            normalized_tags = normalize_placement_tags([*normalized_tags, _gang.TAG])
             # A retried or preempted member would start alone beside siblings
             # already running: a gang member gets exactly one attempt, and an
             # unsuccessful one ends the whole gang.
@@ -7088,50 +7093,28 @@ class PoolQueue:
                 raise PoolContractError("a gang member must declare a resource demand")
         elif _gang.TAG in normalized_tags:
             raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
-        if declared_interpreter is not None:
-            # The capability tag rides the requirement (the #714 shape): a
-            # loop from before the field does not offer it, so an old worker
-            # never claims an item whose interpreter it cannot even see.
-            normalized_tags = normalize_placement_tags(
-                [*normalized_tags, contracts.INTERPRETER_TAG])
-        elif contracts.INTERPRETER_TAG in normalized_tags:
+        if (contracts.INTERPRETER_TAG in normalized_tags
+                and contracts.INTERPRETER_TAG not in declared_contracts):
             raise PoolContractError(
                 f"{contracts.INTERPRETER_TAG} requires an interpreter; an item may "
                 "not require the declared-interpreter capability without "
                 "naming one")
-        if dependencies:
-            normalized_tags = normalize_placement_tags(
-                [*normalized_tags, dependency_contract.TAG])
-        elif dependency_contract.TAG in normalized_tags:
+        if (dependency_contract.TAG in normalized_tags
+                and dependency_contract.TAG not in declared_contracts):
             raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
-        if declared_requirements is not None:
-            # The same ride (#714 shape): a loop from before this contract
-            # offers neither the tag nor the claim check, so a row whose
-            # dependencies it cannot see must be unclaimable by it, not
-            # merely risky to hand it (#1495).
-            normalized_tags = normalize_placement_tags(
-                [*normalized_tags, contracts.DEPENDENCY_DIGEST_TAG])
-        elif contracts.DEPENDENCY_DIGEST_TAG in normalized_tags:
+        if (contracts.DEPENDENCY_DIGEST_TAG in normalized_tags
+                and contracts.DEPENDENCY_DIGEST_TAG not in declared_contracts):
             raise PoolContractError(
                 f"{contracts.DEPENDENCY_DIGEST_TAG} requires "
                 "requires_files; an item may not require the "
                 "dependency-digest capability without naming any")
-        if image_refs:
-            # The capability the claim check rides must travel with the
-            # requirement, never be forgotten by a producer: a box that does
-            # not offer it is a loop from before the check, which is exactly
-            # the worker #714 must not reach.
-            normalized_tags = normalize_placement_tags(
-                [*normalized_tags, contracts.CONTAINER_IMAGE_TAG])
-        elif contracts.CONTAINER_IMAGE_TAG in normalized_tags:
-            # One spelling of the declaration: the tag is the capability, and
-            # an item carrying it without references is a producer that
-            # dropped the sealed requirement.  Refused rather than run
-            # unchecked.
+        if (contracts.CONTAINER_IMAGE_TAG in normalized_tags
+                and contracts.CONTAINER_IMAGE_TAG not in declared_contracts):
             raise PoolContractError(
                 f"{contracts.CONTAINER_IMAGE_TAG} requires container_images; an item "
                 "may not require the declared-image capability without "
                 "declaring one")
+        normalized_tags = normalize_placement_tags([*normalized_tags, *declared_contracts])
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
             raise PoolContractError("resource demand must not be negative")
@@ -7203,8 +7186,9 @@ class PoolQueue:
                 variables = sealed_request["environment"]["variables"]
                 if demand.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]:
                     raise PoolContractError("scratch lifetime intent lacks its sealed reservation")
-                normalized_tags = normalize_placement_tags(
-                    [*normalized_tags, contracts.SCRATCH_LIFETIME_TAG])
+                normalized_tags = normalize_placement_tags([
+                    *normalized_tags, *contracts.declared_contract_tags(
+                        contracts.Publication(scratch_lifetime=bool(lifetime)))])
             elif contracts.SCRATCH_LIFETIME_TAG in normalized_tags:
                 raise PoolContractError("scratch lifetime capability requires sealed lifetime intent")
         except PoolContractError:

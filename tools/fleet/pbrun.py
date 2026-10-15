@@ -2028,30 +2028,6 @@ def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
         raise SystemExit(f"pbrun: {exc}") from None
 
 
-def progress_required_tags(policy: Mapping[str, object],
-                           awaited_batch: Mapping[str, object] | None = None) -> list[str]:
-    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG] + (
-        [contracts.PROGRESS_CYCLE_TAG] if policy.get("cycle") else [])
-    if awaited_batch is not None:
-        # A coordinator that declares an awaited batch needs a worker that
-        # credits the wait (#1666): an older worker would ignore the sealed
-        # declaration and end a valid queue wait as no_progress.
-        tags = [*tags, contracts.QUEUED_CHILD_TAG]
-    return tags
-
-
-def container_image_required_tags(images: Sequence[str]) -> list[str]:
-    """The capability an image-pinned action must require of a claiming box.
-
-    Same shape and reason as :func:`progress_required_tags`: a loop from
-    before the claim check would take the work, spend the attempt and die in
-    the container, which is exactly #714.  Requiring the tag the new loops
-    offer is what makes that unreachable without a second matcher.
-    """
-
-    return [contracts.CONTAINER_IMAGE_TAG] if images else []
-
-
 def container_image_refusal(images: Sequence[object]) -> str | None:
     """Why ``--container-image`` refuses this list, or ``None``.
 
@@ -6765,9 +6741,8 @@ def residency_stage_rows(
                 # A progress-governed action is placed only on a worker
                 # that enforces the contract and exports the helper
                 # environment the mover reports through.
-                tags=(tags if progress is None
-                      else [*tags, *progress_required_tags(progress),
-                            contracts.POOL_CONTENTION_TAG]),
+                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
+                    progress=progress, pool_contention=progress is not None))],
                 retry_policy=mover_retry_policy,
                 log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
                 extra_params=(None if progress is None
@@ -6905,9 +6880,9 @@ def residency_stage_rows(
                 # enforces the contract, credits the pool on its own sample,
                 # and never credits the egress's own hold of the stage's
                 # ownership lock as a wait (``contracts.EGRESS_PROGRESS_TAG``).
-                tags=(tags if egress_policy is None
-                      else [*tags, *progress_required_tags(egress_policy),
-                            contracts.POOL_CONTENTION_TAG, contracts.EGRESS_PROGRESS_TAG]),
+                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
+                    progress=egress_policy, pool_contention=egress_policy is not None,
+                    egress=egress_policy is not None))],
                 # The egress's retry policy is a movement node's, as the
                 # mover's is (#950): with the consumer's single attempt, one
                 # transient unlink error left the range's bytes holding their
@@ -7854,41 +7829,14 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
         # --constraint.  A union rather than a replacement: a hostname pin a
         # box-local executable earned stays, and the class narrows it further.
         tags = pool.normalize_placement_tags([*tags, args.host_class])
-    if progress_policy is not None:
-        # A capability, not a place: the boxes that cannot enforce this
-        # action's stall policy must not be able to claim it.  A worker offer
-        # says who understands the contract, but nothing consults an offer at
-        # claim time; item tags are what the matcher already checks, so the
-        # requirement rides them.  Sealed with the rest of the placement, so
-        # the receipt says the action was admitted under the contract *and*
-        # ran on a box that could keep it.
-        tags = pool.normalize_placement_tags(
-            [*tags, *progress_required_tags(
-                progress_policy,
-                getattr(args, "awaited_batch", None))])
-    if gang is not None:
-        # Capability, not place (#1517): only a gang-enabled box offers it,
-        # so the live-offer check below refuses when none can claim a member.
-        from prismabuild import _gang
-        tags = pool.normalize_placement_tags([*tags, _gang.TAG])
-    if images:
-        # The same capability-not-place rule for declared images: the tag is
-        # what keeps a loop from before the claim check (#714) from taking
-        # work it can only fail.  Which boxes actually hold a reference is
-        # decided by their announced inventory, not by this tag -- a box
-        # offering the tag without the image refuses at claim and leaves the
-        # item ready.
-        tags = pool.normalize_placement_tags(
-            [*tags, *container_image_required_tags(images)])
-    if scratch_io_intent(variables, transport=args.transport) is not None:
-        from prismabuild import local_scratch
-        tags = pool.normalize_placement_tags([*tags, contracts.SCRATCH_IO_TAG])
-    if requirements:
-        # The capability rides the tags, not the bytes (#714 shape, #1495):
-        # a loop that cannot hash the row's requirements must not be able to
-        # claim the row at all.
-        tags = pool.normalize_placement_tags(
-            [*tags, contracts.DEPENDENCY_DIGEST_TAG])
+    tags = pool.normalize_placement_tags([
+        *tags, *contracts.declared_contract_tags(contracts.Publication(
+            progress=progress_policy,
+            awaited_batch=getattr(args, "awaited_batch", None) is not None
+                and progress_policy is not None,
+            gang=gang is not None, container_images=bool(images),
+            scratch_io=scratch_io_intent(variables, transport=args.transport) is not None,
+            requires_files=bool(requirements)))])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=RUNTIME_ROOT)
     # Other paths retain lazy discovery until submission advice needs it.

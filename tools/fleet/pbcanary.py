@@ -271,7 +271,7 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
         return False
     sys.path.insert(0, str(paths["published_src"]))
     from prismabuild import contracts as _contracts
-    from prismabuild import pool as _pool, core as _core
+    from prismabuild import pool as _pool
     from prismabuild import publication_canary as _canary
     queue = _pool.PoolQueue(paths["queue_root"])
     base = {

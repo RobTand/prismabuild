@@ -603,10 +603,6 @@ def test_an_older_worker_cannot_claim_an_awaited_coordinator(
     })
     cas.publish_action_request(action)
     tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.QUEUED_CHILD_TAG]
-    import pbrun as pbrun_mod  # noqa: PLC0415 -- tools/fleet is on sys.path in PB
-    required = pbrun_mod.progress_required_tags(policy, awaited)
-    assert contracts.QUEUED_CHILD_TAG in required
-    assert contracts.QUEUED_CHILD_TAG not in pbrun_mod.progress_required_tags(policy)
     queue.publish(
         action_key=action["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true",
