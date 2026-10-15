@@ -64,7 +64,7 @@ def test_idle_physical_park_does_not_require_receipt_identity(
     assert list(queue.dir(pool.DONE).iterdir()) == []
     assert list(queue.dir(pool.FAILED).iterdir()) == []
     assert not (queue.root / role_session.GENERATION_DRIFT_DIR).exists()
-    offers = list(queue.dir(pool.WORKERS).glob("*.json"))
+    offers = list((queue.root / pool.WORKERS).glob("*.json"))
     assert len(offers) == (0 if missing else 1)
     if closed:
         start = Path("/proc/self/stat").read_text().rpartition(")")[2].split()[19]
