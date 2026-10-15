@@ -281,3 +281,60 @@ existing broker and sealed request writers. Source `ce0354a825e6` retains all
 all 36 cases. It is integrated at `289b97371545`. Fifteen fabricated binding
 callers remain at that source pin. These scoped results do not establish a
 final integrated full-suite pass or completion of the original brief.
+
+
+## Qualified source through 29d963e60265
+
+The full ledger-holder reader at `c746c5f68669` passed 554 cases and independent
+source review before integration at `09f803ae799b`. Measurement and scratch retain their
+fresh second holder scans. Announcement composition is closed through `ed3e51a55e1a`:
+all 42 callers across seventeen files migrated, the legacy public signature was
+deleted, and 863 cases passed across 33 files. These extend the earlier partial
+holder and announcement checkpoints above.
+
+Core GPU facts first exposed a timestamp local shadowing the fairness clock
+reader. The failed 42/477 result is retained. A separate production correction
+renames that local, and a fixture correction gets seven new variants past
+placement to their intended busy-room gate. The corrected closed wave passed
+519 cases at `b1c512b4ce67`, with the independent finding resolved. Offer and
+framebuffer projections at `bec2f9896483` then passed 534 cases in action
+`0fea1b9aaadaa5dc3a5f573275a729c25773593820a20d91f4f03f354c336687`.
+All previous 519 cases remain. The additional fifteen exercise public capacity,
+first diagnostics, separate clocks, profile differences and retained/retried
+windows. Independent review found no actionable issues; all four integrated
+files at `29d963e60265` match the qualified source. Sampler injection remains
+open.
+
+Denial encoding at `b6918cc416ba` passed 204 cases and independent review before
+integration at `fd3c61c60124`. The initial 181-case baseline exposed a staged-wait
+fixture whose fabricated ledger lacked the real census API. A separate
+fixture-only prerequisite uses the actual isolated ResourceLedger and passed
+all 181, preserving the test bodies. The pure codec preserves wire values,
+clock and exception ordering, ring/write sequence and memo behavior. A fresh
+merged baseline at `fd3c61c60124` passed 575 unique cases across 35 files. Pure
+room selection, staged drain notes and the reduced claim driver remain open.
+
+ProgressWatch's complete stall rung at `654abddc197e` passed 476 cases across
+21 files after a 471-case baseline, with no skips. Independent review found no
+actionable issue. Integration `fecf54d2635d` preserves the qualified owned
+function ASTs and test bytes. Existing ending paths, deadline credits and all
+155 coordinator assertions remain. This scoped result still needs the final
+assembled qualification.
+
+The last fabricated binding callers in `test_prepaid_output_funding.py` are
+removed. Unit A passed 41 cases; unit B's four independent refusal parameters
+passed 44. The final race uses bounded causal barriers at real funding and
+finish lock boundaries, with actor progress and exact terminal/token controls.
+It replaces sleep/retry scheduling and deletes the three now-unused setup
+helpers. All 45 funding/broker cases passed in action
+`279f60151f3b8c4badcc2ade99a2fd45562c537aa3d45d7cad29e359b68f6b9d`.
+Integration `187498e84cfa` is byte-identical to the qualified test source.
+This establishes no measured flake-rate improvement or complete fixture-builder
+closure across the repository.
+
+Every action above has independently checked source parent, terminal, retained
+logs and CAS receipt/payload. Populations overlap and must not be summed.
+The cc58 completion audit remains fixed at its historical source. Typed role
+receipts, the privileged proof consumer and broader RecordStore work are still
+isolated or unfinished. No final complete-brief or full-current-suite result,
+push, PR state change or deployment is claimed.

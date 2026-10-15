@@ -17935,9 +17935,25 @@ and freeze-before-publication ordering retain their existing contracts.
 
 Execution passes one `ExecutionClock` to the loop and `ProgressWatch`. Monotonic
 time prices elapsed work; Unix time records observations. The watch owns the
-final stall sample/refund and stall record, while queue probes and containment
-remain with the execution loop. The default clock uses the existing real clock
-functions.
+complete stall check: due comparison, final report sample and refund, then
+staged, export, reader and queued-child wait guards in that order. Concrete
+queue adapters supply observations; the watch owns credits and probe-time
+refunds. The loop applies the returned checkpoint adjustment and keeps the
+execution ending and containment decisions. The default clock uses the existing
+real clock functions.
+
+`gpu_sample_facts.py` owns GPU sample decoding for controller, measurement,
+room, offer and framebuffer consumers. Each consumer retains its existing
+freshness and attribution requirements. Offer numbers permit their existing
+float coercions; framebuffer counters require exact integers. Framebuffer
+reporting does not authorize admission from incomplete global attribution.
+Samplers and guarded clocks stay at their existing caller points.
+
+`denial_records.py` prepares detached bounded denial values and merges latest,
+transition and diagnostic records without I/O or clocks. Queue adapters retain
+the ring-before-latest order, conditional reads, writes, memo updates and flush
+boundaries. Candidate room selection and drain-note ownership remain separate
+unfinished work.
 
 Funding record persistence has one internal writer with an explicit window or
 output binding and a separate rotation flag. Each binding keeps its validator,
