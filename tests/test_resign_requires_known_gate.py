@@ -24,13 +24,21 @@ class EmptyKernel:
 @pytest.mark.parametrize("fault", ["none", "missing-key", "missing-file", "malformed-file"])
 def test_resign_requires_known_gate_even_with_a_proved_empty_census(
         tmp_path, monkeypatch, fault):
-    gate = tmp_path / "maintenance.json"
+    run = tmp_path / "run"
+    run.mkdir(mode=0o700)
+    gate = run / "maintenance.json"
     gate.write_text(json.dumps({"schema": resource_broker.MAINTENANCE_SCHEMA,
                                 "draining": False}))
+    gate.chmod(0o644)
+    durable = tmp_path / "durable" / "maintenance.json"
     authority = resource_broker.Authority(
-        tmp_path / "broker-state", os.getuid(), EmptyKernel(),
-        max_memory_bytes=1024**3,
-        maintenance_state=tmp_path / "durable" / "maintenance.json")
+        run / "jobs", os.getuid(), EmptyKernel(),
+        max_memory_bytes=1024**3, maintenance_state=durable)
+    assert authority.maintenance_path == gate
+    assert authority.maintenance_state_path == durable
+    assert authority.maintenance_error is None, authority.maintenance_error
+    initial = authority.admin(0, {"op": "maintenance_status"})
+    assert initial["health"] is True and initial["draining"] is False, initial
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     runtime = tmp_path / "private-runtime"
