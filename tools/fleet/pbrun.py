@@ -2958,6 +2958,7 @@ def outcome_poll(
                for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     found = []
     broken = []
+    publication_errors = []
     for path in watched:
         try:
             record = terminal_record(
@@ -2966,7 +2967,12 @@ def outcome_poll(
             broken.append(exc)
             continue
         if record is not None:
-            found.append((path, record))
+            try:
+                _require_execution_ending(record, where=str(path))
+            except OutcomeReadUnavailable as exc:
+                publication_errors.append(exc)
+            else:
+                found.append((path, record))
     # The immutable cancellation is already an ending if its writer died
     # before updating withdrawn/<key>.json, or publication retired that
     # visible marker while an earlier generation's waiter was still here.
@@ -3011,6 +3017,8 @@ def outcome_poll(
                 raise OutcomeReadUnavailable(f"unavailable publication ending: {exc}") from exc
             if superseded is not None:
                 return superseded, generation
+            if publication_errors:
+                raise publication_errors[0]
         if not found:
             if broken:
                 raise broken[0]
@@ -3025,6 +3033,8 @@ def outcome_poll(
         # when the queue is already running it: follow the generation the
         # requeue published instead.
         return None, requeued
+    if publication_errors:
+        raise publication_errors[0]
     if len(found) == 1:
         return found[0], generation
     if found:
@@ -3084,6 +3094,13 @@ def landed_outcome(
 
 class OutcomeReadUnavailable(RuntimeError):
     """A bounded pool outcome read did not return a trustworthy result."""
+
+
+def _require_execution_ending(record: Mapping[str, object], *, where: str) -> None:
+    if (record.get("status") == "superseded"
+            or record.get("schema") == pool.PUBLICATION_SUPERSEDED_SCHEMA_V1):
+        raise OutcomeReadUnavailable(
+            f"publication evidence cannot supply an execution ending: {where}")
 
 
 class OutcomeObservationTimedOut(OutcomeReadUnavailable):
@@ -3354,6 +3371,7 @@ def decode_outcome_ending(q, key: str, generation: float | None, value: dict
             or (superseded is not None and landed is not None)):
         raise OutcomeReadUnavailable("pool outcome observation returned an invalid ending")
     if superseded is None:
+        _require_execution_ending(raw["record"], where="outcome execution IPC branch")
         return Path(raw["path"]), raw["record"]
     try:
         ending = q.decode_publication_supersession(Path(raw["path"]), raw["record"])
@@ -3402,6 +3420,7 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
     inspection evidence, never as an ordinary successful outcome (#1351).
     """
 
+    _require_execution_ending(outcome, where=str(outcome_path))
     value = _bounded_pool_read(
         "pool outcome verification",
         lambda: (_diagnosed_outcome_render_value if diagnose_conflicts
@@ -3415,6 +3434,7 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
         return value
     if not isinstance(value.get("summary"), dict) or not isinstance(value.get("attempts"), list):
         raise OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
+    _require_execution_ending(value["summary"], where="execution verification IPC summary")
     return value
 
 
@@ -3488,6 +3508,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     records and the pool's predate the field.
     """
 
+    _require_execution_ending(outcome, where=str(outcome_path))
     detail = outcome.get("detail") or {}
     status = str(outcome.get("status"))
     adopted = None

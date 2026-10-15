@@ -128,3 +128,33 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
                                        original["published_unix"], lane_root=queue.root / "slurm")
 
     assert decision.path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("renderer", ["summary", "bounded", "pbwait"])
+def test_direct_execution_renderers_reject_a_publication_marker(queue, clock, renderer):
+    _, _, attempt, attempt_bytes = _legacy_slot(queue, clock, "both")
+    slot = queue.item_path(pool.DONE, KEY)
+    record = json.loads(slot.read_bytes())
+
+    with pytest.raises(pbrun.OutcomeReadUnavailable):
+        if renderer == "summary":
+            pbrun.outcome_summary(queue, slot, record)
+        elif renderer == "bounded":
+            pbrun.bounded_outcome_render(queue, slot, record, budget_s=5)
+        else:
+            pbwait._from_ending(queue, (slot, record))
+
+    assert attempt.read_bytes() == attempt_bytes
+
+
+def test_verification_ipc_cannot_report_a_publication_status_as_execution(
+    queue, clock, monkeypatch,
+):
+    executed, _, _, _ = _legacy_slot(queue, clock, None)
+    path, record = queue.archived_generation_outcomes(KEY, generation=executed["published_unix"])[0]
+    summary = pbrun.outcome_summary(queue, path, record)
+    payload = {"summary": {**summary, "status": "superseded"}, "attempts": []}
+    monkeypatch.setattr(pbrun, "_bounded_pool_read", lambda *args, **kwargs: payload)
+
+    with pytest.raises(pbrun.OutcomeReadUnavailable):
+        pbrun.bounded_outcome_render(queue, path, record, budget_s=5)

@@ -1072,6 +1072,12 @@ an exact publication ending outranks an unstamped legacy terminal fallback.
 Bounded IPC uses the queue's public decoder for the same immutable proof.
 Unavailable or invalid publication evidence is an observation I/O failure 74;
 the existing immutable attempt-history integrity rules remain separate.
+The publication schema or `superseded` status in an execution terminal slot,
+execution IPC branch or execution renderer is unavailable evidence, not a
+publication or execution verdict. Verified exact immutable execution retains
+precedence over a malformed legacy candidate, and ordinary legacy execution
+fallback remains supported. Only the typed publication branch decoded by the
+queue may report supersession.
 `pbrun` reports original and successor identities and exits 76 without CAS
 success or attempt-log rendering. An action's own 76 is reserved and maps to
 ordinary failure 1, with its actual number retained in the record.
