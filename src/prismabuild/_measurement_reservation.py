@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager, ExitStack
+from dataclasses import dataclass
 import fcntl
 import math
 import os
@@ -979,6 +980,62 @@ def reservation_priority_on(census: dict, *, host: str, now: float, authority: b
                  if chosen["host"] == host and chosen["group"] != exclude_group
                  and _gang_reserves(chosen, now, authority)]
     return max(reserving) if reserving else None
+
+
+@dataclass(frozen=True)
+class ReservationPriority:
+    priority: int | None
+    measurement_suspended: bool
+
+
+@dataclass(frozen=True)
+class IncumbentPosition:
+    serves_incumbent: bool
+    blocker: Mapping[str, object] | None
+    must_defer: bool
+
+
+def candidate_priority(census, item, *, host, now, authority, group) -> ReservationPriority:
+    reserving_priority = reservation_priority_on(
+        census, host=host, now=now, authority=authority, exclude_group=group)
+    measurement_suspended = (reserving_priority is not None
+                             and int(item.get("priority", 0)) <= reserving_priority)
+    return ReservationPriority(reserving_priority, measurement_suspended)
+
+
+def measurement_blocker(census, item, priority: ReservationPriority, *, host):
+    blocked = blocking_selection(census, item, host=host, funded_by=None)
+    if (priority.measurement_suspended and blocked is not None
+            and blocked["priority"] <= priority.priority):
+        blocked = None
+    return blocked
+
+
+def candidate_blocker(blocker, *, dependent_owner, held_keys, census) -> IncumbentPosition:
+    serves_incumbent = (isinstance(dependent_owner, str)
+                        and dependent_owner in held_keys
+                        and dependent_owner not in census["elections"])
+    if serves_incumbent:
+        blocker = None
+    must_defer = blocker is not None and dependent_owner != blocker["action_key"]
+    return IncumbentPosition(serves_incumbent, blocker, must_defer)
+
+
+def unavailable_verdict(verdict, error_text: str):
+    return dict(verdict, withhold=True, why="measurement_census_unavailable",
+                census_error=error_text)
+
+
+def amend_verdict(verdict, chosen, *, reserved_elsewhere: bool):
+    if chosen is None:
+        return verdict
+    if reserved_elsewhere:
+        return dict(verdict, withhold=False, drain_resolves=False,
+                    why="measurement_reserved_on_other_host", selection=chosen)
+    if verdict.get("why") == "measurement_drain_expired":
+        return dict(verdict, withhold=True, why="measurement_reservation_waiting",
+                    selection=chosen)
+    return dict(verdict, selection=chosen)
 
 
 def _reserved(member_demand: object, capacity: Mapping) -> dict[str, int]:

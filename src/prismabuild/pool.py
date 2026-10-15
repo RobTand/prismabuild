@@ -12461,20 +12461,10 @@ class PoolQueue:
                 sampled_unix=sampled, gpu_sample=gpu_sample,
                 authority=authority, tags=tags, has_gpu=has_gpu)
         except reservation.CensusUnavailable as exc:
-            return dict(verdict, withhold=True, why="measurement_census_unavailable",
-                        census_error=str(exc))
-        if chosen is None:
-            return verdict
-        if chosen["host"] != ledger.base.name:
-            return dict(verdict, withhold=False, drain_resolves=False,
-                        why="measurement_reserved_on_other_host", selection=chosen)
-        # Bounded legacy attention may lapse or become unknown/foreign, but
-        # that never retires the canonical no-refill guard. Physical tokens
-        # and isolation remain owned by the real controllers/holders.
-        if verdict.get("why") == "measurement_drain_expired":
-            return dict(verdict, withhold=True, why="measurement_reservation_waiting",
-                        selection=chosen)
-        return dict(verdict, selection=chosen)
+            return reservation.unavailable_verdict(verdict, str(exc))
+        return reservation.amend_verdict(
+            verdict, chosen, reserved_elsewhere=(
+                chosen["host"] != ledger.base.name if chosen is not None else False))
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
         _write_json_atomic(
@@ -21804,14 +21794,14 @@ class PoolQueue:
                             reservation_authority = (
                                 copy_authority and measurement_reservation.movement_drained(
                                     census, self, tags=tagset, has_gpu=has_gpu, host=ledger.base.name))
-                            reserving_priority = measurement_reservation.reservation_priority_on(
-                                census, host=ledger.base.name, now=reservation_now,
+                            priority = measurement_reservation.candidate_priority(
+                                census, item, host=ledger.base.name, now=reservation_now,
                                 authority=reservation_authority,
-                                exclude_group=gang["group"] if gang is not None else None)
+                                group=gang["group"] if gang is not None else None)
                             # This row's own measurement withhold yields only to a
                             # gang of its priority or higher.
-                            measurement_suspended = (reserving_priority is not None
-                                                     and int(item.get("priority", 0)) <= reserving_priority)
+                            reserving_priority = priority.priority
+                            measurement_suspended = priority.measurement_suspended
                             reservation_held = reservation_capacity = None
                             if reserving_priority is not None:
                                 try:
@@ -21819,11 +21809,8 @@ class PoolQueue:
                                     reservation_capacity = total
                                 except (OSError, ValueError, PoolContractError):
                                     reservation_held = reservation_capacity = None  # fail safe
-                            census_blocked = measurement_reservation.blocking_selection(
-                                census, item, host=ledger.base.name, funded_by=None)
-                            if (measurement_suspended and census_blocked is not None
-                                    and census_blocked["priority"] <= reserving_priority):
-                                census_blocked = None  # the reservation wins; higher priority keeps its place
+                            census_blocked = measurement_reservation.measurement_blocker(
+                                census, item, priority, host=ledger.base.name)
                             # A dependent of a current incumbent on this host
                             # (its sealed producer holds tokens here) only
                             # shortens that incumbent's life, which is what the
@@ -21833,12 +21820,14 @@ class PoolQueue:
                             # A running elected measurement is not such an
                             # incumbent: its own dependents keep the existing
                             # ``funded_by`` rule below (#982).
-                            serves_incumbent = (isinstance(dependent_owner, str)
-                                                and dependent_owner in ledger.held_keys()
-                                                and dependent_owner not in census["elections"])
-                            if serves_incumbent:
-                                census_blocked = None
-                            if census_blocked is not None and dependent_owner != census_blocked["action_key"]:
+                            incumbent = measurement_reservation.candidate_blocker(
+                                census_blocked, dependent_owner=dependent_owner,
+                                held_keys=(ledger.held_keys()
+                                           if isinstance(dependent_owner, str) else None),
+                                census=census)
+                            serves_incumbent = incumbent.serves_incumbent
+                            census_blocked = incumbent.blocker
+                            if incumbent.must_defer:
                                 self.record_denial(item, "deferred_for_measurement_reservation", {
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
