@@ -14,7 +14,12 @@ def replay(source, history):
     environment = dict(os.environ, PYTHONPATH=os.pathsep.join(
         (str(source / "src"), str(source / "tests"))))
     result = subprocess.run([sys.executable, str(history)], cwd=source, env=environment,
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True)
+    if result.returncode:
+        print(f"peer replay failed for {source}", file=sys.stderr)
+        print(result.stdout, file=sys.stderr)
+        print(result.stderr, file=sys.stderr)
+        result.check_returncode()
     return json.loads(result.stdout)
 
 
