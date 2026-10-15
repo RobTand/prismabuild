@@ -85,3 +85,30 @@ def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
     assert queue.release_tier_host_memory(queue.ledger().host, GRANT) == 7
     claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
     assert claimed and claimed['action_key'] == 'd' * 64
+
+
+@pytest.mark.parametrize('committed', [False, True])
+def test_an_unknown_memory_reservation_blocks_until_released(tmp_path, monkeypatch, committed):
+    from prismabuild import adaptive_cpu
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    ledger = queue.ledger()
+    ledger.configure_cpu_tiers(TIERS)
+    ledger.ensure_capacity(CAPACITY)
+    key = 'e' * 64
+    handle = ledger.begin_acquire(key, {'mem_gb': 1})
+    assert handle is not None
+    if committed:
+        assert ledger.commit_acquire(key, handle) == 1
+    _idle_host(monkeypatch)
+    controller = adaptive_cpu.Controller(ledger, TIERS)
+    item = {'action_key': 'f' * 64, 'cas_root': str(tmp_path)}
+    with controller.locked():
+        assert controller.decision(item, {'cpu': 1, 'mem_gb': 1}) is None
+    assert controller.last_decision['reason'] == 'holder_reservation_unknown'
+    assert ledger.held() == {'mem_gb': 1}
+    assert ledger.available()['cpu'] == CAPACITY['cpu']
+
+    assert (ledger.release(key) if committed else ledger.abandon_acquire(handle)) == 1
+    with controller.locked():
+        assert controller.decision(item, {'cpu': 1, 'mem_gb': 1}) is not None
+    assert not ledger.held()

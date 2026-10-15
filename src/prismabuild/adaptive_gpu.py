@@ -25,8 +25,9 @@ import time
 import uuid
 
 from . import adaptive_cpu
+from .holder_census import GPU_METADATA, HolderCensus
 
-METADATA = '.gpu.json'
+METADATA = GPU_METADATA
 SAMPLE_PATH = Path('/run/prismabuild/gpu-capacity.json')
 MAX_SAMPLE_AGE_S = 5.0
 SETTLE_S = 2.0
@@ -530,16 +531,12 @@ class Controller:
         # Any holder at all, GPU or not: the idle baseline (#997) keeps only
         # samples the pool's own work did not load.
         occupied = False
-        for holder in self.ledger.held_dir.iterdir():
-            # A RAM fill's memory hold runs no process (#1260): it neither
-            # occupies the host nor holds a GPU.
-            if (not holder.is_dir()
-                    or holder.name.startswith(adaptive_cpu.RAM_HOST_MEMORY_PREFIX)):
-                continue
+        census = HolderCensus(self.ledger.held_dir, adaptive_cpu.read_json)
+        for holder in census.non_mirror_holders:
             occupied = True
-            meta = adaptive_cpu.read_json(holder / METADATA)
-            if meta or any(holder.glob('gpu-*')):
-                holders.append((holder, meta))
+            reservation = census.gpu(holder.name)
+            if reservation.owns_device:
+                holders.append((holder, reservation.metadata))
         if len(holders) >= MAX_ACTIONS:
             return refuse("max_actions", holders=len(holders))
         # Unknown/private/legacy reservations remain exclusive until released.

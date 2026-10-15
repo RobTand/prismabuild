@@ -23,6 +23,7 @@ import time
 import uuid
 
 from . import adaptive_snapshot
+from .holder_census import CPU_METADATA, HolderCensus
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
 from .control_cpu import attributed_ticks, boot_ticks, control_plane_counters
 
@@ -36,7 +37,7 @@ MAX_SAMPLE_AGE_S = 5.0
 MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
 MAX_ACTIONS = 256
-METADATA = '.adaptive.json'
+METADATA = CPU_METADATA
 #: ``decision`` has not been told the item's :func:`dependent_owner`.
 _UNREAD = object()
 
@@ -1807,7 +1808,7 @@ class Controller:
         self.write_state('cpu-sample.json', current)
         return observation
 
-    def _funding(self, owner, holders, demand):
+    def _funding(self, owner, holders, demand, census):
         """Whether ``owner``'s export allowance covers this dependent (#985).
 
         Returns ``(funded, None)`` -- the allowance CPUs and memory this
@@ -1818,7 +1819,7 @@ class Controller:
         """
         if set(demand) - set(EXPORT_DEMAND) or not int(demand.get('cpu', 0)):
             return None, 'demand_outside_allowance'
-        meta_of_owner = read_json(self.ledger.held_dir / owner / METADATA)
+        meta_of_owner = census.cpu(owner).metadata
         allowance = meta_of_owner.get('dependent_allowance')
         if not isinstance(allowance, dict):
             return None, 'owner_holds_no_allowance'
@@ -1830,7 +1831,7 @@ class Controller:
         for holder in holders:
             if holder.name == owner:
                 continue
-            meta = read_json(holder / METADATA)
+            meta = census.cpu(holder.name).metadata
             if meta.get('measurement'):
                 return None, 'measurement_holder'
             if meta.get('funded_by') == owner:
@@ -1892,8 +1893,8 @@ class Controller:
         # counts, and runs nothing on a CPU.  Read as a holder it has no
         # declared CPU and non-empty content, so it refused every row on the
         # storage host as ``holder_reservation_unknown`` (#1260).
-        holders = [p for p in self.ledger.held_dir.iterdir()
-                   if p.is_dir() and not p.name.startswith(RAM_HOST_MEMORY_PREFIX)]
+        census = HolderCensus(self.ledger.held_dir, read_json)
+        holders = list(census.non_mirror_holders)
         # Resolved once, before the pressure decision reads the demand.  The
         # caller may have pre-read the sealed identity, and the measurement and
         # ownership paths below all need the same answer rather than a second
@@ -1921,7 +1922,7 @@ class Controller:
             # pressure is not its gate: its CPUs are reserved, so nothing the
             # pool admits runs there, and the pressure its producer makes on
             # its own CPUs is the producer's.  No free token is taken.
-            funded, funding_refusal = self._funding(owner, holders, demand)
+            funded, funding_refusal = self._funding(owner, holders, demand, census)
             if funded is not None:
                 serves_measurement = funded.pop('owner_measurement')
                 self.last_decision = {"reason": "admitted_on_allowance", "sample": sample,
@@ -2069,11 +2070,12 @@ class Controller:
         protected_cpus = set()
         active_cost = 0.
         for holder in holders:
-            meta = read_json(holder / METADATA)
-            physical = len(list(holder.glob('cpu-*')))
+            reservation = census.cpu(holder.name)
+            meta = reservation.metadata
+            physical = reservation.physical_cpu_count
             reserved = meta.get('declared_cpu', physical)
             if not reserved:
-                if meta or any(holder.iterdir()):
+                if meta or reservation.has_contents:
                     return refuse("holder_reservation_unknown", holder=holder.name)
                 continue
             if measurement:
@@ -2082,7 +2084,7 @@ class Controller:
                 # that measurement's own dependents (#982).
                 isolated = holder.name if meta.get('measurement') else next(
                     (other.name for other in holders
-                     if read_json(other / METADATA).get('measurement')), None)
+                     if census.cpu(other.name).metadata.get('measurement')), None)
                 return refuse("measurement_holder", holder=holder.name,
                               isolated_by=isolated, fresh=fresh)
             if meta.get('measurement'):

@@ -480,6 +480,42 @@ def test_legacy_gpu_only_holder_cannot_overlap_cpu_work_or_measurement(tmp_path,
                                    {'cpu': 1}) is None
 
 
+def test_a_private_cpu_reservation_blocks_measurement_until_it_releases(tmp_path, monkeypatch):
+    from prismabuild import adaptive_cpu
+    clock = [100.]
+    monkeypatch.setattr(time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
+        'busy_cpus': 0., 'psi_some': 0.})
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    ledger = queue.ledger()
+    tiers = {'preferred': [0], 'fallback': [1]}
+    capacity = {'cpu': 2, 'mem_gb': 4}
+    ledger.configure_cpu_tiers(tiers)
+    ledger.ensure_capacity(capacity)
+    controller = adaptive_cpu.Controller(ledger, tiers)
+    incumbent = {'action_key': 'a' * 64}
+    demand = {'cpu': 1, 'mem_gb': 1}
+    with controller.locked():
+        metadata = controller.decision(incumbent, demand, identity=('shape', False))
+        assert metadata is not None
+        handle = ledger.begin_acquire(incumbent['action_key'], demand,
+                                      adaptive=metadata, cpu_tiers=tiers)
+    assert handle is not None
+    assert ledger.available() == {'cpu': 1, 'mem_gb': 3}
+    measurement = {'action_key': 'b' * 64}
+    with controller.locked():
+        assert controller.decision(measurement, demand, identity=('measurement', True)) is None
+    assert controller.last_decision['reason'] == 'measurement_holder'
+    assert ledger.abandon_acquire(handle) == 2
+
+    clock[0] += 2
+    retry = adaptive_cpu.Controller(ledger, tiers)
+    with retry.locked():
+        assert retry.decision(measurement, demand, identity=('measurement', True)) is not None
+    assert ledger.available() == capacity
+
+
 def test_legacy_incoming_cpu_zero_is_charged_as_unknown_whole_host(tmp_path, monkeypatch):
     from prismabuild import adaptive_cpu
     queue = pool.PoolQueue(tmp_path / 'queue')

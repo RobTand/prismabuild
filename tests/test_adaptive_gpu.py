@@ -958,3 +958,95 @@ def test_sampled_power_is_recorded_as_the_device_peak(gpu_rig):
     tick()
     assert claim()
     assert adaptive_cpu.read_json(_gpu_state_path(queue))['power_peaks'] == {'GPU-1': 62.}
+
+
+def test_a_private_gpu_token_remains_exclusive_until_it_releases(gpu_rig):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    handle = ledger.begin_acquire('a' * 64, {'gpu': 1})
+    assert handle is not None
+    controller = adaptive_gpu.Controller(ledger)
+    item = {'action_key': 'b' * 64}
+    demand = {'gpu': 1, 'mem_gb': 1}
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        assert controller.decision(item, demand) is None
+    assert controller.last_decision['reason'] == 'exclusive_holder'
+    assert ledger.available()['gpu'] == 0
+
+    assert ledger.abandon_acquire(handle) == 1
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        assert controller.decision(item, demand) is not None
+    assert ledger.available() == capacity
+
+
+def test_a_borrowed_gpu_holder_still_blocks_an_exclusive_request(gpu_rig):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    publish(1)
+    first = claim()
+    assert first is not None
+    publish(2)
+    tick()
+    borrower = claim()
+    assert borrower is not None
+    ledger = queue.ledger()
+    assert borrower['gpu_admission']['borrowed_gpu'] == 1
+    assert ledger.holder_tokens(borrower['action_key']).get('gpu', 0) == 0
+    queue.finish(first['action_key'], status='executed', detail={})
+    assert ledger.available()['gpu'] == 1
+
+    controller = adaptive_gpu.Controller(ledger)
+    item = {'action_key': 'c' * 64}
+    demand = {'gpu': 1, 'mem_gb': 1}
+    contract = ('exclusive', False, True, adaptive_gpu.GIB)
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        assert controller.decision(item, demand, contract=contract) is None
+    assert controller.last_decision['reason'] == 'exclusive_holder'
+    queue.finish(borrower['action_key'], status='executed', detail={})
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        assert controller.decision(item, demand, contract=contract) is not None
+    assert ledger.available() == capacity
+
+
+@pytest.mark.parametrize('memory_mirror', [False, True])
+def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_mirror):
+    from prismabuild import adaptive_gpu
+    queue, clock, sample, capacity, publish, tick, claim = gpu_rig
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    if memory_mirror:
+        assert queue.hold_tier_host_memory(ledger.host, 'mirror', 1) == ('taken', '')
+    else:
+        assert ledger.acquire('a' * 64, {'cpu': 1})
+    item = {'action_key': 'b' * 64}
+    demand = {'gpu': 1, 'mem_gb': 1}
+    controller = adaptive_gpu.Controller(ledger)
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        metadata = controller.decision(item, demand)
+    assert metadata is not None
+    assert metadata['probe'] is False
+    assert ledger.available()['gpu'] == 1
+
+    if memory_mirror:
+        assert ledger.held() == {'mem_gb': 1}
+        assert queue.release_tier_host_memory(ledger.host, 'mirror') == 1
+    else:
+        assert ledger.release('a' * 64) == 1
+    tick()
+    measurement = ('measurement', True, False, adaptive_gpu.GIB)
+    retry = adaptive_gpu.Controller(ledger)
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        result = retry.decision(item, demand, contract=measurement)
+    if memory_mirror:
+        assert result is not None
+    else:
+        assert result is None
+        assert retry.last_decision['reason'] == 'host_or_device_congested'
+        assert retry.last_decision['baseline']['state'] == 'holder_tail'
+        tick(11)
+        after_tail = adaptive_gpu.Controller(ledger)
+        with adaptive_cpu.AdmissionGate(ledger).locked():
+            assert after_tail.decision(item, demand, contract=measurement) is not None
+    assert ledger.available() == capacity
