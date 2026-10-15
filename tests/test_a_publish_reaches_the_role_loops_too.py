@@ -144,7 +144,7 @@ def signals(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_the_tier_loop_exits_when_the_published_runtime_moves(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The check ``worker_loop`` and ``prewarm_loop`` carry, and this one did not.
 
@@ -155,10 +155,10 @@ def test_the_tier_loop_exits_when_the_published_runtime_moves(
 
     loaded = tmp_path / "gen-live" / "RUNTIME_VERSION.json"
     loaded.parent.mkdir(parents=True)
-    loaded.write_text(json.dumps({"commit": "a078cababe0d"}))
+    loaded.write_text(json.dumps({"commit": "a078cababe0d", "generation": "gen-old"}))
     live = tmp_path / "repo" / "RUNTIME_VERSION.json"
     live.parent.mkdir(parents=True)
-    live.write_text(json.dumps({"commit": "6bdd75d7b738"}))
+    live.write_text(json.dumps({"commit": "6bdd75d7b738", "generation": "gen-new"}))
     monkeypatch.setattr(tier_loop.runtime_gate, "GENERATION_VERSION", loaded)
     monkeypatch.setattr(tier_loop.runtime_gate, "RUNTIME_VERSION", live)
 
@@ -169,6 +169,9 @@ def test_the_tier_loop_exits_when_the_published_runtime_moves(
 
     assert tier_loop.main([
         "--pool-root", str(tmp_path / "pb-queue"), "--once"]) == 75
+    event = json.loads(capsys.readouterr().out)
+    assert event["event"] == "tier-runtime-moved"
+    assert (event["loaded"], event["published"]) == ("a078cababe0d", "6bdd75d7b738")
 
 
 def test_the_tier_loop_runs_its_cycle_while_the_runtime_stands_still(
@@ -178,7 +181,7 @@ def test_the_tier_loop_runs_its_cycle_while_the_runtime_stands_still(
 
     version = tmp_path / "gen-live" / "RUNTIME_VERSION.json"
     version.parent.mkdir(parents=True)
-    version.write_text(json.dumps({"commit": "6bdd75d7b738"}))
+    version.write_text(json.dumps({"commit": "6bdd75d7b738", "generation": "gen-live"}))
     monkeypatch.setattr(tier_loop.runtime_gate, "GENERATION_VERSION", version)
     monkeypatch.setattr(tier_loop.runtime_gate, "RUNTIME_VERSION", version)
     gate = tmp_path / "maintenance.json"
