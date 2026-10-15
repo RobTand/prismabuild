@@ -7664,6 +7664,22 @@ class PoolQueue:
             record.pop(field, None)
         return self.item_path(READY, action_key)
 
+    def _publish_requeued_claim(
+        self, record: Mapping[str, object], *, action_key: str, tombstone: Path,
+        superseded_kind: str, superseded_reason: str,
+    ) -> Path:
+        """Publish a requeue without replacing another publication's READY row."""
+        destination = self.item_path(READY, action_key)
+        _write_json_atomic(tombstone, record)
+        try:
+            os.link(tombstone, destination)
+        except FileExistsError:
+            return self._file_superseded(
+                record, key=action_key, kind=superseded_kind, status="dropped",
+                reason=superseded_reason,
+            )
+        return destination
+
     # -- consumer -------------------------------------------------------
 
     def _may_serve_a_producer(self, item: Mapping[str, object]) -> bool:
@@ -29336,16 +29352,13 @@ class PoolQueue:
             return
         self.lease_path(key).unlink(missing_ok=True)
         self._release_reservation(key, host=host)
-        destination = self._shape_as_ready_item(record, action_key=key)
+        self._shape_as_ready_item(record, action_key=key)
         record["maintenance_deferred_unix"] = _now()
-        _write_json_atomic(tombstone, record)
-        try:
-            os.link(tombstone, destination)
-        except FileExistsError:
-            self._file_superseded(
-                record, key=key, kind="maintenance-deferred", status="dropped",
-                reason="a newer publication already owns ready after maintenance deferral",
-            )
+        self._publish_requeued_claim(
+            record, action_key=key, tombstone=tombstone,
+            superseded_kind="maintenance-deferred",
+            superseded_reason="a newer publication already owns ready after maintenance deferral",
+        )
         tombstone.unlink(missing_ok=True)
 
     def serve_once(
