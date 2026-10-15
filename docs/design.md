@@ -3247,7 +3247,7 @@ ACL/WORM/retention controls already required for CAS and Slurm state. The hook
 has CPU-only hostile tests. Its exact V4 two-host run on `gx10-6b77` and Sparky
 also passed the configured shared-NFS causal path for source commit `452c6f6`;
 the frozen command, authority hashes and post-run verification are recorded in
-`docs/results/prismabuild_two_host_qualification_2026-08-31.md`. That does not
+`docs/two_host_qualification_2026-08-31.md`. That does not
 qualify other mounts, host/power loss, live Slurm, daemon deployment, or a
 hostile namespace principal.
 

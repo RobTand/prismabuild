@@ -1,5 +1,9 @@
 # PrismaBuild disagreements for the Claude discussion
 
+These are the positions recorded before the mailbox discussion. The
+[resolution record](refactor_resolution_2026-10-15.md) supersedes them where
+agreement or a correction is recorded. Product choices remain with Rob.
+
 This brief separates positions to challenge from implementation I left unfinished.
 It supersedes the broader reject/revise language in the first-phase review.
 The original proposal is the [root architecture review](../prismabuild-architecture-review-2026-10-13.html).
