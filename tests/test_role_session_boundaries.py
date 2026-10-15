@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_tier_loop
 import pbmetrics
 import prewarm_loop
-import worker_loop
 from prismabuild import role_session
 from prewarm_fixture import Fleet, StagePool
 

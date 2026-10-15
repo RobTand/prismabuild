@@ -32,7 +32,6 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(TESTS))
 
 import supervise  # noqa: E402
-import worker_loop  # noqa: E402
 from prismabuild import role_session
 from test_a_second_role_refuses_the_host_role_lock import (  # noqa: E402
     HOST, STORAGE, _role_box, _role_process, _spawn_recorder)

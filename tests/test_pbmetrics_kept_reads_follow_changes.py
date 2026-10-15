@@ -39,7 +39,6 @@ from test_pbmetrics_kept_reads import (  # noqa: E402
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
 import supervise  # noqa: E402
-import worker_loop  # noqa: E402
 from prismabuild import role_session
 
 MANIFEST = "9" * 64

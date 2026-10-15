@@ -27,7 +27,6 @@ from prismabuild import core as pb_core  # noqa: E402
 from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
-import worker_loop  # noqa: E402
 from prismabuild import role_session
 from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 
