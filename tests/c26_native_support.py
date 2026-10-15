@@ -19,7 +19,7 @@ RELAY = r'''
 import json, os, select, signal, subprocess, sys
 mode, evidence = sys.argv[1:3]
 read_fd, write_fd = os.pipe()
-env = dict(os.environ, C26_READY_FD=str(write_fd))
+env = dict(os.environ, C26_READY_FD=str(write_fd), PYTHONUNBUFFERED='1')
 child = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, env=env,
                          start_new_session=True, pass_fds=(write_fd,))

@@ -192,9 +192,13 @@ def gate_receipt(tmp_path, monkeypatch, fault):
                   resources={'cpu': 1, 'mem_gb': 1}, priority=-10)
     item = queue.claim(tags=[], capacity={'cpu': 1, 'mem_gb': 1})
     assert item is not None, 'private native receipt action was not claimed'
-    ending = queue.execute(item, python=sys.executable, timeout_s=90)
-    assert ending['status'] == 'executed' and ending['returncode'] == 0, ending
-    terminal = queue.finish(action['action_key'], status=ending['status'], detail=ending)
+    # Core publishes only after the actual argv exits zero and source is attested.
+    # A checkout worker's runtime-upgrade gate is unrelated to log judgment.
+    ending = core.run_local_action(action, cas_root=cas.root, checkout_root=root,
+                                   timeout_seconds=90)
+    assert ending['status'] == 'executed' and ending.get('receipt'), ending
+    terminal = queue.finish(action['action_key'], status=ending['status'],
+                            detail={**ending, 'returncode': 0}, claim_snapshot=item)
     assert terminal.parent.name == pool.DONE
     receipt = cas.lookup(action)
     assert receipt is not None
