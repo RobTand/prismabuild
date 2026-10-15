@@ -38,7 +38,9 @@ mode = sys.argv[3]
 config = json.loads(config_path.read_text())
 backend = json.loads(backend_path.read_text())
 install = Path(config['install_dir'])
-program = runpy.run_path(str(install / 'upgrade_client.py'), run_name='installed_reader')
+driver = (Path(config['runtime']) / 'tools/upgrade_client.py'
+          if mode == 'direct' else install / 'upgrade_client.py')
+program = runpy.run_path(str(driver), run_name='client_reader')
 assert not any(name == 'prismabuild' or name.startswith('prismabuild.') for name in sys.modules)
 
 def rpc(endpoint, operation, **fields):
@@ -200,7 +202,7 @@ def test_proof_transaction_requires_both_actual_reader_capabilities_before_mutat
         receipt["files"]["tools/upgrade_client.py"] = _sha(candidate)
         receipt_path.write_text(json.dumps(receipt))
     before = {path.name: path.read_bytes() for path in install.iterdir()}
-    observed = _fresh(publication)
+    observed = _fresh(publication, "direct" if incapable == "previous" else "run")
     assert observed["exception"] == "ValueError", observed
     assert "proof" in observed["error"].lower() and "protocol" in observed["error"].lower(), observed
     assert observed["journal_exists"] is False
