@@ -1627,7 +1627,7 @@ class Upgrader:
             if holder is not None:
                 return self.report('held', epoch=rollout['intent']['epoch'],
                                    drain_owner=holder,
-                                   **self.drain_evidence(held, rollout=True))
+                                   **self.drain_evidence(held))
             if (held.get('draining') is not True
                     or held.get('maintenance_durable_protocol')
                     != MAINTENANCE_DURABLE_PROTOCOL):
