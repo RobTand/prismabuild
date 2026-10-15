@@ -934,6 +934,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     real_verdict = queue.residency_verdict
     real_write = pool._write_json_atomic
     calls = 0
+    observed_faults = []
 
     def verdict(item, **kwargs):
         nonlocal calls
@@ -947,15 +948,22 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
 
     def write(path, record):
         if path == mark_path:
+            observed_faults.append("mark-write")
             raise OSError("mark replacement failed")
         return real_write(path, record)
 
+    def fail_clear(*args):
+        observed_faults.append("clear-terminal")
+        return False
+
     with monkeypatch.context() as fault:
         fault.setattr(queue, "residency_verdict", verdict)
-        fault.setattr(_gang, "clear_terminal", lambda *args: False)
+        fault.setattr(_gang, "clear_terminal", fail_clear)
         fault.setattr(pool, "_write_json_atomic", write)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
+        assert "clear-terminal" in observed_faults, "reset never reached the failed terminal clear"
+        assert "mark-write" in observed_faults, "reset never reached the failed mark replacement"
         assert mark_path.read_bytes() == old_mark, "the reset failure must retain the old bytes"
 
     if restart:

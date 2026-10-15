@@ -575,9 +575,11 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     # injection then breaks); nothing may be recorded or moved.
     q.funding_output_path(mover, TIER).unlink()
     real_write = pool._write_json_atomic
+    observed_faults = []
 
     def fail_intent(path, *a, **k):
         if str(path).endswith(".output-funding.json"):
+            observed_faults.append("intent-write")
             raise OSError("injected intent failure")
         return real_write(path, *a, **k)
 
@@ -586,6 +588,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
                               mover_key=mover, instance=inst,
                               template=template, batch_id="b1",
                               descriptors=descs)
+    assert "intent-write" in observed_faults, "funding never reached the intent-write fault"
     assert out.get("ok") is False, out
     assert q.read_output_funding(mover, TIER) is None
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
@@ -610,6 +613,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
             # Let the first token through, fail subsequent? Our batch is 1
             # token, so fail it once to force transfer-short, then succeed
             # on drive retry.
+            observed_faults.append("token-transfer")
             raise OSError("injected transfer failure")
         return real_rename(src, dst)
 
@@ -623,6 +627,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
                               descriptors=descs)
     # Either transfer-short (failed rename, intent filed reserved) or
     # funding-race-deferred; both preserve sum and are recoverable.
+    assert "token-transfer" in observed_faults, "funding never reached the token-transfer fault"
     assert out.get("ok") is False, out
     assert out.get("refusal") in ("transfer-short", "funding-race-deferred",
                                   "unknown-retain: injected transfer failure"), out
@@ -646,11 +651,13 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
 
     def fail_claim_record(path, *a, **k):
         if str(path).endswith(f"{mover}.json") and f"{pool.CLAIMED}{os.sep}" in str(path):
+            observed_faults.append("claim-record")
             raise OSError("injected claim-record failure")
         return real_claim_write(path, *a, **k)
 
     monkeypatch.setattr(pool, "_write_json_atomic", fail_claim_record)
     assert q.claim(owner="w-flt-1") is None
+    assert "claim-record" in observed_faults, "claim never reached the claim-record fault"
     assert q.item_path(pool.READY, mover).exists()
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"

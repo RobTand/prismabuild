@@ -404,12 +404,14 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
     q, mover, live_mover, receipts, *_ = _stranded_with_live_intent(tmp_path)
     ledger = q.tier_ledger(TIER)
     live_before = q.read_output_funding(live_mover, TIER)
+    observed_faults = []
     with monkeypatch.context() as patch:
         if fault == "token-release":
             release = pool.ResourceLedger.release
 
             def fail_release(self, key):
                 if key == mover:
+                    observed_faults.append("token-release")
                     raise OSError("injected token release failure")
                 return release(self, key)
 
@@ -420,11 +422,13 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
             def fail_funding_write(path, body, **kwargs):
                 if (path == q.funding_output_path(mover, TIER)
                         and body.get("state") == "released"):
+                    observed_faults.append("funding-write")
                     raise OSError("injected funding write failure")
                 return write(path, body, **kwargs)
 
             patch.setattr(pool, "_write_json_atomic", fail_funding_write)
         _cycle(q, tmp_path, receipts)
+        assert fault in observed_faults, f"cycle never reached the {fault} fault"
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
         assert ledger.holder_tokens(mover).get(KIND, 0) == (
             1 if fault == "token-release" else 0)
