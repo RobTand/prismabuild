@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 from prismabuild.durable_child_reporter import DurableChildReporter  # noqa: E402
 
@@ -601,17 +602,17 @@ def test_an_older_worker_cannot_claim_an_awaited_coordinator(
                             "host_class": None},
     })
     cas.publish_action_request(action)
-    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.QUEUED_CHILD_TAG]
+    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.QUEUED_CHILD_TAG]
     import pbrun as pbrun_mod  # noqa: PLC0415 -- tools/fleet is on sys.path in PB
     required = pbrun_mod.progress_required_tags(policy, awaited)
-    assert pb.QUEUED_CHILD_TAG in required
-    assert pb.QUEUED_CHILD_TAG not in pbrun_mod.progress_required_tags(policy)
+    assert contracts.QUEUED_CHILD_TAG in required
+    assert contracts.QUEUED_CHILD_TAG not in pbrun_mod.progress_required_tags(policy)
     queue.publish(
         action_key=action["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true",
         tags=[*tags])
-    assert queue.claim(tags=["x86", "old", pb.PROGRESS_TAG,
-                             pb.PROGRESS_HELPER_TAG]) is None
+    assert queue.claim(tags=["x86", "old", contracts.PROGRESS_TAG,
+                             contracts.PROGRESS_HELPER_TAG]) is None
     claimed = queue.claim(tags=["x86", "old", *tags])
     assert claimed is not None
     assert claimed["action_key"] == action["action_key"]

@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import (  # noqa: E402
     pool, progress, residency_map, residency_plan, storage_tiers)
@@ -203,9 +204,9 @@ def test_a_measured_mover_is_sealed_with_its_grace_and_its_pool(
             "priced_bytes_per_s": float(116 * MB),
             "stage_root": str(tmp_path / "stage")}
         tags = params["placement"]["required_tags"]
-        assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG,
-                pb.POOL_CONTENTION_TAG} <= set(tags)
-        assert pb.PROGRESS_CYCLE_TAG not in tags
+        assert {contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG,
+                contracts.POOL_CONTENTION_TAG} <= set(tags)
+        assert contracts.PROGRESS_CYCLE_TAG not in tags
         assert "dl380g10" in tags
 
 

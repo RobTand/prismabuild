@@ -19,6 +19,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -115,7 +116,7 @@ def _serve(queue: pool.PoolQueue, *, limit: int | None = None) -> int:
         # requires the interpreter-path tag as well as the host pin; a worker
         # that offers only ``sparky`` claims none of them (#1263).
         one = queue.serve_once(
-            tags=["sparky", pb.INTERPRETER_TAG], python=sys.executable, timeout_s=120.0,
+            tags=["sparky", contracts.INTERPRETER_TAG], python=sys.executable, timeout_s=120.0,
             capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         )
         if one is None:

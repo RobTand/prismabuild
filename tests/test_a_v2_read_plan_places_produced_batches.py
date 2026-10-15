@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
+from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
@@ -78,7 +79,7 @@ def _progress_worker(queue: pool.PoolQueue, monkeypatch) -> list[str]:
     """
 
     queue.announce(host="sparky",
-                   tags=[*TAGS, pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+                   tags=[*TAGS, contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
                    has_gpu=True, capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
     consulted: list[str] = []

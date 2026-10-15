@@ -23,6 +23,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import container_images  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
@@ -42,7 +43,7 @@ SPARKLINA_SET = [
 
 KEY_A = "a" * 64
 CAPACITY = {"cpu": 4, "mem_gb": 16, "gpu": 1}
-CLAIM_TAGS = [pb.CONTAINER_IMAGE_TAG]
+CLAIM_TAGS = [contracts.CONTAINER_IMAGE_TAG]
 
 
 def publish(queue, key, **kwargs):
@@ -50,7 +51,7 @@ def publish(queue, key, **kwargs):
                   worker_script="/w.py", **kwargs)
 
 
-def announce(queue, host, *, tags=("gb10", pb.CONTAINER_IMAGE_TAG),
+def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
              observed_images=None, capacity=CAPACITY, gpu=False):
     queue.announce(host=host, tags=list(tags), has_gpu=gpu,
                    capacity=dict(capacity), observed_images=observed_images)
@@ -88,7 +89,7 @@ def test_the_placement_surface_matches_on_both_stores(tmp_path):
 
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[BARE], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[BARE], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "sparky", observed_images=list(SPARKY_SET))
     announce(queue, "sparklina", observed_images=list(SPARKLINA_SET))
     ready = queue.ready_items()[0]
@@ -128,7 +129,7 @@ def test_a_box_holding_neither_the_id_nor_the_repo_digest_still_denies(tmp_path)
 def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[BARE], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[BARE], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "unknown", observed_images=None)
     assert queue.placeable_hosts(queue.ready_items()[0]) == []
     assert queue.claim(capacity=CAPACITY, tags=["gb10", *CLAIM_TAGS],

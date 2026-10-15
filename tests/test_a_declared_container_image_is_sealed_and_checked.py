@@ -17,6 +17,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import container_images  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
@@ -56,7 +57,7 @@ CAPACITY = {"cpu": 4, "mem_gb": 16, "gpu": 1}
 #: The claim check rides the declared-image capability, so a worker that may
 #: take image-pinned work is one that offers the tag (pbrun seals it into the
 #: placement, and publish adds it with the references).
-CLAIM_TAGS = [pb.CONTAINER_IMAGE_TAG]
+CLAIM_TAGS = [contracts.CONTAINER_IMAGE_TAG]
 
 
 def publish(queue, key, **kwargs):
@@ -64,7 +65,7 @@ def publish(queue, key, **kwargs):
                   worker_script="/w.py", **kwargs)
 
 
-def announce(queue, host, *, tags=("gb10", pb.CONTAINER_IMAGE_TAG),
+def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
              observed_images=None, capacity=CAPACITY, gpu=False):
     queue.announce(host=host, tags=list(tags), has_gpu=gpu,
                    capacity=dict(capacity), observed_images=observed_images)
@@ -91,13 +92,13 @@ def test_the_item_carries_the_sealed_references_sorted_and_deduplicated(tmp_path
     assert record["container_images"] == [REF_A, ID_A]
     # The capability the claim check rides is added by the queue itself, so no
     # producer can publish a requirement no worker is allowed to enforce.
-    assert pb.CONTAINER_IMAGE_TAG in record["tags"]
+    assert contracts.CONTAINER_IMAGE_TAG in record["tags"]
 
 
 def test_publish_refuses_the_capability_without_a_requirement(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="container_images"):
-        publish(queue, KEY_A, tags=[pb.CONTAINER_IMAGE_TAG])
+        publish(queue, KEY_A, tags=[contracts.CONTAINER_IMAGE_TAG])
     assert not queue.item_path(pool.READY, KEY_A).exists()
 
 
@@ -106,7 +107,7 @@ def test_a_record_requiring_the_capability_without_refs_is_denied(tmp_path):
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
     path = queue.item_path(pool.READY, KEY_A)
     record = json.loads(path.read_text(encoding="utf-8"))
-    record["tags"] = [*record["tags"], pb.CONTAINER_IMAGE_TAG]
+    record["tags"] = [*record["tags"], contracts.CONTAINER_IMAGE_TAG]
     path.write_text(json.dumps(record), encoding="utf-8")
     assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
                        observed_images=[ID_A]) is None
@@ -136,7 +137,7 @@ def test_a_refused_publication_retires_no_withdrawal(tmp_path):
     before = marker.read_bytes()
 
     with pytest.raises(pool.PoolContractError, match="container_images"):
-        publish(queue, KEY_A, tags=[pb.CONTAINER_IMAGE_TAG])
+        publish(queue, KEY_A, tags=[contracts.CONTAINER_IMAGE_TAG])
 
     assert marker.exists()
     assert marker.read_bytes() == before
@@ -178,7 +179,7 @@ def test_an_offer_reports_only_what_it_positively_observed(tmp_path):
 def test_a_box_that_reports_the_image_is_placeable_and_one_that_does_not_is_not(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[REF_A], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[REF_A], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "has-it", observed_images=[REF_A])
     announce(queue, "has-none", observed_images=[])
     announce(queue, "cannot-look", observed_images=None)
@@ -191,7 +192,7 @@ def test_a_box_that_reports_the_image_is_placeable_and_one_that_does_not_is_not(
 def test_an_old_loop_without_the_capability_tag_cannot_match_even_with_the_image(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[REF_A], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[REF_A], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     # The pre-#714 loop announces a full inventory but has no claim check.
     announce(queue, "old-loop", tags=("gb10",), observed_images=[REF_A])
     assert queue.placeable(queue.ready_items()[0]) is False
@@ -200,7 +201,7 @@ def test_an_old_loop_without_the_capability_tag_cannot_match_even_with_the_image
 def test_a_box_with_an_unknown_inventory_is_not_a_capable_box(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[REF_A], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[REF_A], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "cannot-look", observed_images=None)
     assert queue.placeable(queue.ready_items()[0]) is False
 
@@ -288,7 +289,7 @@ def test_a_content_sealed_action_is_placeable_on_either_store(tmp_path):
     sparklina = container_images.observe(probe=_store_probe("sparklina"))
     portable = container_images.content_ref(_row("sparky", GLM_TAG))
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[portable], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[portable], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "sparky", observed_images=sorted(sparky))
     announce(queue, "sparklina", observed_images=sorted(sparklina))
     ready = queue.ready_items()[0]
