@@ -16,6 +16,53 @@ The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
 `36cebfbcc189`, based on `6073c9d36555`. Newer source is named below.
 
+The accumulation at `09a4dd3f6c151f18f63a78f567c410a57755d6c9` includes the
+ordinary installed package boundary and arbitration test cleanup. The package
+exports its actual progress objects eagerly, loads its two broad module exports
+on request, and keeps role receipt, drift, lock and park operations on their
+stdlib owners. Its real installed-wheel tests physically remove broad modules
+and verify actual operations, source origins, object identity and concurrent
+first access. The integrated 164-file check passed 4,012 cases with eighteen
+existing map_files capability skips; all 3,852 prior nodes remain. Four complete
+source, terminal, log and CAS chains were checked, and independent review found
+no actionable issue.
+
+A meaningful frozen-namespace guard exposed a B04 omission. Commit
+`f37413513af191f7d82ea712ce5793229b36e17d` gives the new supersession record the
+`prismabuild.publication_superseded.v1` ID. The legacy allowlist is unchanged.
+All 367 cases across thirty complete files passed, with both evidence chains
+verified. No stored or deployed record migration is included.
+
+The full baseline at `abf1516c81e86ccf5721abe5f42599ce3b1b7605` remains failed:
+14,704 passed, 24 skipped and two failed among 14,730 unique cases across 1,000
+complete files, with six auxiliary subtests separate. The failures were the
+namespace guard and the large arbitration case exceeding its 180-second bound.
+The latter also timed out in an isolated full-file run at `566892fc1dc7`, while
+its other nine cases passed. Root checked every terminal, retained log and
+receipt or expected receipt absence. A fresh 1,001-file run at `09a4dd3f6c15` is
+pending; it does not retroactively change the baseline.
+
+The arbitration regression now uses sixteen names and seven other namespaces.
+Its real byte, ownership, refusal and filesystem-operation assertions are
+unchanged. Three cases testing their own assertion helper were removed; one
+real case was renamed with its bounded input. All seven retained cases passed.
+Two isolated production mutations prove the smaller tests still distinguish
+extra root listings and missed live-owner fragments: each produced six actual
+call failures, including its intended real consumer failure. Independent review
+checked the packing and retention limits, all four result chains, and the exact
+rename/deletion map. This establishes the routine regression's coverage, not a
+large-workload performance or measured flake-rate claim. Rerunnable source and
+node audits, actual mutation diffs and evidence are under
+`/home/rob/tmp/prismabuild-refactor-mailbox-20261015/arbitration-shape/`.
+
+C01 T-qualification remains isolated at `503fb73a059ecd20a96af83c543b06a88df154d0`:
+all 3,268 cases across 159 full files passed, retaining all 3,204 Unit A nodes
+plus 64. The pre-H unit, decomposition operations and shared directory captures
+are still in progress. C11's full 47-file baseline contains 811 passes and two
+observed consumer assertion failures; those explicit tightenings and their
+positive controls precede implementation. These checkpoints do not change the
+frozen 93424 requirement assessment or close the complete brief.
+
 ## Agreed engineering choices
 
 | Thread | Agreed design | Implementation owed or qualified |
@@ -27,7 +74,7 @@ The discussion is append-only in
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
-| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Typed receipt authorization and the role caller migration are integrated through `32b79024ec9f`, with qualification and limits recorded below. Strict privileged proof and the retained-reader corpus remain isolated pending actual actor entry, native ARM/NFS and paired-host qualification. Their prior-trust repair is implemented and source-qualified separately. Ordinary package/role stdlib import closure remains unfinished. Named-profile membership awaits Rob. |
+| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Typed receipt authorization and the role caller migration are integrated through `32b79024ec9f`, with qualification and limits recorded below. Strict privileged proof and the retained-reader corpus remain isolated pending actual actor entry, native ARM/NFS and paired-host qualification. Their prior-trust repair is implemented and source-qualified separately. Ordinary installed package/role stdlib import closure is integrated at `566892fc1dc7`, with 4,012 passes and 18 existing capability skips across 164 complete files; strict physical-proof gates remain separate. Named-profile membership awaits Rob. |
 | D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. The final eighteen fabricated binding setups have since migrated to real ownership and causal funding/finish controls; the complete funding/broker file passed 45 cases and is recorded below. Repository-wide fixture ownership remains owed. There is no blanket raw-write ban. |
 | D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
 
