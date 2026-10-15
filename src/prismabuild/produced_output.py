@@ -108,6 +108,9 @@ and returns the exact SDK dependency instead of a stub.
 from __future__ import annotations
 
 from prismabuild import kept_reads
+from prismabuild.record_store import (
+    Absent, KeyStanding, Moving, Present, QueueRow, RecordStore, Unknown,
+)
 from collections.abc import Collection, Mapping, Sequence
 import contextlib
 import errno
@@ -1336,7 +1339,7 @@ class _TickReads:
     its own container, never what the next batch reads (#992).  What an
     attempt owns (`_attempt_owned_paths`) is kept the same way, under the
     versions of its commitments and of each prewrite record it has.  An
-    owner key's generation (`_key_generation`) and its funding census are
+    owner key's standing (`RecordStore.standing`) and its funding census are
     read at most once per tick.
 
     ``forget(scope)`` drops a scope's commitments immediately before a write
@@ -1351,7 +1354,7 @@ class _TickReads:
         self.queue = queue
         self._commitments: dict[str, tuple[tuple[int, ...], dict[str, object]]] = {}
         self._owned: dict[str, tuple[object, dict[str, str], dict[str, str]]] = {}
-        self._generations: dict[str, tuple[str, dict[str, object] | None]] = {}
+        self._generations: dict[str, KeyStanding] = {}
         self._census: dict[str, tuple[list[dict], bool]] = {}
         self._templates: dict[str, dict[str, object]] | None = None
         self._lock_orders: dict[tuple[str, tuple[tuple[str, str], ...]],
@@ -1457,9 +1460,9 @@ class _TickReads:
         self._owned[str(scope)] = (fingerprint, committed, prewritten)
         return fingerprint, committed, prewritten
 
-    def generation(self, owner: str) -> tuple[str, dict[str, object] | None]:
+    def generation(self, owner: str) -> KeyStanding:
         if owner not in self._generations:
-            self._generations[owner] = _key_generation(self.queue, owner)
+            self._generations[owner] = RecordStore(self.queue.root).standing(owner)
         return self._generations[owner]
 
     def census(self, owner: str) -> tuple[list[dict], bool]:
@@ -1631,7 +1634,7 @@ ORPHANED_HOLDER_REMEDY = (
     "batch again from the files that are there")
 
 
-def _unknown_attempt_detail(generation: tuple[str, dict[str, object] | None],
+def _unknown_attempt_detail(generation: KeyStanding,
                             nonce: str, *, last_write_ns: int | None,
                             now: float) -> dict[str, object]:
     """Why `_attempt_state` reads ``unknown`` for this attempt (#1065).
@@ -1652,25 +1655,28 @@ def _unknown_attempt_detail(generation: tuple[str, dict[str, object] | None],
 
     from prismabuild import pool as pool_mod
 
-    state, record = generation
-    if state == "absent":
+    if isinstance(generation, Absent):
         why = "no-queue-row"
-    elif state == pool_mod.READY:
-        why = "queued"
-    elif state == "moving":
-        why = "moving"
-    elif state == pool_mod.CLAIMED:
-        why = "claim-names-no-nonce"
-    elif state == pool_mod.DONE and record is not None:
-        status = str(record.get("status"))
-        if status not in ("executed", "cache_hit"):
-            why = f"done-status-{status}"
-        elif not _record_nonce(record):
-            why = "done-names-no-nonce"
-        else:
-            why = "cache-hit-by-another-attempt"
-    else:
+    elif isinstance(generation, Unknown):
         why = "queue-row-unreadable"
+    elif isinstance(generation.value, Moving):
+        why = "moving"
+    else:
+        state, record = generation.value.state, generation.value.record
+        if state == pool_mod.READY:
+            why = "queued"
+        elif state == pool_mod.CLAIMED:
+            why = "claim-names-no-nonce"
+        elif state == pool_mod.DONE:
+            status = str(record.get("status"))
+            if status not in ("executed", "cache_hit"):
+                why = f"done-status-{status}"
+            elif not _record_nonce(record):
+                why = "done-names-no-nonce"
+            else:
+                why = "cache-hit-by-another-attempt"
+        else:
+            why = "queue-row-unreadable"
     last_write = (None if last_write_ns is None
                   else round(last_write_ns / 1e9, 3))
     orphaned = (why == "no-queue-row" and last_write is not None
@@ -7803,74 +7809,6 @@ def _declared_consumers(queue_root: str | Path, instance: Mapping[str, object],
     return keys
 
 
-def _key_generation_once(queue, key: str) -> tuple[str, dict[str, object] | None]:
-    """One read of where an action key stands: ``(state, record)``.
-
-    A live row wins: ``claimed`` or ``ready``. (A claim's ``intent`` marker is
-    not one: it names who claimed the key and outlives the claim.) A claim
-    a finisher or a reaper has moved aside -- a tombstone or late-finish file
-    beside the row -- is a transition in flight and reads ``moving``. A lease
-    with no claim is a widowed lease, not a transition, and is not read.
-    Otherwise the terminal record
-    with the latest ``published_unix`` among ``done``, ``failed`` and
-    ``withdrawn`` is the key's latest generation: a resubmission publishes a
-    new generation and leaves the earlier terminal where it was, so the
-    newest one is the one that answers for the key. No record at all reads
-    ``absent``; an unreadable record, a terminal without a generation stamp,
-    or two terminals of one generation read ``unknown``.
-    """
-
-    from prismabuild import pool as pool_mod
-
-    try:
-        for state in (pool_mod.CLAIMED, pool_mod.READY):
-            record = pool_mod._read_json(queue.item_path(state, key))
-            if record is not None:
-                return (state, record)
-        try:
-            beside = [path.name for path in pool_mod._glob_visible(
-                queue.dir(pool_mod.CLAIMED), f"{key}.*")]
-        except FileNotFoundError:
-            beside = []
-        if any(name.endswith((pool_mod.TOMBSTONE_SUFFIX,
-                              pool_mod.LATE_FINISH_SUFFIX))
-               for name in beside):
-            return ("moving", None)
-        terminals: list[tuple[float, str, dict[str, object]]] = []
-        for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
-            record = pool_mod._read_json(queue.item_path(state, key))
-            if record is None:
-                continue
-            stamp = record.get("published_unix")
-            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
-                return ("unknown", None)
-            terminals.append((float(stamp), state, record))
-    except (OSError, pool_mod.PoolContractError):
-        return ("unknown", None)
-    if not terminals:
-        return ("absent", None)
-    terminals.sort(key=lambda item: item[0])
-    if len(terminals) > 1 and terminals[-1][0] == terminals[-2][0]:
-        return ("unknown", None)
-    return (terminals[-1][1], terminals[-1][2])
-
-
-def _key_generation(queue, key: str) -> tuple[str, dict[str, object] | None]:
-    """`_key_generation_once`, taken twice; a disagreement reads ``unknown``.
-
-    The single read visits several directories one after another, and a row
-    moving between two of them (a requeue lands in ``ready`` after that
-    directory was read) can make one read describe a state the key was never
-    in. Two reads that agree have not been split by a move.
-    """
-
-    first = _key_generation_once(queue, key)
-    second = _key_generation_once(queue, key)
-    if first != second:
-        return ("unknown", None)
-    return first
-
-
 def _record_nonce(record: Mapping[str, object] | None) -> str:
     control = (record or {}).get("resource_scope")
     if isinstance(control, Mapping):
@@ -7890,11 +7828,17 @@ def _consumer_state(queue, key: str) -> str:
 
     from prismabuild import pool as pool_mod
 
-    state, record = _key_generation(queue, key)
-    if state in (pool_mod.CLAIMED, pool_mod.READY, "moving"):
+    standing = RecordStore(queue.root).standing(key)
+    if isinstance(standing, Absent):
+        return "unpublished"
+    if isinstance(standing, Unknown):
+        return "unknown"
+    if isinstance(standing.value, Moving):
+        return "live"
+    state, record = standing.value.state, standing.value.record
+    if state in (pool_mod.CLAIMED, pool_mod.READY):
         return "live"
     if state == pool_mod.DONE:
-        assert record is not None
         if record.get("status") in ("executed", "cache_hit"):
             return "succeeded"
         return "unknown"
@@ -7902,8 +7846,6 @@ def _consumer_state(queue, key: str) -> str:
         return "failed"
     if state == pool_mod.WITHDRAWN:
         return "withdrawn"
-    if state == "absent":
-        return "unpublished"
     return "unknown"
 
 
@@ -7923,7 +7865,7 @@ def _producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
     return _attempt_state(
-        _key_generation(queue, str(instance["owner_action_key"])),
+        RecordStore(queue.root).standing(str(instance["owner_action_key"])),
         str(attempt["nonce"]))
 
 
@@ -7932,7 +7874,7 @@ def dead_input_hint(queue, item: Mapping[str, object], hints) -> bool:
 
     #1202 review N2: the gate the caller consults BEFORE taking the mover
     key's transition lock, so a live producer's movers pay no lock round
-    trip at all.  One ``_key_generation`` read per distinct owner per pass
+    trip at all. One ``RecordStore.standing`` read per distinct owner per pass
     (the caller's memo); the answer is only a gate -- a ``dead`` hint still
     pays for the full proof, which re-reads every fact fresh under the
     lock, never trusting the memo.  Anything unprovable answers False.
@@ -7950,7 +7892,7 @@ def dead_input_hint(queue, item: Mapping[str, object], hints) -> bool:
         return False
     generation = hints.get(owner)
     if generation is None:
-        generation = hints[owner] = _key_generation(queue, owner)
+        generation = hints[owner] = RecordStore(queue.root).standing(owner)
     return _attempt_state(generation, nonce) == "dead"
 
 
@@ -7977,7 +7919,7 @@ def dead_input_dependency(
     The answer names the owner nonce and the missing path.
 
     ``hints`` is the caller's per-pass memo of owner generations (#1202
-    review finding 5): one ``_key_generation`` read per distinct owner per
+    review finding 5): one ``RecordStore.standing`` read per distinct owner per
     pass, so a fleet of movers of one live producer pays one ``claimed/``
     census instead of two per mover. The hint is only a gate -- a
     non-``dead`` hint skips the mover entirely this pass (a producer that
@@ -8079,18 +8021,20 @@ def dead_input_dependency(
     return None
 
 
-def _attempt_state(generation: tuple[str, dict[str, object] | None],
+def _attempt_state(generation: KeyStanding,
                    nonce: str) -> str:
     """`_producer_attempt_state` for one attempt, over a generation already read.
 
     Every attempt of one owner key answers from the same read of the key
-    (`_key_generation`), so a caller that asks about several attempts of it
+    (`RecordStore.standing`), so a caller that asks about several attempts of it
     reads the key once.
     """
 
     from prismabuild import pool as pool_mod
 
-    state, record = generation
+    if not isinstance(generation, Present) or isinstance(generation.value, Moving):
+        return "unknown"
+    state, record = generation.value.state, generation.value.record
     if state == pool_mod.CLAIMED:
         live = _record_nonce(record)
         if not live:
@@ -8099,7 +8043,6 @@ def _attempt_state(generation: tuple[str, dict[str, object] | None],
     if state in (pool_mod.FAILED, pool_mod.WITHDRAWN):
         return "dead"
     if state == pool_mod.DONE:
-        assert record is not None
         finished = _record_nonce(record)
         if record.get("status") not in ("executed", "cache_hit") or not finished:
             return "unknown"
@@ -9491,7 +9434,15 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
     tier = str(active.get("tier") or entry.get("tier") or "")
     if len(mover) != 64 or not tier:
         return {"event": report.refused("unknown-retain: batch-target-mismatch")}
-    mover_state, _row = reads.generation(mover)
+    match reads.generation(mover):
+        case Present(QueueRow(mover_state, _row)):
+            pass
+        case Present(Moving()):
+            mover_state = "moving"
+        case Absent():
+            mover_state = "absent"
+        case Unknown():
+            mover_state = "unknown"
     if mover_state in (pool_mod.READY, pool_mod.CLAIMED, "moving"):
         return {"event": report.quiet()}
     if mover_state not in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):

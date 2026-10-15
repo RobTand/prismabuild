@@ -96,6 +96,9 @@ import d38_gate  # noqa: E402
 import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
 from prismabuild import local_dependencies  # noqa: E402
+from prismabuild.record_store import (  # noqa: E402
+    Absent, Moving, Present, QueueRow, RecordStore, Unknown,
+)
 
 FLEET_ROSTER_PATH = Path(__file__).resolve().parent / "fleet_boxes.json"
 
@@ -8916,7 +8919,15 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
             f"release-key-mismatch: the pinned release names "
             f"{str(pinned['action_key'])[:12]}, and this runtime seals "
             f"{key[:12]}")
-    state, existing = produced_mod._key_generation(q, key)
+    match RecordStore(q.root).standing(key):
+        case Present(QueueRow(state, existing)):
+            pass
+        case Present(Moving()):
+            state, existing = "moving", None
+        case Absent():
+            state, existing = "absent", None
+        case Unknown():
+            state, existing = "unknown", None
     if state == "absent":
         if resumed:
             # About to publish: the generation must still be there, and the

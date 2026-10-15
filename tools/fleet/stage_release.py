@@ -120,6 +120,9 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
+from prismabuild.record_store import (  # noqa: E402
+    Absent, Moving, Present, QueueRow, RecordStore, Unknown,
+)
 from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
@@ -4731,7 +4734,15 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
         return unknown("its funding, instance and template disagree")
     try:
         producer = produced_output._producer_attempt_state(queue, instance)
-        mover_state, _row = produced_output._key_generation(queue, mover)
+        match RecordStore(queue.root).standing(mover):
+            case Present(QueueRow(mover_state, _row)):
+                pass
+            case Present(Moving()):
+                mover_state = "moving"
+            case Absent():
+                mover_state = "absent"
+            case Unknown():
+                mover_state = "unknown"
     except (OSError, ValueError, pool.PoolContractError) as exc:
         return unknown(f"a queue state is unreadable: {exc}")
     if producer == "live":

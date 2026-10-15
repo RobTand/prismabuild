@@ -40,6 +40,7 @@ from pathlib import Path
 
 from . import core as pb
 from . import produced_output as po
+from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 
 DEFERRED_SUBDIR = "deferred"
 RELEASES_SUBDIR = "deferred-releases"
@@ -621,7 +622,15 @@ def check_supersession(queue, old: str, *, new: str, new_kind: str
                 f"{old[:12]} is already released; supersede the key it was "
                 "released as once that key has failed")
     else:
-        state, _record = po._key_generation(queue, old)
+        match RecordStore(queue.root).standing(old):
+            case Present(QueueRow(state, _record)):
+                pass
+            case Present(Moving()):
+                state = "moving"
+            case Absent():
+                state = "absent"
+            case Unknown():
+                state = "unknown"
         if state not in ("failed", "withdrawn"):
             raise ActionEdgeError(
                 f"{old[:12]} cannot be superseded: its latest generation is "
@@ -718,12 +727,12 @@ def producer_kind(queue, producer: str) -> str:
     producer = _hex64(producer, where="--after producer")
     if read_deferred(queue.root, producer) is not None:
         return PRODUCER_PENDING
-    state, _record = po._key_generation(queue, producer)
-    if state == "absent":
+    standing = RecordStore(queue.root).standing(producer)
+    if isinstance(standing, Absent):
         raise ActionEdgeError(
             f"--after {producer[:12]}: no action or deferred submission with "
             "this key is filed in the queue")
-    if state == "unknown":
+    if isinstance(standing, Unknown):
         raise ActionEdgeError(
             f"--after {producer[:12]}: the queue cannot say what this key is")
     return PRODUCER_KEY
@@ -854,7 +863,15 @@ def resolve_producer(queue, producer: str, kind: str,
                 current, current_kind = str(published["action_key"]), PRODUCER_KEY
                 continue
             return {"state": "pending", "key": None, "nonce": None, "path": path}
-        state, record = po._key_generation(queue, current)
+        match RecordStore(queue.root).standing(current):
+            case Present(QueueRow(state, record)):
+                pass
+            case Present(Moving()):
+                state, record = "moving", None
+            case Absent():
+                state, record = "absent", None
+            case Unknown():
+                state, record = "unknown", None
         if state in ("claimed", "ready", "moving"):
             return {"state": "live", "key": current, "nonce": None, "path": path}
         if state == "done":
