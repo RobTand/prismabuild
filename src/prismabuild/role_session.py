@@ -1,4 +1,10 @@
-"""Shared role operations; serving loops own their completion policies."""
+"""Shared role operations; serving loops own their completion policies.
+
+Entrypoints prepend their generation's src directory before importing this
+module, so its source root and immutable receipt name the tool's loaded tree.
+Marker bytes belong to park_proof; patch that owner to observe marker naming,
+because imported helper bindings here do not replace its internal calls.
+"""
 from contextlib import contextmanager
 import fcntl
 import os

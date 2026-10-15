@@ -342,7 +342,7 @@ on the PB-owned path finishes before capacity is reported released.
 |---|---|---|---|
 | Registered hardware shape | `fleet_boxes.json` entry + `fleet_roster.box_status` | versioned file + published generation | supervise `_config` (refuses unknown/absent at startup) |
 | Desired membership (transient resign/rejoin) | broker durable maintenance state (`maintenance_state_path`, schema `prismabuild.resource-maintenance.v1`) | root-owned persistent JSON; restart replays it; boot hold (`owner=client-upgrade`) keeps the fence closed until client verification | broker `_restore_maintenance`; CLI never invents a parallel store |
-| Execution fence (this epoch) | volatile gate mirror (`MAINTENANCE_GATE`, `changed_unix` names the epoch) | tmpfs; missing/unparsable reads as draining (fail closed) | `worker_loop.read_maintenance_gate` |
+| Execution fence (this epoch) | volatile gate mirror (`MAINTENANCE_GATE`, `changed_unix` names the epoch) | tmpfs; missing/unparsable reads as draining (fail closed) | `role_session.read_maintenance_gate` |
 | Exact-loop acks | `PARKED_ROOT/<pid>-<starttime>-<gatekey>` markers | tmpfs; missing marker is never a stale absence | resign collector (exact name-set match, not PID-prefix) |
 | Worker incarnation | live supervisor pid in `supervise.CLAIM` + `/proc` starttime | host-local; reboot clears it (boot hold applies) | CLI derives owner, never mints random per-call nonces |
 | Claim/attempt truth | `claimed/` + leases + immutable withdrawal decisions + terminal records | shared queue | ladder, reaper, `finish` |

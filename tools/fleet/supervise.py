@@ -46,7 +46,7 @@ A role must not depend on its launcher being single.  On 2026-09-19 a
 duplicate supervisor started its own storage reader beside the primary's --
 two readers of one ready list, double-published movers and contradictory
 fill measurements compounding the movers wedge (#709).  So each role's
-process takes its own host-local singleton flock (``worker_loop``'s
+process takes its own host-local singleton flock (``role_session``'s
 ``take_role_singleton``, under a private per-uid namespace stable across
 generations), this supervisor probes that lock before spawning and reports a
 held one instead of racing it, and a role the kernel reports stopped -- alive

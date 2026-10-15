@@ -56,7 +56,7 @@ MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
 #: the file. Each one leaves this box reading as still admitting, and something
 #: waiting on the drain keeps waiting, which is the direction to be wrong in.
 SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py', 'prewarm_loop.py'})
-#: Mirrors worker_loop._KEY_SAFE. The two modules cannot import each other --
+#: Mirrors park_proof._KEY_SAFE. The two modules cannot import each other --
 #: the loop runs unprivileged out of a published generation, this runs as root
 #: out of the install directory -- so the spelling is asserted between them by
 #: test rather than shared.

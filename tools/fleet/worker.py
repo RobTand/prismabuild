@@ -13,7 +13,7 @@ maintenance gate is what ``maintenance_begin`` writes and what every loop
 obeys, and ``containment`` is what puts a claim in front of the broker's
 draining refusal.  Serving one action rather than many changes how long this
 process lives, not whose permission it needs.  The stops are imported from
-``worker_loop`` rather than restated, so a fleet has one definition of
+``prismabuild.role_session`` rather than restated, so a fleet has one definition of
 "drained" and not two that can drift.
 """
 import sys, socket, json

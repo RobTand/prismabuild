@@ -73,10 +73,6 @@ import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
-#: The same generation gate ``prewarm_loop`` reads, under the same name, for
-#: the same reason: a loop holds the modules it imported for its whole life,
-#: so a fix published under a running fleet reaches none of it (#615).
-
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.MOVERS
