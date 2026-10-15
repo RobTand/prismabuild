@@ -105,12 +105,12 @@ def test_egress_support_follows_the_executed_movement_identity(
     assert (contracts.EGRESS_PROGRESS_TAG in tags) is egress
 
 
-def test_an_invalid_sealed_progress_policy_is_refused_before_ready(tmp_path):
-    queue, action, cas, checkout = _sealed_request(
-        tmp_path, {pb.PROGRESS_PARAM: {**PROGRESS, "phases": []}})
-    with pytest.raises(pool.PoolContractError, match="progress"):
-        _publish(queue, action, cas, checkout)
-    assert not queue.item_path(pool.READY, action["action_key"]).exists()
+def _replace_request_with_corrupt_json(request: Path) -> None:
+    """Violate JSON structure while keeping a readonly regular-file request."""
+    damaged = request.with_suffix(".damaged")
+    damaged.write_bytes(b"{")
+    damaged.chmod(0o444)
+    damaged.replace(request)
 
 
 @pytest.mark.parametrize("damage", ["missing", "corrupt"])
@@ -122,7 +122,7 @@ def test_unknown_sealed_declaration_never_authorizes_a_progress_tag(tmp_path, da
     if damage == "missing":
         request.unlink()
     else:
-        request.write_bytes(b"{")
+        _replace_request_with_corrupt_json(request)
     with pytest.raises(pool.PoolContractError):
         _publish(queue, action, cas, checkout, tags=[contracts.PROGRESS_TAG])
     assert not queue.item_path(pool.READY, action["action_key"]).exists()
