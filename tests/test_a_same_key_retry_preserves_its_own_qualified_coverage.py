@@ -270,7 +270,9 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
         named_once=frozenset(stage_move.paths_named_once(entries)))
 
 
-@pytest.mark.parametrize("filesystem", ["zfs", "nfs4"])
+@pytest.mark.parametrize("filesystem", [
+    "zfs", "nfs4", pytest.param(None, id="local-unmapped-device"),
+])
 def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
         fleet, monkeypatch, filesystem) -> None:
     """The pre-lock parse of a same-key retry's own fragment never holds
@@ -330,7 +332,7 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     assert not worker.is_alive()
     # Unchanged mature local evidence reuses the parse; remote evidence is
     # deliberately parsed fresh under the lock even at identical metadata.
-    assert calls == ([1] if filesystem == "zfs" else [1, 1])
+    assert calls == ([1, 1] if filesystem == "nfs4" else [1])
     staged, _sidecar, _generation = outcome["result"]
     assert set(staged) == set(keys[:2])
 
