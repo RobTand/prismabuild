@@ -17,6 +17,7 @@ import sys
 
 import pytest
 
+from prismabuild import contracts
 from prismabuild import core as pb, pool
 
 CAPACITY = {"cpu": 4, "mem_gb": 16}
@@ -62,11 +63,11 @@ def test_a_shared_venv_interpreter_is_placeable_on_every_box_that_has_it(tmp_pat
 
     queue = _queue_at(tmp_path)
     for host in ("dl380g10", "sparky", "sparklina"):
-        _announce(queue, host, tags=(pb.INTERPRETER_TAG,),
+        _announce(queue, host, tags=(contracts.INTERPRETER_TAG,),
                   interpreters=[PQ_PYTHON])
     _publish(queue, "a" * 64, interpreter=PQ_PYTHON)
 
-    probe = {"tags": [pb.INTERPRETER_TAG], "interpreter": PQ_PYTHON,
+    probe = {"tags": [contracts.INTERPRETER_TAG], "interpreter": PQ_PYTHON,
              "resources": {"cpu": 1, "mem_gb": 1}}
     assert queue.placeable(probe) is True
     assert set(queue.placeable_hosts(probe)) == {
@@ -77,11 +78,11 @@ def test_a_sparks_only_interpreter_is_placeable_on_the_sparks_only(tmp_path):
     """The tf516 venv: portable work, one real constraint, no submitter tag."""
 
     queue = _queue_at(tmp_path)
-    _announce(queue, "dl380g10", tags=(pb.INTERPRETER_TAG,),
+    _announce(queue, "dl380g10", tags=(contracts.INTERPRETER_TAG,),
               interpreters=[PQ_PYTHON])
-    _announce(queue, "sparky", tags=(pb.INTERPRETER_TAG,),
+    _announce(queue, "sparky", tags=(contracts.INTERPRETER_TAG,),
               interpreters=[PQ_PYTHON, TF516_PYTHON])
-    _announce(queue, "sparklina", tags=(pb.INTERPRETER_TAG,),
+    _announce(queue, "sparklina", tags=(contracts.INTERPRETER_TAG,),
               interpreters=[PQ_PYTHON, TF516_PYTHON])
 
     probe = {"tags": [], "interpreter": TF516_PYTHON,
@@ -111,7 +112,7 @@ def test_an_offer_without_answers_is_not_a_match_for_a_naming_item(tmp_path):
 
     queue = _queue_at(tmp_path)
     _announce(queue, "old-generation", tags=(), interpreters=None)
-    _announce(queue, "new-generation", tags=(pb.INTERPRETER_TAG,),
+    _announce(queue, "new-generation", tags=(contracts.INTERPRETER_TAG,),
               interpreters=[PQ_PYTHON])
 
     probe = {"tags": [], "interpreter": PQ_PYTHON,
@@ -129,7 +130,7 @@ def test_publish_seals_the_path_and_adds_the_capability_tag(tmp_path):
     _publish(queue, "b" * 64, interpreter=PQ_PYTHON)
     record = _item_of(queue, "b" * 64)
     assert record["interpreter"] == PQ_PYTHON
-    assert pb.INTERPRETER_TAG in record["tags"]
+    assert contracts.INTERPRETER_TAG in record["tags"]
 
 
 def test_publish_refuses_a_relative_path_and_a_bare_capability(tmp_path):
@@ -137,7 +138,7 @@ def test_publish_refuses_a_relative_path_and_a_bare_capability(tmp_path):
     with pytest.raises(pool.PoolContractError, match="absolute"):
         _publish(queue, "c" * 64, interpreter="venv/bin/python")
     with pytest.raises(pool.PoolContractError, match="interpreter"):
-        _publish(queue, "d" * 64, tags=[pb.INTERPRETER_TAG])
+        _publish(queue, "d" * 64, tags=[contracts.INTERPRETER_TAG])
     assert not queue.item_path(pool.READY, "c" * 64).exists()
     assert not queue.item_path(pool.READY, "d" * 64).exists()
 
@@ -147,7 +148,7 @@ def test_an_item_without_an_interpreter_is_byte_identical_to_before(tmp_path):
     _publish(queue, "e" * 64)
     record = _item_of(queue, "e" * 64)
     assert "interpreter" not in record
-    assert pb.INTERPRETER_TAG not in record["tags"]
+    assert contracts.INTERPRETER_TAG not in record["tags"]
 
 
 def test_the_offer_records_only_what_it_positively_answers(tmp_path):
@@ -199,7 +200,7 @@ def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
              interpreter="/no/such/bin/python")
 
     assert queue.claim(capacity=CAPACITY,
-                       tags=[pb.INTERPRETER_TAG, "gb10"]) is None
+                       tags=[contracts.INTERPRETER_TAG, "gb10"]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "interpreter_not_present"
     assert denial["evidence"]["interpreter"] == "/no/such/bin/python"
@@ -212,7 +213,7 @@ def test_the_claim_takes_an_interpreter_this_box_has(tmp_path):
              interpreter=sys.executable)
 
     claimed = queue.claim(capacity=CAPACITY,
-                          tags=[pb.INTERPRETER_TAG, "gb10"])
+                          tags=[contracts.INTERPRETER_TAG, "gb10"])
 
     assert claimed is not None
 
@@ -270,7 +271,7 @@ def test_pbtest_refuses_a_path_no_recorded_worker_reports(tmp_path, capsys):
 # --- review round 1 (#1266): the first submission must pass the pre-flight ---
 
 def _announce_live(queue, host, *, present=(), absent=(),
-                   tags=(pb.INTERPRETER_TAG,)):
+                   tags=(contracts.INTERPRETER_TAG,)):
     _announce(queue, host, tags=tags, interpreters=list(present) or None)
     record_path = queue.root / "workers" / f"{host}.json"
     record = json.loads(record_path.read_text())

@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from prismabuild import contracts
 from prismabuild import core as pb, pool
 
 
@@ -18,7 +19,7 @@ def fleet(tmp_path, monkeypatch, request):
     host = request.param
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
     queue = pool.PoolQueue(tmp_path / "queue")
-    worker_tags = [host, "gb10", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG]
+    worker_tags = [host, "gb10", contracts.INTERPRETER_TAG, contracts.CONTAINER_IMAGE_TAG]
     queue.announce(host=host, tags=worker_tags, has_gpu=True,
                    capacity=CAPACITY, observed_capacity=CAPACITY,
                    interpreters=[sys.executable], observed_images=[])

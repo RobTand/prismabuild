@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import container_images as ci  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
@@ -32,7 +33,7 @@ ID_B = "sha256:" + "b" * 64
 REF_A = "ghcr.io/example/stage-a@sha256:" + "a" * 64
 REF_B = "ghcr.io/example/stage-b@sha256:" + "b" * 64
 
-CAPABILITY = pb.CONTAINER_IMAGE_TAG
+CAPABILITY = contracts.CONTAINER_IMAGE_TAG
 
 
 def _offer_images(queue, *images):

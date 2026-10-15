@@ -15,6 +15,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -104,7 +105,7 @@ def _progress_queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(
         host="sparky",
-        tags=["sparky", "x86", pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+        tags=["sparky", "x86", contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
         has_gpu=False,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 0},
         progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
@@ -143,8 +144,8 @@ def test_decomposition_seals_shared_policies_on_every_child(
         assert params[pb.PROFILE_PARAM] == "sample"
         assert params["retry_policy"] == {"max_attempts": 1, "retry_safe": True}
         assert "x86" in params["placement"]["required_tags"]
-        assert pb.PROGRESS_TAG in params["placement"]["required_tags"]
-        assert pb.PROGRESS_HELPER_TAG in params["placement"]["required_tags"]
+        assert contracts.PROGRESS_TAG in params["placement"]["required_tags"]
+        assert contracts.PROGRESS_HELPER_TAG in params["placement"]["required_tags"]
 
     _, baseline = pbcampaign.decompose(
         dc.validate_logical_request(_request(work)), transport="pool", priority=0,

@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import contracts
 from prismabuild import pool  # noqa: E402
 
 CAPACITY = {"cpu": 2, "mem_gb": 2}
@@ -57,11 +58,11 @@ def test_qualification_container_image_unknown_vs_present(tmp_path: Path) -> Non
     queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))
     _publish(queue, "b" * 64, tags=["x86"], container_images=[IMAGE])
-    assert _claim(queue, tags=["x86", pb.CONTAINER_IMAGE_TAG]) is None
+    assert _claim(queue, tags=["x86", contracts.CONTAINER_IMAGE_TAG]) is None
     queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS),
                    observed_images=[IMAGE])
-    admitted = _claim(queue, tags=["x86", pb.CONTAINER_IMAGE_TAG],
+    admitted = _claim(queue, tags=["x86", contracts.CONTAINER_IMAGE_TAG],
                       observed_images=[IMAGE])
     assert admitted is not None
     assert admitted["action_key"] == "b" * 64
@@ -138,7 +139,7 @@ def test_mixed_capability_matrix_without_hosts(tmp_path: Path) -> None:
     cpu_work = _claim(queue, tags=["x86"])
     assert cpu_work is not None
     assert cpu_work["action_key"] == "1" * 64
-    gpu_work = _claim(queue, tags=["x86", "gb10", pb.CONTAINER_IMAGE_TAG],
+    gpu_work = _claim(queue, tags=["x86", "gb10", contracts.CONTAINER_IMAGE_TAG],
                       has_gpu=True, observed_images=[IMAGE])
     assert gpu_work is not None
     assert gpu_work["action_key"] == "2" * 64

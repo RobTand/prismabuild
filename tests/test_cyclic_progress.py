@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from test_progress_keeps_a_working_action_alive import pb, pool, pbrun, _claimed
+from prismabuild import contracts
 
 
 def _policy(cycle=True):
@@ -115,9 +116,9 @@ def test_cycle_without_phases_is_refused_before_submission():
 
 
 def _announce(queue, host, *, cycle, ceiling=7200):
-    tags = ["x86", host, pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG]
+    tags = ["x86", host, contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG]
     if cycle:
-        tags.append(pb.PROGRESS_CYCLE_TAG)
+        tags.append(contracts.PROGRESS_CYCLE_TAG)
     queue.announce(host=host, tags=tags, has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 0},
                    timeout_ceiling_s=ceiling,
@@ -154,14 +155,14 @@ def test_cycle_flag_seals_policy_and_blocks_an_old_worker(tmp_path, monkeypatch,
                       "--progress", "encode=200", "--progress", "publish=5") == 0
     submission = _one_json_line(capsys.readouterr())
     item = json.loads(Path(submission["submission"]).read_text())
-    assert pb.PROGRESS_CYCLE_TAG in item["tags"]
+    assert contracts.PROGRESS_CYCLE_TAG in item["tags"]
     key = item["action_key"]
     request = json.loads((Path(item["cas_root"]) / "requests" / key[:2] / f"{key}.json").read_text())
     assert request["params"][pb.PROGRESS_PARAM] == _policy()
     linear = {k: v for k, v in request.items() if k != "action_key"}
     linear["params"] = {**linear["params"], pb.PROGRESS_PARAM: _policy(False)}
     assert pb.seal_action(linear)["action_key"] != key
-    old_tags = [tag for tag in item["tags"] if tag != pb.PROGRESS_CYCLE_TAG]
+    old_tags = [tag for tag in item["tags"] if tag != contracts.PROGRESS_CYCLE_TAG]
     assert queue.claim(tags=old_tags, capacity={"cpu": 2, "mem_gb": 16}) is None
     claimed = queue.claim(tags=item["tags"], capacity={"cpu": 2, "mem_gb": 16})
     assert claimed["action_key"] == key
