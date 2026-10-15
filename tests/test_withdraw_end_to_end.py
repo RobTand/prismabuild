@@ -35,7 +35,6 @@ import pbrun  # noqa: E402
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
-from prismabuild import role_session
 
 
 def _await(predicate, *, timeout_s: float = 30.0) -> bool:

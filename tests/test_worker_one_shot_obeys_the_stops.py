@@ -23,7 +23,6 @@ from prismabuild import pool
 KEY = "c" * 64
 
 
-from prismabuild import role_session
 
 
 def exercise(tmp_path, *, draining, loaded, live):

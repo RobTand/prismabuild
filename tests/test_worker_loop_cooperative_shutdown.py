@@ -13,7 +13,6 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 from prismabuild import pool
 
 
-from prismabuild import role_session
 
 
 @pytest.mark.parametrize("fails", [False, True])
