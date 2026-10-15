@@ -524,9 +524,29 @@ pretransition/busy policy preserve conditional observations and their phases.
 The driver still has 723 executable AST statements; six C01 waves remain.
 The existing unbounded ready-GPU veto is unchanged.
 
-Immutable-file owner P2 is still under qualification. Its first complete
-77-file run at `16a44b327fd5bbdd154495ea299235ceae095756` had 2,626 passes,
-18 existing capability skips and one stale four-source assertion failure.
-The separate test correction at `8210201e7ab53472e547e4861785155e80c75f92`
-checks all five actual materialized source hashes. Its complete rerun is
-pending. No P2 integration or final pass is claimed here.
+Immutable-file owner P2's first complete 77-file run at
+`16a44b327fd5bbdd154495ea299235ceae095756` had 2,626 passes, 18 existing
+capability skips and one stale four-source assertion failure. That RED remains
+recorded. The separate correction at
+`8210201e7ab53472e547e4861785155e80c75f92` checks all five actual materialized
+source hashes. The full rerun passed 2,627 cases with the same 18 capability
+skips; all three source, terminal, retained-log and CAS chains are verified.
+One approved textual source-count mirror was removed and seven real cases were
+added. Independent review found no production defect and accepted the correction.
+
+P2 is integrated through `3c9e73edf6f6e776471f176c56f874089a23c8b3`.
+Thirty-two whole files match the qualified author source. The pool and design
+overlaps preserve the current claim wave and later design correction; the
+rerunnable source audit checks every pool function and the exact prose edits.
+The complete 475-file consumer union at that source passed 7,741 unique cases
+with 21 skips and six separate auxiliary subtests. All eight full chains are
+verified. All 6,622 prior combined nodes remain; 1,140 more nodes mostly come
+from newly included full files. This is a scoped integrated run, not the full
+repository suite. Eighteen skips require privileged map_files identity proof,
+two require readable NFS, and one is an opt-in claim-loop profile.
+
+The receipt replay test at `5f03306cfcef15a7c2ec171516b88a2224bd4f16` fixes the
+real file's timestamp before replay instead of sleeping for the clock. Its
+complete 18 cases passed, retaining all 63 original assertions and node IDs.
+The baseline file is byte-identical at qualified `0e17e8b0ef2804b21a055f7e0d877b121138ece9`.
+There is no measured flake-rate or speed claim.
