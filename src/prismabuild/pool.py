@@ -20662,6 +20662,12 @@ class PoolQueue:
                 self.attempt_generation(checked), checked.get("attempts", 0))
 
     def _read_peer_observation(self, host: str, offer: Mapping) -> _peer_placement.PeerObservation | None:
+        """Share #1262 peer evidence without repeated shared-mount reads (#351).
+
+        GPU hosts leave CPU-only work to fitting CPU-only peers (#1262).
+        The pass reads each peer once.
+        Peer I/O stays outside host admission (#351).
+        """
         remote = self.ledger(host)
         tiers = offer.get("cpu_tiers") or {}
         if _read_json(remote.base / "cpu-map.json") != tiers:

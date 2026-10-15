@@ -96,13 +96,13 @@ def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 3
     return steps
 
 
-@pytest.mark.parametrize("rule", RULES)
-@pytest.mark.parametrize("observation", OBSERVATIONS)
+@pytest.mark.parametrize("rule,observation", [
+    pytest.param(rule, observation, id=f"{observation}-{rule}")
+    for observation in OBSERVATIONS for rule in RULES
+    if observation != "ledger_failure" or rule == "cpu_host"
+])
 def test_real_claim_preserves_rule_evidence_requirements(tmp_path, monkeypatch, rule, observation):
     steps = _history(tmp_path, monkeypatch, rule, observation)
-    if observation == "ledger_failure" and rule != "cpu_host":
-        assert steps == [{"error": "OSError", "message": "injected peer ledger read failure"}]
-        return
     yields = observation == "fresh" or (
         rule == "preferred_cpu" and observation in {"partial", "stale"})
     assert steps[0]["claimed"] is not yields, steps
@@ -116,6 +116,13 @@ def test_real_claim_preserves_rule_evidence_requirements(tmp_path, monkeypatch, 
         assert steps[1]["claimed"] is (rule != "cpu_host")
     else:
         assert not steps[0]["ready"] and steps[0]["held"]
+
+
+@pytest.mark.parametrize("rule", ("cross_resource", "preferred_cpu"))
+def test_characterization_timer_peer_read_error_aborts_claim(tmp_path, monkeypatch, rule):
+    """Retained behavior. Follow-up: treat an unreadable timer peer as no candidate."""
+    assert _history(tmp_path, monkeypatch, rule, "ledger_failure") == [
+        {"error": "OSError", "message": "injected peer ledger read failure"}]
 
 
 def _scratch_history(root, monkeypatch, observation):
@@ -251,4 +258,4 @@ def replay():
 
 
 if __name__ == "__main__":
-    print(json.dumps(replay(), sort_keys=True))
+    print(json.dumps(replay()))

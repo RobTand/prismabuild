@@ -53,6 +53,10 @@ class PlacementPass:
         return self._offers
 
     def peer(self, host: str, offer: Mapping) -> PeerObservation | None:
+        """The first offer fixes this host's observation for the pass.
+
+        Callers reuse that snapshot offer, including scratch's original offer.
+        """
         if host not in self._peers:
             try:
                 self._peers[host] = self._read_peer(host, offer)
