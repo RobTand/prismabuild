@@ -34,7 +34,6 @@ DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_TERMINAL_WINDOW_SECONDS = 3600.0
 DEFAULT_TERMINAL_LIMIT = 500
 SHUTDOWN_GRACE_S = 10.0
-GENERATION_CHECK_INTERVAL_S = 5.0
 GIB = 1024 ** 3
 #: How far ahead of this reader another box's clock may be before its sample
 #: stops being credible. A telemetry record is stamped by the box executing the
@@ -2676,10 +2675,7 @@ def _serve(args: argparse.Namespace, *, refused: int) -> int:
 
 def _serve_requests(args: argparse.Namespace, *, refused: int,
                     stop: threading.Event) -> int:
-    from prismabuild import generation_receipt, role_session
-
-    loaded_commit = role_session.loaded_runtime_commit()
-    loaded_generation = role_session.loaded_generation()
+    from prismabuild import role_session
 
     class CompletingServer(ThreadingHTTPServer):
         def __init__(self, *args, **kwargs):
@@ -2730,18 +2726,8 @@ def _serve_requests(args: argparse.Namespace, *, refused: int,
                         holder_argv=argv)
         return refused
     server.timeout = 0.1
-    next_generation_check = time.monotonic()
     try:
         while not stop.is_set():
-            if time.monotonic() >= next_generation_check:
-                published = generation_receipt.read_receipt(role_session.RUNTIME_VERSION)
-                next_generation_check = time.monotonic() + GENERATION_CHECK_INTERVAL_S
-                if generation_receipt.drift(
-                        loaded_commit=loaded_commit,
-                        loaded_generation=loaded_generation,
-                        published_commit=str(published.get("commit") or ""),
-                        published_generation=str(published.get("generation") or "")) is not None:
-                    break
             server.handle_request()
     finally:
         server.server_close()
