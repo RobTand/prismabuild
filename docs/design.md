@@ -4860,6 +4860,18 @@ a known published commit alone does not prove that an unknown loaded commit
 moved. The worker loop keeps its existing generation-drift exit 0, including
 `--once`.
 
+`generation_receipt.observe` reads both runtime identities from one receipt
+read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,
+unreadable, malformed and incomplete receipts remain distinct
+`ReceiptUnavailable` observations. Values are not trimmed or coerced, and this
+boundary imposes no commit grammar or additional receipt schema.
+`compare` returns `Match(identity)`, `Drift(loaded, published)` or
+`Unknown(loaded, published)`. Drift requires two complete identities; an
+unavailable observation proves neither agreement nor movement. Each decision
+carries its evidence. Roles retain their own refusal, wait and retirement
+policies. This leaf is qualified separately before role callers migrate;
+the existing scalar comparison paths remain until that closed caller wave.
+
 ### The pre-publish shape gate (#987)
 
 The #965 defect reached production because nothing before a publish staged a
