@@ -319,7 +319,10 @@ def test_a_collection_skip_covers_its_assigned_file():
               "summary": "1 skipped in 0.01s",
               "output": _record([], [["tests/test_skipped.py", "collect", "skipped",
                                        "optional dependency absent", None]])}
-    pbtest.reconcile_shards([result])
+    observed = {**result, "returncode": 0,
+                "output": result["output"] + "\n" + result["summary"]}
+    result["reconciliation"] = pbtest.pbtest_outcomes.judge_shards(
+        [observed], requested_files=result["files"])["shards"][0]["reconciliation"]
     assert result["reconciliation"]["problems"] == []
     assert result["reconciliation"]["missing_files"] == []
 
@@ -340,7 +343,10 @@ def test_only_complete_consistent_ignore_evidence_covers_a_file(selection, error
     result = {"shard": 0, "files": ["tests/test_ignored.py"], "ran": True,
               "summary": "no tests ran in 0.01s",
               "output": outcomes.PREFIX + json.dumps(record)}
-    pbtest.reconcile_shards([result])
+    observed = {**result, "returncode": 0,
+                "output": result["output"] + "\n" + result["summary"]}
+    result["reconciliation"] = pbtest.pbtest_outcomes.judge_shards(
+        [observed], requested_files=result["files"])["shards"][0]["reconciliation"]
     rec = result["reconciliation"]
     assert (rec["problems"] == []) is valid
     assert rec["missing_files"] == ([] if valid else ["tests/test_ignored.py"])
@@ -355,7 +361,10 @@ def test_a_collected_file_cannot_also_claim_to_be_ignored():
     result = {"shard": 0, "files": [name], "ran": True,
               "summary": "1 passed in 0.01s",
               "output": outcomes.PREFIX + json.dumps(record)}
-    pbtest.reconcile_shards([result])
+    observed = {**result, "returncode": 0,
+                "output": result["output"] + "\n" + result["summary"]}
+    result["reconciliation"] = pbtest.pbtest_outcomes.judge_shards(
+        [observed], requested_files=result["files"])["shards"][0]["reconciliation"]
     assert "invalid or inconsistent file selection evidence" in result["reconciliation"]["problems"]
 
 
@@ -385,4 +394,4 @@ def test_failed_shard_shows_full_failure_section(tmp_path, monkeypatch, capsys):
     ("no tests collected (2 deselected) in 0.01s", None, 0),
 ])
 def test_summary_outcomes_read_the_categories_the_record_uses(summary, counts, collected):
-    assert pbtest.summary_outcomes(summary) == (counts, collected)
+    assert pbtest.pbtest_outcomes.summary_outcomes(summary) == (counts, collected)

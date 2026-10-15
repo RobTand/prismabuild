@@ -209,7 +209,7 @@ def test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang(
         import xdist
     output = blocked_shard(
         tmp_path, workers=workers, incomplete=False, exit_hook="unconfigure")
-    summary = pbtest.pytest_summary(output.splitlines())
+    summary = pbtest.pbtest_outcomes.pytest_summary(output.splitlines())
     assert summary.startswith("2 passed"), output
     assert pbtest.pbtest_outcomes.parse(output) is not None
     code, record = _one_shard(

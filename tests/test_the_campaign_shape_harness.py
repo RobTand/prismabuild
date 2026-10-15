@@ -305,8 +305,18 @@ def _outcomes(**changes) -> dict:
     return record
 
 
+def _gate_log(record):
+    if record is None:
+        return ""
+    counts = {}
+    for row in record["reports"]:
+        counts[row[2]] = counts.get(row[2], 0) + 1
+    summary = ", ".join(f"{count} {category}" for category, count in counts.items())
+    return "pbtest-outcomes: " + json.dumps(record) + "\n" + summary + " in 0.01s\n"
+
+
 def test_a_gate_run_that_passed_every_table_is_accepted() -> None:
-    shape_gate.judge_outcomes(_outcomes(), where="k")
+    shape_gate.judge_gate_log(_gate_log(_outcomes()), where="k")
 
 
 @pytest.mark.parametrize("record", [
@@ -330,7 +340,7 @@ def test_a_gate_run_that_passed_every_table_is_accepted() -> None:
         "failed", "teardown-error", "uncounted"])
 def test_a_gate_run_that_is_not_every_table_passing_is_refused(record) -> None:
     with pytest.raises(shape_gate.ShapeGateFailure) as caught:
-        shape_gate.judge_outcomes(record, where="k")
+        shape_gate.judge_gate_log(_gate_log(record), where="k")
     assert caught.value.reason == "receipt_refused"
 
 
