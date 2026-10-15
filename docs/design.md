@@ -4852,13 +4852,16 @@ Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.
 
-Local tier now compares the runtime generation as well as the commit before
-each pass, so republication of the same commit retires the old role. A one-shot
-returns 75 without serving that pass; the continuous role returns 0 for
-supervisor replacement. Its existing unknown-loaded-commit policy remains:
-a known published commit alone does not prove that an unknown loaded commit
-moved. The worker loop keeps its existing generation-drift exit 0, including
-`--once`.
+Local tier requires a complete matching commit and generation before each
+queue/layout/cycle pass. Known drift returns 75 from a one-shot and 0 from a
+continuous role for supervisor replacement. UNKNOWN returns 75 from a one-shot
+or waits interruptibly on the role's stop Event. An initially unavailable
+loaded receipt is retried until known; that first known identity stays attached
+to the imported code. A closed maintenance gate can still write the role's
+actual idle park marker while receipt identity is unavailable. No new queue work
+starts in UNKNOWN, and local tier does not write drift incidents. Its current
+pass finishes before the next receipt boundary. The worker loop keeps its
+existing generation-drift exit 0, including `--once`.
 
 `generation_receipt.observe` reads both runtime identities from one receipt
 read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,

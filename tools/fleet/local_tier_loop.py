@@ -41,24 +41,26 @@ def main(argv=None):
         parser.error("interval must be positive")
     try:
         with runtime_gate.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
-            loaded = runtime_gate.loaded_runtime_commit()
-            loaded_generation = runtime_gate.loaded_generation()
+            loaded = runtime_gate.loaded_runtime()
             with runtime_gate.role_singleton(Path(__file__)):
                 while not stop.is_set():
-                    published = runtime_gate.published_commit()
-                    published_generation = runtime_gate.published_generation_name()
-                    if generation_receipt.drift(
-                            loaded_commit=loaded,
-                            loaded_generation=loaded_generation,
-                            published_commit=published if loaded else "",
-                            published_generation=published_generation) is not None:
+                    if isinstance(loaded, generation_receipt.ReceiptUnavailable):
+                        loaded = runtime_gate.loaded_runtime()
+                    decision = generation_receipt.compare(loaded, runtime_gate.published_runtime())
+                    if isinstance(decision, generation_receipt.Drift):
                         return 75 if args.once else 0
                     gate = runtime_gate.read_maintenance_gate()
                     if gate is not None:
                         runtime_gate.post_park_marker(gate)
+                    if isinstance(decision, generation_receipt.Unknown):
+                        reasons = {
+                            name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+                            for name, value in (("loaded", decision.loaded), ("published", decision.published))
+                        }
+                        print(json.dumps({"event": "localtier-runtime-unknown", **reasons}), flush=True)
                         if args.once:
                             return 75
-                    else:
+                    elif gate is None:
                         try:
                             queue = pool.PoolQueue(args.pool_root)
                             queue.ensure_layout()
@@ -72,6 +74,8 @@ def main(argv=None):
                             print(json.dumps(result), flush=True)
                             if args.once:
                                 return 1 if any(row.get("error") for row in result.get("lease_pass", [])) else 0
+                    elif args.once:
+                        return 75
                     stop.wait(args.interval_s)
     except (runtime_gate.RoleLockHeld, runtime_gate.RoleLockUnavailable) as exc:
         print(f"localtier: {exc}", file=sys.stderr)

@@ -235,14 +235,13 @@ def test_local_tier_same_commit_new_generation_exits_before_cycle(
     assert calls == [], "local tier served a same-commit retired generation"
 
 
-def test_local_tier_unknown_loaded_commit_keeps_its_existing_policy(boundary, monkeypatch):
-    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "")
-    monkeypatch.setattr(role_session, "published_commit", lambda: "known-published-commit")
+def test_local_tier_unknown_loaded_receipt_refuses_the_pass(boundary, monkeypatch):
+    (boundary.root / "loaded.json").unlink()
     monkeypatch.setattr(local_tier_loop.resident_sets, "read_policy", lambda _: {})
     calls = []
     monkeypatch.setattr(local_tier_loop, "local_tier_cycle", lambda *args: calls.append(True) or {})
-    assert local_tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--once"]) == 0
-    assert calls == [True]
+    assert local_tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--once"]) == 75
+    assert calls == []
 
 
 @pytest.mark.parametrize("gate_state", ["open", "closed", "missing"])
@@ -345,14 +344,24 @@ def test_stop_context_precedes_each_roles_startup_queue_boundary(
         monkeypatch.setattr(worker_loop, "SH", boundary.root)
         main = lambda: worker_loop.main(argv=["--all-cores", "--cpu-slots", "1",
             "--mem-gb", "1", "--assume-idle", "--poll-s", "0", "--max-idle", "1"])
+    elif role == "localtier":
+        def local_main():
+            def read_finished(frame, event, value):
+                if (event == "return" and isinstance(value, str) and frame.f_code.co_name == "read_text"
+                        and frame.f_locals.get("self") == role_session.GENERATION_VERSION):
+                    sys.setprofile(None)
+                    os.kill(os.getpid(), signal.SIGTERM)
+            sys.setprofile(read_finished)
+            try:
+                return local_tier_loop.main(["--pool-root", str(boundary.root / "queue")])
+            finally:
+                sys.setprofile(None)
+        main = local_main
     else:
         monkeypatch.setattr(role_session, "loaded_runtime_commit", loaded)
-        if role == "storage":
-            args = Fleet(boundary.root / "fleet").args(once=False, dry_run=True)
-            monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
-            main = lambda: prewarm_loop.main([])
-        else:
-            main = lambda: local_tier_loop.main(["--pool-root", str(boundary.root / "queue")])
+        args = Fleet(boundary.root / "fleet").args(once=False, dry_run=True)
+        monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
+        main = lambda: prewarm_loop.main([])
     monkeypatch.setattr(local_tier_loop.pool, "PoolQueue", queue_boundary)
     log = boundary.root / "entry.log"
     process = CONTEXT.Process(target=_run_role, args=(main, log))

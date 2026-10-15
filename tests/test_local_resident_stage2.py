@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 from pathlib import Path
 import signal
 
@@ -133,14 +132,15 @@ def test_role_reports_a_cycle_error_instead_of_crashing(tmp_path, monkeypatch, c
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"schema": resident_sets.POLICY_SCHEMA, "hosts": {}}))
 
-    @contextmanager
-    def singleton(_script):
-        yield
-
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "role_singleton", singleton)
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "loaded_runtime_commit", lambda: "")
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "published_commit", lambda: "")
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "read_maintenance_gate", lambda: None)
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "first"}))
+        monkeypatch.setattr(local_tier_loop.runtime_gate, attribute, receipt)
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
+    monkeypatch.setattr(local_tier_loop.runtime_gate, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(local_tier_loop.runtime_gate, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     calls = []
 
     def cycle(*args):
