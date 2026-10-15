@@ -41,19 +41,32 @@ def residency_denial(verdict: Mapping[str, object]) -> str | None:
                             and entry.get("status")
                             not in RESIDENCY_LEAD_UNFINISHED
                             for entry in pending)):
-                # Every lead ended somewhere no later poll repairs:
-                # failed, withdrawn, dropped, unpinned, or bound
-                # to another manifest.  Admission is unchanged --
-                # the item stays ready, as documented above -- but
-                # the denial names the terminal state, so the
-                # fleet-wide denial snapshot tells it apart from a
-                # mover that simply has not finished (#595).  A
-                # lead queued or claimed again under a later
-                # generation has not finished, whatever its old
-                # ending says (#1186).
                 reason = "residency_lead_terminal"
         return reason
     return None
+
+
+def admission_denial(host_demand: Mapping[str, int], *, capacity_present: bool) -> str | None:
+    if not capacity_present:
+        return "admission_capacity_required"
+    if not host_demand:
+        return "admission_demand_required"
+    return None
+
+
+def never_fits(reservation_demand: Mapping[str, int], total: Mapping[str, int]) -> bool:
+    return any(total.get(kind, 0) < need for kind, need in reservation_demand.items())
+
+
+def funded_remainder(
+    host_demand: Mapping[str, int], adaptive: Mapping[str, object],
+) -> dict[str, int]:
+    funded = adaptive["funded"]
+    covered = {"cpu": len(funded["cpus"]),
+               "mem_gb": int(funded["mem_gb"])}
+    return {kind: int(need) - covered.get(kind, 0)
+              for kind, need in host_demand.items()
+              if int(need) - covered.get(kind, 0) > 0}
 
 
 WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}

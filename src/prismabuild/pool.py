@@ -19700,19 +19700,6 @@ class PoolQueue:
             raise PoolContractError("pool item resources must be an object")
         return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
 
-    @staticmethod
-    def _admission_refusal(host_demand: Mapping[str, int], *, capacity: Mapping[str, int] | None) -> str | None:
-        """Executable claims need real host admission, never implicit demand.
-
-        A private root or an already-admitted parent is not an outer grant.
-        No metadata-only/cannot-execute claim policy is supplied by this API.
-        """
-        if capacity is None:
-            return "admission_capacity_required"
-        if not host_demand:
-            return "admission_demand_required"
-        return None
-
     def _defer_fallback(
         self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
     ) -> dict[str, object] | None:
@@ -21567,7 +21554,8 @@ class PoolQueue:
                     self.record_denial(item, "malformed_tier_demand", {
                         "demand": sealed_demand, "error": str(exc)})
                     continue
-                admission_refusal = self._admission_refusal(demand, capacity=capacity)
+                admission_refusal = candidate_policy.admission_denial(
+                    demand, capacity_present=capacity is not None)
                 if admission_refusal is not None:
                     self.record_denial(item, admission_refusal, {
                         "declared_demand": sealed_demand,
@@ -21633,7 +21621,7 @@ class PoolQueue:
                 # not author, which is what the bare ``except`` is for.
                 try:
                     if ledger is not None and demand:
-                        if any(total.get(kind, 0) < need for kind, need in reservation_demand.items()):
+                        if candidate_policy.never_fits(reservation_demand, total):
                             self.record_denial(item, "never_fits_capacity", {
                                 "capacity_total": total, "demand": demand,
                                 "reservation_demand": reservation_demand,
@@ -22000,12 +21988,7 @@ class PoolQueue:
                                 # allowance, not ``free/`` (#985): only the
                                 # remainder, if any, is taken, and only it is
                                 # what the commit must file.
-                                funded = adaptive["funded"]
-                                covered = {"cpu": len(funded["cpus"]),
-                                           "mem_gb": int(funded["mem_gb"])}
-                                demand = {kind: int(need) - covered.get(kind, 0)
-                                          for kind, need in demand.items()
-                                          if int(need) - covered.get(kind, 0) > 0}
+                                demand = candidate_policy.funded_remainder(demand, adaptive)
                                 reservation_demand = dict(demand)
                             elif held_back and not (serves_incumbent
                                                     and scan.withheld_for in scan.measurement_withholds):
