@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from prismabuild import pool, resource_scope
-from test_worker_loop_reloads_unversioned import _worker_loop
+from test_generation_drift_refusals import _worker_loop
 
 KEY = 'a' * 64
 
