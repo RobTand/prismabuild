@@ -1101,12 +1101,13 @@ def _sealed_cas_with_params(tmp_path: Path, params: dict, tag: str):
     return cas, action, checkout
 
 
-def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path) -> None:
+def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path, broker) -> None:
     """Real filed request + publish WITHOUT kwarg => derived projection (R4)."""
     owner = _hexkey("sq-owner")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1317,13 +1318,14 @@ def test_legacy_mover_without_reference_claims_fresh(tmp_path: Path) -> None:
     q.finish(mover, status="executed")
 
 
-def test_publish_without_staged_intent_refuses(tmp_path: Path) -> None:
+def test_publish_without_staged_intent_refuses(tmp_path: Path, broker) -> None:
     """Publication precondition: no staged intent => refuse before READY."""
     owner = _hexkey("pp-owner")
     mover = _hexkey("pp-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -1334,13 +1336,14 @@ def test_publish_without_staged_intent_refuses(tmp_path: Path) -> None:
     assert pool._read_json(q.item_path(pool.READY, mover)) is None
 
 
-def test_publish_mismatched_intent_refuses(tmp_path: Path) -> None:
+def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
     """Staged intent for another batch => publication refuses (R5)."""
     owner = _hexkey("pp2-owner")
     mover = _hexkey("pp2-mover")
     q = _queue(tmp_path)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     descs2 = _descriptors(tmp_path, template, inst, name="b.bin")
