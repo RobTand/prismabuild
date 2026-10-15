@@ -269,7 +269,7 @@ def test_metrics_serves_until_explicit_stop_for_each_gate_state(
         os.kill(process.pid, signal.SIGTERM)
         process.join(3)
         assert process.exitcode == 0, (boundary.root / "gate-metrics.log").read_text()
-        assert len(list(boundary.parked.iterdir())) == int(gate_state != "open")
+        assert len(list(boundary.parked.iterdir())) == int(gate_state == "closed")
     finally:
         _finish(process)
 
