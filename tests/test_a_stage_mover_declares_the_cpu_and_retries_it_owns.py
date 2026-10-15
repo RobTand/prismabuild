@@ -143,17 +143,17 @@ def _idle_two_cpu_host(monkeypatch):
     from prismabuild import adaptive_cpu
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", False))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 2, "interval_s": 1.,
-        "busy_cpus": 0., "psi_some": 0.})
+        "busy_cpus": 0., "psi_some": 0.}
 
 
-def _hold_one_cpu(queue: pool.PoolQueue, tiers) -> dict[str, object]:
+def _hold_one_cpu(queue: pool.PoolQueue, tiers, cpu_sampler) -> dict[str, object]:
     queue.publish(action_key=HOLDER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="worker.py",
                   resources={"cpu": 1})
     claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                        adaptive_cpu=True)
+                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == HOLDER
     return claim
 
@@ -172,8 +172,8 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     queue.ensure_layout()
     tiers = {"preferred": [0], "fallback": [1]}
     staged = _seal(tmp_path, queue)
-    _idle_two_cpu_host(monkeypatch)
-    _hold_one_cpu(queue, tiers)
+    cpu_sampler = _idle_two_cpu_host(monkeypatch)
+    _hold_one_cpu(queue, tiers, cpu_sampler=cpu_sampler)
 
     row = dict(staged["plan"]["phases"][0]["mover_row"])
     assert row["resources"]["cpu"] == READERS, row["resources"]
@@ -184,7 +184,7 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     row["resources"] = {**row["resources"], "cpu": 1}
     queue.publish(**row)
     claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                        adaptive_cpu=True)
+                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None, "a bounded mover must run beside one holder"
     assert claim["action_key"] == row["action_key"]
 
@@ -195,7 +195,7 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
                               if key != "cpu"}
     queue.publish(**unbounded)
     assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                       adaptive_cpu=True) is None
+                       adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.item_path(pool.READY, unbounded["action_key"]).exists()
 
 

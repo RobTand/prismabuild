@@ -161,17 +161,17 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     return queue, template, consumer, phase["mover_row"], phase["egress_row"], cas
 
 
-def _busy_stage_host(monkeypatch) -> None:
+def _busy_stage_host():
     """dl380g10 as it always is: sampled fresh, one CPU of eight busy."""
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 8, "interval_s": 1.,
-        "busy_cpus": FOREIGN_BUSY_CPUS, "psi_some": 0.})
+        "busy_cpus": FOREIGN_BUSY_CPUS, "psi_some": 0.}
 
 
-def _claim(queue: pool.PoolQueue):
+def _claim(queue: pool.PoolQueue, cpu_sampler):
     return queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=CPU_TIERS,
-                       adaptive_cpu=True)
+                       adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _denial(queue: pool.PoolQueue, key: str) -> dict:
@@ -190,7 +190,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
     """
 
     queue, _template_, consumer, mover_row, _egress, cas = _seal(tmp_path, monkeypatch)
-    _busy_stage_host(monkeypatch)
+    cpu_sampler = _busy_stage_host()
     consumer_key = str(consumer["action_key"])
     queue.publish(action_key=consumer_key, cas_root=str(cas.cas.root),
                   checkout_root=str(tmp_path), worker_script="worker.py",
@@ -199,7 +199,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
         {"action_key": consumer_key, "cas_root": str(cas.cas.root)})[1] is True
 
     queue.publish(**mover_row)
-    claim = _claim(queue)
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     if claim is None:
         refused = _denial(queue, str(mover_row["action_key"]))["evidence"]["decision"]
         pytest.fail("a measurement consumer's mover must run on a stage host "
@@ -220,15 +220,15 @@ def test_the_consumer_alone_is_still_held_to_an_idle_host(
     queue.publish(action_key=consumer_key, cas_root=str(cas.cas.root),
                   checkout_root=str(tmp_path), worker_script="worker.py",
                   resources={"cpu": 1, "mem_gb": 1}, tags=["dl380g10"])
-    _busy_stage_host(monkeypatch)
-    assert _claim(queue) is None
+    cpu_sampler = _busy_stage_host()
+    assert _claim(queue, cpu_sampler=cpu_sampler) is None
     decision = _denial(queue, consumer_key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": time.time(), "cpu_count": 8, "interval_s": 1.,
-        "busy_cpus": 0., "psi_some": 0.})
-    claim = _claim(queue)
+        "busy_cpus": 0., "psi_some": 0.}
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == consumer_key
 
 
