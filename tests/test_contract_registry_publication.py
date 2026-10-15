@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -124,3 +126,24 @@ def test_unknown_sealed_declaration_never_authorizes_a_progress_tag(tmp_path, da
     with pytest.raises(pool.PoolContractError):
         _publish(queue, action, cas, checkout, tags=[contracts.PROGRESS_TAG])
     assert not queue.item_path(pool.READY, action["action_key"]).exists()
+
+
+def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypatch):
+    import pbrun
+
+    queue, action, _cas, checkout = _sealed_request(tmp_path, {
+        "gang": {"group": "c" * 32, "size": 2, "index": 0},
+        "placement": {"required_tags": [contracts.GANG_TAG]}})
+    queue.announce(host="ordinary", tags=["ordinary"], has_gpu=False,
+                   capacity={"cpu": 4, "mem_gb": 8})
+    remedy = "Enable the reviewed gang worker configuration."
+    monkeypatch.setattr(contracts, "CONTRACTS", tuple(
+        replace(row, remedy=remedy) if row.tag == contracts.GANG_TAG else row
+        for row in contracts.CONTRACTS))
+    args = SimpleNamespace(progress_policy=None, here=False, awaited_batch=None,
+                           timeout_s=None, wait_s=0.01)
+    with pytest.raises(SystemExit) as exc:
+        pbrun.announce_placement(queue, action, args=args, cwd=checkout,
+                                 portable_checkout=True)
+    assert remedy in str(exc.value)
+    assert queue.ready_items() == []
