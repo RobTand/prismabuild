@@ -16,7 +16,7 @@ from pathlib import Path
 from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
-from prismabuild import _gang, core as pb, pool, residency_map, residency_plan
+from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
 
 TIER = "prismabuild-stage:sparklina"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -281,7 +281,7 @@ def test_unreadable_manifest_is_not_a_pass(gang_fleet, tmp_path):
     row = pool._read_json(queue.item_path(pool.READY, keys[0]))
     _delete_manifest_blob(row, keys[0])
     verdict = queue.residency_verdict(row)
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES, verdict
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES, verdict
     assert verdict["state"] != "resident", verdict
 
 

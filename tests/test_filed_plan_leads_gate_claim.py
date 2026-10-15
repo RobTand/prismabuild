@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from test_planner_filed_rows_are_staged import (  # noqa: E402
     Fleet, _planner_row, pool, residency_plan,
 )
+from prismabuild import candidate_policy  # noqa: E402
 
 
 def _item(fleet, key):
@@ -29,7 +30,7 @@ def test_bare_planner_row_waits_on_its_first_filed_lead(tmp_path):
         "state": "lead_not_resident",
         "pending": [{"lead": residency_plan.leads_for(plan)[0], "status": "absent"}],
         "leads": residency_plan.leads_for(plan)}
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
     assert fleet.queue.item_path(pool.READY, key).read_bytes() == before
 
 
@@ -43,7 +44,7 @@ def test_unreadable_filed_plan_is_a_denial_not_advisory(tmp_path):
     verdict = fleet.queue.residency_verdict(_item(fleet, key))
     assert verdict["state"] == "plan_unreadable"
     assert verdict["error"]
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
 
 
 def test_plain_row_and_advisory_receipt_without_a_plan_stay_plain(tmp_path):

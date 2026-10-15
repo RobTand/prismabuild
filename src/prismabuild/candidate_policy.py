@@ -8,6 +8,54 @@ from types import MappingProxyType
 from typing import cast
 
 
+#: Residency states the claim pass refuses a row on before any token is taken
+#: (``residency_<state>``): its bytes are not there, or cannot be reached.  A
+#: ready GPU row in one of them keeps no room on a free GPU (#1169).
+#: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
+#: ram paths from the epoch before a reboot, so the bytes are gone and the
+#: tier loop's next recomposition is what makes the row admissible (#640).
+#: ``prelaunch_undeclared`` belongs here as a shape refusal: the
+#: sealed manifest declares a prelaunch prefix the filed plan does not carry,
+#: so no token moves until the plan matches the manifest (#1594).
+RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
+                            "map_stale", "map_unreadable", "plan_unreadable",
+                            "ram_epoch_stale", "prelaunch_undeclared",
+                            "map_incomplete")
+
+#: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
+#: poll can still see land: a lead with no ending yet (``absent``), and a lead
+#: queued or running again under a later generation than the ending on file
+#: (``ready``, ``claimed``, #1186).  Every other status is an ending, and a
+#: denial whose pending leads all ended is ``residency_lead_terminal`` (#595).
+RESIDENCY_LEAD_UNFINISHED = ("absent", "ready", "claimed")
+
+
+def residency_denial(verdict: Mapping[str, object]) -> str | None:
+    if verdict["state"] in RESIDENCY_REFUSAL_STATES:
+        reason = f"residency_{verdict['state']}"
+        if verdict["state"] in ("lead_not_resident", "lead_unpinned"):
+            pending = verdict.get("pending")
+            if (isinstance(pending, list) and pending
+                    and all(isinstance(entry, Mapping)
+                            and entry.get("status") is not None
+                            and entry.get("status")
+                            not in RESIDENCY_LEAD_UNFINISHED
+                            for entry in pending)):
+                # Every lead ended somewhere no later poll repairs:
+                # failed, withdrawn, dropped, unpinned, or bound
+                # to another manifest.  Admission is unchanged --
+                # the item stays ready, as documented above -- but
+                # the denial names the terminal state, so the
+                # fleet-wide denial snapshot tells it apart from a
+                # mover that simply has not finished (#595).  A
+                # lead queued or claimed again under a later
+                # generation has not finished, whatever its old
+                # ending says (#1186).
+                reason = "residency_lead_terminal"
+        return reason
+    return None
+
+
 WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
 
 

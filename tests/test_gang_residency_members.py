@@ -40,7 +40,7 @@ import pytest  # noqa: F401
 from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
-from prismabuild import _gang, core as pb, pool, residency_map, residency_plan
+from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import manifest_promotion  # noqa: E402
@@ -606,7 +606,7 @@ def test_a_fresh_read_that_disagrees_blocks_the_teardown(gang_fleet, monkeypatch
 #: read in any of them is no terminal proof.  Built from the queue's own
 #: refusal list, so a state main adds later joins the test by itself.
 NON_TERMINAL_STATES = [
-    state for state in pool.RESIDENCY_REFUSAL_STATES
+    state for state in candidate_policy.RESIDENCY_REFUSAL_STATES
     if state not in ("lead_not_resident", "lead_unpinned")
 ] + ["resident", "not_requested", "no_leads"]
 

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import (  # noqa: E402
-    adaptive_cpu, pool, reader_lease, residency_map, residency_plan)
+    adaptive_cpu, candidate_policy, pool, reader_lease, residency_map, residency_plan)
 import tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
@@ -120,7 +120,7 @@ def test_a_declared_sharer_is_not_admitted_on_a_partial_vouch(
         queue.residency_map_path(SECOND))["leads"]), "the map names its lead"
     verdict = _verdict(queue, SECOND)
     assert verdict["state"] == "map_incomplete", verdict
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
     assert verdict["missing"] == 1
 
 
@@ -245,7 +245,7 @@ def test_a_source_fragment_that_cannot_be_statted_is_a_wait_not_a_pass(
     monkeypatch.setattr(Path, "stat", stat)
     verdict = _verdict(queue, SECOND)
     assert verdict["state"] == "map_unreadable", verdict
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
     _waits(queue, SECOND, source)
 
 

@@ -433,27 +433,6 @@ WITHHOLD_CARRYING_REASONS = frozenset({
     "transition_busy", "container_image_presence_unknown",
     "residency_lead_record_unreadable"})
 
-#: Residency states the claim pass refuses a row on before any token is taken
-#: (``residency_<state>``): its bytes are not there, or cannot be reached.  A
-#: ready GPU row in one of them keeps no room on a free GPU (#1169).
-#: ``ram_epoch_stale`` belongs here with ``map_not_composed``: the map names
-#: ram paths from the epoch before a reboot, so the bytes are gone and the
-#: tier loop's next recomposition is what makes the row admissible (#640).
-#: ``prelaunch_undeclared`` belongs here as a shape refusal: the
-#: sealed manifest declares a prelaunch prefix the filed plan does not carry,
-#: so no token moves until the plan matches the manifest (#1594).
-RESIDENCY_REFUSAL_STATES = ("lead_not_resident", "lead_unpinned", "map_not_composed",
-                            "map_stale", "map_unreadable", "plan_unreadable",
-                            "ram_epoch_stale", "prelaunch_undeclared",
-                            "map_incomplete")
-
-#: Pending-lead statuses (``residency_verdict``'s ``pending``) that a later
-#: poll can still see land: a lead with no ending yet (``absent``), and a lead
-#: queued or running again under a later generation than the ending on file
-#: (``ready``, ``claimed``, #1186).  Every other status is an ending, and a
-#: denial whose pending leads all ended is ``residency_lead_terminal`` (#595).
-RESIDENCY_LEAD_UNFINISHED = ("absent", READY, CLAIMED)
-
 # Claim-order reliefs under which no standing exempts a wait (#1022 review
 # round 3).  ``refused`` (the stage root refused an eviction) and ``unknown``
 # (the tier ledger did not read) make no room and name no victim, so a wait
@@ -7876,7 +7855,7 @@ class PoolQueue:
                 observed_images, policy=container_class_policy, inventory=container_inventory)
             if not images.room_eligible(item, clock=_now):
                 return None
-            if self.residency_verdict(item)["state"] in RESIDENCY_REFUSAL_STATES:
+            if self.residency_verdict(item)["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES:
                 return None
             host, _tiers = storage_tiers.split_demand(self.demand_of(item))
             reservation = self._reservation_demand(host, gpu_controller=gpu_controller)
@@ -17934,7 +17913,7 @@ class PoolQueue:
         claim scan's cost for a lead still coming (``absent``) or resident is
         unchanged.  Admission is unchanged too: the lead is not resident
         either way.  What changes is the denial: a lead running again is not
-        ``residency_lead_terminal`` (:data:`RESIDENCY_LEAD_UNFINISHED`).
+        ``residency_lead_terminal`` (:data:`candidate_policy.RESIDENCY_LEAD_UNFINISHED`).
         """
 
         def generation(record: Mapping[str, object] | None) -> float | None:
@@ -18178,7 +18157,7 @@ class PoolQueue:
                         "sibling_action_key": other_key,
                         "sibling_state": "unknown",
                         "error": f"sibling verdict unreadable: {exc}"}
-            if verdict["state"] in RESIDENCY_REFUSAL_STATES:
+            if verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES:
                 return {"group": group, "sibling_index": index,
                         "sibling_action_key": other_key,
                         "sibling_state": state,
@@ -18298,7 +18277,7 @@ class PoolQueue:
                 "state": "lead_unpinned" if unpinned else "lead_not_resident",
                 "pending": pending,
                 "leads": [str(lead) for lead in leads]}
-            if any(entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+            if any(entry.get("status") not in candidate_policy.RESIDENCY_LEAD_UNFINISHED
                    for entry in pending):
                 # A lead that finished -- failed, withdrawn, dropped, or
                 # executed holding no tokens -- is republished only by the
@@ -21506,7 +21485,8 @@ class PoolQueue:
                         **({"withhold_carried": carried}
                            if carried is not None else {})})
                     continue
-                if residency["state"] in RESIDENCY_REFUSAL_STATES:
+                reason = candidate_policy.residency_denial(residency)
+                if reason is not None:
                     # Before any token is taken, and without ``record_pass``:
                     # the bytes are not there, so this box should go do other
                     # work rather than age an item nothing on this box can
@@ -21533,26 +21513,6 @@ class PoolQueue:
                     # before the current one, so the bytes are gone and the
                     # loop's next recomposition drops the prior-epoch
                     # fragment (#640).
-                    reason = f"residency_{residency['state']}"
-                    if residency["state"] in ("lead_not_resident", "lead_unpinned"):
-                        pending = residency.get("pending")
-                        if (isinstance(pending, list) and pending
-                                and all(isinstance(entry, Mapping)
-                                        and entry.get("status") is not None
-                                        and entry.get("status")
-                                        not in RESIDENCY_LEAD_UNFINISHED
-                                        for entry in pending)):
-                            # Every lead ended somewhere no later poll repairs:
-                            # failed, withdrawn, dropped, unpinned, or bound
-                            # to another manifest.  Admission is unchanged --
-                            # the item stays ready, as documented above -- but
-                            # the denial names the terminal state, so the
-                            # fleet-wide denial snapshot tells it apart from a
-                            # mover that simply has not finished (#595).  A
-                            # lead queued or claimed again under a later
-                            # generation has not finished, whatever its old
-                            # ending says (#1186).
-                            reason = "residency_lead_terminal"
                     if item.get("gang") is not None:
                         if reason != "residency_lead_terminal":
                             self._gang_clear_terminal(item, key)
@@ -25436,7 +25396,7 @@ class PoolQueue:
         pending = residency.get("pending")
         if not (isinstance(pending, list) and pending and all(
                 isinstance(entry, Mapping) and entry.get("status") is not None
-                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                and entry.get("status") not in candidate_policy.RESIDENCY_LEAD_UNFINISHED
                 for entry in pending)):
             return None
         rows = []
@@ -25459,7 +25419,7 @@ class PoolQueue:
         pending = residency.get("pending")
         if not (isinstance(pending, list) and pending and all(
                 isinstance(entry, Mapping) and entry.get("status") is not None
-                and entry.get("status") not in RESIDENCY_LEAD_UNFINISHED
+                and entry.get("status") not in candidate_policy.RESIDENCY_LEAD_UNFINISHED
                 for entry in pending)):
             return None
         return sorted({str(entry.get("lead")) for entry in pending})
