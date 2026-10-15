@@ -24,9 +24,10 @@ def shard_environment(command):
                 for index, flag in enumerate(flags) if flag == "--env")
 
 
-def admitted_child(command):
+def admitted_child(command, *, environment=None):
     """Execute a generated child inside a test's admitted action, with env."""
-    return command[command.index("--") + 1:], {**os.environ, **shard_environment(command)}
+    return command[command.index("--") + 1:], {
+        **(os.environ if environment is None else environment), **shard_environment(command)}
 
 
 def shard_output(passed: int = 1, skipped: int = 0, *, file: str = "tests/test_one.py",
