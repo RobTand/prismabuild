@@ -1196,19 +1196,22 @@ def complete_group(request, plan, children, *, cas) -> tuple[dict, Path]:
                 f"child {ordinal} does not seal the plan's exact batch "
                 f"membership and identity"
             )
-        result = _read_child_result(cas, child)
-        if result is None:
+        document = _read_child_result_document(cas, child)
+        if document is None:
             raise MissingChildResult(ordinal, len(children))
-        manifest = result.manifest
-        if manifest["child_ordinal"] != ordinal:
+        child_receipt, manifest = document
+        if manifest is None:
+            raise MissingChildResult(ordinal, len(children))
+        checked = _validate_child_result_manifest(manifest)
+        if checked["child_ordinal"] != ordinal:
             raise RecordError(
                 f"child {ordinal}'s receipt carries a result manifest for "
-                f"ordinal {manifest['child_ordinal']}"
+                f"ordinal {checked['child_ordinal']}"
             )
         manifests.append(manifest)
         child_evidence.append({
             "action_key": child_keys[ordinal],
-            "receipt_sha256": document_sha256(result.receipt),
+            "receipt_sha256": document_sha256(child_receipt),
         })
     receipt = {
         **verify_exact_cover(request, plan, manifests),
@@ -1394,8 +1397,10 @@ def read_child_request(
     return request, ""
 
 
-def _read_child_result(cas, request: Mapping[str, object]) -> ChildResult | None:
-    """Read one native receipt and its strict manifest under the result bound."""
+def _read_child_result_document(
+    cas, request: Mapping[str, object],
+) -> tuple[Mapping[str, object], object] | None:
+    """Read a native receipt and its bounded, strictly decoded JSON value."""
 
     receipt = cas._lookup_receipt_only(pb.validate_action(request))
     if receipt is None:
@@ -1404,10 +1409,7 @@ def _read_child_result(cas, request: Mapping[str, object]) -> ChildResult | None
     assert isinstance(result, Mapping)
     payload = cas.read_declared_blob(
         result, max_bytes=_MAX_CHILD_RESULT_BYTES, where="child result manifest")
-    value = pb._decode_strict_json(payload, where="child result manifest")
-    if value is None:
-        return None
-    return ChildResult(receipt, _validate_child_result_manifest(value))
+    return receipt, pb._decode_strict_json(payload, where="child result manifest")
 
 
 def child_result(
@@ -1426,15 +1428,17 @@ def child_result(
     ``child_action_keys``, and its task set equals the plan's partition at
     that ordinal. A child with several tasks still counts one unit.
     Returns the verified receipt and manifest, or ``None`` when the child has
-    no verified durable result, including a JSON null manifest. Raises on
-    unreadable or tampered bytes, like any CAS verification.
+    no verified durable result. A receipted JSON null is an invalid manifest
+    and raises the native ActionContractError. Unreadable or tampered bytes
+    retain their native CAS failures.
     """
 
-    result = _read_child_result(cas, request)
-    if result is None:
+    document = _read_child_result_document(cas, request)
+    if document is None:
         return None
+    receipt, value = document
     key = child_key
-    manifest = result.manifest
+    manifest = _validate_child_result_manifest(value)
     params = request.get("params")
     batch = (params.get("logical_batch")  # type: ignore[union-attr]
              if isinstance(params, Mapping) else None)
@@ -1471,7 +1475,7 @@ def child_result(
     manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
     if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
         return None
-    return result
+    return ChildResult(receipt, manifest)
 
 
 # --------------------------------------------------------------------------

@@ -18068,14 +18068,18 @@ and results, exact-cover proof, and first-writer group receipt publication.
 Campaign closure renders the result and keeps its missing-child, ordinal and
 collision diagnostics. It fully validates the publication schema and its binding
 to the frozen plan before reading child results. Campaign, queue and reporter
-share one native receipt-and-manifest read. That read validates the action and
+share one native receipt-and-document read. That read validates the action and
 canonical receipt without opening the result blob, then uses the native CAS
 `read_declared_blob` operation with a 1,048,576-byte bound. The bound applies
 before the first blob open and throughout the stable read, whose size and digest
 must match the receipt. Child manifests use strict UTF-8 JSON with duplicate-key
-rejection. A receipted JSON null remains a missing child, including the exact
-campaign no-receipt diagnostic. Native receipt and blob integrity errors retain
-their types; strict JSON failures use the native action-contract refusal.
+rejection. The shared read returns the receipt and decoded JSON value; a decoded
+value is not yet a validated manifest. Campaign closure checks JSON null before
+manifest validation and retains its exact MissingChildResult/no-receipt line.
+The bound query validates the decoded value, so receipted null retains its native
+ActionContractError. Reporter and queue still map that refusal to zero credit or
+no durable result. Native receipt and blob integrity errors retain their types;
+strict JSON failures use the native action-contract refusal.
 
 Queue request membership and key-based reporter result queries live in
 `decomposition`. Bound child queries require the child identity, plan and
