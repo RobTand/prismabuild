@@ -669,10 +669,6 @@
    "tools/fleet/pb_gc.py",
    "tools/fleet/stage_release.py"
   ],
-  "validate_plan": [
-   "src/prismabuild/decomposition.py",
-   "src/prismabuild/residency_plan.py"
-  ],
   "verdict": [
    "tools/fleet/pbcanary_verdict.py",
    "tools/fleet/pbwait.py"

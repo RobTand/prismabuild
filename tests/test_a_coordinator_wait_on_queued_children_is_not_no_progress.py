@@ -137,7 +137,7 @@ def _batch(
     request = dc.validate_logical_request(proposed)
     frozen = _frozen()
     frozen["argv"][2] = producer
-    plan = dc.build_plan(request, frozen)
+    plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
     prepared = dc.PreparedBatches(request, plan)
     checkout = tmp_path / "child-src"
     checkout.mkdir()
@@ -145,6 +145,7 @@ def _batch(
     roster_input, _ = cas.ingest_bytes(
         dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
     children = []
+    digests = []
     for ordinal in range(len(plan["partitions"])):
         envelope = prepared.envelope(ordinal)
         batch_input, _ = cas.ingest_bytes(
@@ -170,13 +171,10 @@ def _batch(
         })
         cas.publish_action_request(child)
         children.append(child)
-    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
-    stored.mkdir(parents=True, exist_ok=True)
-    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
-    (stored / "publication.json").write_bytes(dc.document_bytes(
-        dc.publication_index(
-            plan, batch_input_digests=["0" * 64] * len(children),
-            child_action_keys=[child["action_key"] for child in children])))
+        digests.append(str(batch_input["sha256"]))
+    dc.publish_children(
+        plan, cas_root=cas.root, batch_input_digests=digests,
+        child_action_keys=[child["action_key"] for child in children])
     return cas, plan, children
 
 
@@ -938,7 +936,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     frozen = _frozen()
     frozen["argv"] = [sys.executable, "-c", PRODUCER,
                       dc.TASK_BATCH_PLACEHOLDER]
-    plan = dc.build_plan(request, frozen)
+    plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
     assert len(plan["partitions"]) == 1, plan["partitions"]
     assert len(plan["partitions"][0]) == 3, plan["partitions"]
     prepared = dc.PreparedBatches(request, plan)
@@ -967,13 +965,9 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
                             "platform_key": None, "host_class": None},
     })
     cas.publish_action_request(child)
-    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
-    stored.mkdir(parents=True, exist_ok=True)
-    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
-    (stored / "publication.json").write_bytes(dc.document_bytes(
-        dc.publication_index(
-            plan, batch_input_digests=["0" * 64],
-            child_action_keys=[child["action_key"]])))
+    dc.publish_children(
+        plan, cas_root=cas.root, batch_input_digests=[str(batch_input["sha256"])],
+        child_action_keys=[child["action_key"]])
     queue = _queue(tmp_path, cas)
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
@@ -1492,6 +1486,7 @@ def test_a_refused_plan_stops_the_reporter_but_keeps_queue_diagnosis(
     else:
         other = {key: value for key, value in plan.items() if key != "plan_key"}
         other["parent_key"] = "f" * 64
+        plan_path.unlink()
         plan_path.write_bytes(dc.document_bytes(
             {**other, "plan_key": pb.canonical_sha256(other)}))
     publication_reads = []

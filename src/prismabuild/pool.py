@@ -11007,7 +11007,7 @@ class PoolQueue:
                 missing.append(child_key)
                 children.append(entry)
                 continue
-            link, detail = self._queued_child_link(
+            link, detail = decomposition.read_child_request(
                 child_key, cas_root=cas_root, parent_key=parent_key,
                 plan_key=plan_key, plan=plan_doc, publication=index)
             if link is None:
@@ -11090,59 +11090,6 @@ class PoolQueue:
             else:
                 verdict["reason"] = "no awaited child is ready or claimed"
         return verdict
-
-    def _queued_child_link(
-            self, child_key: str, *, cas_root: object,
-            parent_key: str, plan_key: str,
-            plan: Mapping[str, object] | None = None,
-            publication: Mapping[str, object] | None = None,
-    ) -> tuple[dict[str, object] | None, str]:
-        """The child's sealed request when it carries the exact membership."""
-
-        if (len(child_key) != 64
-                or any(ch not in "0123456789abcdef" for ch in child_key)):
-            return None, "not an action key"
-        if not isinstance(cas_root, (str, Path)) or not str(cas_root):
-            return None, "the coordinator's claim names no CAS"
-        path = Path(str(cas_root)) / "requests" / child_key[:2] / f"{child_key}.json"
-        try:
-            raw = pb._read_regular_file_nofollow(path, where="child action request")
-            request = pb.validate_action(
-                pb._decode_strict_json(raw, where="child action request"))
-        except FileNotFoundError:
-            return None, "no sealed request in the coordinator's CAS"
-        except (OSError, ValueError, RecursionError, pb.ActionContractError,
-                pb.CASTamperError, pb.CASUnavailableError) as exc:
-            return None, f"request unreadable: {type(exc).__name__}"
-        params = request.get("params")
-        batch = (params.get("logical_batch")  # type: ignore[union-attr]
-                 if isinstance(params, Mapping) else None)
-        if not isinstance(batch, Mapping):
-            return None, "its sealed params carry no logical_batch"
-        if (request.get("action_key") != child_key
-                or batch.get("parent_key") != parent_key
-                or batch.get("plan_key") != plan_key):
-            return None, "its sealed logical_batch names another batch"
-        ordinal = batch.get("child_ordinal")
-        if (not isinstance(ordinal, int) or isinstance(ordinal, bool)
-                or not isinstance(batch.get("ordered_task_ids"), list)):
-            return None, "its sealed logical_batch carries no ordinal membership"
-        if plan is not None and publication is not None:
-            keys = publication.get("child_action_keys")
-            partitions = plan.get("partitions")
-            if not isinstance(keys, list) or not isinstance(partitions, list):
-                return None, "the stored publication names no children"
-            if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
-                return None, (
-                    "its sealed ordinal is not its position in the stored "
-                    "publication")
-            if not 0 <= ordinal < len(partitions):
-                return None, "its sealed ordinal is outside the stored plan"
-            if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
-                return None, (
-                    "its sealed task set differs from the stored plan's "
-                    "partition")
-        return request, ""
 
     def _queued_child_queue_state(
             self, child_key: str, *, cas_root: object,
@@ -11456,17 +11403,14 @@ class PoolQueue:
 
         try:
             cas = pb.PrismaBuildCAS(Path(str(cas_root)))
-            receipt = cas.lookup(request)
         except (OSError, ValueError, pb.ActionContractError,
                 pb.CASTamperError, pb.CASUnavailableError):
-            return False
-        if receipt is None:
             return False
         try:
             from . import decomposition
 
-            return decomposition.verify_durable_child_result(
-                cas, request, receipt, child_key=child_key,
+            return decomposition.child_result(
+                cas, request, child_key=child_key,
                 plan=plan, publication=publication) is not None
         except (OSError, ValueError, pb.ActionContractError,
                 pb.CASTamperError, pb.CASUnavailableError):

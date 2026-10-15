@@ -3,7 +3,7 @@
 A coordinator that awaits a decomposed batch runs beside this reporter.
 The reporter polls the native CAS for each awaited child's receipt, verifies
 the receipt, the result blob digest and manifest membership through
-``decomposition.verify_durable_child_result``, and commits one unit per
+``decomposition.child_result_for_key``, and commits one unit per
 distinct child whose result verifies. A child with several tasks still counts one unit.
 
 Children already durable when the reporter starts are a verified baseline
@@ -49,62 +49,16 @@ class DurableChildReporter:
         self.counted: set[str] = set()
         self.verified: dict[str, dict[str, Any]] = {}
 
-    def _request_of(self, child_key: str) -> Mapping[str, Any] | None:
-        try:
-            request = self.cas.read_action_request(child_key)
-        except (OSError, ValueError):
-            return None
-        supplied = self.child_requests.get(child_key)
-        if supplied is not None and supplied != request:
-            return None
-        return request
-
-    def _verifies(self, child_key: str) -> dict[str, Any] | None:
-        from . import decomposition
-
-        request = self._request_of(child_key)
-        if request is None:
-            return None
-        if str(request.get("action_key") or "") != child_key:
-            return None
-        params = request.get("params")
-        batch = (params.get("logical_batch")  # type: ignore[union-attr]
-                 if isinstance(params, Mapping) else None)
-        if (not isinstance(batch, Mapping)
-                or batch.get("parent_key") != self.parent_key
-                or batch.get("plan_key") != self.plan_key):
-            return None
-        try:
-            membership = decomposition.read_membership(
-                self.cas.root, parent_key=self.parent_key, plan_key=self.plan_key,
-                stop_after_invalid_plan=True)
-        except AttributeError:
-            return None
-        if membership["unreadable"]:
-            return None
-        plan_doc, index = membership["plan"], membership["publication"]
-        try:
-            receipt = self.cas.lookup(request)
-        except Exception:  # noqa: BLE001 -- an unreadable CAS reads as absent
-            return None
-        if receipt is None:
-            return None
-        try:
-            manifest = decomposition.verify_durable_child_result(
-                self.cas, request, receipt, child_key=child_key,
-                plan=plan_doc, publication=index)
-        except Exception:  # noqa: BLE001 -- tamper reads as not durable
-            return None
-        if manifest is None:
-            return None
-        return dict(manifest)
-
     def establish_baseline(self) -> set[str]:
         """Mark children already durable at start; they count zero."""
 
         found: set[str] = set()
         for child_key in self.child_keys:
-            manifest = self._verifies(child_key)
+            from . import decomposition
+
+            manifest = decomposition.child_result_for_key(
+                self.cas, child_key, parent_key=self.parent_key,
+                plan_key=self.plan_key, supplied_requests=self.child_requests)
             if manifest is not None:
                 found.add(child_key)
                 self.verified[child_key] = manifest
@@ -126,7 +80,11 @@ class DurableChildReporter:
                 continue
             if child_key not in custody or not custody[child_key]["confirmed"]:
                 continue
-            manifest = self._verifies(child_key)
+            from . import decomposition
+
+            manifest = decomposition.child_result_for_key(
+                self.cas, child_key, parent_key=self.parent_key,
+                plan_key=self.plan_key, supplied_requests=self.child_requests)
             if manifest is None:
                 continue
             self.verified[child_key] = manifest

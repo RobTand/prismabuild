@@ -18066,9 +18066,14 @@ retains both document diagnostics. `complete_group` owns the publication-only
 read against the already frozen plan, exact sealed-batch checks, child receipts
 and results, exact-cover proof, and first-writer group receipt publication.
 Campaign closure renders the result and keeps its existing missing-child and
-refusal messages. The moved private result reader retains its existing lenient
-JSON parser and unbounded reads. Stored paths, schemas, canonical bytes
-and freeze-before-publication ordering retain their existing contracts.
+refusal messages. Group closure retains its existing lenient JSON parser and
+unbounded reads. Queue request membership and key-based reporter result queries
+live in `decomposition`. `child_result` owns the native receipt lookup followed
+by the existing strict bounded read, including its preliminary unbounded hash.
+Reporter request checks still precede membership I/O, and invalid-plan capture
+still stops before publication reads. Record validators and the index constructor
+are private after their complete caller migration. Stored paths, schemas, canonical
+bytes and freeze-before-publication ordering retain their existing contracts.
 
 Execution passes one `ExecutionClock` to the loop and `ProgressWatch`. Monotonic
 time prices elapsed work; Unix time records observations. The watch owns the
