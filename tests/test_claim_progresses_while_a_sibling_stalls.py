@@ -54,13 +54,16 @@ CAPACITY = {'cpu': 4, 'mem_gb': 4}
 KEYS = ('a' * 64, 'b' * 64)
 
 
+def _idle_sample():
+    return {
+        'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
+        'cpu_count': 4, 'interval_s': 1.}
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     """A pool with two claimable items and a host that is plainly idle."""
 
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-        'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 4, 'interval_s': 1.})
     queue = pool.PoolQueue(tmp_path / 'queue')
     for key in KEYS:
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
@@ -77,8 +80,8 @@ def _pin_sibling(queue):
     pool._write_json_atomic(path, item)
 
 
-def _claim(queue):
-    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+def _claim(queue, *, cpu_sampler=_idle_sample):
+    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _lock_path(queue):
@@ -430,7 +433,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=True,
-                           tags=[pool.socket.gethostname()])
+                           tags=[pool.socket.gethostname()], cpu_sampler=_idle_sample)
 
     if refusal == 'tokens':
         # A real committed holder leaves enough for B, but not A's memory.
@@ -526,7 +529,7 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
 @pytest.mark.parametrize(('gpu', 'read_number'), [(False, 1), (True, 2), (True, 3)])
 def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, read_number):
     """Sealed request reads need no host exclusion, unlike capacity decisions."""
-    monkeypatch.setattr(pool.gpu_admission.Controller, 'sample', lambda self: {})
+    gpu_sampler = lambda: {}
     capacity = dict(CAPACITY, gpu=1) if gpu else CAPACITY
     _pin_sibling(rig)
     if gpu:
@@ -553,7 +556,9 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=gpu,
-                           tags=[pool.socket.gethostname()])
+                           tags=[pool.socket.gethostname()],
+                           gpu_sampler=gpu_sampler,
+                           cpu_sampler=_idle_sample)
 
     def run():
         try:
@@ -587,6 +592,7 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
     """A delayed immutable read cannot bypass the subsequent live host gates."""
     read_json = adaptive_cpu.read_json
     descriptors, prepared = [], []
+    pressure = [False]
 
     def changed_host(path):
         result = read_json(path)
@@ -598,14 +604,17 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 descriptors.append(fd)
             else:
-                monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-                    'sampled_unix': time.time(), 'busy_cpus': 4., 'psi_some': 0.,
-                    'cpu_count': 4, 'interval_s': 1.})
+                pressure[0] = True
         return result
 
     monkeypatch.setattr(adaptive_cpu, 'read_json', changed_host)
     try:
-        assert _bounded(lambda: _claim(rig), 'claim after request preparation') is None
+        def sample():
+            return ({'sampled_unix': time.time(), 'busy_cpus': 4., 'psi_some': 0.,
+                     'cpu_count': 4, 'interval_s': 1.} if pressure[0] else _idle_sample())
+
+        assert _bounded(lambda: _claim(rig, cpu_sampler=sample),
+                        'claim after request preparation') is None
     finally:
         for fd in descriptors:
             os.close(fd)
@@ -666,11 +675,11 @@ def test_empty_adaptive_poll_leaves_capacity_and_active_holders_untouched(rig, m
     with monkeypatch.context() as patch:
         patch.setattr(rig, 'ready_items', lambda: [])
         assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
-                         adaptive_cpu=True) is None
+                         adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity() == capacity, 'empty discovery rewrote capacity'
     assert ledger.held() == held
     # The lower offer still applies when this loop actually sees a candidate.
     assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
-                     adaptive_cpu=True) is None
+                     adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity()['cpu'] == 1
     assert ledger.held() == held

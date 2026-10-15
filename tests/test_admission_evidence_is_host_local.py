@@ -48,8 +48,8 @@ def cpu_rig(tmp_path, monkeypatch):
     clock = [100.]
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
     state = {'busy_cpus': 0., 'psi_some': 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: dict(
-        sampled_unix=clock[0], cpu_count=2, interval_s=1., **state))
+    cpu_sampler = lambda: dict(
+        sampled_unix=clock[0], cpu_count=2, interval_s=1., **state)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     queue = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [0], 'fallback': [1]}
@@ -63,7 +63,7 @@ def cpu_rig(tmp_path, monkeypatch):
 
     def claim():
         return queue.claim(capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1},
-                           cpu_tiers=tiers, adaptive_cpu=True)
+                           cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
     def record(key, cpu):
         return {'action_key': key, 'sampled_unix': clock[0], 'cpu_seconds': cpu,
@@ -121,9 +121,9 @@ def gpu_rig(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     monkeypatch.setattr(adaptive_gpu, 'action_contract', lambda item, demand:
                         ('shape', False, False, demand['mem_gb'] * adaptive_gpu.GIB))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+    cpu_sampler = lambda: {
         'sampled_unix': clock[0], 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 8, 'interval_s': 1.})
+        'cpu_count': 8, 'interval_s': 1.}
     sample = {'schema': 'prismabuild.gpu_capacity.v1', 'sample_id': '100',
               'sampled_unix': 100., 'complete': True, 'attributed': True,
               'devices': [{'uuid': 'GPU-1', 'name': 'NVIDIA GB10', 'power_w': 15.,
@@ -134,7 +134,7 @@ def gpu_rig(tmp_path, monkeypatch):
               'host_available_bytes': 100 * adaptive_gpu.GIB,
               'memory_pressure_some': 0., 'memory_pressure_full': 0.,
               'cpu_pressure_some': 0., 'foreign_processes': [], 'jobs': []}
-    monkeypatch.setattr(adaptive_gpu.Controller, 'sample', lambda self: sample.copy())
+    gpu_sampler = lambda: sample.copy()
     queue = pool.PoolQueue(tmp_path / 'queue')
     capacity = {'cpu': 8, 'mem_gb': 4, 'gpu': 1}
     args = dict(capacity=capacity, cpu_tiers={'preferred': list(range(8)), 'fallback': []},
@@ -162,7 +162,7 @@ def gpu_rig(tmp_path, monkeypatch):
                                    'scope_id': record['scope_unit'], 'complete': True})
 
     def claim():
-        return queue.claim(**args)
+        return queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
 
     return queue, clock, sample, capacity, publish, tick, claim
 
