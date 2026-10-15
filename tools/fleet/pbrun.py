@@ -88,7 +88,8 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import (  # noqa: E402
     action_edges, adaptive_gpu, container_images, core as pb,
     decomposition as dc, dependency_digest, filesystem_floor, materialize,
-    movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
+    movement_actions, owned_tree, pool, residency_plan, slurm_lane,
+    storage_tiers,
 )
 import d38_gate  # noqa: E402
 import pbevidence  # noqa: E402
@@ -963,6 +964,47 @@ def build_stamp_closure(stamp_name: str, payload: str) -> dict[str, object]:
         {**body, "closure_sha256": pb.canonical_sha256(body)})
 
 
+#: The only names ``owned_snapshot_directory`` gives its private trees.
+SNAPSHOT_TREE = re.compile(r"pbrun-snapshot\.[a-z0-9_]{8}")
+
+
+@contextlib.contextmanager
+def owned_snapshot_directory():
+    """A private snapshot workspace under ``TMPDIR`` that a killed pbrun cannot leak.
+
+    It holds an index, an object store and a bare repository.  The
+    directory carries an owner lock (``owned_tree``) for this client's life,
+    so a pbrun killed mid-snapshot leaves a tree the next pbrun reaps once
+    its retention window has passed; reaping never fails a submission.
+    """
+
+    parent = tempfile.gettempdir()
+    root = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            owned_tree.reap_dead_trees(root, SNAPSHOT_TREE)
+        except Exception as exc:                                 # noqa: BLE001
+            print(f"pbrun: snapshot expiry skipped in {parent}: {exc}",
+                  file=sys.stderr, flush=True)
+        temporary = Path(tempfile.mkdtemp(prefix="pbrun-snapshot.", dir=parent))
+        held = os.open(temporary.name, os.O_RDONLY | os.O_DIRECTORY
+                       | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
+        try:
+            lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME)
+        finally:
+            os.close(held)
+        try:
+            yield temporary
+        finally:
+            try:
+                owned_tree.release_owned_tree(root, temporary.name, lock, remove=True)
+            except OSError as exc:
+                print(f"pbrun: snapshot workspace kept for expiry: {exc}",
+                      file=sys.stderr, flush=True)
+    finally:
+        os.close(root)
+
+
 def build_git_checkout_snapshot(
     cwd: Path,
     *,
@@ -1027,8 +1069,7 @@ def build_git_checkout_snapshot(
     parent = identity["head"]
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
 
-    with tempfile.TemporaryDirectory(prefix="pbrun-snapshot.") as temporary_raw:
-        temporary = Path(temporary_raw)
+    with owned_snapshot_directory() as temporary:
         object_directory = temporary / "objects"
         (object_directory / "info").mkdir(parents=True)
         (object_directory / "pack").mkdir()

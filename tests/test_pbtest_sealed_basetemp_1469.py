@@ -44,6 +44,11 @@ SCRATCH_RECORDER = (
     "    }))\n"
 )
 
+#: The recorder for tests that inspect a leaf after the run.  A passing
+#: attempt removes its own leaf at exit; a failing one keeps it for its
+#: retention window, so these attempts fail on purpose once they have recorded.
+KEPT_RECORDER = SCRATCH_RECORDER + "    raise AssertionError('kept for inspection')\n"
+
 #: A sealed action identity for the worker-side tests: the derivation reads
 #: the action's own identity from its environment, so the tests name one
 #: instead of depending on what the surrounding action's launcher injected.
@@ -96,7 +101,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
 
 
 def _real_dispatch(monkeypatch, checkout: Path, extra: list[str],
-                   shards: int = 1) -> list[list[str]]:
+                   shards: int = 1, expect: int = 0) -> list[list[str]]:
     """Dispatch with every shard's payload executed inside this action."""
 
     actual_popen = subprocess.Popen
@@ -115,7 +120,7 @@ def _real_dispatch(monkeypatch, checkout: Path, extra: list[str],
             "--shards", str(shards), "--threads-per-shard", "1",
             "--test-timeout-s", "0", *extra, "tests",
         ])
-        assert pbtest.main() == 0
+        assert pbtest.main() == expect
     return calls
 
 
@@ -244,10 +249,11 @@ def test_worker_derives_the_action_owned_basetemp(
 
     root = tmp_path / "qualified"
     root.mkdir()
-    checkout = _checkout(tmp_path, SCRATCH_RECORDER)
+    checkout = _checkout(tmp_path, KEPT_RECORDER)
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", TEST_ACTION_KEY)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", TEST_ACTION_NONCE)
-    assert _real_dispatch(monkeypatch, checkout, ["--basetemp", str(root)])
+    assert _real_dispatch(monkeypatch, checkout, ["--basetemp", str(root)],
+                          expect=1)
     records = _records(root)
     assert len(records) == 1
     record = next(iter(records.values()))
@@ -268,13 +274,13 @@ def test_xdist_children_remain_under_the_action_root(
     root.mkdir()
     checkout = _checkout(
         tmp_path,
-        SCRATCH_RECORDER.replace("test_one", "test_a")
-        + SCRATCH_RECORDER.replace("test_one", "test_b"))
+        KEPT_RECORDER.replace("test_one", "test_a")
+        + KEPT_RECORDER.replace("test_one", "test_b"))
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", TEST_ACTION_KEY)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", TEST_ACTION_NONCE)
     assert _real_dispatch(
         monkeypatch, checkout,
-        ["--basetemp", str(root), "--workers-per-shard", "2"])
+        ["--basetemp", str(root), "--workers-per-shard", "2"], expect=1)
     records = _records(root)
     assert len(records) == 2
     # Each xdist worker numbers its own popen-gw directory under the one
@@ -302,7 +308,7 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
     tests.mkdir(parents=True)
     for name in ("a", "b"):
         (tests / f"test_{name}.py").write_text(
-            SCRATCH_RECORDER.replace("test_one", f"test_{name}"))
+            KEPT_RECORDER.replace("test_one", f"test_{name}"))
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
 
     # Each shard is its own action on the real fleet, so each child gets its
@@ -339,7 +345,7 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
                 "--shards", "2", "--threads-per-shard", "1",
                 "--test-timeout-s", "0", "--basetemp", str(root), "tests",
             ])
-            assert pbtest.main() == 0
+            assert pbtest.main() == 1
         return _records(root)
 
     first = run_once("b")

@@ -239,15 +239,15 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         claim = queue.claim(owner=f"recovery-fixture-{counter}")
         assert claim is not None and claim["action_key"] == action["action_key"]
         held: list[Path] = []
-        actual_rmtree = materialize.shutil.rmtree
+        actual_remove = materialize._remove_checkout_tree
 
-        def retained_cleanup(path, *args, **kwargs):
+        def retained_cleanup(path):
             if Path(path) in held:
                 raise PermissionError("injected root-owned native cleanup failure")
-            return actual_rmtree(path, *args, **kwargs)
+            return actual_remove(path)
 
         with monkeypatch.context() as retain:
-            retain.setattr(materialize.shutil, "rmtree", retained_cleanup)
+            retain.setattr(materialize, "_remove_checkout_tree", retained_cleanup)
             with materialize._execution_checkout(
                     claim, local_checkout_root=local_root, on_temporary=held.append) as checkout:
                 (checkout / "payload.txt").write_bytes(b"dirty tracked bytes\0not in Git\n")
@@ -852,16 +852,16 @@ def test_cleanup_failure_is_incomplete_and_never_a_fabricated_removal(case, monk
     member = case.checkout / "payload.txt"
     if partially_deleted:
         original.pop("checkout/payload.txt")
-    actual_rmtree = materialize.shutil.rmtree
+    actual_remove = materialize._remove_checkout_tree
 
-    def fail_selected(path, *args, **kwargs):
+    def fail_selected(path):
         if Path(path) == case.directory:
             if partially_deleted:
-                member.unlink()  # a genuine partial rmtree, not a pre-delete failure
+                member.unlink()  # a genuine partial removal, not a pre-delete failure
             raise PermissionError("still held by native root owner")
-        return actual_rmtree(path, *args, **kwargs)
+        return actual_remove(path)
 
-    monkeypatch.setattr(materialize.shutil, "rmtree", fail_selected)
+    monkeypatch.setattr(materialize, "_remove_checkout_tree", fail_selected)
     result = case.apply(plan)
     assert result["schema"] == RESULT_SCHEMA and result["complete"] is False, result
     assert result["status"] == "incomplete" and result["removed"] == []
@@ -1050,16 +1050,16 @@ def test_batch_helper_failure_reports_actual_partial_progress_and_keeps_the_hold
     member = second.checkout / "payload.txt"
     if partially_deleted:
         second_original.pop("checkout/payload.txt")
-    actual = materialize.shutil.rmtree
+    actual = materialize._remove_checkout_tree
 
-    def fail_second(path, *args, **kwargs):
+    def fail_second(path):
         if Path(path) == second.directory:
             if partially_deleted:
                 member.unlink()  # the failed root loses bytes but is not removed
             raise PermissionError("second checkout still owned")
-        return actual(path, *args, **kwargs)
+        return actual(path)
 
-    monkeypatch.setattr(materialize.shutil, "rmtree", fail_second)
+    monkeypatch.setattr(materialize, "_remove_checkout_tree", fail_second)
     result = first.apply(plan)
     assert result["complete"] is False and result["status"] == "incomplete", result
     assert result["removed"] == [str(first.directory)]

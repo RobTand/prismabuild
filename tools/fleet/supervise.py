@@ -59,6 +59,7 @@ a stopped role keeps its lock until an operator continues or terminates it.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -203,6 +204,14 @@ INHERITED_CLAIM_FD_ENV = "PRISMABUILD_SUPERVISOR_CLAIM_FD"
 RUNTIME_VERSION_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
 # A large inherited zombie backlog must not starve the census or re-exec.
 MAX_REAPS_PER_TICK = 256
+#: A worker loop's log is pruned once nothing has written to it for this
+#: long, it is not the highest index, and no live loop holds it.
+WORKER_LOG_RETENTION_S = 7 * 24 * 3600
+#: The most worker logs one regular cycle inspects for pruning, so a
+#: directory of tens of thousands never holds up a cycle or a spawn.
+WORKER_LOG_PRUNES_PER_TICK = 256
+#: The only names ``_spawn`` gives worker logs.
+WORKER_LOG_NAME = re.compile(r"pb-worker-(0|[1-9][0-9]*)\.log")
 
 
 @dataclass(frozen=True)
@@ -1203,23 +1212,94 @@ def housekeeping_ceiling(floor: int) -> int:
     return max(floor, min(by_cpu, max(1, by_memory)))
 
 
-def _next_log_index() -> int:
-    """Choose a log slot no running or earlier loop can already be appending."""
+def _worker_log_census() -> list[int]:
+    """Every worker log index in ``LOG_DIR``, lowest first.
 
-    highest = -1
+    Listed once per supervisor start.  The next slot is one above the
+    highest, so no running or earlier loop can already be appending to it;
+    the rest are what ``_prune_worker_logs`` works through.
+    """
+
     try:
-        entries = list(LOG_DIR.iterdir())
+        names = os.listdir(LOG_DIR)
+    except OSError:
+        return []
+    return sorted(int(match.group(1)) for name in names
+                  if (match := WORKER_LOG_NAME.fullmatch(name)))
+
+
+def _log_writers(pids: Collection[int]) -> set[tuple[int, int]] | None:
+    """The files these loops hold as stdout and stderr; ``None`` if unreadable.
+
+    A loop that has exited (or closed the descriptor) holds nothing; any
+    other failure to read one is unknown, and unknown keeps every log.
+    """
+
+    held = set()
+    for pid in pids:
+        for descriptor in (1, 2):
+            try:
+                info = os.stat(PROC / str(pid) / "fd" / str(descriptor))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return None
+            held.add((info.st_dev, info.st_ino))
+    return held
+
+
+def _prune_worker_logs(backlog: deque[int], pids: Collection[int],
+                       newest: int) -> int:
+    """Remove worker logs no loop will append to again; return the count.
+
+    A log goes when it is a single-link regular file this user owns, last
+    written more than ``WORKER_LOG_RETENTION_S`` ago, below ``newest`` (the
+    highest index, which a restarted supervisor counts from), and held as
+    stdout or stderr by none of ``pids``, the cycle's live loops.  At most
+    ``WORKER_LOG_PRUNES_PER_TICK`` are inspected; a kept log returns to the
+    back of the backlog and anything else is forgotten untouched.  A loop
+    whose descriptors cannot be read might hold any log, so that cycle
+    prunes nothing.
+    """
+
+    now = time.time()
+    held = None
+    pruned = 0
+    try:
+        directory = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+                            | os.O_NOFOLLOW)
     except OSError:
         return 0
-    for path in entries:
-        name = path.name
-        if not (name.startswith("pb-worker-") and name.endswith(".log")):
-            continue
-        try:
-            highest = max(highest, int(name[10:-4]))
-        except ValueError:
-            continue
-    return highest + 1
+    try:
+        role_log_identity.check_directory(directory, LOG_DIR, os.getuid())
+        for _ in range(min(WORKER_LOG_PRUNES_PER_TICK, len(backlog))):
+            index = backlog.popleft()
+            name = f"pb-worker-{index}.log"
+            try:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.getuid()):
+                continue
+            if index >= newest or now - info.st_mtime < WORKER_LOG_RETENTION_S:
+                backlog.append(index)
+                continue
+            if held is None and (held := _log_writers(pids)) is None:
+                backlog.appendleft(index)
+                break
+            again = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if ((info.st_dev, info.st_ino) in held
+                    or (again.st_dev, again.st_ino) != (info.st_dev, info.st_ino)):
+                backlog.append(index)
+                continue
+            os.unlink(name, dir_fd=directory)
+            pruned += 1
+    except OSError as exc:
+        print(f"worker log pruning stopped: {str(exc)[:200]!r}", flush=True)
+    finally:
+        os.close(directory)
+    return pruned
 
 
 def cycle_stale(published: str) -> list[int]:
@@ -2160,7 +2240,8 @@ def _run_supervisor(stop_requested) -> int:
     print(f"[{host}] supervising {target} loops: {' '.join(loop_args)}",
           flush=True)
     fixed_target = args.loops > 0
-    next_log_index = _next_log_index()
+    log_backlog = deque(_worker_log_census())
+    next_log_index = log_backlog[-1] + 1 if log_backlog else 0
     draining_announced = False
     # The busiest claim census of the last two ticks (#1571): a claim
     # count that alternates between ticks -- a loop finishes one action
@@ -2241,6 +2322,8 @@ def _run_supervisor(stop_requested) -> int:
             draining_announced = False
 
         live = _live_loops()
+        # Loops this cycle may stop are still alive while it prunes logs.
+        census_loops = list(live)
         # One authoritative claim census per cycle.  Computed before the role
         # pass so role freshness shares it, and reused for stale cycling, load
         # feedback and scale-down below -- still one NFS rescan per pid, not
@@ -2360,10 +2443,17 @@ def _run_supervisor(stop_requested) -> int:
             index = next_log_index
             next_log_index += 1
             pid = _spawn(loop_args, index)
+            log_backlog.append(index)
             print(f"[{host}] spawned loop {index} pid {pid} "
                   f"({len(live) + offset + 1} of {desired})", flush=True)
         if stop_requested():
             continue
+        if not args.once:
+            pruned = _prune_worker_logs(log_backlog, census_loops,
+                                        next_log_index - 1)
+            if pruned:
+                print(f"[{host}] pruned {pruned} worker log(s) older than "
+                      f"{WORKER_LOG_RETENTION_S // 86400} days", flush=True)
         if missing:
             # One bounded delay lets a large batch spread its first polls
             # without charging half a second for every housekeeping process.

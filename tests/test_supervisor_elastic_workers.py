@@ -210,7 +210,9 @@ def test_log_slots_never_reuse_append_targets(tmp_path, monkeypatch):
     (tmp_path / "pb-worker-19.log").write_text("newer evidence\n")
     (tmp_path / "pb-worker-nope.log").write_text("ignore\n")
 
-    assert supervise._next_log_index() == 20
+    census = supervise._worker_log_census()
+    assert census == [2, 19]
+    assert census[-1] + 1 == 20, "the next slot is above every earlier one"
 
 
 def test_a_backlog_that_never_drains_does_not_pin_proven_idle_pollers(
