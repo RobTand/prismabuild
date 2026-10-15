@@ -36,7 +36,6 @@ import os
 from pathlib import Path
 import sys
 import threading
-import time
 
 import pytest
 
@@ -319,7 +318,7 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     queue.item_path(pool.READY, lead).unlink(missing_ok=True)
 
     entered = threading.Event()
-    attempted = threading.Event()
+    completed = threading.Event()
     cleanup_events: list[dict[str, object]] = []
     real_publication_row = pbrun.publication_row
 
@@ -330,16 +329,15 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
         if action.get("action_key") != key:
             return real_publication_row(action, *args, **kwargs)
         entered.set()
-        assert attempted.wait(10)
-        time.sleep(0.5)         # the window a racing cleanup would use
+        assert completed.wait(10)
         return real_publication_row(action, *args, **kwargs)
 
     monkeypatch.setattr(pbrun, "publication_row", paused_publication_row)
 
     def cleanup() -> None:
         assert entered.wait(10)
-        attempted.set()
         cleanup_events.extend(tier_loop.withdraw_dead_consumer_movers(queue))
+        completed.set()
 
     worker = threading.Thread(target=cleanup, daemon=True)
     worker.start()
@@ -347,6 +345,11 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     worker.join(10)
     assert not worker.is_alive(), "the cleanup pass never returned"
 
+    assert any(event.get("event") == "transition-lock-busy"
+               and event.get("lock_key") == key
+               and event.get("consumer") == key
+               and event.get("step") == "dead-consumer"
+               for event in cleanup_events), cleanup_events
     assert not any(event.get("event") == "residency-plan-reaped"
                    for event in cleanup_events), cleanup_events
     assert residency_plan.read(queue, key) is not None, (
