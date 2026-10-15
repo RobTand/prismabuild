@@ -33,8 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"
                        / "fleet"))
 from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -157,7 +156,7 @@ def _staged_file(stage: Path, relative: str, size: int = 4096) -> Path:
     return path
 
 
-def _mark(path: Path, attribute: str = prewarm_loop.STAGE_SOURCE_XATTR,
+def _mark(path: Path, attribute: str = stage_marks.STAGE_SOURCE_XATTR,
           value: bytes = b"/mnt/shared/x@0") -> Path:
     try:
         os.setxattr(path, attribute, value)
@@ -328,7 +327,7 @@ def test_a_changed_mark_is_probed_again(stage_fleet, monkeypatch):
                             wanted=set(), index=index)
     calls.reset()
 
-    os.setxattr(target, stage_move.STAGE_MOVER_XATTR, MOVER.encode())
+    os.setxattr(target, stage_marks.STAGE_MOVER_XATTR, MOVER.encode())
     candidates, errors = stage_release._unattributed_candidates(
         stage, stage.resolve(strict=True), set(), set(), memo=index)
 

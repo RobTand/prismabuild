@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -144,7 +144,7 @@ def test_a_prewarm_stage_object_is_not_a_movers_leftover(fleet):
     queue, stage = fleet
     marked = _staged_file(stage, "prewarmed.bin", 4096)
     try:
-        os.setxattr(marked, prewarm_loop.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
+        os.setxattr(marked, stage_marks.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
     except OSError:
         pytest.skip("this filesystem carries no user extended attributes")
     unmarked = _staged_file(stage, "nobodys.bin", 4096)
@@ -182,7 +182,7 @@ def test_a_prewarm_temporary_is_left_to_the_loop_that_owns_it(fleet):
 
     queue, stage = fleet
     temporary = _staged_file(stage, "obj.bin.pbstage@0+4096.7.1.tmp", 4096)
-    assert prewarm_loop._STAGE_TEMPORARY.search(temporary.name)
+    assert stage_marks.prewarm_temporary_pid(temporary.name) is not None
     receipt = stage_release.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
     assert temporary.exists()

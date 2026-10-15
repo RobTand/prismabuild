@@ -22,7 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb, pool, reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
@@ -44,7 +44,7 @@ def _stage_copy(stage: Path, mount: Path, name: str,
     path = _staged(stage, mount, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
     return path
 
 
@@ -138,7 +138,7 @@ def test_dry_run_lists_proven_pairs_and_changes_nothing(fleet) -> None:
               for name in NAMES}
     before_xattr = {
         name: os.getxattr(_staged(stage, mount, name),
-                          prewarm_loop.STAGE_SOURCE_XATTR)
+                          stage_marks.STAGE_SOURCE_XATTR)
         for name in NAMES}
 
     got = _reclaim(fleet)
@@ -157,7 +157,7 @@ def test_dry_run_lists_proven_pairs_and_changes_nothing(fleet) -> None:
     for name in NAMES:
         assert _staged(stage, mount, name).read_bytes() == before[name]
         assert os.getxattr(_staged(stage, mount, name),
-                           prewarm_loop.STAGE_SOURCE_XATTR) == before_xattr[
+                           stage_marks.STAGE_SOURCE_XATTR) == before_xattr[
             name]
 
 
@@ -281,7 +281,7 @@ def test_a_produced_output_copy_never_moves(fleet) -> None:
     staged = lane / (NAMES[0] + ".pbrange") / f"0-{SIZE}"
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
-    os.setxattr(staged, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(staged, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
 
     got = _reclaim(fleet, apply=True, run_id="run-lane")
 
@@ -409,7 +409,7 @@ def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
     before = {name: (
         _staged(stage, mount, name).read_bytes(),
         os.getxattr(_staged(stage, mount, name),
-                    prewarm_loop.STAGE_SOURCE_XATTR),
+                    stage_marks.STAGE_SOURCE_XATTR),
         os.stat(_staged(stage, mount, name))) for name in NAMES}
 
     got = _reclaim(fleet, apply=True, run_id="run-restore")
@@ -426,7 +426,7 @@ def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
         live = os.stat(path)
         assert path.read_bytes() == before[name][0]
         assert os.getxattr(path,
-                            prewarm_loop.STAGE_SOURCE_XATTR) == before[
+                            stage_marks.STAGE_SOURCE_XATTR) == before[
             name][1]
         assert live.st_mtime_ns == before[name][2].st_mtime_ns
         assert live.st_atime_ns == before[name][2].st_atime_ns
@@ -458,8 +458,8 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     retained_key, waiting_key = "b" * 64, "c" * 64
     retained = stage / "owned.bin"
     retained.write_bytes(b"held")
-    os.setxattr(retained, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
-    os.setxattr(retained, stage_reclaim.STAGE_MOVER_XATTR, retained_key.encode())
+    os.setxattr(retained, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(retained, stage_marks.STAGE_MOVER_XATTR, retained_key.encode())
     queue.mint_tier_capacity(TIER, {KIND: 3})
     assert queue.tier_ledger(TIER).acquire(retained_key, {KIND: 1})
     queue.record_move(retained_key, {
@@ -544,7 +544,7 @@ def test_a_ranged_name_inside_a_ranged_name_still_pairs(fleet) -> None:
         f"{mount}/{nested}", 0, SIZE, mount_prefix=str(mount))
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
-    os.setxattr(staged, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(staged, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
 
     got = _reclaim(fleet)
 
@@ -786,7 +786,7 @@ def test_a_nonzero_original_extent_is_proven(fleet):
         str(mount / "offset.bin"), 6, SIZE, mount_prefix=str(mount))
     target.parent.mkdir(parents=True)
     target.write_bytes(good)
-    os.setxattr(target, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(target, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
     got = _reclaim(fleet, apply=True, run_id="nonzero")
     row = next(row for row in got["entries"] if row["stage_path"] == str(target))
     assert row["offset"] == 6 and row["sha256"] == hashlib.sha256(good).hexdigest()

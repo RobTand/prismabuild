@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"
                        / "fleet"))
 from prismabuild import kept_reads
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -70,7 +70,7 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
                 continue
             partial = stage_release._is_mover_partial(name)
             if not partial:
-                if prewarm_loop._STAGE_TEMPORARY.search(name):
+                if stage_marks.prewarm_temporary_pid(name) is not None:
                     continue
                 marked = stage_release._marked_by_the_prewarm_stage(path)
                 if marked is None or marked:
@@ -115,7 +115,7 @@ def _staged_file(stage: Path, relative: str, size: int = 4096) -> Path:
 
 def _mark(path: Path) -> None:
     try:
-        os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
     except OSError:
         pytest.skip("this filesystem carries no user extended attributes")
 

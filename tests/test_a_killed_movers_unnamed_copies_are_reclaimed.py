@@ -12,7 +12,7 @@ room stayed lost, and the receipt counted the files without their bytes,
 mixed in with the prewarm loop's objects.
 
 With the fix each mover also names itself on its copy
-(``stage_move.STAGE_MOVER_XATTR``).  The reconciliation deletes such a copy
+(``stage_marks.STAGE_MOVER_XATTR``).  The reconciliation deletes such a copy
 once no fragment, live pin or live promotion names it and its writer has
 ended, and it sizes what it deleted and what it left by kind.  A copy whose
 writer is still wanted or queued stays, a genuine prewarm object stays, and
@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 import ram_promote  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
@@ -389,8 +390,8 @@ def test_a_prewarm_object_and_a_copy_marked_before_the_fix_are_kept(world):
 
     world.forget_stage_fragment()
     legacy, *residue = world.paths(world.stage)
-    os.removexattr(legacy, stage_move.STAGE_MOVER_XATTR)
-    assert os.getxattr(legacy, prewarm_loop.STAGE_SOURCE_XATTR)
+    os.removexattr(legacy, stage_marks.STAGE_MOVER_XATTR)
+    assert os.getxattr(legacy, stage_marks.STAGE_SOURCE_XATTR)
     origin = Path(str(world.body["entries"][0]["path"]))
     tier = prewarm_loop.StageTier(state="present", reason="test",
                                   mountpoint=str(world.stage),
@@ -443,6 +444,6 @@ def test_every_movers_copy_names_its_writer(world, monkeypatch):
         if root == world.ram:
             world.kill_a_promotion(monkeypatch)
         for path in world.paths(root):
-            assert os.getxattr(path, stage_move.STAGE_MOVER_XATTR) == (
+            assert os.getxattr(path, stage_marks.STAGE_MOVER_XATTR) == (
                 mover.encode()), path
-            assert os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR), path
+            assert os.getxattr(path, stage_marks.STAGE_SOURCE_XATTR), path
