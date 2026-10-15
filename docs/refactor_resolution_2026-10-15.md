@@ -404,6 +404,21 @@ The accumulation branch advanced through that qualified sequence. The
 `sampler-port`, `shim-test-signals` and `merged-sampler-flock-refusal` artifacts
 retain the source audits, original failures, node comparisons and qualifications.
 
+The publication-handoff race test now waits for the cleanup pass to finish
+while publication is paused. It requires the actual busy-lock event for that
+consumer, so a cleanup pass scheduled after publication cannot satisfy the test.
+All 40 original assertions remain, with one new event assertion. Its full
+16-case file passed at `8ad04d9799eda28f13dd47cc58c7ebd0ad1623c7`, with verified
+source, terminal, logs and CAS receipt/payload. The `handoff-test-signal` artifacts
+retain that qualification and the source-preservation audit.
+
+The admitted descriptive inventory at that source found 999 test files, 8,883
+test-function definitions, 96 sleep calls in test bodies, two reflexive-looking
+assertions, 15 source inspections and no shadowed tests. These are review flags,
+not executed case counts or failure verdicts. The two repeated-operation checks
+remain because their second real call tests stability. Further hygiene work must
+retain each test's actual behavioral consequence.
+
 The combined qualification at `a230804e91b65011ccb8f082b770da77bd313c0b`
 passed all 5,230 unique tests across 356 files and eight actions. It retains
 every one of the 5,229 nodes in the earlier receipt, drain and mover runs.

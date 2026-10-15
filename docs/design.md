@@ -18070,17 +18070,25 @@ Ordinary finish does not hold the key transition lock across outcome filing;
 its existing exact-claim and tombstone guards protect cleanup. No broader
 locking, identity schema, admission rule or retry budget changes here.
 
-Superseded evidence is not a terminal verdict. An exact-generation G1 waiter
-does not read generic superseded drops, and an intermediate `requeued` attempt
-does not give the archive reader a terminal outcome. After G2 succeeds, that
-waiter still returns no ending for G1; ordinary republication does not authorize
-following G2. This existing maintenance-deferral limitation remains. G2's exact
-waiter reads G2's own ending, and the older generation's evidence stays retained.
+Generic superseded drops and intermediate `requeued` attempts do not supply an
+execution verdict. A validated newer READY publication can instead end G1 with
+an immutable `PublicationSupersession` under its exact publication identity.
+Exact-generation readers consult that ending after exact execution, withdrawal
+and archive evidence cannot answer. The wait reports `superseded` and exits 76;
+it grants no execution verdict, resource release or authority to follow G2.
+Same-generation retries do not create that ending. G2's exact waiter reads G2's
+own evidence, and the older generation's evidence remains retained.
 
 The test-only source parent reproduced three READY-generation losses in PB
 action `c28bdd67aea92a51224aaa57d295f080b588e6d95d6d235062eca3226065b5ea`.
-Source-bound verification of this fix remains pending. This component change
-does not promote staged-read deployment or workload-proof axes.
+The integrated generation-preservation cohort passed 195 tests at
+`7be48621c2eb8519666f777ec622570ba20d8c0d`. The later typed publication-ending
+and caller cohort passed 677 at `961290a01b4d351a7b7d0b4886830ddd1cfd6c45`.
+Their source, terminal, retained logs and CAS receipt/payload evidence is
+verified in `requeue-generation/integrated-evidence.json` and
+`integration/publication-assembled-evidence.json` in the refactor evidence
+directory. These component qualifications do not promote staged-read
+deployment or workload-proof axes.
 
 ### Queue-key standing read owner
 
