@@ -19,7 +19,7 @@ RULES = ("cpu_host", "cross_resource", "preferred_cpu")
 OBSERVATIONS = ("fresh", "partial", "stale", "zero", "map_mismatch", "ledger_failure")
 
 
-def _history(root, monkeypatch, rule, observation):
+def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 31.)):
     monkeypatch.setattr(socket, "gethostname", lambda: LOCAL)
     monkeypatch.setattr(time, "time", lambda: 1_800_000_000.0)
     clock = [10.0]
@@ -42,7 +42,7 @@ def _history(root, monkeypatch, rule, observation):
             observed.pop("mem_gb")
         if host == PEER and observation == "zero":
             observed["mem_gb"] = 0
-        power = .9 if host == LOCAL and rule == "cross_resource" else .05
+        power = .9 if host == LOCAL and (rule == "cross_resource" or mixed) else .05
         queue.announce(host=host, tags=[], has_gpu=has_gpu, capacity=capacity,
                        observed_capacity=observed, cpu_tiers=tiers,
                        observed_detail={"observed_unix": time.time() - age, "load1": 0.,
@@ -63,8 +63,12 @@ def _history(root, monkeypatch, rule, observation):
     key = "a" * 64
     queue.publish(action_key=key, cas_root=str(root / "cas"), checkout_root=str(root),
                   worker_script="worker.py", resources={"cpu": 3, "mem_gb": 1})
+    other_key = "c" * 64
+    if mixed:
+        queue.publish(action_key=other_key, cas_root=str(root / "cas"), checkout_root=str(root),
+                      worker_script="worker.py", resources={"cpu": 3, "mem_gb": 1})
     steps = []
-    for tick in (10., 31.):
+    for tick in ticks:
         clock[0] = tick
         try:
             claimed = queue.claim(capacity=CAPACITY, cpu_tiers=local_tiers,
@@ -78,6 +82,10 @@ def _history(root, monkeypatch, rule, observation):
                           "ready": queue.item_path(pool.READY, key).exists(),
                           "held": bool(queue.ledger().held_keys()),
                           "passes": queue.passes_path(key).exists()})
+            if mixed:
+                others = queue.latest_denials({other_key}).get(other_key) or []
+                steps[-1]["other_reason"] = next((record.get("reason") for record in others
+                                                   if record.get("host") == LOCAL), None)
         except OSError as exc:
             steps.append({"error": type(exc).__name__, "message": str(exc)})
             break
@@ -165,6 +173,26 @@ def test_scratch_measured_fit_and_replacement_offer(tmp_path, monkeypatch, obser
                    for candidate in history["candidates"])
 
 
+def test_peer_observation_is_reused_across_cpu_host_and_timer_queries(tmp_path, monkeypatch):
+    reads = []
+    original = pool.ResourceLedger.available
+
+    def observe(ledger):
+        if ledger.base.name == PEER:
+            reads.append(ledger.base)
+        return original(ledger)
+
+    monkeypatch.setattr(pool.ResourceLedger, "available", observe)
+    _history(tmp_path, monkeypatch, "cpu_host", "fresh", mixed=True, ticks=(10.,))
+    assert len(reads) == 1
+
+
+def test_timer_only_yields_do_not_charge_peer_capacity(tmp_path, monkeypatch):
+    steps = _history(tmp_path, monkeypatch, "cross_resource", "fresh", mixed=True, ticks=(10.,))
+    assert not steps[0]["claimed"] and not steps[0]["held"]
+    assert steps[0]["reason"] == steps[0]["other_reason"] == "deferred_for_cross_resource_placement"
+
+
 def replay():
     histories = {}
     for rule in RULES:
@@ -174,6 +202,9 @@ def replay():
     for observation in ("fresh", "partial", "stale", "zero", "replacement"):
         with tempfile.TemporaryDirectory() as root, pytest.MonkeyPatch.context() as patch:
             histories[f"scratch/{observation}"] = _scratch_history(Path(root), patch, observation)
+    for rule in ("cpu_host", "cross_resource"):
+        with tempfile.TemporaryDirectory() as root, pytest.MonkeyPatch.context() as patch:
+            histories[f"mixed/{rule}"] = _history(Path(root), patch, rule, "fresh", mixed=True)
     return histories
 
 

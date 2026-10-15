@@ -139,6 +139,7 @@ import uuid
 
 from . import contracts
 from . import manifest_layout
+from . import _peer_placement
 from . import core as pb
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
@@ -20219,7 +20220,9 @@ class PoolQueue:
             return "admission_demand_required"
         return None
 
-    def _defer_fallback(self, item: Mapping, demand: Mapping) -> dict[str, object] | None:
+    def _defer_fallback(
+        self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
+    ) -> dict[str, object] | None:
         """Give a compatible host with free preferred CPUs up to 20s to claim.
 
         Offers and remote ledger scans are advisory snapshots, not an atomic
@@ -20231,25 +20234,21 @@ class PoolQueue:
         started = self._cpu_deferrals.setdefault(identity, time.monotonic())
         if time.monotonic() - started >= 20.0:
             return None
-        for offer in self._matching_offers(item, live=self.offers()):
+        for offer in self._matching_offers(item, live=placement.offers()):
             host = str(offer.get("host") or "")
             if not host or host == socket.gethostname():
                 continue
             tiers = offer.get("cpu_tiers")
             if not isinstance(tiers, Mapping) or not tiers.get("preferred"):
                 continue
-            remote = self.ledger(host)
-            if _read_json(remote.base / "cpu-map.json") != tiers:
+            peer = placement.peer(host, offer)
+            if peer is None:
                 continue
-            free = remote.available()
-            observed = offer.get("observed_capacity") or {}
-            free_preferred = remote.free_preferred(tiers)
-            if (free_preferred >= demand.get("cpu", 0)
-                    and all(free.get(k, 0) >= n and observed.get(k, free[k]) >= n
-                            for k, n in demand.items())):
-                return {"host": host, "free_preferred": free_preferred,
-                        "available": free,
-                        "observed_capacity": observed, "demand": dict(demand)}
+            capacity = peer.raw
+            if capacity.fits_or_ledger(demand):
+                return {"host": host, "free_preferred": capacity.free_preferred,
+                        "available": capacity.available,
+                        "observed_capacity": capacity.observed, "demand": dict(demand)}
         return None
 
     @staticmethod
@@ -20309,7 +20308,7 @@ class PoolQueue:
     CROSS_RESOURCE_MARGIN = 0.20
 
     def _defer_cross_resource_placement(
-        self, item: Mapping, demand: Mapping, *, live: Sequence,
+        self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
     ) -> dict[str, object] | None:
         """Prefer not to spend a box's GPU power on work that can go elsewhere.
 
@@ -20328,6 +20327,7 @@ class PoolQueue:
         """
 
         host = socket.gethostname()
+        live = placement.offers()
         local = next((offer for offer in live if offer.get("host") == host), {})
         gpu_job = bool(demand.get("gpu"))
         load = self._opposite_resource_load(local, gpu_job=gpu_job)
@@ -20347,18 +20347,14 @@ class PoolQueue:
             remote_load = self._opposite_resource_load(offer, gpu_job=gpu_job)
             if remote_load is None or remote_load > load - self.CROSS_RESOURCE_MARGIN:
                 continue
-            remote = self.ledger(remote_host)
-            tiers = offer.get("cpu_tiers") or {}
-            if _read_json(remote.base / "cpu-map.json") != tiers:
+            peer = placement.peer(remote_host, offer)
+            if peer is None:
                 continue
-            free = remote.available()
-            observed = offer.get("observed_capacity") or {}
-            if (remote.free_preferred(tiers) >= demand.get("cpu", 0)
-                    and all(min(free.get(k, 0), observed.get(k, 0)) >= n
-                            for k, n in demand.items())):
+            capacity = peer.raw
+            if capacity.fits_measured(demand):
                 return {"host": remote_host, "local_load": load,
                         "remote_load": remote_load, "gpu_job": gpu_job,
-                        "available": free, "observed_capacity": observed,
+                        "available": capacity.available, "observed_capacity": capacity.observed,
                         "demand": dict(demand)}
         return None
 
@@ -20402,7 +20398,7 @@ class PoolQueue:
         end a measured-cost yield; no reason-ring fallback supplies authority.
         """
         identity = f"{item['action_key']}:{repr(float(item['published_unix']))}"
-        record = view["denials"].get(identity)
+        record = view.denials.get(identity)
         if not isinstance(record, Mapping):
             return False
         reason = record.get("reason")
@@ -20499,9 +20495,10 @@ class PoolQueue:
                     and device["memory_total_bytes"] > 0
                     and device["memory_free_bytes"] + device["memory_used_bytes"] <= device["memory_total_bytes"]))
 
-    def _scratch_placement(self, item, intent, demand, *, live, views):
+    def _scratch_placement(self, item, intent, demand, *, placement):
         """Independent worker choice; all shared offer/ledger reads precede admission."""
         host, now = socket.gethostname(), _now()
+        live = placement.offers()
         matched = {str(o["host"]) for o in self._matching_offers(item, live=live)}
         own = next((o for o in live if o.get("host") == host), None)
         if own is None or host not in matched or own.get("state") == "draining":
@@ -20533,20 +20530,21 @@ class PoolQueue:
                 elif self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
                     candidate["exclusion"] = "observations_not_fresh"
                 else:
-                    view = cast(dict[str, Any] | None, self._cpu_host_view(remote, offer, views))
+                    try:
+                        view = placement.peer(remote, offer)
+                    except (OSError, ValueError, TypeError, PoolContractError):
+                        view = None
                     if view is None:
                         candidate["exclusion"] = "host_view_unknown"
-                    elif not (view["free_preferred"] >= demand.get("cpu", 0)
-                              and all(min(view["available"].get(k, 0),
-                                          view["observed"].get(k, 0)) >= n for k, n in demand.items())):
+                    elif not view.remaining.fits_measured(demand):
                         candidate["exclusion"] = "full_demand_does_not_fit"
                     elif remote != host and self._scratch_isolated(remote, view):
                         candidate["exclusion"] = "current_isolation_holder"
                     else:
                         candidate["fit"] = True
-                        candidate["available"] = dict(view["available"])
-                        candidate["observed_capacity"] = dict(view["observed"])
-                        candidate["free_preferred"] = view["free_preferred"]
+                        candidate["available"] = dict(view.remaining.available)
+                        candidate["observed_capacity"] = dict(view.remaining.observed)
+                        candidate["free_preferred"] = view.remaining.free_preferred
             except (ValueError, TypeError, OSError, KeyError) as exc:
                 candidate["exclusion"] = str(exc)
             candidates.append(candidate)
@@ -20599,7 +20597,8 @@ class PoolQueue:
                     raise local_scratch.LocalScratchError("scratch peer offer expired")
                 if self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
                     raise local_scratch.LocalScratchError("observations_not_fresh")
-                view = cast(dict[str, Any], views[remote])
+                view = cast(_peer_placement.PeerObservation,
+                            placement.peer(remote, originals[remote]))
                 if self._scratch_peer_passed_on(item, offer, view, now=now):
                     candidate["fit"], candidate["exclusion"] = False, "current_policy_refusal"
                 elif candidate["io_seconds"] < selected["io_seconds"]:
@@ -20609,17 +20608,13 @@ class PoolQueue:
         if cheaper:
             alternative = min(cheaper, key=lambda c: (c["io_seconds"], c["host"]))
             evidence["yield_to"] = alternative["host"]
-            # Reuse the existing per-pass fit view: one pass must not promise
-            # a faster box more rows than its currently free resources fit.
-            view = cast(dict[str, Any], views[alternative["host"]])
-            for kind, need in demand.items():
-                view["available"][kind] -= need
-                view["observed"][kind] -= need
-            view["free_preferred"] -= demand.get("cpu", 0)
+            view = cast(_peer_placement.PeerObservation,
+                        placement.peer(alternative["host"], originals[alternative["host"]]))
+            view.charge(demand)
         return evidence, bool(cheaper)
 
     def _scratch_isolated(self, host, view):
-        if "scratch_isolated" not in view:
+        if view.scratch_isolated is None:
             ledger = self.ledger(host)
             isolated = False
             for key in ledger.held_keys():
@@ -20631,8 +20626,8 @@ class PoolQueue:
                         or gpu.get("measurement") or gpu.get("exclusive")):
                     isolated = True
                     break
-            view["scratch_isolated"] = isolated
-        return view["scratch_isolated"]
+            view.scratch_isolated = isolated
+        return view.scratch_isolated
 
     def _scratch_boundary(self, item, intent, evidence, demand):
         # Re-read this host's small offer and exact root identity AFTER peer
@@ -20666,41 +20661,23 @@ class PoolQueue:
         return (chosen["measured_unix"], offer["announced_unix"],
                 self.attempt_generation(checked), checked.get("attempts", 0))
 
-    def _cpu_host_view(
-        self, host: str, offer: Mapping, views: dict[str, dict[str, object] | None],
-    ) -> dict[str, object] | None:
-        """What this pass knows of a host without a GPU, read once per pass (#1262).
+    def _read_peer_observation(self, host: str, offer: Mapping) -> _peer_placement.PeerObservation | None:
+        remote = self.ledger(host)
+        tiers = offer.get("cpu_tiers") or {}
+        if _read_json(remote.base / "cpu-map.json") != tiers:
+            return None
+        denials = cpu_admission.read_json(
+            self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
+        capacity = _peer_placement.PeerCapacity(
+            available=dict(remote.available()),
+            observed=dict(offer.get("observed_capacity") or {}),
+            free_preferred=int(remote.free_preferred(tiers)))
+        return _peer_placement.PeerObservation(
+            capacity, dict(denials) if isinstance(denials, Mapping) else {})
 
-        The free tokens and preferred CPUs of its ledger, the capacity its
-        offer observed, and its published latest denial per action
-        generation (``reservations/<host>/adaptive/claim-denials.json``, the
-        file :meth:`latest_denials` reads).  Every CPU-only row a pass
-        considers asks about the same few hosts, so the mount is read at most
-        once per host per pass (#351), and each yield charges the view so a
-        host is never offered more rows in one pass than it can fit.
-        ``None`` when a read fails or the host's CPU map is not its offer's:
-        a host this pass cannot read is not one a row waits for.
-        """
-
-        if host in views:
-            return views[host]
-        view: dict[str, object] | None = None
-        try:
-            remote = self.ledger(host)
-            tiers = offer.get("cpu_tiers") or {}
-            if _read_json(remote.base / "cpu-map.json") == tiers:
-                denials = cpu_admission.read_json(
-                    self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
-                view = {"available": dict(remote.available()),
-                        "free_preferred": int(remote.free_preferred(tiers)),
-                        "observed": dict(offer.get("observed_capacity") or {}),
-                        "denials": dict(denials) if isinstance(denials, Mapping) else {}}
-        except (OSError, ValueError, TypeError, PoolContractError):
-            view = None
-        views[host] = view
-        return view
-
-    def _cpu_host_passed_on(self, item: Mapping, host: str, view: Mapping) -> bool:
+    def _cpu_host_passed_on(
+        self, item: Mapping, host: str, view: _peer_placement.PeerObservation,
+    ) -> bool:
         """Whether ``host`` has already looked at this row and not taken it.
 
         Its published latest denial for this generation says so, whatever the
@@ -20720,18 +20697,18 @@ class PoolQueue:
 
         published = item.get("published_unix")
         identity = f"{item['action_key']}:{repr(float(published))}"  # type: ignore[arg-type]
-        denials = view["denials"]
-        record = denials.get(identity)                              # type: ignore[union-attr]
+        denials = view.denials
+        record = denials.get(identity)
         if isinstance(record, Mapping) and record.get("host") == host:
             return record.get("reason") != "transition_busy"
-        if len(denials) < MAX_CLAIM_DENIALS:                         # type: ignore[arg-type]
+        if len(denials) < MAX_CLAIM_DENIALS:
             return False
         return any(entry.get("host") == host for entry in self.denial_transitions(
             str(item["action_key"]), published_unix=float(published)))  # type: ignore[arg-type]
 
     def _defer_to_cpu_host(
-        self, item: Mapping, demand: Mapping, *, has_gpu: bool, live: Sequence,
-        views: dict[str, dict[str, object] | None],
+        self, item: Mapping, demand: Mapping, *, has_gpu: bool,
+        placement: _peer_placement.PlacementPass,
     ) -> dict[str, object] | None:
         """Leave a CPU-only row to a host without a GPU that can run it now (#1262).
 
@@ -20762,32 +20739,28 @@ class PoolQueue:
         if not isinstance(item.get("published_unix"), (int, float)):
             return None           # no denial could ever end the wait
         host = socket.gethostname()
-        for offer in self._matching_offers(item, live=live):
+        for offer in self._matching_offers(item, live=placement.offers()):
             remote_host = str(offer.get("host") or "")
             if not remote_host or remote_host == host or offer.get("has_gpu"):
                 continue
             if self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
-            view = self._cpu_host_view(remote_host, offer, views)
+            try:
+                view = placement.peer(remote_host, offer)
+            except (OSError, ValueError, TypeError, PoolContractError):
+                continue
             if view is None or self._cpu_host_passed_on(item, remote_host, view):
                 continue
-            free = view["available"]
-            observed = view["observed"]
-            if not (view["free_preferred"] >= demand.get("cpu", 0)          # type: ignore[operator]
-                    and all(min(free.get(k, 0), observed.get(k, 0)) >= n     # type: ignore[union-attr]
-                            for k, n in demand.items())):
+            capacity = view.remaining
+            if not capacity.fits_measured(demand):
                 continue
             since = self._cpu_host_yields.setdefault(
                 (str(item["action_key"]), repr(item.get("published_unix"))), _now())
-            evidence = {"host": remote_host, "available": dict(free),       # type: ignore[call-overload]
-                        "free_preferred": view["free_preferred"],
-                        "observed_capacity": dict(observed),                  # type: ignore[call-overload]
+            evidence = {"host": remote_host, "available": dict(capacity.available),
+                        "free_preferred": capacity.free_preferred,
+                        "observed_capacity": dict(capacity.observed),
                         "demand": dict(demand), "yielding_s": round(_now() - since, 3)}
-            for kind, need in demand.items():
-                free[kind] = int(free.get(kind, 0)) - int(need)             # type: ignore[index, union-attr]
-                if kind in observed:                                         # type: ignore[operator]
-                    observed[kind] = int(observed[kind]) - int(need)         # type: ignore[index]
-            view["free_preferred"] = int(view["free_preferred"]) - int(demand.get("cpu", 0))  # type: ignore[call-overload]
+            view.charge(demand)
             return evidence
         return None
 
@@ -21730,21 +21703,7 @@ class PoolQueue:
         # guard lists the index fresh under the key's transition lock (#964),
         # so a release that lands after this scan listed it is still seen.
         released = self.released_origin_consumer_keys()
-        # One offer snapshot per scan, read only if something asks for it.
-        # The cross-resource preference is the only caller and it asks on the
-        # rare scans where this box is working the other resource, so an
-        # ordinary scan still reads the worker registry not at all.
-        placement_offers: list[dict[str, object]] | None = None
-
-        def offer_snapshot() -> list[dict[str, object]]:
-            nonlocal placement_offers
-            if placement_offers is None:
-                placement_offers = self.offers()
-            return placement_offers
-
-        #: Hosts without a GPU as this pass read them, for the CPU-only rows a
-        #: GPU host leaves to them (#1262, :meth:`_cpu_host_view`).
-        cpu_host_views: dict[str, dict[str, object] | None] = {}
+        placement = _peer_placement.PlacementPass(self.offers, self._read_peer_observation)
 
         ledger = None
         host_gate = controller
@@ -21816,7 +21775,7 @@ class PoolQueue:
         # fits beside it. This is a placement rule, not #1169's scan ordering.
         ready_gpu = self._ready_gpu_for_host(
             ready, tags=tagset, has_gpu=has_gpu, total=total,
-            gpu_controller=gpu_controller, offers=offer_snapshot,
+            gpu_controller=gpu_controller, offers=placement.offers,
             observed_images=observed_images, verdicts=verdict_snapshot)
         host = socket.gethostname()
         #: The rooms of those rows this pass could not evaluate because another
@@ -22566,7 +22525,7 @@ class PoolQueue:
                         # holding host admission across a mount stall is #351.
                         cpu_host = self._defer_to_cpu_host(
                             item, reservation_demand, has_gpu=has_gpu,
-                            live=offer_snapshot(), views=cpu_host_views)
+                            placement=placement)
                         if cpu_host is not None:
                             # Not a refusal: no ``record_pass``, as for the
                             # preferences below.  It lasts until the host
@@ -22577,7 +22536,7 @@ class PoolQueue:
                             })
                             continue
                         cross_resource = self._defer_cross_resource_placement(
-                            item, reservation_demand, live=offer_snapshot())
+                            item, reservation_demand, placement=placement)
                         if cross_resource is not None:
                             # Not a refusal and not starvation: no ``record_pass``,
                             # for the same reason ``deferred_for_preferred_cpu``
@@ -22625,7 +22584,7 @@ class PoolQueue:
                                 # allowance above; placement never discounts it.
                                 scratch_evidence, yielding = self._scratch_placement(
                                     item, scratch_intent, reservation_demand,
-                                    live=offer_snapshot(), views=cpu_host_views)
+                                    placement=placement)
                                 if yielding:
                                     self.record_denial(item, "deferred_for_local_scratch_io", scratch_evidence)
                                     continue
@@ -22858,7 +22817,7 @@ class PoolQueue:
                                         try:
                                             hold = _gang.resident_hold(
                                                 self, gang_record, gang_entry, item, here,
-                                                _now(), live=offer_snapshot(),
+                                                _now(), live=placement.offers(),
                                                 prefer_s=RESIDENT_COPY_PREFER_S)
                                         except (OSError, ValueError, PoolContractError,
                                                 pb.PrismaBuildError, KeyError, TypeError,
@@ -23199,7 +23158,7 @@ class PoolQueue:
                             continue
                     allocation = (ledger.cpu_allocation(handle, cpu_tiers)
                                   if ledger is not None and handle is not None and cpu_tiers is not None else None)
-                    fallback_deferral = (self._defer_fallback(item, demand)
+                    fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
                                           if allocation is not None and allocation["fallback"]
                                           and not (adaptive or {}).get("funded_by") else None)
                     if fallback_deferral is not None:

@@ -5789,6 +5789,25 @@ deferral, not the READY-GPU rule. Remote reads are made once per host per claim
 pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
 
+Peer placement now owns one lazy offer snapshot and one advisory ledger
+observation per peer per claim pass in `_peer_placement.PlacementPass`.
+Each observation retains raw capacity and capacity after CPU-host or scratch
+yields. These yields use one charge operation. CPU-host, cross-resource and
+scratch fits require measured capacity for every demanded kind;
+preferred-CPU fits retain their ledger fallback for an unmeasured kind.
+Freshness, eligibility, pass-on and timer rules remain separate.
+
+This extraction retains the timer rules' raw-capacity queries. Reusing the
+first advisory observation deliberately changes observation timing: a peer
+ledger or offer replacement after that read is ordinarily observed on the
+next claim pass, rather than on a later timer-rule read in this pass. The
+retained-base replay compares fixed observations and an explicit scratch
+replacement history, not arbitrary concurrent updates. Scratch still rereads
+eligible peer offers after ledger/isolation I/O and rechecks their original
+profiles, root identities, eligibility and measured fit. Authoritative local
+admission reads and transition/measurement/host lock ordering are unchanged;
+peer scans hold no host admission lock.
+
 It is not a thermal control and nothing here measures temperature or
 throughput. The GPU side reads drawn power against a reference, because
 `gpu_utilization` reports a resident kernel rather than working SMs. The
