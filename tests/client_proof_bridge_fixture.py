@@ -217,6 +217,7 @@ def recover(*args, **kwargs):
 updater.recover = recover
 lock = (Path(config['state_dir']) / 'upgrade.lock').open('a')
 fcntl.flock(lock, fcntl.LOCK_EX)
+observations = {}
 try:
     if mode == 'trust':
         try:
@@ -227,12 +228,24 @@ try:
             result = {'trusted': True}
     elif mode == 'loaded':
         result = {'loaded_matches': updater.loaded_matches(rpc(None, 'maintenance_status'))}
+    elif mode == 'host-proof':
+        program['trusted'](driver)
+        status = json.loads(Path(config['host_proof_status']).read_text())
+        def selected_census():
+            names = {'worker_loop.py', 'worker.py', 'prewarm_loop.py'}
+            return [[pid, start] for pid, start, argv in program['proc_census']()
+                    if any(Path(arg).name in names for arg in argv)]
+        observations['census_before'] = selected_census()
+        result = updater.drain_evidence(status)
+        observations['census_after'] = selected_census()
     else:
         result = updater.run()
     outcome = {'result': result, 'exception': None}
 except Exception as error:
     outcome = {'result': None, 'exception': type(error).__name__, 'error': str(error)}
+assert not any(name == 'prismabuild' or name.startswith('prismabuild.') for name in sys.modules)
 persist_backend()
+outcome.update(observations)
 outcome['journal_exists'] = updater.journal.exists()
 outcome['executed_sha256'] = updater.executing_sha256
 print(json.dumps({'test_outcome': outcome}), flush=True)
@@ -253,8 +266,7 @@ def fixed_source_artifact(name, revision, path, expected_sha256):
     return data
 
 
-@pytest.fixture
-def publication(tmp_path):
+def make_publication(tmp_path):
     generation = tmp_path / "generations" / "proof-bridge"
     install = tmp_path / "installed"
     state = tmp_path / "state"
@@ -294,6 +306,11 @@ def publication(tmp_path):
     harness = tmp_path / "installed_reader.py"
     harness.write_text(INSTALLED_READER)
     return generation, install, state, config, backend, harness
+
+
+@pytest.fixture
+def publication(tmp_path):
+    return make_publication(tmp_path)
 
 
 def _fresh(publication, mode="run"):
