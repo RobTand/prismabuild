@@ -161,7 +161,10 @@ def test_storage_drain_observation_does_not_gate_ordinary_client_convergence(set
     result = updater.run()
     assert result['state'] == 'draining'
     assert result['drained'] is False
-    assert result['unparked'] == [105]
+    assert result['unparked'] == []
+    assert result['evidence_errors'] == [
+        f'host park observation unavailable: unsafe root-owned installation path: {updater.install}'
+    ]
     backend.active = 0
     assert updater.run()['state'] == 'updated'
     assert not backend.draining
