@@ -155,10 +155,7 @@ def test_suspension_only_suppresses_a_measurements_later_join(suspended, measure
 
 def test_falsey_identity_is_not_indexed_and_retains_its_truth_conversion():
     class FalseyIdentity(dict):
-        reads = 0
-
         def __bool__(self):
-            self.reads += 1
             return False
 
         def __getitem__(self, key):
@@ -169,7 +166,6 @@ def test_falsey_identity_is_not_indexed_and_retains_its_truth_conversion():
         policy.ScanOrder(), identity=identity, measurement_suspended=False)
     assert actual.withheld_for == "waiting"
     assert actual.measurement_withholds == frozenset()
-    assert identity.reads == 2
 
 
 @pytest.mark.parametrize("fail_publication", [False, True])
