@@ -77,6 +77,9 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from prismabuild.stage_marks import (  # noqa: E402
+    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, source_identity,
+)
 
 #: Every staged object lives under this suffix, named by the exact range it
 #: holds, so the name of one range can never be the name of another.
@@ -86,16 +89,6 @@ RANGE_SUFFIX = ".pbrange"
 #: See :func:`move`; a per-entry publish costs an NFS round trip per file and
 #: was measured at 75 KB/s against 466 MB/s.
 FRAGMENT_PUBLISH_S = 5.0
-
-#: Whose copy a staged file is (#1088): the action key of the mover that
-#: wrote it, set on the temporary before the rename, beside the prewarm
-#: loop's ``user.pbstage.source``.  That mark alone cannot tell a mover's copy
-#: from a prewarm object, so a copy renamed into place after the mover's last
-#: fragment -- a stage mover's last interval, a RAM promotion's whole range --
-#: read as the prewarm loop's and nothing reclaimed it.
-#: ``stage_release.reconcile`` reads this one; a file without it is judged
-#: exactly as before.
-STAGE_MOVER_XATTR = "user.pbstage.mover"
 
 
 def stage_relative(path: str, offset: int, size: int, *, mount_prefix: str,
@@ -473,7 +466,7 @@ def _observe(path: Path) -> "tuple[int, int, int, int, int] | OSError":
 def _origin_id_of(path_str: str) -> str | None:
     """``st_size:st_mtime_ns:st_ino`` of a copy source, or ``None``.
 
-    The same three numbers :mod:`prewarm_loop` files as
+    The same three numbers :mod:`prismabuild.stage_marks` defines for
     ``STAGE_SOURCE_XATTR`` at copy time: the existing origin
     change-detection evidence, read here rather than reinvented.
     """
@@ -484,7 +477,7 @@ def _origin_id_of(path_str: str) -> str | None:
         return None
     if not statmod.S_ISREG(sample.st_mode):
         return None
-    return f"{sample.st_size}:{sample.st_mtime_ns}:{sample.st_ino}"
+    return source_identity(sample)
 
 
 def _packed_order(names: "list[str] | set[str]") -> list[str]:
@@ -2564,7 +2557,7 @@ class _StagedPublisher:
         """The origin identity a published file still carries, if any."""
 
         try:
-            raw = os.getxattr(norm, prewarm_loop.STAGE_SOURCE_XATTR)
+            raw = os.getxattr(norm, STAGE_SOURCE_XATTR)
         except OSError:
             return None
         try:
@@ -3409,7 +3402,7 @@ class _Copier:
             # will not carry it still converges through the digest
             # comparison at publication.
             try:
-                os.setxattr(temporary, prewarm_loop.STAGE_SOURCE_XATTR,
+                os.setxattr(temporary, STAGE_SOURCE_XATTR,
                             source_id.encode())
             except OSError:
                 pass

@@ -32,11 +32,13 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import kept_reads, manifest_layout
+from prismabuild.stage_marks import (  # noqa: E402
+    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, prewarm_temporary_pid,
+)
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
-import prewarm_loop  # noqa: E402
 import stage_release  # noqa: E402
-from stage_move import RANGE_SUFFIX, STAGE_MOVER_XATTR, stage_relative  # noqa: E402
+from stage_move import RANGE_SUFFIX, stage_relative  # noqa: E402
 
 #: The event each reclaim receipt publishes.
 RECLAIM_EVENT = "stage-source-mark-reclaimed"
@@ -266,7 +268,7 @@ def _source_mark_only(path: Path) -> bool | None:
     else:
         return False
     try:
-        os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR, follow_symlinks=False)
+        os.getxattr(path, STAGE_SOURCE_XATTR, follow_symlinks=False)
     except OSError as exc:
         if exc.errno in stage_release._XATTR_ABSENT:
             return False
@@ -316,7 +318,7 @@ def _walk_source_marks(stage: Path, attributed: set[str]
             except OSError as exc:
                 walk_errors.append(f"{entry.path}: {exc}")
                 continue
-            if prewarm_loop._STAGE_TEMPORARY.search(entry.name):
+            if prewarm_temporary_pid(entry.name) is not None:
                 continue
             kind = _source_mark_only(entry_path)
             if kind is None:
@@ -1459,7 +1461,7 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
             if (not stage_rel or stage_rel == "." or os.path.isabs(stage_rel)
                     or ".." in Path(stage_rel).parts or size <= 0
                     or "mtime_ns" not in times or "atime_ns" not in times
-                    or prewarm_loop.STAGE_SOURCE_XATTR not in xattrs):
+                    or STAGE_SOURCE_XATTR not in xattrs):
                 errors.append(f"{stage_rel}: manifest names an unsafe path")
                 continue
             try:

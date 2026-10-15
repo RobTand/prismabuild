@@ -195,7 +195,6 @@ import errno
 import json
 import os
 import queue as queuelib
-import re
 import socket
 import stat as statmod
 import subprocess
@@ -222,6 +221,10 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
+from prismabuild.stage_marks import (  # noqa: E402
+    STAGE_OBJECT_MARK, STAGE_SOURCE_FORMAT, STAGE_SOURCE_XATTR,
+    prewarm_temporary_name, prewarm_temporary_pid, source_identity,
+)
 
 #: ZFS reads a whole record either way, and the pool this was measured on uses
 #: 1 MiB records; a smaller block only costs syscalls.
@@ -311,26 +314,6 @@ STAGE_DATASET = "prewarm"
 #: heuristic standing where an explicit exists.
 STAGE_SLOP_SHIFT = 5
 STAGE_SLOP_MINIMUM = 128 << 20
-#: Separates a stage object's mirrored path from the byte range it holds.
-STAGE_OBJECT_MARK = ".pbstage@"
-#: Where a staged object carries the identity of what it copied.  The key
-#: names a path and a range, which is what a consumer looks an object up by;
-#: it says nothing about *which version* of that path was copied, and the
-#: manifests this tier exists for carry ``sha256: null`` on every entry, so
-#: the manifest cannot break the tie either.  A source rewritten to the same
-#: length between the copy and the read would be shadowed by a stale object
-#: that nothing could detect.  The three numbers below are already in hand --
-#: the reader fstats the source to check it is a regular file -- so the cost
-#: is one syscall on a file that is about to be closed anyway.  An extended
-#: attribute rather than a sidecar: a second file per object would double the
-#: inode count of a 469 008-entry window.
-STAGE_SOURCE_XATTR = "user.pbstage.source"
-#: ``<st_size>:<st_mtime_ns>:<st_ino>`` of the source, when it was copied.
-STAGE_SOURCE_FORMAT = "st_size:st_mtime_ns:st_ino at copy time"
-#: A temporary left by a copy that never finished.  ``<key>.<pid>.<tid>.tmp``:
-#: matched exactly rather than by suffix, so nothing this loop did not write
-#: is ever unlinked.
-_STAGE_TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
 #: Stage roots this process has already reaped.  A crash or a SIGKILL leaves
 #: one temporary per in-flight reader, and nothing else ever removes them:
 #: ``release`` unlinks by key and the sweep is driven from receipts, so they
@@ -836,7 +819,8 @@ class StageTier:
 
         target = self.object_path(key)
         temporary = target.with_name(
-            f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            prewarm_temporary_name(
+                target.name, os.getpid(), threading.get_ident()))
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             handle = os.open(
@@ -900,8 +884,8 @@ class StageTier:
             return
         mine = str(os.getpid())
         for path in Path(self.mountpoint).rglob("*.tmp"):
-            found = _STAGE_TEMPORARY.search(path.name)
-            if not found or found.group(1) == mine:
+            pid = prewarm_temporary_pid(path.name)
+            if pid is None or pid == mine:
                 continue
             try:
                 size = path.stat().st_size
@@ -1021,8 +1005,7 @@ class StageObject:
         if self.source is None:
             self.tier.note_unrecorded_identity()
             return
-        value = (f"{self.source.st_size}:{self.source.st_mtime_ns}:"
-                 f"{self.source.st_ino}")
+        value = source_identity(self.source)
         try:
             os.setxattr(self.handle, STAGE_SOURCE_XATTR, value.encode())
         except OSError as exc:

@@ -111,6 +111,9 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import kept_reads, manifest_layout
+from prismabuild.stage_marks import (  # noqa: E402
+    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, prewarm_temporary_pid,
+)
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -125,7 +128,7 @@ from prismabuild import window_credit  # noqa: E402
 
 import prewarm_loop  # noqa: E402
 from stage_move import (  # noqa: E402
-    RANGE_SUFFIX, STAGE_MOVER_XATTR, _is_action_key, paths_named_once,
+    RANGE_SUFFIX, _is_action_key, paths_named_once,
     pre_range_stage_relative, stage_relative,
 )
 
@@ -158,7 +161,7 @@ UNATTRIBUTED_EVENT = "stage-unattributed-evicted"
 #: * ``partial`` -- a mover's own ``.<name>.partial`` temporary;
 #: * ``unmarked`` -- a file carrying neither stage mark;
 #: * ``mover_residue`` -- a copy a mover renamed into place, carrying
-#:   ``stage_move.STAGE_MOVER_XATTR``, that no fragment names.  It is left
+#:   ``stage_marks.STAGE_MOVER_XATTR``, that no fragment names.  It is left
 #:   while its mover is still wanted or queued, or while a live promotion
 #:   reads it;
 #: * ``source_mark_only`` -- a file carrying the prewarm loop's
@@ -4865,7 +4868,7 @@ def _marked_by_the_prewarm_stage(path: Path | str) -> bool | None:
     """
 
     try:
-        os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR)
+        os.getxattr(path, STAGE_SOURCE_XATTR)
     except OSError as exc:
         # The attribute is absent: an answer, and it is "no".
         if exc.errno in _XATTR_ABSENT:
@@ -5012,7 +5015,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
       copy is producing is the residue of a killed or withdrawn one.
     * **A mover's copy that no fragment names is residue once its writer has
       ended (#1088).**  Both movers name themselves on every copy, in
-      ``stage_move.STAGE_MOVER_XATTR``, before its rename.  A copy that *no*
+      ``stage_marks.STAGE_MOVER_XATTR``, before its rename.  A copy that *no*
       fragment names -- wanted or not: a copy some fragment names is retired
       with that fragment and its material by the egress, the dead-owner
       sweep or the uncharged-owner pass -- and no live pin names is deleted
@@ -5405,7 +5408,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     def classify(name: str, path: str) -> tuple[str, str]:
         if _is_mover_partial(name):
             return "partial", ""
-        if prewarm_loop._STAGE_TEMPORARY.search(name):
+        if prewarm_temporary_pid(name) is not None:
             return temporary, ""
         return _stage_mark(path)
 
