@@ -14698,16 +14698,17 @@ class PoolQueue:
         census paths MUST use `output_funding_file_state` (absent vs unknown)
         instead of treating this None as legacy/no-funding; only the cover
         path (which requires a parsed transferring record) may use this.
+        The retired record is read only when opening the live path reports
+        ENOENT; present empty, invalid or unreadable data never falls back.
         """
 
         try:
-            raw = _read_json(self.funding_output_path(mover_action_key, tier_id))
-            if raw is None:
-                raw = _read_json(self.funding_output_retired_path(
-                    mover_action_key, tier_id))
-        except (OSError, PoolContractError):
-            return None
-        if raw is None:
+            raw_bytes = self._read_output_funding_bytes(
+                mover_action_key, tier_id, max_bytes=None)
+            if raw_bytes is None:
+                return None
+            raw = json.loads(raw_bytes)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return None
         try:
             return self.validate_output_funding(raw)

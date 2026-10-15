@@ -10015,8 +10015,13 @@ mover has a filed `done`, `failed` or `withdrawn` record with no `ready` or
 `claimed` row, no lease, and no token on the record's tier, re-read under the
 mover's transition lock. Per-mover reads (`read_output_funding`,
 `output_funding_file_state`, `_output_funding_unretired`) fall back to the
-retired copy, so every decision about one mover reads what it read before, and
-writers refuse to file beside a retired record. Only the directory scans stop
+retired copy only when opening the live path reports ENOENT. A present live
+record suppresses that fallback even when empty, malformed, invalid or
+unreadable. Both readers share the actual-open byte selection; their existing
+byte limits and JSON decoding policies remain distinct. The tolerant reader
+returns no record for corrupt data, while the strict reader reports corrupt
+and retains unknown funding authority. Writers refuse to file beside a retired
+record. Only the directory scans stop
 reading it. Measured on the 2026-09-22 queue (973 records, 972 terminal):
 concluding an action that holds no tier token went from 2,919 record reads and
 0.80 s to none and 0.0007 s; a holder's conclusion went from 2,919 reads to one
