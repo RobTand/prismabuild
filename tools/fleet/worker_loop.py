@@ -1275,6 +1275,13 @@ def image_observation(inventory, policy, *, max_age_s=None):
 def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse argument values no box can declare."""
 
+    code_tags = {row.tag for row in contracts.CONTRACTS}
+    reserved = sorted({tag.strip() for tag in args.tag
+                       if tag.strip() in code_tags
+                       or tag.strip().startswith("runtime-generation:")})
+    if reserved:
+        ap.error("--tag names worker code contracts assigned by the loaded runtime: "
+                 + ", ".join(reserved))
     if args.gpu_slots < 0:
         ap.error("--gpu-slots cannot be negative")
     if args.spool_gb < 0:

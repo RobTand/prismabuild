@@ -17697,9 +17697,20 @@ tags or imports their owner. The isolated scratch recorder and pbtest's
 embedded dependency verifier also retain their existing import closures.
 The public SDK's capability values remain unchanged.
 
-This extraction preserves existing publication verdicts. Pool publication still
-does not derive or reject progress-family tags, and manual worker tags still
-precede code enablement. Qualifying those changes remains separate work.
+Pool publication derives progress-family tags from the validated sealed request
+and refuses code tags without their declarations before READY exposure.
+Missing sealed authority is unknown and cannot authorize a progress tag;
+unreadable authority retains its existing refusal. Legacy direct API projections
+for images, interpreters and dependencies retain their existing rules.
+The egress requirement uses the existing executed movement identity and the
+exact stage-release tool. A different capacity-returning tool does not acquire
+egress semantics by its role alone. Canary and scratch-I/O envelope and funding
+checks remain prerequisites, ahead of the new progress fence.
+
+Worker `--tag` accepts placement tags and the `cpu` host fact. It refuses
+registry-owned code tags and `runtime-generation:` companions before announcing.
+The loaded code and its enablement own those offers. The source and published
+fleet rosters contained no such manual tags when inspected for this change.
 Availability eligibility and the complete shared submission owner also remain
 separate work. Source changes establish no new deployed capability or
 staged-read workload proof.

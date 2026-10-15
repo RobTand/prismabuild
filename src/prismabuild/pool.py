@@ -7191,6 +7191,36 @@ class PoolQueue:
                         contracts.Publication(scratch_lifetime=bool(lifetime)))])
             elif contracts.SCRATCH_LIFETIME_TAG in normalized_tags:
                 raise PoolContractError("scratch lifetime capability requires sealed lifetime intent")
+            # Keep the existing envelope, funding and projection refusals
+            # above ahead of the newly enforced declaration fence.
+            movement_role = (movement_actions.capacity_role(
+                sealed_request, demand, residency=residency_block)
+                if sealed_request is not None else None)
+            progress = (pb.action_progress_policy(sealed_request)
+                        if sealed_request is not None else None)
+            contention = (pb.action_pool_contention(sealed_request)
+                          if sealed_request is not None else None)
+            awaited = (pb.action_awaited_batch(sealed_request)
+                       if sealed_request is not None else None)
+            declared_contracts = contracts.declared_contract_tags(contracts.Publication(
+                progress=progress,
+                pool_contention=progress is not None and contention is not None,
+                awaited_batch=progress is not None and awaited is not None,
+                egress=progress is not None and movement_role is not None
+                    and Path(movement_role.script).name == movement_actions.STAGE_RELEASE_SCRIPT,
+                gang=declared_gang is not None,
+                interpreter=declared_interpreter is not None,
+                local_dependencies=bool(dependencies),
+                requires_files=declared_requirements is not None,
+                container_images=bool(image_refs), canary=canary_ref is not None,
+                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime)))
+            for contract in contracts.CONTRACTS:
+                if contract.tag in normalized_tags and contract.tag not in declared_contracts:
+                    unknown = ("; sealed request unavailable, declaration unknown"
+                               if sealed_request is None else "")
+                    raise PoolContractError(
+                        f"{contract.tag} requires its sealed declaration{unknown}")
+            normalized_tags = normalize_placement_tags([*normalized_tags, *declared_contracts])
         except PoolContractError:
             raise
         except (ValueError, OSError) as exc:
@@ -7557,12 +7587,9 @@ class PoolQueue:
             # A retained-store path never derives a role: those bytes are
             # mutable to ordinary store owners (#1659).  ``recompute``
             # is no part of it.
-            from . import movement_actions
-            role = movement_actions.capacity_role(
-                sealed_request, demand, residency=residency_block)
-            if role is not None:
-                item[role.role] = True
-                item[movement_actions.ROLE_SCRIPT_FIELD] = role.script
+            if movement_role is not None:
+                item[movement_role.role] = True
+                item[movement_actions.ROLE_SCRIPT_FIELD] = movement_role.script
         if declared_requirements is not None:
             # The claim-relevant projection of the sealed params (#1495):
             # what a claim gate reads, no more -- the full capability
