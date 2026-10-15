@@ -92,6 +92,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Iterable, Mapping, Sequence  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 from prismabuild import pool, posix_lock  # noqa: E402
 
 #: The litter classes, in the order the report prints them.
@@ -754,7 +755,7 @@ def _remove_private_ingest(row: Mapping[str, object]) -> str:
     path = Path(str(row["path"]))
     parent_fd = directory_fd = owner_fd = None
     try:
-        parent_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+        parent_fd = immutable_files.open_directory_nofollow(path.parent, where="GC parent")
         directory_fd = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                dir_fd=parent_fd)
         if _identity(os.fstat(directory_fd)) != row["identity"]:
@@ -871,7 +872,7 @@ def _remove_lock(path: Path, identity: tuple) -> str:
     """
 
     try:
-        directory_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+        directory_fd = immutable_files.open_directory_nofollow(path.parent, where="GC parent")
     except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot open {path.parent}: {exc}"
     try:
@@ -960,7 +961,7 @@ def _remove(row: Mapping[str, object]) -> str:
     if kind == KIND_CANARY:
         return _remove_canary(row)
     try:
-        directory_fd = pb._open_directory_nofollow(path.parent, where="GC parent")
+        directory_fd = immutable_files.open_directory_nofollow(path.parent, where="GC parent")
     except (OSError, pb.PrismaBuildError) as exc:
         return f"cannot open parent: {exc}"
     try:

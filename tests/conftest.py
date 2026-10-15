@@ -71,6 +71,7 @@ if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
 import pbstatus  # noqa: E402
 import prismabuild.core as pb_core  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 # A private consumer suite can reuse this conftest through a symlink.
 # Resolve its helper directory from the source, not from the consumer's cwd.
 _TEST_HELPERS = str(Path(__file__).resolve().parent)
@@ -137,7 +138,7 @@ AUDITED_PATHS: dict[str, tuple[tuple[int, int | None], ...]] = {
     # from ``/`` one dir_fd-relative component at a time, so the ``open``
     # events of that walk name only ``mnt``, ``shared`` and so on. They
     # announce the absolute directory in this event first.
-    pb_core.NOFOLLOW_DIRECTORY_AUDIT_EVENT: ((0, None),),
+    immutable_files.NOFOLLOW_DIRECTORY_AUDIT_EVENT: ((0, None),),
 }
 
 #: ``dir_fd`` values that mean "relative to the working directory".

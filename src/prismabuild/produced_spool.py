@@ -24,6 +24,7 @@ import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
 from . import adaptive_cpu, filesystem_capacity, resource_scope, runtime_publication, storage_tiers
+from . import immutable_files
 from .record_store import Absent, Present, QueueRow, RecordStore, Unknown
 
 API_VERSION = 1
@@ -189,12 +190,12 @@ def _check_repins(proof):
 @contextmanager
 def _parent(path, *, create=False):
     path = Path(path)
-    descriptor = core._open_directory_nofollow(
+    descriptor = immutable_files.open_directory_nofollow(
         path.parent, where="produced spool parent", create=create, mode=0o700)
     try:
-        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
         yield descriptor
-        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
     finally:
         os.close(descriptor)
 
@@ -251,7 +252,7 @@ def _lock(path):
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise SpoolError("spool lock is not regular")
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            core._assert_directory_identity(directory, path.parent, where="locked spool parent")
+            immutable_files.assert_directory_identity(directory, path.parent, where="locked spool parent")
             yield
         finally:
             os.close(descriptor)
@@ -1501,7 +1502,7 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
             proof.update(ready_identity=_identity(temporary, directory=destination_parent),
                          sha256=digest.hexdigest())
             _write(proof_path, proof)
-            core._assert_directory_identity(destination_parent, destination.parent,
+            immutable_files.assert_directory_identity(destination_parent, destination.parent,
                                              where="canonical export parent")
             os.link(temporary.name, destination.name,
                     src_dir_fd=destination_parent, dst_dir_fd=destination_parent,

@@ -20,6 +20,7 @@ import tarfile
 import time
 
 from . import core as pb, materialize, pool
+from . import immutable_files
 
 PLAN_SCHEMA = "prismabuild.checkout_recovery_plan.v1"
 RESULT_SCHEMA = "prismabuild.checkout_recovery_result.v1"
@@ -76,10 +77,10 @@ def _checkout_recovery_path(value: object, where: str) -> Path:
 
 
 def _directory(path: Path, where: str) -> dict[str, int]:
-    fd = pb._open_directory_nofollow(path, where=where)
+    fd = immutable_files.open_directory_nofollow(path, where=where)
     try:
         info = os.fstat(fd)
-        pb._assert_directory_identity(fd, path, where=where)
+        immutable_files.assert_directory_identity(fd, path, where=where)
         return _checkout_recovery_identity(info)
     finally:
         os.close(fd)
@@ -258,7 +259,7 @@ def _add(manifest: dict, name: str, entry: dict, budget: list[int]) -> None:
 
 def _tree(root: Path) -> tuple[dict, dict, dict]:
     manifest, identities, budget = {}, {}, [0]
-    rootfd = pb._open_directory_nofollow(root, where='execution checkout')
+    rootfd = immutable_files.open_directory_nofollow(root, where='execution checkout')
     device = os.fstat(rootfd).st_dev
 
     def visit(fd: int, relative: str) -> None:
@@ -313,7 +314,7 @@ def _tree(root: Path) -> tuple[dict, dict, dict]:
 
     try:
         visit(rootfd, '.')
-        pb._assert_directory_identity(rootfd, root, where='execution checkout')
+        immutable_files.assert_directory_identity(rootfd, root, where='execution checkout')
     finally:
         os.close(rootfd)
     summary = dict(manifest_sha256=_manifest_digest(manifest),
@@ -549,7 +550,7 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
             # a low address. Duplicate/overlapping ranges were refused above.
             file_maps[f'{start:x}-{end:x}'] = target
     mapdir = pidroot / 'map_files'
-    fd = pb._open_directory_nofollow(mapdir, where='process map_files')
+    fd = immutable_files.open_directory_nofollow(mapdir, where='process map_files')
     targets = {}
     text_bytes = 0
     try:
@@ -584,7 +585,7 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
                 targets[name] = (target, *identity)
         if targets.keys() != file_maps.keys():
             _checkout_recovery_refuse(f'process maps/map_files incomplete for PID {pidroot.name}')
-        pb._assert_directory_identity(fd, mapdir, where='process map_files')
+        immutable_files.assert_directory_identity(fd, mapdir, where='process map_files')
     finally:
         os.close(fd)
     return raw, targets
@@ -602,7 +603,7 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
         pidroot = proc / name
         pidfd = None
         try:
-            pidfd = pb._open_directory_nofollow(pidroot, where='process lifetime directory')
+            pidfd = immutable_files.open_directory_nofollow(pidroot, where='process lifetime directory')
             state, started = _process_stat(pidroot / 'stat')
             pidinfo = os.fstat(pidfd)
             lifetimes[name] = (started, pidinfo.st_dev, pidinfo.st_ino)
@@ -610,7 +611,7 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
                 after_state, after_started = _process_stat(pidroot / 'stat')
                 if after_started != started or after_state not in ('Z', 'X', 'x'):
                     _checkout_recovery_refuse('process lifetime changed during census; replan')
-                pb._assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
+                immutable_files.assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
                 continue
             raw = pb._read_regular_file_nofollow(pidroot / 'cmdline',
                     where='process cmdline', max_bytes=MAX_JSON_BYTES)
@@ -650,7 +651,7 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
             after_state, after_started = _process_stat(pidroot / 'stat')
             if after_started != started or after_state in ('Z', 'X', 'x'):
                 _checkout_recovery_refuse('process lifetime changed during census; replan')
-            pb._assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
+            immutable_files.assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
         except (FileNotFoundError, ProcessLookupError):
             if pidroot.exists():
                 _checkout_recovery_refuse(f'process census incomplete for live PID {name}')
@@ -708,7 +709,7 @@ def _assert_tree_identity(root: Path, tree: dict) -> None:
         if stat.S_ISDIR(expected['mode']):
             observed = _directory(path, 'checkout directory identity')
         else:
-            parent = pb._open_directory_nofollow(path.parent, where='checkout member parent')
+            parent = immutable_files.open_directory_nofollow(path.parent, where='checkout member parent')
             try:
                 observed = _checkout_recovery_identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
             finally:

@@ -371,7 +371,7 @@ def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
         tmp_path: Path) -> None:
     """The September leak's shape: ``pbrun.SH`` left at the store, a CAS request.
 
-    ``PrismaBuildCAS`` opens every directory through ``_open_directory_nofollow``,
+    ``PrismaBuildCAS`` opens every directory through ``immutable_files.open_directory_nofollow``,
     which starts at ``/`` and descends one ``dir_fd``-relative component at a
     time, so no audited call sees an absolute path under the store. The
     request must be refused anyway.
@@ -647,10 +647,10 @@ def test_a_marked_descriptor_relative_open_is_let_through(guarded: Path) -> None
 def test_a_cas_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
     """The no-follow walk announces the absolute directory before descending."""
 
-    from prismabuild import core as pb
+    from prismabuild import immutable_files
 
     with pytest.raises(RuntimeError, match=str(guarded / "cas/requests/ab")):
-        pb._open_directory_nofollow(guarded / "cas/requests/ab", where="test",
+        immutable_files.open_directory_nofollow(guarded / "cas/requests/ab", where="test",
                                     create=True)
     assert not (guarded / "cas/requests").exists()
 

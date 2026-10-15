@@ -31,6 +31,7 @@ from test_pool import _materialization_item
 from prismabuild import checkout_recovery as recovery
 from prismabuild import core as pb
 from prismabuild import materialize, pool
+from prismabuild import immutable_files
 
 
 OWNER = "test-pb1465-exact-orphan-recovery"
@@ -1679,7 +1680,7 @@ def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits
     else:
         # Leave the two valid maps records within the limit. Change only the
         # mapping-directory budget after the real maps parser has run.
-        actual_open = pb._open_directory_nofollow
+        actual_open = immutable_files.open_directory_nofollow
 
         def smaller_map_directory_budget(path, **options):
             result = actual_open(path, **options)
@@ -1687,7 +1688,7 @@ def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits
                 monkeypatch.setattr(recovery, "MAX_PROCESS_MAPS", 1)
             return result
 
-        monkeypatch.setattr(pb, "_open_directory_nofollow", smaller_map_directory_budget)
+        monkeypatch.setattr(immutable_files, "open_directory_nofollow", smaller_map_directory_budget)
     result = _refused(case, case.prepare)
     expected = "map_files" if bound == "map-files-count" else "maps"
     assert any(expected in error and ("bound" in error or "byte" in error)
@@ -1707,7 +1708,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
         _planned(case, proc_root=Path("/proc"))
         process = Path("/proc") / str(holder.pid)
         actual_read = pb._read_regular_file_nofollow
-        actual_open = pb._open_directory_nofollow
+        actual_open = immutable_files.open_directory_nofollow
         actual_readlink = recovery.os.readlink
         map_directory = (process / "map_files").stat()
         map_reads = 0
@@ -1759,7 +1760,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
             return actual_readlink(path, dir_fd=dir_fd)
 
         monkeypatch.setattr(pb, "_read_regular_file_nofollow", failed_mapping_read)
-        monkeypatch.setattr(pb, "_open_directory_nofollow", failed_mapping_directory)
+        monkeypatch.setattr(immutable_files, "open_directory_nofollow", failed_mapping_directory)
         monkeypatch.setattr(recovery.os, "readlink", failed_mapping_link)
         result = _refused(case, lambda: case.prepare(proc_root=Path("/proc")))
         assert map_reads > 0
