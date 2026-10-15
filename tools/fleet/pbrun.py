@@ -115,6 +115,7 @@ RESIDENCY_RAM_MODES = ("auto", "off")
 #: The pool path already spells it this way; the SLURM path means the same
 #: thing by it, and in both cases the work is still running.
 GAVE_UP_EXIT = 75
+PUBLICATION_SUPERSEDED_EXIT = 76
 # An arbitrary command can write state outside its declared CAS result before
 # a later check fails.  Retrying that command is never implied by numerical
 # determinism; the producer must opt the whole action into a larger bound.
@@ -173,8 +174,10 @@ RECORD_WRITE_FAILED_EXIT = 74
 #: files it under a status that is not one, and the SLURM site below already
 #: excludes it by truthiness.
 RESERVED_EXITS = frozenset(
-    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, WITHDRAWN_EXIT}
+    {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, PUBLICATION_SUPERSEDED_EXIT, WITHDRAWN_EXIT}
 )
+
+ObservedEnding = tuple[Path, dict[str, object]] | pool.PublicationSupersession
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -2928,13 +2931,13 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
 
 def outcome_poll(
     q, key: str, generation: float | None, *, report_unreadable: bool = False,
-):
+) -> tuple[ObservedEnding | None, float | None]:
     """Read one terminal-outcome snapshot and select its next state.
 
     This is the canonical selection step shared by the historical synchronous
     waiter and its bounded pool caller.  It returns ``(landed, generation)``:
-    ``landed`` is ``(path, record)`` when this snapshot reached a terminal
-    verdict, otherwise ``None``; ``generation`` is either the input generation
+    ``landed`` is an execution/withdrawal ``(path, record)``, a typed
+    publication supersession, or ``None``; ``generation`` is either the input generation
     or the exact successor a preemption published.  Keeping that successor in
     the return value is essential because a bounded caller observes each poll
     in a new child process.
@@ -2990,7 +2993,7 @@ def outcome_poll(
         # exact to the generation and refuses tampered or incomplete
         # archives rather than reporting a neighbour's verdict.
         found.extend(q.archived_generation_outcomes(key, generation=generation))
-    if generation is not None and found:
+    if generation is not None:
         # A legacy ending with no generation remains the fallback when it is
         # the only account of this run.  It must not outrank an exact ending
         # that is also present: otherwise an old unstamped DONE can hide this
@@ -3001,6 +3004,17 @@ def outcome_poll(
             and not isinstance(entry[1].get("published_unix"), bool)
             and float(entry[1]["published_unix"]) == float(generation)
         ]
+        if not exact:
+            try:
+                superseded = q.publication_ending(key, generation=generation)
+            except (OSError, pb.PrismaBuildError) as exc:
+                raise OutcomeReadUnavailable(f"unavailable publication ending: {exc}") from exc
+            if superseded is not None:
+                return superseded, generation
+        if not found:
+            if broken:
+                raise broken[0]
+            return None, generation
         landed = (exact or found)[0]
         requeued = _preemption_requeue(q, key, landed[1], generation)
         if requeued is None:
@@ -3023,7 +3037,7 @@ def outcome_poll(
 def landed_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None,
     report_unreadable: bool = False,
-):
+) -> ObservedEnding | None:
     """Block until this action's ending lands, and return it with its path.
 
     Watches all THREE terminal directories.  An action whose argv exits
@@ -3276,7 +3290,7 @@ _DELIVERED_READERS: contextvars.ContextVar[list | None] = contextvars.ContextVar
 def bounded_outcome_observation(
     q, key: str, generation: float | None, *, budget_s: float,
     use_delivered_snapshot: bool = False,
-):
+) -> tuple[ObservedEnding | None, float | None]:
     """Read and select one pool outcome snapshot in an abandonable child.
 
     The child returns only JSON values.  In particular, paths become strings
@@ -3311,14 +3325,43 @@ def bounded_outcome_observation(
             and (not isinstance(next_generation, (int, float))
                  or isinstance(next_generation, bool))):
         raise OutcomeReadUnavailable("pool outcome observation returned an invalid generation")
+    landed = decode_outcome_ending(q, key, next_generation, value)
+    if isinstance(landed, pool.PublicationSupersession) and next_generation != generation:
+        raise OutcomeReadUnavailable("publication supersession changed the watched generation")
+    return landed, float(next_generation) if next_generation is not None else None
+
+
+def encode_outcome_ending(ending: ObservedEnding | None) -> dict:
+    """Encode the observed-ending union for both bounded waiter protocols."""
+    if isinstance(ending, pool.PublicationSupersession):
+        return {"landed": None,
+                "superseded": {"path": str(ending.path), "record": ending.record}}
+    return {"landed": None if ending is None else {
+        "path": str(ending[0]), "record": ending[1],
+    }}
+
+
+def decode_outcome_ending(q, key: str, generation: float | None, value: dict
+                          ) -> ObservedEnding | None:
+    """Decode wire branches; the queue owns publication-proof validation."""
+    superseded = value.get("superseded")
     landed = value.get("landed")
-    if landed is None:
-        return None, float(next_generation) if next_generation is not None else None
-    if (not isinstance(landed, dict) or not isinstance(landed.get("path"), str)
-            or not isinstance(landed.get("record"), dict)):
+    raw = superseded if superseded is not None else landed
+    if raw is None:
+        return None
+    if (not isinstance(raw, dict) or not isinstance(raw.get("path"), str)
+            or not isinstance(raw.get("record"), dict)
+            or (superseded is not None and landed is not None)):
         raise OutcomeReadUnavailable("pool outcome observation returned an invalid ending")
-    return (Path(landed["path"]), landed["record"]), (
-        float(next_generation) if next_generation is not None else None)
+    if superseded is None:
+        return Path(raw["path"]), raw["record"]
+    try:
+        ending = q.decode_publication_supersession(Path(raw["path"]), raw["record"])
+    except (OSError, pb.PrismaBuildError) as exc:
+        raise OutcomeReadUnavailable(f"invalid observed publication ending: {exc}") from exc
+    if ending.action_key != key or ending.published_unix != generation:
+        raise OutcomeReadUnavailable("observed publication ending differs from the watched identity")
+    return ending
 
 
 def _outcome_observation_value(q, key: str, generation: float | None) -> dict:
@@ -3329,9 +3372,7 @@ def _outcome_observation_value(q, key: str, generation: float | None) -> dict:
         return {"unreadable": {"path": str(exc.path), "reason": exc.reason}}
     return {
         "generation": next_generation,
-        "landed": None if landed is None else {
-            "path": str(landed[0]), "record": landed[1],
-        },
+        **encode_outcome_ending(landed),
     }
 
 
@@ -3859,6 +3900,8 @@ def await_outcome(
                     use_delivered_snapshot=True)
                 first_observation = False
                 if landed is not None:
+                    if isinstance(landed, pool.PublicationSupersession):
+                        break
                     # Verification keeps its own full budget once an ending
                     # has landed; it does not borrow the caller's deadline.
                     rendered = bounded_outcome_render(
@@ -3953,7 +3996,7 @@ def await_outcome(
                   f"{key[:12]}*.json or run pbwait.py {key[:12]}",
                   file=sys.stderr)
             return RECORD_WRITE_FAILED_EXIT
-        if landed is not None:
+        if landed is not None and not isinstance(landed, pool.PublicationSupersession):
             try:
                 rendered = bounded_outcome_render(
                     q, landed[0], landed[1],
@@ -3965,7 +4008,7 @@ def await_outcome(
                       file=sys.stderr)
                 return RECORD_WRITE_FAILED_EXIT
             unavailable, unavailable_count = None, 0
-        else:
+        elif landed is None:
             print(f"pbrun: unavailable pool outcome for {key[:12]} on {host}; "
                   f"the terminal re-read saw no ending either. The action may "
                   f"still be running or may already have landed; nothing was "
@@ -3989,6 +4032,11 @@ def await_outcome(
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
         return GAVE_UP_EXIT
+    if isinstance(landed, pool.PublicationSupersession):
+        print(f"pbrun: {key[:12]} publication {landed.published_unix!r} superseded by "
+              f"publication {landed.successor_published_unix!r}; no execution verdict",
+              file=sys.stderr)
+        return PUBLICATION_SUPERSEDED_EXIT
     outcome_path, outcome = landed
     summary = rendered["summary"]
     detail = summary["detail"]

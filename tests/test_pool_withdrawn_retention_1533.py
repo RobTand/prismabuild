@@ -231,7 +231,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
     elif reader == "pbrun":
         assert pbrun.await_outcome(queue, key, wait_s=1) == pbrun.WITHDRAWN_EXIT
     else:
-        assert pbwait._from_record(queue, path, record)["status"] == "withdrawn"
+        assert pbwait._from_ending(queue, (path, record))["status"] == "withdrawn"
 
 
 def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped, monkeypatch):

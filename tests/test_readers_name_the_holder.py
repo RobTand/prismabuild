@@ -90,7 +90,7 @@ def test_pbwait_names_the_holder(lost_claim) -> None:
 
     q, path, record = lost_claim
 
-    row = pbwait._from_record(q, path, record)
+    row = pbwait._from_ending(q, (path, record))
     assert row["host"] == HELD_BY
 
 
@@ -115,7 +115,7 @@ def test_an_ending_with_no_claimant_still_names_a_box(tmp_path: Path) -> None:
     rows = pbstatus.read_endings(q.root, limit=10)
     assert next(row for row in rows if row["action_key"] == KEY)["host"] == REAPED_BY
 
-    row = pbwait._from_record(q, q.item_path(pool.DONE, KEY), record)
+    row = pbwait._from_ending(q, (q.item_path(pool.DONE, KEY), record))
     assert row["host"] == REAPED_BY
 
 
@@ -135,5 +135,5 @@ def test_the_two_readers_agree_with_pbrun(lost_claim) -> None:
 
     status_row = next(row for row in pbstatus.read_endings(q.root, limit=10)
                       if row["action_key"] == KEY)
-    wait_row = pbwait._from_record(q, path, record)
+    wait_row = pbwait._from_ending(q, (path, record))
     assert status_row["host"] == wait_row["host"] == summary["claimed_host"]

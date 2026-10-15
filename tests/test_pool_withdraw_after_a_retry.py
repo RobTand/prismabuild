@@ -90,7 +90,7 @@ def test_a_withdrawal_after_a_retry_is_readable(
 
     monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
     assert pbrun.await_outcome(withdrawn, KEY, wait_s=1.0) == pbrun.WITHDRAWN_EXIT
-    assert pbwait._from_record(withdrawn, path, record)["status"] == "withdrawn"
+    assert pbwait._from_ending(withdrawn, (path, record))["status"] == "withdrawn"
 
 
 def test_the_withdrawn_record_keeps_the_attempts_it_inherited(

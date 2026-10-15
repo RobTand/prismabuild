@@ -214,9 +214,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
             q, key, generation, report_unreadable=True)
         outcome = {
             "generation": next_generation,
-            "landed": None if landed is None else {
-                "path": str(landed[0]), "record": landed[1],
-            },
+            **pbrun.encode_outcome_ending(landed),
         }
     except pbrun.UnreadableTerminal as exc:
         # Keep the already selected generation with an unreadable record. The
@@ -227,7 +225,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
     # An ending is the first answer.  In particular, do not let a later CAS
     # payload verification hide an already-filed (or unreadable) terminal
     # record, and do not spend that work when no SLURM recovery needs it.
-    if outcome.get("landed") is not None:
+    if outcome.get("landed") is not None or outcome.get("superseded") is not None:
         action = None
         receipt = None
     elif (effective_generation is not None
@@ -314,16 +312,7 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
                  or isinstance(next_generation, bool))):
         raise pbrun.OutcomeReadUnavailable(
             "pbwait observation returned an invalid generation")
-    raw_landed = raw_outcome.get("landed")
-    if raw_landed is None:
-        landed = None
-    elif (isinstance(raw_landed, dict)
-          and isinstance(raw_landed.get("path"), str)
-          and isinstance(raw_landed.get("record"), dict)):
-        landed = Path(raw_landed["path"]), raw_landed["record"]
-    else:
-        raise pbrun.OutcomeReadUnavailable(
-            "pbwait observation returned an invalid ending")
+    landed = pbrun.decode_outcome_ending(q, key, next_generation, raw_outcome)
     action = value.get("action")
     if action is not None and not isinstance(action, dict):
         raise pbrun.OutcomeReadUnavailable(
@@ -338,6 +327,10 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
                  or isinstance(observed_generation, bool))):
         raise pbrun.OutcomeReadUnavailable(
             "pbwait observation returned an invalid observed generation")
+    if isinstance(landed, pool.PublicationSupersession):
+        expected = generation if generation is not None else found[1] if found else None
+        if next_generation != observed_generation or next_generation != expected:
+            raise pbrun.OutcomeReadUnavailable("publication supersession changed the watched generation")
     return found, landed, (
         float(next_generation) if next_generation is not None else None
     ), action, receipt_published, unreadable, (
@@ -376,7 +369,16 @@ def _job_id(found) -> str:
     return str(submission.get("job_id") or "-")
 
 
-def _from_record(q, outcome_path, outcome) -> dict:
+def _from_ending(q, ending: pbrun.ObservedEnding) -> dict:
+    if isinstance(ending, pool.PublicationSupersession):
+        return _row(
+            ending.action_key, "superseded", transport="pool",
+            published_unix=ending.published_unix,
+            superseded_by_published_unix=ending.successor_published_unix,
+            note=(f"publication {ending.published_unix!r} superseded by "
+                  f"publication {ending.successor_published_unix!r}; no execution verdict"),
+        )
+    outcome_path, outcome = ending
     rendered = pbrun.bounded_outcome_render(
         q, outcome_path, outcome, budget_s=PBWAIT_READ_TIMEOUT_S,
         diagnose_conflicts=True)
@@ -635,7 +637,7 @@ def _look_once_checked(
                  and found[1] == generation)
 
     if landed is not None:
-        return _from_record(q, *landed)
+        return _from_ending(q, landed)
     if unreadable is not None:
         if slurm_run and action is not None:
             # The lane owns recovery of its own missing/corrupt terminal
@@ -651,7 +653,7 @@ def _look_once_checked(
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_record(q, *landed)
+                return _from_ending(q, landed)
         return _row(
             key, "unreadable", transport=found[0] if found else "-",
             job=_job_id(found), note=f"{unreadable[1]}: {unreadable[0]}",
@@ -678,7 +680,7 @@ def _look_once_checked(
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_record(q, *landed)
+                return _from_ending(q, landed)
         # Nothing outstanding, or nothing that could file: the work is done
         # and was memoized.  Which transport delivered it does not enter into
         # it, which is the property the CAS exists to give.
@@ -708,7 +710,7 @@ def _look_once_checked(
         if state is not None:
             state["generation"] = generation
         if landed is not None:
-            return _from_record(q, *landed)
+            return _from_ending(q, landed)
         return _row(key, "waiting", transport="slurm",
                     job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
@@ -822,8 +824,10 @@ def verdict(rows) -> int:
 
     if any(row["status"] == "record_error" for row in rows):
         return pbrun.RECORD_WRITE_FAILED_EXIT
-    if any(not row["succeeded"] and row["status"] != "waiting" for row in rows):
+    if any(not row["succeeded"] and row["status"] not in {"waiting", "superseded"} for row in rows):
         return 1
+    if any(row["status"] == "superseded" for row in rows):
+        return pbrun.PUBLICATION_SUPERSEDED_EXIT
     if any(row["status"] == "waiting" for row in rows):
         return GAVE_UP_EXIT
     return 0

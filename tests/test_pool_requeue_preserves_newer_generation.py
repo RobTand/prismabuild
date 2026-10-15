@@ -111,10 +111,10 @@ def test_requeue_preserves_newer_ready_publication(
     landed, watched = pbrun.outcome_poll(queue, KEY, newer["published_unix"])
     assert landed is not None and landed[1]["status"] == "executed"
     assert watched == newer["published_unix"]
-    # A superseded drop is retained evidence, not the old generation's verdict.
-    assert pbrun.outcome_poll(queue, KEY, claim["published_unix"]) == (
-        None, claim["published_unix"],
-    )
+    superseded, watched = pbrun.outcome_poll(queue, KEY, claim["published_unix"])
+    assert isinstance(superseded, pool.PublicationSupersession)
+    assert watched == claim["published_unix"]
+    assert superseded.successor_published_unix == newer["published_unix"]
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
