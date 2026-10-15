@@ -167,10 +167,18 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
     _publish(queue)
     legacy = queue.claim(owner="legacy", capacity=DEMAND)
     assert legacy is not None
-    path = queue.finish(KEY, status="executed", claim_snapshot=legacy)
-    record = json.loads(path.read_bytes())
-    del record["published_unix"]
-    path.write_text(json.dumps(record))
+    queue.finish(KEY, status="executed", claim_snapshot=legacy)
+    attempt = queue.attempt_path(legacy, 1)
+    attempt_bytes = attempt.read_bytes()
+    path = queue.item_path(pool.DONE, KEY)
+    retained = json.loads(path.read_bytes())
+    legacy_record = {name: retained[name] for name in (
+        "schema", "action_key", "status", "finished_unix", "finished_host",
+        "attempts", "detail",
+    )}
+    path.write_text(json.dumps(legacy_record))
+    assert pbrun.await_outcome(queue, KEY, wait_s=0,
+                              generation=legacy["published_unix"] + 100) == 0
     clock[0] += 1
     _publish(queue)
     original = queue.claim(owner="original", capacity=DEMAND)
@@ -180,6 +188,10 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
     successor = _ready(queue)["published_unix"]
     _end_claim(queue, original, "finish_retry", clock)
 
+    assert attempt.read_bytes() == attempt_bytes
+    archived = queue.archived_generation_outcomes(KEY, generation=legacy["published_unix"])
+    assert len(archived) == 1
+    assert archived[0][1]["published_unix"] == legacy["published_unix"]
     _assert_superseded(queue, original["published_unix"], successor)
 
 
