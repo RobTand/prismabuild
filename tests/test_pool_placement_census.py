@@ -33,6 +33,9 @@ GB10 = {"gpu": 2, "mem_gb": 48, "cpu": 10}
 X86 = {"gpu": 0, "mem_gb": 60, "cpu": 80}
 
 
+from prismabuild import role_session
+
+
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     """The live fleet's shape, from ``tools/fleet/fleet_boxes.json``."""
 
@@ -200,8 +203,8 @@ def test_an_idle_worker_says_how_much_of_the_queue_is_one_box_wide(
     spec.loader.exec_module(module)
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(module, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0
@@ -287,8 +290,8 @@ def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
     spec.loader.exec_module(module)
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(module, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0              # the item is bad; the box is not

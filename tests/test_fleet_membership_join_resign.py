@@ -28,6 +28,7 @@ from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 import worker_loop  # noqa: E402
+from prismabuild import role_session
 from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 
 CPU = {"cpu": 1}
@@ -158,15 +159,15 @@ def _tmp_gate(tmp_path: Path, draining: bool, changed: float = 1234.0) -> Path:
 
 def test_gate_shape_is_fail_closed_and_keyed(tmp_path: Path) -> None:
     gate = _tmp_gate(tmp_path, True, 1700.0)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is not None
-        assert worker_loop._gate_key(worker_loop.read_maintenance_gate()) == "1700.0"
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is not None
+        assert role_session._gate_key(role_session.read_maintenance_gate()) == "1700.0"
     gate.write_text(json.dumps({"draining": False, "changed_unix": 1700.0}))
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is None
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is None
     gate.write_text("not json")
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is not None
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is not None
 
 
 def _incarnation(monkeypatch, host: str) -> str:

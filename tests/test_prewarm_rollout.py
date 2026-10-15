@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 import worker_loop
+from prismabuild import role_session
 
 
 class CycleBoundary(Exception):
@@ -32,13 +33,13 @@ def role(tmp_path, monkeypatch):
     gate.write_text(json.dumps({"draining": False}))
     parked = tmp_path / "rollout/parked"
     parked.mkdir(parents=True)
-    monkeypatch.setattr(worker_loop, "MAINTENANCE_GATE", gate)
-    monkeypatch.setattr(worker_loop, "PARKED_ROOT", parked)
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
     loaded, current = tmp_path / "loaded.json", tmp_path / "current.json"
     for path in (loaded, current):
         path.write_text(json.dumps({"generation": "old", "commit": "a" * 40}))
-    monkeypatch.setattr(worker_loop, "GENERATION_VERSION", loaded)
-    monkeypatch.setattr(worker_loop, "RUNTIME_VERSION", current)
+    monkeypatch.setattr(role_session, "GENERATION_VERSION", loaded)
+    monkeypatch.setattr(role_session, "RUNTIME_VERSION", current)
     calls = []
     monkeypatch.setattr(loop, "cycle", lambda *a, **k: calls.append(True) or {})
     monkeypatch.setattr(loop.time, "sleep", lambda _: (_ for _ in ()).throw(CycleBoundary))
@@ -65,7 +66,7 @@ def test_gate_stops_every_storage_invocation(role, contents, once):
     assert calls == []
     markers = list(parked.iterdir())
     assert len(markers) == 1
-    assert markers[0].name.startswith(f"{os.getpid()}-{worker_loop._proc_starttime(os.getpid())}-")
+    assert markers[0].name.startswith(f"{os.getpid()}-{role_session._proc_starttime(os.getpid())}-")
     assert markers[0].name.endswith("-458.0" if contents and "458.0" in contents else "-unknown")
 
 

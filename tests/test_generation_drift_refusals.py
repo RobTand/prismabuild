@@ -73,6 +73,9 @@ MOVED = {"commit": "f" * 40, "generation": "gen-moved"}
 # -- the worker's claim-time handshake --------------------------------------
 
 
+from prismabuild import role_session
+
+
 def _worker_loop():
     spec = importlib.util.spec_from_file_location(
         "wl_drift_under_test", WORKER_LOOP)
@@ -155,9 +158,9 @@ def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool):
         return wl.PublicationResult("published", 0.001, None, "")
 
     with mock.patch.object(wl, "SH", tmp_path), \
-         mock.patch.object(wl, "GENERATION_VERSION", loaded), \
-         mock.patch.object(wl, "RUNTIME_VERSION", live), \
-         mock.patch.object(wl, "MAINTENANCE_GATE",
+         mock.patch.object(role_session, "GENERATION_VERSION", loaded), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", live), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE",
                            _receipt(tmp_path / "gate.json",
                                     {"draining": False})), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred",
@@ -210,7 +213,7 @@ def test_the_refusal_stamps_one_record_naming_both_generations(
         f"one record per incident, not one per poll: {records}"
     )
     record = records[0]
-    assert record["schema"] == wl.GENERATION_DRIFT_SCHEMA
+    assert record["schema"] == role_session.GENERATION_DRIFT_SCHEMA
     assert record["actor"] == "worker_loop"
     assert record["loaded_commit"] == LOADED["commit"]
     assert record["loaded_generation"] == LOADED["generation"]

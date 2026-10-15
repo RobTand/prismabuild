@@ -39,6 +39,7 @@ from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
 import supervise  # noqa: E402
 import worker_loop  # noqa: E402
+from prismabuild import role_session
 
 MANIFEST = "9" * 64
 CONSUMER = _key("consumer", 0)
@@ -481,13 +482,13 @@ def test_the_metrics_role_runs_the_exporter_on_the_queue_host():
 
 
 def test_a_second_exporter_on_the_box_refuses(tmp_path, capsys):
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
-        with worker_loop.role_singleton(Path(pbmetrics.__file__)):
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with role_session.role_singleton(Path(pbmetrics.__file__)):
             with mock.patch.object(pbmetrics, "ThreadingHTTPServer") as server:
                 code = pbmetrics.main(["--port", "9469",
                                        "--queue-root", str(tmp_path / "q")])
         server.assert_not_called()
-    assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert code == role_session.ROLE_SINGLETON_HELD_EXIT
     assert "refusing a second metrics exporter" in capsys.readouterr().err
 
 
@@ -499,23 +500,23 @@ def test_the_exporter_serves_under_its_role_lock(tmp_path):
             pass
 
         def serve_forever(self) -> None:
-            held.append(worker_loop.role_singleton_holder(
+            held.append(role_session.role_singleton_holder(
                 Path(pbmetrics.__file__))[0])
 
         def server_close(self) -> None:
             pass
 
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
             mock.patch.object(pbmetrics, "ThreadingHTTPServer", Server):
         assert pbmetrics.main(["--port", "9469",
                                "--queue-root", str(tmp_path / "q")]) == 0
         assert held == [True]
-        assert worker_loop.role_singleton_holder(Path(pbmetrics.__file__)) == (False, None)
+        assert role_session.role_singleton_holder(Path(pbmetrics.__file__)) == (False, None)
 
 
 def test_once_takes_no_lock(tmp_path, capsys):
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
-        with worker_loop.role_singleton(Path(pbmetrics.__file__)):
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with role_session.role_singleton(Path(pbmetrics.__file__)):
             assert pbmetrics.main(["--once", "--queue-root", str(tmp_path / "q")]) == 0
     assert "prismabuild_collection_success" in capsys.readouterr().out
 
@@ -528,15 +529,15 @@ def test_a_port_in_use_refuses_with_a_record(tmp_path, capsys):
         holder.bind(("127.0.0.1", 0))
         holder.listen(1)
         port = holder.getsockname()[1]
-        with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
             code = pbmetrics.main(["--listen", "127.0.0.1", "--port", str(port),
                                    "--queue-root", str(tmp_path / "q")])
             # The refusal let the role lock go with the process's attempt.
-            assert worker_loop.role_singleton_holder(
+            assert role_session.role_singleton_holder(
                 Path(pbmetrics.__file__)) == (False, None)
     finally:
         holder.close()
-    assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert code == role_session.ROLE_SINGLETON_HELD_EXIT
     err = capsys.readouterr().err
     assert "Traceback" not in err
     record = json.loads(err.strip().splitlines()[-1])
@@ -545,4 +546,4 @@ def test_a_port_in_use_refuses_with_a_record(tmp_path, capsys):
     assert record["reason"] == "port-in-use"
     assert (record["listen"], record["port"]) == ("127.0.0.1", port)
     assert record["holder_pid"] == os.getpid()
-    assert record["exit"] == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert record["exit"] == role_session.ROLE_SINGLETON_HELD_EXIT

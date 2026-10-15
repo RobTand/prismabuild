@@ -9,6 +9,9 @@ from test_worker_loop_reloads_unversioned import _worker_loop
 KEY = 'a' * 64
 
 
+from prismabuild import role_session
+
+
 def _publish(queue, **kwargs):
     queue.publish(action_key=KEY, cas_root='/cas', checkout_root='/checkout',
                   worker_script='/worker.py', resources={'cpu': 1, 'mem_gb': 1}, max_attempts=1, **kwargs)
@@ -58,8 +61,8 @@ def test_same_commit_new_generation_exits_before_any_queue_access(tmp_path, monk
     loaded, active = tmp_path / 'loaded.json', tmp_path / 'active.json'
     loaded.write_text(json.dumps({'commit': 'same', 'generation': 'first'}))
     active.write_text(json.dumps({'commit': 'same', 'generation': 'second'}))
-    monkeypatch.setattr(worker, 'GENERATION_VERSION', loaded)
-    monkeypatch.setattr(worker, 'RUNTIME_VERSION', active)
+    monkeypatch.setattr(role_session, 'GENERATION_VERSION', loaded)
+    monkeypatch.setattr(role_session, 'RUNTIME_VERSION', active)
     monkeypatch.setattr(worker, 'SH', tmp_path)
     class Untouchable:
         # Startup housekeeping (#1040) sweeps this box's dead offer
@@ -80,9 +83,9 @@ def test_maintenance_gate_blocks_claims_before_queue_reads(tmp_path, monkeypatch
     worker = _worker_loop()
     gate = tmp_path / 'maintenance.json'
     gate.write_text(json.dumps({'draining': True}))
-    monkeypatch.setattr(worker, 'MAINTENANCE_GATE', gate, raising=False)
-    monkeypatch.setattr(worker, 'loaded_runtime_commit', lambda: 'same')
-    monkeypatch.setattr(worker, 'published_commit', lambda: 'same')
+    monkeypatch.setattr(role_session, 'MAINTENANCE_GATE', gate, raising=False)
+    monkeypatch.setattr(role_session, 'loaded_runtime_commit', lambda: 'same')
+    monkeypatch.setattr(role_session, 'published_commit', lambda: 'same')
     # The drain poll republishes its advisory offer (#1204), so it now takes
     # the host-local publication lock; keep that lock inside the test rather
     # than letting it contend with a live loop or a sibling pytest worker.
