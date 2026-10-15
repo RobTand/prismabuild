@@ -103,8 +103,17 @@ def test_native_claim_survives_class_drift(tmp_path, monkeypatch):
 def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
-    q.announce(host='seen', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
-               observed_images=[CONTENT], container_class_verdict=policy().evaluate(snapshot(), now=1000.))
+    q.announce(
+        host='seen',
+        tags=[contracts.CONTAINER_IMAGE_TAG],
+        has_gpu=False,
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [CONTENT],
+                policy().evaluate(snapshot(), now=1000.),
+            ),
+        ),
+    )
     assert q.placeable(q.ready_items()[0])
     assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot(image_contents={})) is None
@@ -127,8 +136,17 @@ def test_offer_reports_refusal_and_only_excludes_declared_container_rows(tmp_pat
     monkeypatch.setattr(pool, '_now', lambda: 1000.)
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(image_contents={}), now=1000.)
-    q.announce(host='drifted', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
-               observed_images=[CONTENT], container_class_verdict=evidence)
+    q.announce(
+        host='drifted',
+        tags=[contracts.CONTAINER_IMAGE_TAG],
+        has_gpu=False,
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [CONTENT],
+                evidence,
+            ),
+        ),
+    )
     assert q.offers()[0]['container_class_verdict'] == evidence
     assert q.placeable(q.ready_items()[0]) is (not container)
 
@@ -139,8 +157,17 @@ def test_offer_class_observation_cannot_borrow_fresh_offer_time(tmp_path, monkey
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     evidence = policy().evaluate(snapshot(), now=1000.)
     now[0] = 1031.
-    q.announce(host='old-observation', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
-               observed_images=[CONTENT], container_class_verdict=evidence)
+    q.announce(
+        host='old-observation',
+        tags=[contracts.CONTAINER_IMAGE_TAG],
+        has_gpu=False,
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [CONTENT],
+                evidence,
+            ),
+        ),
+    )
     assert not q.placeable(q.ready_items()[0])
 
 
@@ -292,6 +319,15 @@ def test_oversized_offer_timestamp_is_unknown_and_does_not_break_native_placemen
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(), now=1000.)
     evidence[field] = 10 ** 400
-    q.announce(host='malformed-time', tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
-               observed_images=[CONTENT], container_class_verdict=evidence)
+    q.announce(
+        host='malformed-time',
+        tags=[contracts.CONTAINER_IMAGE_TAG],
+        has_gpu=False,
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [CONTENT],
+                evidence,
+            ),
+        ),
+    )
     assert q.placeable(q.ready_items()[0]) is (not container)

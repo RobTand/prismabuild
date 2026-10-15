@@ -14,6 +14,7 @@ import sys
 
 import prismabuild.core as pb
 import prismabuild.pool as pool
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import publication_canary
 
@@ -36,11 +37,19 @@ def _paths(tmp_path: Path) -> dict:
 
 def _offer(queue, host, *, generation, image=True, gpu=True):
     queue.announce(
-        host=host, tags=[HOST, publication_canary.CAPABILITY,
+        host=host,
+        tags=[HOST, publication_canary.CAPABILITY,
                          f"runtime-generation:{generation}",
                          *( [contracts.CONTAINER_IMAGE_TAG] if image else [] )],
-        has_gpu=gpu, capacity=dict(CAPACITY),
-        observed_images=[IMAGE] if image else [])
+        has_gpu=gpu,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [IMAGE] if image else [],
+                None,
+            ),
+        ),
+    )
 
 
 def test_an_image_with_the_old_generation_tag_waits(tmp_path):

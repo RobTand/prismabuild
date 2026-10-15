@@ -50,9 +50,18 @@ def test_worker_offer_and_live_claim_agree_on_observed_paths(tmp_path, kind):
         {"interpreter": named}, {"interpreter": named}, {}, None])
     fields = answers.offer_fields()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.announce(host="observed", tags=[TAG], has_gpu=False, capacity=CAPACITY,
-                   interpreters=fields["interpreters"],
-                   interpreters_absent=fields["interpreters_absent"])
+    queue.announce(
+        host="observed",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=CAPACITY,
+        capabilities=eligibility.OfferCapabilities(
+            interpreters=eligibility.InterpreterAnswers.from_observed(
+                fields["interpreters"],
+                fields["interpreters_absent"],
+            ),
+        ),
+    )
     _publish(queue, "a" * 64, named)
     expected = kind == "executable"
 
@@ -74,9 +83,18 @@ def test_live_claim_uses_current_path_instead_of_offer_answer(tmp_path, offered_
     path = tmp_path / "python"
     named = str(path) if offered_present else _executable(path)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.announce(host="previous-poll", tags=[TAG], has_gpu=False, capacity=CAPACITY,
-                   interpreters=[named] if offered_present else [],
-                   interpreters_absent=[] if offered_present else [named])
+    queue.announce(
+        host="previous-poll",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=CAPACITY,
+        capabilities=eligibility.OfferCapabilities(
+            interpreters=eligibility.InterpreterAnswers.from_observed(
+                [named] if offered_present else [],
+                [] if offered_present else [named],
+            ),
+        ),
+    )
     _publish(queue, "a" * 64, named)
 
     assert queue.placeable({"tags": [TAG], "interpreter": named,
@@ -193,9 +211,19 @@ def test_offer_path_presence_does_not_prove_required_bytes(tmp_path, monkeypatch
         answers = eligibility.observe_dependencies(
             [{"requires_files": [entry]}], python=sys.executable)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.announce(host="observed", tags=[contracts.DEPENDENCY_DIGEST_TAG], has_gpu=False,
-                   capacity=CAPACITY, dependency_files=sorted(answers.files_present),
-                   dependency_files_absent=sorted(answers.files_absent))
+    queue.announce(
+        host="observed",
+        tags=[contracts.DEPENDENCY_DIGEST_TAG],
+        has_gpu=False,
+        capacity=CAPACITY,
+        capabilities=eligibility.OfferCapabilities(
+            dependencies=eligibility.DependencyAnswers.from_observed(
+                None,
+                sorted(answers.files_present),
+                sorted(answers.files_absent),
+            ),
+        ),
+    )
     _publish_dependencies(queue, "a" * 64, files=[entry])
     if kind == "unreadable":
         claim_digest = dependency_digest.claim_digest
@@ -239,8 +267,19 @@ def test_local_path_offer_and_claim_share_requirement_semantics(tmp_path, requir
     answers = eligibility.observe_dependencies(
         [{"local_dependencies": local}], python=sys.executable)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.announce(host="observed", tags=[contracts.LOCAL_DEPENDENCY_TAG], has_gpu=False,
-                   capacity=CAPACITY, local_dependency_answers=answers.local_paths)
+    queue.announce(
+        host="observed",
+        tags=[contracts.LOCAL_DEPENDENCY_TAG],
+        has_gpu=False,
+        capacity=CAPACITY,
+        capabilities=eligibility.OfferCapabilities(
+            dependencies=eligibility.DependencyAnswers.from_observed(
+                answers.local_paths,
+                None,
+                None,
+            ),
+        ),
+    )
     _publish_dependencies(queue, "a" * 64, local=local)
     expected = actual == "executable" or (
         required_kind == "path" and actual in ("file", "directory"))
@@ -312,9 +351,19 @@ def test_first_digest_failure_follows_the_foreign_rows_declared_order(tmp_path):
 def test_submission_needs_one_host_with_all_required_paths(tmp_path, answers, expected):
     queue = pool.PoolQueue(tmp_path / "queue")
     for index, fields in enumerate(answers):
-        queue.announce(host=f"host-{index}", tags=[contracts.DEPENDENCY_DIGEST_TAG],
-                       has_gpu=False, capacity=CAPACITY, dependency_files=fields.get("present"),
-                       dependency_files_absent=fields.get("absent"))
+        queue.announce(
+            host=f"host-{index}",
+            tags=[contracts.DEPENDENCY_DIGEST_TAG],
+            has_gpu=False,
+            capacity=CAPACITY,
+            capabilities=eligibility.OfferCapabilities(
+                dependencies=eligibility.DependencyAnswers.from_observed(
+                    None,
+                    fields.get("present"),
+                    fields.get("absent"),
+                ),
+            ),
+        )
     assert queue.dependency_placement_verdict({
         "tags": [contracts.DEPENDENCY_DIGEST_TAG], "resources": CAPACITY,
         "requires_files": [_required("/a"), _required("/b")],
@@ -389,8 +438,18 @@ def _class_report():
 def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkeypatch, report_kind):
     monkeypatch.setattr(pool, "_now", lambda: 1000.)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.announce(host="observed", tags=[contracts.CONTAINER_IMAGE_TAG], has_gpu=False,
-                   capacity=CAPACITY, observed_images=[IMAGE])
+    queue.announce(
+        host="observed",
+        tags=[contracts.CONTAINER_IMAGE_TAG],
+        has_gpu=False,
+        capacity=CAPACITY,
+        capabilities=eligibility.OfferCapabilities(
+            images=eligibility.ImageAnswers.from_observed(
+                [IMAGE],
+                None,
+            ),
+        ),
+    )
     offer_path = queue.root / pool.WORKERS / "observed.json"
     offer = json.loads(offer_path.read_text())
     if report_kind != "omitted":

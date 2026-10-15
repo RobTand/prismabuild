@@ -22,6 +22,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
 
@@ -43,9 +44,21 @@ def _offer(queue, host, *, capability=True, images=(), capacity=None):
     if capability:
         tags.append(CAPABILITY)
     queue.announce(
-        host=host, tags=tags, has_gpu=False,
+        host=host,
+        tags=tags,
+        has_gpu=False,
         capacity=capacity or {"cpu": 4, "mem_gb": 16},
-        observed_images=list(images), interpreters=None)
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                list(images),
+                None,
+            ),
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                None,
+                None,
+            ),
+        ),
+    )
 
 
 def _refusal(tmp_path, monkeypatch, *options) -> str:

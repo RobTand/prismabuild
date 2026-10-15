@@ -23,6 +23,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import container_images  # noqa: E402
@@ -53,8 +54,18 @@ def publish(queue, key, **kwargs):
 
 def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
              observed_images=None, capacity=CAPACITY, gpu=False):
-    queue.announce(host=host, tags=list(tags), has_gpu=gpu,
-                   capacity=dict(capacity), observed_images=observed_images)
+    queue.announce(
+        host=host,
+        tags=list(tags),
+        has_gpu=gpu,
+        capacity=dict(capacity),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                observed_images,
+                None,
+            ),
+        ),
+    )
 
 
 def denials(queue):
