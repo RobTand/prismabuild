@@ -24,6 +24,7 @@ import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
 from . import adaptive_cpu, filesystem_capacity, resource_scope, runtime_publication, storage_tiers
+from .record_store import Absent, Present, QueueRow, RecordStore, Unknown
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -691,8 +692,8 @@ class ProducedSpool:
         if not launch.get("ok"):
             raise SpoolError(str(launch))
         key = record["export_key"]
-        state = po._mover_live_state(self.queue, key)
-        if state == "absent":
+        mover = RecordStore(self.queue.root).mover(key)
+        if isinstance(mover, Absent):
             # The row carries exactly the demand the action sealed, so a
             # reservation priced at seal time is the one admission charges.
             self.queue.publish(action_key=key, cas_root=self.cas_root,
@@ -700,9 +701,10 @@ class ProducedSpool:
                 resources=dict(record["action"]["params"]["demand"]), tags=[self.host],
                 max_attempts=3, retry_safe=True, priority=launch["priority"],
                 dependent_of=self.owner, refuse_withdrawn=True)
-        elif state in {"failed", "withdrawn"}:
+        elif (isinstance(mover, Present)
+              and mover.value.state in {"failed", "withdrawn"}):
             return {"ok": False, "complete": False, "export_key": key,
-                    "refusal": f"export-{state}"}
+                    "refusal": f"export-{mover.value.state}"}
         return {"ok": True, "complete": False, "export_key": key}
 
     def poll_group(self, batch_id):
@@ -751,10 +753,11 @@ class ProducedSpool:
             except (SpoolError, reader_lease.ReaderLeaseError) as exc:
                 return {"ok": False, "complete": False, "refusal": str(exc)}
             return {"ok": True, "complete": True, "export_key": key}
-        state = po._mover_live_state(self.queue, key)
-        if state in {"failed", "withdrawn", "done"}:
+        mover = RecordStore(self.queue.root).mover(key)
+        if (isinstance(mover, Present)
+                and mover.value.state in {"failed", "withdrawn", "done"}):
             return {"ok": False, "complete": False, "export_key": key,
-                    "refusal": f"export-{state}-without-ack"}
+                    "refusal": f"export-{mover.value.state}-without-ack"}
         return {"ok": True, "complete": False, "export_key": key}
 
     def commit_origin_group(self, batch_id, descriptors, *,
@@ -1910,7 +1913,13 @@ def _retire_group(queue, directory, group, owner):
                            "export_key": record["export_key"],
                            "bytes": released["payload_bytes"]}
             else:
-                state = po._mover_live_state(queue, record["export_key"])
+                match RecordStore(queue.root).mover(record["export_key"]):
+                    case Present(QueueRow(state, _row)):
+                        pass
+                    case Absent():
+                        state = "absent"
+                    case Unknown():
+                        state = "unknown"
                 if state in (pool.READY, pool.CLAIMED):
                     return {"batch_id": name, "kept": f"export-{state}",
                             "export_key": record["export_key"]}

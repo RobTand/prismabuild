@@ -1,12 +1,13 @@
 """Read-only questions about records filed under a queue key.
 
-The leaf JSON reader remains pool.read_queue_record until the wider queue-I/O
-caller migration. Key standing owns its layout, ordering, and consecutive
-observations here. These reads acquire no lock and impose no deadline.
+The leaf JSON readers remain in pool until the wider queue-I/O caller
+migration. Standing and mover polling own their layout and observation
+policies here. These reads acquire no lock and impose no deadline.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -53,6 +54,35 @@ type KeyStanding = ReadResult[QueueRow | Moving]
 class RecordStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
+
+    def mover(self, key: str) -> ReadResult[QueueRow]:
+        """Poll claimed, ready, done, failed, then withdrawn for one key.
+
+        Each missing or empty record gets the existing best-effort parent
+        refresh and one retry. A hit needs no refresh. The first readable
+        state wins, and any read exception leaves the answer unknown.
+        """
+
+        from . import pool
+
+        path = self.root
+        for state in ("claimed", "ready"):
+            try:
+                path = self.root / state / f"{key}.json"
+                record = pool._read_json_fresh(path)
+            except Exception as exc:
+                return Unknown("record-unreadable", path, exc)
+            if record is not None:
+                return Present(QueueRow(state, record))
+        for state in ("done", "failed", "withdrawn"):
+            try:
+                path = self.root / state / f"{key}.json"
+                record = pool._read_json_fresh(path)
+            except Exception as exc:
+                return Unknown("record-unreadable", path, exc)
+            if isinstance(record, Mapping):
+                return Present(QueueRow(state, record))
+        return Absent()
 
     def standing(self, key: str) -> KeyStanding:
         """Read a key twice; disagreement leaves its standing unknown.

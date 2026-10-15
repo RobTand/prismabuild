@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild.record_store import Absent, Present, RecordStore  # noqa: E402
 from prismabuild import residency_map as map_mod  # noqa: E402
 import test_produced_output_restage as restage  # noqa: E402
 
@@ -252,7 +253,8 @@ def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
     world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
     _descs, first = _staged_batch(world, "b1", "p1", b"Q" * 900)
     mover0 = str(first["mover_key"])
-    assert po._mover_live_state(world.q, mover0) == pool.READY
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(mover0), Present)
+            and mover_row.value.state == pool.READY)
 
     with _NoFleetTools():
         outcome = world.retire("b1")
@@ -290,14 +292,16 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     with _NoFleetTools():
         egress = _assert_own_egress_deferral(world.retire("b1"))
     attempts = 0
-    while po._mover_live_state(world.q, egress) == pool.READY:
+    while (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.READY):
         attempts += 1
         outcome = _run_on_the_tier_host(world, egress, f"w-tier-{attempts}")
         assert outcome.get("returncode") == 1, outcome
         world.q.finish(egress, status="failed")
         assert attempts <= 3, "the row's own retry budget is three"
     assert attempts == 3
-    assert po._mover_live_state(world.q, egress) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.FAILED)
     assert staged.read_bytes() == payload
 
     with _NoFleetTools():
@@ -309,7 +313,8 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     assert blocked["receipt"]["deferred_own"] == []
     assert blocked["receipt"]["action_key"] == mover0
     # ...and the same key is queued again, as a fresh attempt.
-    assert po._mover_live_state(world.q, egress) == pool.READY
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.READY)
     assert not world.entry("b1").get("retired")
 
     assert rlc.release(world.q, read["pin_id"], read["ref_id"],
@@ -443,13 +448,13 @@ def test_a_finished_egress_is_read_by_its_receipt_whatever_the_rows_state(
     assert outcome.get("returncode") == 0, outcome
     # The window itself: the claim is gone and no terminal has landed.
     os.unlink(world.q.item_path(pool.CLAIMED, egress))
-    assert po._mover_live_state(world.q, egress) == "absent"
+    assert isinstance(RecordStore(world.q.root).mover(egress), Absent)
 
     with _OwnersView(world.stage_root):
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert po._mover_live_state(world.q, egress) == "absent", (
+    assert isinstance(RecordStore(world.q.root).mover(egress), Absent), (
         "nothing was published for an egress that had already completed")
 
 
@@ -465,7 +470,8 @@ def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
     with _OwnersView(world.stage_root):
         egress = _assert_own_egress_deferral(world.retire("b1"))
     withdrawn = world.q.withdraw(egress, reason="operator stop", by="test")
-    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN, withdrawn
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.WITHDRAWN), withdrawn
 
     with _OwnersView(world.stage_root):
         stopped = world.retire("b1")
@@ -473,6 +479,7 @@ def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
     assert str(stopped.get("refusal")).startswith("egress-withdrawn: "), stopped
     assert "receipt" not in stopped, "no deferral for a poller to wait on"
     assert stopped["egress_action_key"] == egress
-    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.WITHDRAWN)
     assert world.stage_path("p1.bin").read_bytes() == payload
     assert not world.entry("b1").get("retired")

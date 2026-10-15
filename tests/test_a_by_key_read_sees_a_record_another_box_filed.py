@@ -29,6 +29,7 @@ import pytest
 
 from prismabuild import pool
 from prismabuild import produced_output
+from prismabuild.record_store import Absent, Present, RecordStore, Unknown
 
 
 KEY = "ab" * 32
@@ -141,10 +142,11 @@ def test_a_terminal_row_filed_after_the_first_poll_is_named(
         queue.dir(state).mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
-    assert produced_output._mover_live_state(queue, KEY) == "absent"
+    assert isinstance(RecordStore(queue.root).mover(KEY), Absent)
     queue.item_path(pool.DONE, KEY).write_text(json.dumps({"action_key": KEY}))
 
-    assert produced_output._mover_live_state(queue, KEY) == pool.DONE
+    assert (isinstance(mover_row := RecordStore(queue.root).mover(KEY), Present)
+            and mover_row.value.state == pool.DONE)
 
 
 def test_a_record_that_is_there_costs_no_directory_open(
@@ -165,6 +167,7 @@ def test_a_directory_that_is_not_there_is_still_absent_not_an_error(
     NegativeLookupCache(monkeypatch)
 
     assert queue.move_record(KEY) is None
+    assert isinstance(RecordStore(queue.root).mover(KEY), Absent)
 
 
 def test_a_row_claimed_after_the_first_poll_is_not_read_as_absent(
@@ -178,11 +181,12 @@ def test_a_row_claimed_after_the_first_poll_is_not_read_as_absent(
         queue.dir(state).mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
-    assert produced_output._mover_live_state(queue, KEY) == "absent"
+    assert isinstance(RecordStore(queue.root).mover(KEY), Absent)
     queue.item_path(pool.CLAIMED, KEY).write_text(
         json.dumps({"action_key": KEY}))
 
-    assert produced_output._mover_live_state(queue, KEY) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(queue.root).mover(KEY), Present)
+            and mover_row.value.state == pool.CLAIMED)
 
 
 def test_revalidating_another_directory_does_not_refresh_this_one(
@@ -219,3 +223,106 @@ def test_a_parent_that_cannot_be_opened_leaves_the_first_answer(
     monkeypatch.setattr(os, "open", stale)
 
     assert queue.move_record(KEY) is None
+    assert isinstance(RecordStore(queue.root).mover(KEY), Absent)
+
+
+@pytest.mark.parametrize(("filed_states", "expected"), [
+    ((pool.CLAIMED, pool.READY, pool.DONE), pool.CLAIMED),
+    ((pool.READY, pool.DONE), pool.READY),
+    ((pool.DONE, pool.FAILED, pool.WITHDRAWN), pool.DONE),
+    ((pool.FAILED, pool.WITHDRAWN), pool.FAILED),
+    ((pool.WITHDRAWN,), pool.WITHDRAWN),
+])
+def test_mover_polling_names_the_first_filed_state_not_the_newest_generation(
+        tmp_path: Path, filed_states: tuple[str, ...], expected: str) -> None:
+    queue = _queue(tmp_path)
+    for stamp, state in enumerate(filed_states):
+        path = queue.item_path(state, KEY)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"published_unix": stamp, "filed_as": state}))
+
+    answer = RecordStore(queue.root).mover(KEY)
+
+    assert isinstance(answer, Present)
+    assert answer.value.state == expected
+    assert answer.value.record["filed_as"] == expected
+
+
+def test_a_present_mover_needs_no_directory_refresh(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = _queue(tmp_path)
+    path = queue.item_path(pool.CLAIMED, KEY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"action_key": KEY}))
+    cache = NegativeLookupCache(monkeypatch)
+
+    answer = RecordStore(queue.root).mover(KEY)
+
+    assert isinstance(answer, Present)
+    assert answer.value.state == pool.CLAIMED
+    assert cache.revalidations == 0
+
+
+def test_an_empty_live_record_does_not_hide_a_filed_ending(tmp_path: Path) -> None:
+    queue = _queue(tmp_path)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_bytes(b"")
+    done = queue.item_path(pool.DONE, KEY)
+    done.parent.mkdir(parents=True, exist_ok=True)
+    done.write_text(json.dumps({"action_key": KEY}))
+
+    answer = RecordStore(queue.root).mover(KEY)
+
+    assert isinstance(answer, Present)
+    assert answer.value.state == pool.DONE
+
+
+@pytest.mark.parametrize("raw", [b"{", b"[]"])
+def test_an_invalid_live_record_does_not_fall_through_to_a_filed_ending(
+        tmp_path: Path, raw: bytes) -> None:
+    queue = _queue(tmp_path)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_bytes(raw)
+    done = queue.item_path(pool.DONE, KEY)
+    done.parent.mkdir(parents=True, exist_ok=True)
+    done.write_text(json.dumps({"action_key": KEY}))
+
+    answer = RecordStore(queue.root).mover(KEY)
+
+    assert isinstance(answer, Unknown)
+    assert answer.path == claimed
+    assert isinstance(answer.error, pool.PoolContractError)
+
+
+@pytest.mark.parametrize("failing_read", [1, 2])
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_a_failed_mover_read_retains_its_original_error_and_path(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        failing_read: int, error_type: type[Exception]) -> None:
+    queue = _queue(tmp_path)
+    claimed = queue.item_path(pool.CLAIMED, KEY)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    done = queue.item_path(pool.DONE, KEY)
+    done.parent.mkdir(parents=True, exist_ok=True)
+    done.write_text(json.dumps({"action_key": KEY}))
+    error = error_type("the queue read failed")
+    real_read = Path.read_bytes
+    reads = 0
+
+    def read(path: Path) -> bytes:
+        nonlocal reads
+        if path == claimed:
+            reads += 1
+            if reads == failing_read:
+                raise error
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+
+    answer = RecordStore(queue.root).mover(KEY)
+
+    assert isinstance(answer, Unknown)
+    assert answer.path == claimed
+    assert answer.error is error

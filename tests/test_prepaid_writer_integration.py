@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild.record_store import Present, RecordStore  # noqa: E402
 import stage_release  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -1119,7 +1120,8 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert funding is not None and funding["state"] == "consumed"
 
     # The row is terminal FAILED -- and cannot be claimed.
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     assert not q.item_path(pool.READY, mover).exists()
     assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
     # The row is failed but can never be funded back into a claim, so
@@ -1366,7 +1368,8 @@ def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
     # is untouched and still claimed, only its holdings went.
     q.release_tier_reservations(mover)
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert po._mover_live_state(q, mover) == "claimed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "claimed")
 
     events = po.recover_batches(q, inst, template)
     assert {"event": "output-mover-live-wait", "batch_id": "b1",
@@ -1463,7 +1466,8 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     # Nothing staged, so nothing retained -- and the row is filed terminal
     # FAILED with a spent record (#848).
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     verdict = {"event": "output-mover-unfundable-retire", "batch_id": "b1",
                "mover": mover, "action": "retire-reclaim-replan"}
     assert verdict in po.recover_batches(q, inst, template)
@@ -1606,7 +1610,8 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     outcome = q.execute(claimed, timeout_s=240)
     assert outcome.get("returncode") != 0, outcome
     q.finish(mover, status="failed")
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     assert q.read_output_funding(mover, TIER)["state"] == "consumed"
     # Nothing was staged, so the reservation came back; the aggregate
     # ledger is where that is read, not the mover's own holdings.
@@ -1625,7 +1630,8 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert str(again["mover_key"]) == mover
     assert q.read_output_funding(mover, TIER)["state"] == "consumed"
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     assert q.claim(owner="probe-exhausted", tags=[_tier_host(q)]) is None
 
     # So the census must not offer it, and must offer what does work.
@@ -1879,7 +1885,8 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     # FAILED -- where it still carries the tier residency block the
     # predicate reads. The override reads the filed funding record, not
     # this malformed receipt: the two judgements are independent.
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     record = pool._read_json(q.item_path(pool.FAILED, mover))
     assert isinstance(record, dict), record
     assert q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
@@ -1970,7 +1977,8 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     # FAILED (#848) instead of requeueing it.
     occupied = {"capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
     assert _tier_census(ledger) == occupied
-    assert po._mover_live_state(q, mover) == "failed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     assert not q.item_path(pool.READY, mover).exists()
     funding = q.read_output_funding(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
@@ -1984,7 +1992,8 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     legacy = dict(terminal)
     pool._write_json_atomic(
         q._shape_as_ready_item(legacy, action_key=mover), legacy)
-    assert po._mover_live_state(q, mover) == "ready"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "ready")
     assert _tier_census(ledger) == occupied
 
     blanket: list[str] = []

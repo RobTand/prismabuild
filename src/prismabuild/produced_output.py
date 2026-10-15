@@ -5111,12 +5111,12 @@ def _publish_output_mover_row(queue, *, mover_key: str, cas_root: str,
     if fill is not None:
         resources[f"{tiers_mod.FILL_KIND}"
                   f"{tiers_mod.TIER_DEMAND_SEPARATOR}{tier}"] = int(fill)
-    state = _mover_live_state(queue, mover_key)
-    if state == "unknown":
+    mover = RecordStore(queue.root).mover(mover_key)
+    if isinstance(mover, Unknown):
         return {"ok": False, "step": "publish",
                 "refusal": "unknown-retain: mover-row-unreadable"}
-    if state != "absent":
-        return {"ok": True, "published": False, "state": state}
+    if isinstance(mover, Present):
+        return {"ok": True, "published": False, "state": mover.value.state}
     try:
         queue.publish(
             action_key=mover_key, cas_root=str(cas_root),
@@ -5316,8 +5316,15 @@ def materialization_state(queue, instance: Mapping[str, object],
         "origin_reclaimed": bool(entry.get("origin_reclaimed")),
         "mover_receipt_complete": complete,
         "mover_refusal": refusal,
-        "mover_queue_state": _mover_live_state(queue, mover) if mover else "absent",
     }
+    match RecordStore(queue.root).mover(mover) if mover else Absent():
+        case Present(QueueRow(mover_state, _row)):
+            pass
+        case Absent():
+            mover_state = "absent"
+        case Unknown():
+            mover_state = "unknown"
+    state["mover_queue_state"] = mover_state
     if refusal == ORIGIN_UNREACHABLE_REFUSAL:
         state["ok"] = False
         state["refusal"] = refusal
@@ -6539,11 +6546,12 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
 
     # The mover's OWN copy first, exactly as the egress itself would answer
     # (#795): a copy still queued or running is never raced by its egress.
-    mover_state = _mover_live_state(queue, target_mover)
-    if mover_state == "unknown":
+    mover = RecordStore(queue.root).mover(target_mover)
+    if isinstance(mover, Unknown):
         return {"answer": {"ok": False,
                            "refusal": "unknown-retain: mover-row-unreadable"}}
-    if mover_state in (pool_mod.READY, pool_mod.CLAIMED):
+    if (isinstance(mover, Present)
+            and mover.value.state in (pool_mod.READY, pool_mod.CLAIMED)):
         return deferred("own-copy-in-flight")
     sealed = _seal_output_egress(
         queue, record=record, producer=producer, cas_root=cas_root,
@@ -6562,12 +6570,13 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
                 "refusal": f"unknown-retain: {name}-mismatch: the tier's is "
                            f"{sealed_root}, this retirement named {mine}"}}
     egress_key = str(sealed["egress_key"])
-    state = _mover_live_state(queue, egress_key)
-    if state == "unknown":
+    egress = RecordStore(queue.root).mover(egress_key)
+    if isinstance(egress, Unknown):
         return {"answer": {"ok": False, "egress_action_key": egress_key,
                            "refusal": "unknown-retain: egress-row-unreadable"}}
-    if state in (pool_mod.READY, pool_mod.CLAIMED):
-        return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, state)
+    if (isinstance(egress, Present)
+            and egress.value.state in (pool_mod.READY, pool_mod.CLAIMED)):
+        return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, egress.value.state)
     # `Pool._file_move` files a node's receipt under the node's OWN key, so an
     # egress receipt is read by the egress key and names it; the mover it
     # retired is bound by that key, which hashes a command naming it. The
@@ -10479,34 +10488,6 @@ def _mover_receipt_complete(queue, mover_key: str) -> bool | None:
     return _receipt_complete(_mover_receipt(queue, mover_key))
 
 
-def _mover_live_state(queue, mover_key: str) -> str:
-    """Where one mover key is queued right now (existing queue states only)."""
-
-    from prismabuild import pool as pool_mod
-
-    # Every one of these rows is moved by the box that runs the mover while
-    # this one polls for it, so each read revalidates before answering no
-    # (#808).  That matters most for the live legs: `_publish_output_mover_row`
-    # republishes on "absent", and a stale miss on `claimed` would read a row
-    # that is being copied right now as absent.
-    for state in (pool_mod.CLAIMED, pool_mod.READY):
-        try:
-            if pool_mod._read_json_fresh(
-                    queue.item_path(state, mover_key)) is not None:
-                return state
-        except Exception:
-            return "unknown"
-    for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
-        try:
-            record = pool_mod._read_json_fresh(
-                queue.item_path(state, mover_key))
-        except Exception:
-            return "unknown"
-        if isinstance(record, Mapping):
-            return state
-    return "absent"
-
-
 def due_mover_rows(queue, instance: Mapping[str, object],
                    template: Mapping[str, object]) -> list[dict[str, object]]:
     """Frozen mover-row skeletons for batches needing (re)publication.
@@ -10580,8 +10561,9 @@ def due_mover_rows(queue, instance: Mapping[str, object],
             staged = False
         if staged:
             continue
-        state = _mover_live_state(queue, mover)
-        if state in ("claimed", "ready"):
+        mover_row = RecordStore(queue.root).mover(mover)
+        if (isinstance(mover_row, Present)
+                and mover_row.value.state in ("claimed", "ready")):
             continue
         # A batch whose fence is spent can never fund another claim on this
         # mover key, so a row emitted for it would be work the pool cannot
@@ -10620,7 +10602,8 @@ def due_mover_rows(queue, instance: Mapping[str, object],
                 "range_end_bytes": total if total > 0 else 1,
             },
             "generation": generation,
-            "reason": ("retry-failed-mover" if state == "failed"
+            "reason": ("retry-failed-mover" if isinstance(mover_row, Present)
+                       and mover_row.value.state == "failed"
                        else "needs-publish"),
         })
     return rows
@@ -10721,7 +10704,7 @@ def recover_batches(queue, instance: Mapping[str, object],
         mover = str(active.get("mover_key") or "")
         if (str(active.get("source")) == "materialization"
                 and str(active.get("state")) == "intent"
-                and _mover_live_state(queue, mover) == "absent"):
+                and isinstance(RecordStore(queue.root).mover(mover), Absent)):
             # A filed restage intent whose mover row was never published:
             # the durable resumption point `ensure_batch_materialized` left
             # behind. It is neither staged nor lost; re-calling ensure
@@ -10747,7 +10730,13 @@ def recover_batches(queue, instance: Mapping[str, object],
         # says which it was, and an unreadable one leaves it unknown
         # rather than letting the fragments answer a question they cannot.
         complete = _mover_receipt_complete(queue, mover) if composed else None
-        state = _mover_live_state(queue, mover) if mover else "absent"
+        match RecordStore(queue.root).mover(mover) if mover else Absent():
+            case Present(QueueRow(state, _row)):
+                pass
+            case Absent():
+                state = "absent"
+            case Unknown():
+                state = "unknown"
         if composed and complete is True:
             events.append({"event": "output-batch-staged",
                            "batch_id": batch_id, "namespace": ns})
