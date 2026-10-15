@@ -8,7 +8,8 @@
       "tests/test_installed_host_proof.py": 13,
       "tests/test_client_proof_prior_trust.py": 8,
       "tests/test_client_proof_metadata.py": 22,
-      "tests/test_client_proof_current_trust.py": 3
+      "tests/test_client_proof_current_trust.py": 3,
+      "tests/test_installed_park_proof_loader.py": 2
     },
     "cpus": 1,
     "memory_gib": 4,

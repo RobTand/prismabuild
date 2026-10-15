@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import ModuleType
 from typing import NamedTuple
 import uuid
 
@@ -373,6 +374,45 @@ def read_proof_file(path):
     return ProofFileSnapshot(data, ProofFileMetadata(
         before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)))
 
+
+
+class InstalledParkProof(NamedTuple):
+    sha256: str
+    module: ModuleType
+
+
+def load_installed_park_proof(install: Path) -> InstalledParkProof:
+    """Compile only the coherent root-trusted sibling bytes captured this call."""
+    path = trusted(install) / 'park_proof.py'
+    snapshot = read_proof_file(path)
+    if snapshot is None:
+        raise ValueError('installed park proof is missing')
+    metadata = snapshot.metadata
+    if metadata.uid != 0 or metadata.mode & 0o022:
+        raise ValueError('installed park proof is not root-trusted')
+    sha256 = digest(snapshot.data)
+    name = f'_prismabuild_installed_park_proof_{sha256}_{uuid.uuid4().hex}'
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    try:
+        exec(compile(snapshot.data, str(path), 'exec'), module.__dict__)
+        for entrypoint in ('drain_identity', 'process_identity', 'acknowledgements',
+                           'park_marker_filename', 'parked_markers', 'read_gate'):
+            function = getattr(module, entrypoint, None)
+            if not callable(function) or getattr(function, '__globals__', None) is not module.__dict__:
+                raise ValueError(f'installed park proof lacks its strict {entrypoint}')
+        if (not isinstance(getattr(module, 'ProofUnknown', None), type)
+                or module.ProofUnknown.__module__ != name
+                or not isinstance(getattr(module, 'HOST_QUIESCENT', None), frozenset)
+                or not module.HOST_QUIESCENT
+                or any(not isinstance(role, str) or not role for role in module.HOST_QUIESCENT)):
+            raise ValueError('installed park proof lacks its strict domain types/profile')
+    except Exception as exc:
+        raise ValueError(f'installed park proof is unavailable: {exc}') from exc
+    finally:
+        sys.modules.pop(name, None)
+    return InstalledParkProof(sha256, module)
 
 def previous_proof_metadata(transaction, previous):
     """Parse proof-specific rollback facts before service or filesystem mutation."""
