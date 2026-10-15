@@ -35,6 +35,9 @@ import pbrun  # noqa: E402
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _await(predicate, *, timeout_s: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -178,9 +181,10 @@ from pathlib import Path
 sys.path.insert(0, {str(WORKER_LOOP.parents[2] / 'src')!r})
 sys.path.insert(0, {str(WORKER_LOOP.parent)!r})
 import worker_loop as wl
+from prismabuild import role_session
 wl.SH = Path({str(tmp_path)!r})
-wl.loaded_runtime_commit = lambda: 'deadbeef'
-wl.published_commit = lambda: 'deadbeef'
+role_session.loaded_runtime_commit = lambda: 'deadbeef'
+role_session.published_commit = lambda: 'deadbeef'
 raise SystemExit(wl.main())
 """)
     cpu_slots = cpu_slots_that_fit()

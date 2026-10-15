@@ -17,6 +17,9 @@ from prismabuild import box_capacity, core  # noqa: E402
 WORKER = Path(__file__).resolve().parents[1] / "tools/fleet/worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _sample(*, foreign=(), domain="shared_system", age=0.0):
     now = time.time()
     return {
@@ -209,9 +212,9 @@ def _run_worker(argv, *, ready, sample=None):
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
          mock.patch.object(worker, "inherited_cpus", return_value=4), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "maintenance_requested", return_value=False), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "maintenance_requested", return_value=False), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=sample,
                            create=True), \
          mock.patch.object(worker.box_capacity, "ipv4_addresses",

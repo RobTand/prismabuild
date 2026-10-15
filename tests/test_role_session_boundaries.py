@@ -21,6 +21,7 @@ import local_tier_loop
 import pbmetrics
 import prewarm_loop
 import worker_loop
+from prismabuild import role_session
 from prewarm_fixture import Fleet, StagePool
 
 CONTEXT = multiprocessing.get_context("fork")
@@ -36,11 +37,11 @@ def boundary(tmp_path, monkeypatch):
     published = tmp_path / "published.json"
     for receipt in (loaded, published):
         receipt.write_text(json.dumps({"commit": "a" * 40, "generation": "first"}))
-    monkeypatch.setattr(worker_loop, "MAINTENANCE_GATE", gate)
-    monkeypatch.setattr(worker_loop, "PARKED_ROOT", parked)
-    monkeypatch.setattr(worker_loop, "GENERATION_VERSION", loaded)
-    monkeypatch.setattr(worker_loop, "RUNTIME_VERSION", published)
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
+    monkeypatch.setattr(role_session, "GENERATION_VERSION", loaded)
+    monkeypatch.setattr(role_session, "RUNTIME_VERSION", published)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     return SimpleNamespace(root=tmp_path, gate=gate, parked=parked,
                            published=published)
 

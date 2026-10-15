@@ -33,6 +33,7 @@ sys.path.insert(0, str(TESTS))
 
 import supervise  # noqa: E402
 import worker_loop  # noqa: E402
+from prismabuild import role_session
 from test_a_second_role_refuses_the_host_role_lock import (  # noqa: E402
     HOST, STORAGE, _role_box, _role_process, _spawn_recorder)
 
@@ -50,7 +51,7 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(supervise, "declared_roles",
                         lambda host: [("storage", ["--readers", "4"])])
     monkeypatch.setattr(supervise, "_published_receipt", lambda: {})
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     monkeypatch.setattr(supervise, "_ROLE_CHILDREN", {})
     monkeypatch.setattr(supervise, "_ROLE_REFUSALS", {})
     clock = [1000.0]
@@ -74,7 +75,7 @@ def test_a_refused_role_is_not_respawned_every_tick(box, monkeypatch, capsys):
     # Tick 1: nothing runs, the lock is free, the role is spawned.
     assert supervise.ensure_roles(HOST) == [("storage", 9001)]
     # It refuses (exit 3) before the next tick, which reaps it.
-    exits.append((9001, _exit_status(worker_loop.ROLE_SINGLETON_HELD_EXIT)))
+    exits.append((9001, _exit_status(role_session.ROLE_SINGLETON_HELD_EXIT)))
     clock[0] += supervise.BUSY_INTERVAL_S
     assert supervise._reap_children() == 1
     capsys.readouterr()
@@ -84,7 +85,7 @@ def test_a_refused_role_is_not_respawned_every_tick(box, monkeypatch, capsys):
     assert len(spawned) == 1, "a refused role was respawned on the next tick"
     out = capsys.readouterr().out
     assert "role storage refused" in out, out
-    assert f"exit {worker_loop.ROLE_SINGLETON_HELD_EXIT}" in out, out
+    assert f"exit {role_session.ROLE_SINGLETON_HELD_EXIT}" in out, out
     # The refusal is named once, not once per tick of the backoff.
     assert supervise.ensure_roles(HOST) == []
     assert "role storage refused" not in capsys.readouterr().out
@@ -101,7 +102,7 @@ def test_consecutive_refusals_double_the_backoff_to_a_ceiling(box, monkeypatch):
     delays = []
     for _ in range(12):
         assert supervise.ensure_roles(HOST) == [("storage", 9001)]
-        exits.append((9001, _exit_status(worker_loop.ROLE_SINGLETON_HELD_EXIT)))
+        exits.append((9001, _exit_status(role_session.ROLE_SINGLETON_HELD_EXIT)))
         assert supervise._reap_children() == 1
         refusal = supervise._ROLE_REFUSALS["storage"]
         delays.append(refusal["retry_at"] - clock[0])
@@ -119,7 +120,7 @@ def test_a_role_seen_live_clears_the_backoff(box, monkeypatch, capsys):
     _mirror, proc, offered, clock, exits = box
     _spawn_recorder(monkeypatch, pid=9001)
     assert supervise.ensure_roles(HOST) == [("storage", 9001)]
-    exits.append((9001, _exit_status(worker_loop.ROLE_SINGLETON_HELD_EXIT)))
+    exits.append((9001, _exit_status(role_session.ROLE_SINGLETON_HELD_EXIT)))
     supervise._reap_children()
     clock[0] = supervise._ROLE_REFUSALS["storage"]["retry_at"]
     assert supervise.ensure_roles(HOST) == [("storage", 9001)]
@@ -155,7 +156,7 @@ def test_a_worker_exit_three_is_not_a_role_refusal(box, monkeypatch):
 
     _mirror, _proc, _offered, _clock, exits = box
     _spawn_recorder(monkeypatch, pid=9001)
-    exits.append((7777, _exit_status(worker_loop.ROLE_SINGLETON_HELD_EXIT)))
+    exits.append((7777, _exit_status(role_session.ROLE_SINGLETON_HELD_EXIT)))
     assert supervise._reap_children() == 1
     assert supervise._ROLE_REFUSALS == {}
     assert supervise.ensure_roles(HOST) == [("storage", 9001)]

@@ -34,6 +34,9 @@ ORDINARY = "c" * 64
 WAIT_S = 30.0
 
 
+from prismabuild import role_session
+
+
 def _read(path):
     return json.loads(path.read_text())
 
@@ -78,15 +81,15 @@ def _fixture_worker(monkeypatch, tmp_path, *, assume_idle, metadata_capacity=1):
     monkeypatch.setattr(worker, "SH", tmp_path)
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
-    monkeypatch.setattr(worker, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     for attr, name in (("GENERATION_VERSION", "loaded-runtime.json"),
                        ("RUNTIME_VERSION", "published-runtime.json")):
         path = tmp_path / name
         path.write_text(json.dumps({"commit": "d" * 40,
                                     "generation": "metadata-fixture"}))
-        monkeypatch.setattr(worker, attr, path)
+        monkeypatch.setattr(role_session, attr, path)
     monkeypatch.setattr(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "publication")
-    monkeypatch.setattr(worker, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
     monkeypatch.setattr(pool.cpu_admission, "BOX_STATE_ROOT", tmp_path / "box-state")
 
     # No affinity is widened or changed. Two IDs inside the inherited mask are

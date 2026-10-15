@@ -44,6 +44,9 @@ FREE_AFTER_RELEASE_GB = 62
 HONEST = FREE_AFTER_RELEASE_GB - box_capacity.MEMORY_MARGIN_GB          # 54
 
 
+from prismabuild import role_session
+
+
 def _gpu_sample():
     return {
         "schema": box_capacity.GPU_CAPACITY_SCHEMA,
@@ -95,8 +98,8 @@ def test_a_sibling_release_inside_the_reading_is_not_counted_twice(tmp_path):
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample",
                            return_value=_gpu_sample()), \
          mock.patch.object(worker.box_capacity, "mem_available_gb",
