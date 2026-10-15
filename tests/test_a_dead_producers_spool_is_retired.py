@@ -23,6 +23,7 @@ import test_prepaid_writer_integration as fx
 from test_produced_spool import claim_export, prepare, world
 from prismabuild import pool, produced_spool as ps
 import worker_loop
+from prismabuild import role_session
 
 
 def _tree(root: Path) -> dict[str, tuple]:
@@ -166,7 +167,7 @@ def test_a_finished_owners_released_records_are_removed(tmp_path):
 
 
 def test_the_worker_loop_ticks_once_per_interval_on_one_loop(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
     calls = []
     monkeypatch.setattr(ps, "retirement_tick",
                         lambda queue, cas_root, host: calls.append(host) or {"ok": True})
@@ -181,7 +182,7 @@ def test_the_worker_loop_ticks_once_per_interval_on_one_loop(tmp_path, monkeypat
 
 
 def test_a_tick_that_raises_is_recorded_beside_the_ticks(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
 
     def broken(queue, cas_root, host):
         raise OSError(5, "spool root unreadable")

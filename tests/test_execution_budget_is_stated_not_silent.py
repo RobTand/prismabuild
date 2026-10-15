@@ -52,6 +52,9 @@ from test_pool_action_timeout import _claimed  # noqa: E402
 FITS = {"cpu": 1, "mem_gb": 2}
 
 
+from prismabuild import role_session
+
+
 def _intent(tags):
     return {"tags": list(tags), "needs_gpu": False, "resources": dict(FITS)}
 
@@ -283,8 +286,8 @@ def _poll(tmp_path: Path, *extra: str) -> dict:
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(worker.box_capacity, "worker_loops", mock.Mock(return_value=())), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample",
                            return_value=counted._sample()), \

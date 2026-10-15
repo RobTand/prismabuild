@@ -32,6 +32,7 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import worker_loop  # noqa: E402
+from prismabuild import role_session
 from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 import tier_loop  # noqa: E402
@@ -161,8 +162,8 @@ def test_busy_resign_requires_terminal_and_empty_scope(
     parked.mkdir(parents=True, exist_ok=True)
     host = socket.gethostname()
 
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(worker_loop, "PARKED_ROOT", parked), \
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", parked), \
          finish_after_terminal_probe(monkeypatch, queue, snapshot) as finished:
         out = fm.resign(host, reason="busy resign red",
                         queue_root=queue.root, gate=gate,
@@ -213,7 +214,7 @@ def test_withdrawn_retry_safe_row_requeues_with_preserved_budget(
     import threading
     finisher = threading.Thread(target=holder_concludes, daemon=True)
     errors: list = []
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         finisher.start()
         try:
             out = fm.resign(host, reason="retry handoff",
@@ -444,7 +445,7 @@ def test_resign_retains_fence_on_unreadable_reader_refs(
     consumer = (queue.root / "residency" / "leases" / ("c" * 64))
     consumer.mkdir(parents=True)
     (consumer / ("p" * 32 + ".lease.json")).write_text("{}")
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         out = fm.resign(host, reason="refs retained",
                         queue_root=queue.root, gate=gate,
                         broker_call=_broker_call(authority),
@@ -675,7 +676,7 @@ def test_resign_resumes_withdrawn_row_after_crash(
             errors.append(exc)
 
     finisher = threading.Thread(target=holder_concludes, daemon=True)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         finisher.start()
         try:
             out = fm.resign(host, reason="resume after crash",
@@ -750,7 +751,7 @@ def test_resign_preserves_newer_unrelated_publication(
         return real(queue_root, host_, owner)
 
     monkeypatch.setattr(fm, "_resign_resume_owed", operator_lands_mid_resign)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         out = fm.resign(host, reason="preserve foreign row",
                         queue_root=queue.root, gate=gate,
                         broker_call=_broker_call(authority),
@@ -787,7 +788,7 @@ def test_resign_after_a_publication_that_landed_before_it_began_owns_nothing_and
     refused: list = []
     _operator_resubmits_then_holder_concludes(queue, key, snapshot, published, refused, errors)
     assert not errors and published, errors
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         out = fm.resign(host, reason="preserve foreign row",
                         queue_root=queue.root, gate=gate,
                         broker_call=_broker_call(authority),
@@ -834,7 +835,7 @@ def test_resign_second_run_publishes_no_duplicate(
                          live=[], wait_s=40.0)
 
     finisher = threading.Thread(target=holder_concludes, daemon=True)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         finisher.start()
         try:
             first = run_resign()
@@ -843,7 +844,7 @@ def test_resign_second_run_publishes_no_duplicate(
     assert not errors, errors
     assert first["status"] == "resigned", first
     before = json.loads(queue.item_path(pool.READY, key).read_text())
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         second = run_resign()
     assert second["status"] == "resigned", second
     after = json.loads(queue.item_path(pool.READY, key).read_text())
@@ -885,15 +886,15 @@ def test_chained_resign_preserves_budget_a_b_c(
                      claim_snapshot=snap)
 
     def do_resign():
-        with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+        with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
             return fm.resign(host, reason="chain",
                              queue_root=queue.root, gate=gate,
                              broker_call=_broker_call(authority),
                              live=[], wait_s=60.0)
 
     t1 = threading.Thread(target=lambda: _finish_or_error(finish_when_withdrawn, errors))
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(worker_loop, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
         t1.start()
         try:
             first = do_resign()
@@ -910,8 +911,8 @@ def test_chained_resign_preserves_budget_a_b_c(
     snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:q2", capacity={"cpu": 4})
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     t2 = threading.Thread(target=lambda: _finish_or_error(finish_when_withdrawn, errors))
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(worker_loop, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", gate.parent / "rollout" / "parked"):
         t2.start()
         try:
             second = do_resign()
@@ -1019,7 +1020,7 @@ def test_takeover_keeps_gate_closed_and_resumes(
             errors.append(exc)
 
     finisher = threading.Thread(target=holder_concludes, daemon=True)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         finisher.start()
         try:
             out = fm.resign(host, reason="takeover resume",
@@ -1092,7 +1093,7 @@ def test_interrupted_request_settles_through_reconciler(
     auth, _ = authority
     gate = Path(auth.maintenance_path)
 
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         first = fm.resign(host, reason="dies after withdraw",
                           queue_root=queue.root, gate=gate,
                           broker_call=_broker_call(authority),
@@ -1108,7 +1109,7 @@ def test_interrupted_request_settles_through_reconciler(
     settled = fm.reconcile_membership(queue, host)
     assert settled["published"] == [key[:12]], settled
     assert settled["retained"] == []
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         second = fm.resign(host, reason="adopts reconciled row",
                            queue_root=queue.root, gate=gate,
                            broker_call=_broker_call(authority),
@@ -1285,12 +1286,12 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     _sys.modules["drain_poll_loop"] = loop
     spec.loader.exec_module(loop)
     monkeypatch.setattr(loop, "SH", tmp_path)
-    monkeypatch.setattr(loop, "MAINTENANCE_GATE", gate)
-    monkeypatch.setattr(loop, "PARKED_ROOT", parked)
-    monkeypatch.setattr(loop, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(loop, "published_commit", lambda: "test")
-    monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
-    monkeypatch.setattr(loop, "generation_drift",
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
+    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "_generation_at", lambda path: "test")
+    monkeypatch.setattr(role_session, "generation_drift",
                         lambda loaded_commit=None, loaded_generation=None: None)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     monkeypatch.setattr(loop.sys, "argv",
@@ -1659,8 +1660,8 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
             errors.append(exc)
 
     finisher = threading.Thread(target=holder_concludes, daemon=True)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(worker_loop, "PARKED_ROOT",
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT",
                            gate.parent / "rollout" / "parked"):
         finisher.start()
         try:

@@ -50,6 +50,9 @@ RESOURCES = {"cpu": 1, "mem_gb": 2}
 HOST_CAPACITY = {"cpu": 2, "mem_gb": 4}
 
 
+from prismabuild import role_session
+
+
 def _scope_control(key: str, nonce: str) -> dict:
     """A valid durable scope identity, exactly as ``_scope_from_record`` derives it."""
 
@@ -177,14 +180,14 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value) -> object:
     loop = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loop)
     monkeypatch.setattr(loop, "SH", tmp_path)
-    monkeypatch.setattr(loop, "MAINTENANCE_GATE", gate)
-    monkeypatch.setattr(loop, "PARKED_ROOT", tmp_path / "rollout" / "parked")
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", tmp_path / "rollout" / "parked")
     monkeypatch.setattr(loop, "PUBLICATION_LOCK_ROOT",
                         tmp_path / "offer-publish")
-    monkeypatch.setattr(loop, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(loop, "published_commit", lambda: "test")
-    monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
-    monkeypatch.setattr(loop, "generation_drift",
+    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "_generation_at", lambda path: "test")
+    monkeypatch.setattr(role_session, "generation_drift",
                         lambda loaded_commit=None, loaded_generation=None: None)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     monkeypatch.setattr(loop.container_images.InventoryCache, "get",
