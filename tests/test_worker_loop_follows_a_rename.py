@@ -177,3 +177,34 @@ def test_worker_enablement_reaches_the_published_offer_and_claim_matcher(
     assert queue._placement_matches(
         {"tags": [contracts.PUBLICATION_CANARY_TAG]}, tags=tags,
         has_gpu=gpu) is bool(generation)
+
+
+@pytest.mark.parametrize("tag,generation", [
+    (contracts.GANG_TAG, ""),
+    (contracts.PUBLICATION_CANARY_TAG, ""),
+    ("runtime-generation:forged", ""),
+    ("runtime-generation:forged", "g1"),
+])
+def test_manual_contract_tags_refuse_before_worker_main_announces(tag, generation, capsys):
+    module = _worker_loop()
+    published = []
+    original = module.publish_offer
+
+    def record_publication(*args, **kwargs):
+        published.append(True)
+        return original(*args, **kwargs)
+
+    with mock.patch.object(module, "publish_offer", side_effect=record_publication):
+        with pytest.raises(SystemExit) as exc:
+            _announced(module, ["testbox"], generation=generation, extra_tags=[tag])
+    assert exc.value.code == 2
+    assert tag in capsys.readouterr().err
+    assert published == []
+
+
+def test_manual_placement_tags_keep_enabled_code_contracts():
+    module = _worker_loop()
+    tags = _announced(module, ["testbox"], gang=True, generation="g1",
+                      extra_tags=["custom-placement", "cpu"])[-1]["tags"]
+    assert {"custom-placement", "cpu", contracts.GANG_TAG,
+            contracts.PUBLICATION_CANARY_TAG, "runtime-generation:g1"} <= set(tags)
