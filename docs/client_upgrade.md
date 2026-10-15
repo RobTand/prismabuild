@@ -213,3 +213,37 @@ with the old broker and no optional source as the rollback generation. Once
 that removes the optional file safely, a separate later publication can restore
 a pre-bridge updater if explicitly intended; reintroducing the dependency would
 then require bridge convergence again.
+
+`park_proof.py` is a separate updater-owned optional member at
+`src/prismabuild/park_proof.py`. It participates in export, exact installed
+hashes, the previous/target member union and presence/absence recovery. Broker
+loaded equality excludes only this leaf and `upgrade_client.py`; GPU modules
+remain broker-owned. `CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 1` declares this
+transport/recovery contract. It does not claim strict marker acceptance.
+Whenever either side names the proof leaf, both the captured previous updater
+and verified exported candidate must declare that capability as well as the
+existing optional-member protocol 2.
+
+First converge a non-consuming bridge. An old installed reader exports only its
+known names and can adopt that bridge while the proof source remains in the
+shared runtime for roles. A subsequent fresh bridge tick introduces the leaf.
+A direct candidate driver with an incapable installed rollback reader refuses.
+Once introduced, downgrade to an incapable updater stays fenced. Rollback to a
+capable bridge preserves the leaf. First-introduction failure can restore its
+actual previous absence. The GPU instruction to publish a leaf-absent bridge
+does not apply to this role-required shared source.
+
+The updater captures one bounded installed byte map under its local upgrade
+lock. Capability checks, previous digests and backup writes all use that same
+map, including optional absence. Candidate capability uses the already verified
+export bytes. The lock serializes cooperating updater transactions; independent
+administrative replacement of installed files during a transaction is outside
+this guarantee. Such changes must take the same lock or wait for the timer
+transaction to finish.
+
+This bridge does not import or consume proof code. Strict host acceptance and a
+lazy trusted installed-sibling loader require a separate qualified consumer
+wave. Ordinary zero-scope repair remains independent of successful physical
+proof or receipt MATCH. Another named holder and active rollout epochs retain
+their existing limits. Bridge qualification also requires deterministic
+captured-byte replacement and fresh-process journal/copy/recovery histories.

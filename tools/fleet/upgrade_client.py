@@ -28,7 +28,11 @@ MEMBERS = {
 }
 # This reader must converge fleet-wide in a bridge generation before a
 # broker starts requiring a newly listed optional module.
-OPTIONAL_MEMBERS = {'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py'}
+OPTIONAL_MEMBERS = {
+    'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py',
+    'park_proof.py': 'src/prismabuild/park_proof.py',
+}
+UPDATER_ONLY_MEMBERS = frozenset({'upgrade_client.py', 'park_proof.py'})
 SERVICE = 'prismabuild-resource-broker.service'
 #: The holder this agent claims on a drain it opens. It must stay stable across
 #: client generations: a transaction opens a drain under one generation and can
@@ -71,6 +75,7 @@ MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
+CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 1
 MAINTENANCE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_ROLLOUT_PROTOCOL = 1
@@ -1466,21 +1471,28 @@ class Upgrader:
 
     def loaded_matches(self, reply):
         expected = {name: value for name, value in self.installed().items()
-                    if name != 'upgrade_client.py'}
+                    if name not in UPDATER_ONLY_MEMBERS}
         return reply.get('installed_sha256') == expected
 
-    def installed(self, names=None):
+    def read_installed_member_bytes(self, names=None):
+        """One bounded byte observation per member, including optional absence."""
         if names is None:
             names = [*MEMBERS, *(name for name in OPTIONAL_MEMBERS
                                 if (self.install / name).exists())]
         result = {}
         for name in names:
             path = self.install / name
-            if name in OPTIONAL_MEMBERS and not path.exists():
+            try:
+                result[name] = bounded_read(path, MAX_MEMBER)
+            except FileNotFoundError:
+                if name not in OPTIONAL_MEMBERS:
+                    raise
                 result[name] = None
-            else:
-                result[name] = digest(path.read_bytes())
         return result
+
+    def installed(self, names=None):
+        return {name: digest(data) if data is not None else None
+                for name, data in self.read_installed_member_bytes(names).items()}
 
     def run(self):
         self.active_rollout = None
@@ -1565,7 +1577,9 @@ class Upgrader:
                                    installed=result.get('installed'), error=failed['error'])
             return result
         version, blobs = self.reader(self.config)
-        installed = self.installed()
+        installed_bytes = self.read_installed_member_bytes([*MEMBERS, *OPTIONAL_MEMBERS])
+        installed = {name: digest(data) for name, data in installed_bytes.items()
+                     if data is not None}
         if rollout is not None:
             outcome = self._rollout_status(
                 rollout, local_rollout, version, installed, blobs)
@@ -1618,7 +1632,7 @@ class Upgrader:
         # bridge generation has converged.
         durable_marker = rb'(?m)^MAINTENANCE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
         updater_marker = rb'(?m)^CLIENT_UPGRADE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if re.search(durable_marker, (self.install / 'resource_broker.py').read_bytes()) is not None:
+        if re.search(durable_marker, installed_bytes['resource_broker.py']) is not None:
             running = self.call('status')
             if running.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
                 raise ValueError('durable maintenance broker capability is missing or stale')
@@ -1626,7 +1640,7 @@ class Upgrader:
                     or re.search(updater_marker, blobs['upgrade_client.py']) is None):
                 raise ValueError('durable maintenance broker refuses non-durable candidate')
         rollout_marker = rb'(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if (re.search(rollout_marker, (self.install / 'upgrade_client.py').read_bytes())
+        if (re.search(rollout_marker, installed_bytes['upgrade_client.py'])
                 is not None and re.search(rollout_marker, blobs['upgrade_client.py']) is None):
             raise ValueError('rollout-aware updater refuses an epoch-unaware candidate')
         # Keep an explicit union so additions and removals both carry their
@@ -1638,10 +1652,15 @@ class Upgrader:
             # during a transaction that records optional member existence.
             pattern = rb'(?m)^CLIENT_UPGRADE_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
             for code in (blobs['upgrade_client.py'],
-                         (self.install / 'upgrade_client.py').read_bytes()):
+                         installed_bytes['upgrade_client.py']):
                 if re.search(pattern, code) is None:
                     raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
-        previous = self.installed(names)
+        if 'park_proof.py' in names:
+            pattern = rb'(?m)^CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
+            for code in (blobs['upgrade_client.py'], installed_bytes['upgrade_client.py']):
+                if re.search(pattern, code) is None:
+                    raise ValueError('proof client transaction requires proof-member recovery protocol 1')
+        previous = {name: installed.get(name) for name in names}
         target_files = {name: version['files'].get(name) for name in names}
         self.validate_files(target_files)
         for directory in ('staged', 'previous'):
@@ -1653,7 +1672,7 @@ class Upgrader:
                 if hashes[name] is None:
                     target.unlink(missing_ok=True)
                     continue
-                data = blobs[name] if directory == 'staged' else (self.install / name).read_bytes()
+                data = blobs[name] if directory == 'staged' else installed_bytes[name]
                 with target.open('wb') as stream:
                     stream.write(data)
                     stream.flush()

@@ -4793,6 +4793,13 @@ the installed updater reader until its separately qualified reader bridge and
 consumer migration; strict package proof does not claim that migration.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
+The privileged client can transport `park_proof.py` as an optional installed
+sibling under a non-consuming bridge. Its separate proof-member protocol 1
+requires both captured previous and verified candidate updater capability;
+protocol 2 alone is insufficient. One bounded previous byte map supplies all
+capability checks, digests and backups. The leaf remains updater-owned and is
+excluded from exact broker loaded-member equality. This transport bridge does
+not establish strict root proof acceptance or change ordinary repair gates.
 Production callers read generation identities through `loaded_generation()`
 and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
