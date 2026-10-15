@@ -37,14 +37,14 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
     assert parameters == {"capacity": {"cpu": 2, "mem_gb": 3},
                           "cpu_tiers": TIERS, "adaptive_cpu": True}
     assert len(seen) == 1 and seen[0]["gpu_sample"] is None
-    monkeypatch.setattr(pool.cpu_admission.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": time.time(), "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 2, "interval_s": 1.})
+        "cpu_count": 2, "interval_s": 1.}
     key = "a" * 64
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={"cpu": 1, "mem_gb": 1})
-    assert queue.claim(**parameters)["action_key"] == key
+    assert queue.claim(**parameters, cpu_sampler=cpu_sampler)["action_key"] == key
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
     queue.finish(key, status="executed")
     assert queue.ledger().held_keys() == []

@@ -89,10 +89,9 @@ def test_pressure_refuses_measurement_with_complete_healthy_telemetry(
     tiers = {'preferred': [0], 'fallback': [1]}
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', True))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, uniform(cpus, .02), psi_some))
+    cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .02), psi_some)
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert (item is not None) is expect_admission
 
 
@@ -107,10 +106,9 @@ def test_pressure_refuses_unbounded_demand_with_complete_healthy_telemetry(
     tiers = {'preferred': [0], 'fallback': [1]}
     queue, capacity = box(tmp_path, tiers, gpu=True)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, uniform(cpus, .02), psi_some))
+    cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .02), psi_some)
     publish(queue, tmp_path, resources={'gpu': 1, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert (item is not None) is expect_admission
 
 
@@ -129,11 +127,10 @@ def test_pressure_refuses_full_width_even_with_a_learned_cheap_profile(
     tiers = {'preferred': [0], 'fallback': [1]}
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, uniform(cpus, per_cpu), psi_some))
+    cpu_sampler = lambda: host_sample(cpus, uniform(cpus, per_cpu), psi_some)
     seed_cheap_profile(queue)
     publish(queue, tmp_path, resources={'cpu': 2, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert (item is not None) is expect_admission
 
 
@@ -145,18 +142,17 @@ def light_preferred_box(tmp_path, monkeypatch, psi_some):
     queue, capacity = box(tmp_path, tiers)
     seed_light_holder(queue)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, {0: .3, 1: .01}, psi_some))
+    cpu_sampler = lambda: host_sample(cpus, {0: .3, 1: .01}, psi_some)
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    return queue, capacity, tiers
+    return queue, capacity, tiers, cpu_sampler
 
 
 def test_low_some_control_still_borrows_the_proven_idle_preferred_cpu(tmp_path, monkeypatch):
     """With pressure low, the proven-idle preferred CPU is shared first, as
     designed: this is the unchanged preferred-before-fallback behavior."""
     from prismabuild import adaptive_cpu
-    queue, capacity, tiers = light_preferred_box(tmp_path, monkeypatch, 0.)
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    queue, capacity, tiers, cpu_sampler = light_preferred_box(tmp_path, monkeypatch, 0.)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [0], 'fallback': []}
     meta = adaptive_cpu.read_json(
@@ -171,8 +167,8 @@ def test_high_some_never_shares_the_held_preferred_cpu(tmp_path, monkeypatch):
     be allowed to do: the evidence that would authorize sharing is the same
     evidence pressure has made untrustworthy."""
     from prismabuild import adaptive_cpu
-    queue, capacity, tiers = light_preferred_box(tmp_path, monkeypatch, .11)
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    queue, capacity, tiers, cpu_sampler = light_preferred_box(tmp_path, monkeypatch, .11)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     if item is not None:
         allocation = item['cpu_allocation']
         assert 0 not in allocation['preferred'] + allocation['fallback'], (
@@ -196,10 +192,9 @@ def test_hot_cpus_inside_the_tier_are_skipped_for_idle_ones(
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     busy = {cpu: (1. if cpu < 4 else 0.) for cpu in cpus}
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, busy, .633))
+    cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [4, 5, 6, 7], 'fallback': []}
 
@@ -215,10 +210,9 @@ def test_a_claim_that_would_have_to_take_hot_cpus_still_refuses(
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     busy = {cpu: (1. if cpu < 4 else 0.) for cpu in cpus}
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, busy, .633))
+    cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 8, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 def test_pinned_neighbour_outside_the_claim_still_admits(tmp_path, monkeypatch):
@@ -230,10 +224,9 @@ def test_pinned_neighbour_outside_the_claim_still_admits(tmp_path, monkeypatch):
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     busy = {cpu: (1. if cpu in (8, 9, 10, 11) else 0.) for cpu in cpus}
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, busy, .633))
+    cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [0, 1, 2, 3], 'fallback': []}
 
@@ -249,11 +242,10 @@ def test_full_host_saturation_refuses_on_occupancy_alone(tmp_path, monkeypatch):
     tiers = {'preferred': cpus, 'fallback': []}
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, uniform(cpus, .95), 0.))
+    cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .95), 0.)
     seed_cheap_profile(queue, cpu=.05)
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 def test_projected_cost_refuses_despite_pressure(tmp_path, monkeypatch):
@@ -269,10 +261,9 @@ def test_projected_cost_refuses_despite_pressure(tmp_path, monkeypatch):
     for cpu in range(6, 12):
         busy[cpu] = 1.
     assert sum(busy.values()) == pytest.approx(6.05)
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample',
-                        lambda self: host_sample(cpus, busy, .633))
+    cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 6, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 @pytest.mark.parametrize('mutation', ['missing', 'nan'])
@@ -286,7 +277,7 @@ def test_unknown_per_cpu_evidence_refuses_instead_of_admitting(
     queue, capacity = box(tmp_path, tiers)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
 
-    def mutated(self):
+    def mutated():
         value = host_sample(cpus, uniform(cpus, .0), .633)
         if mutation == 'missing':
             del value['per_cpu_busy']
@@ -294,6 +285,6 @@ def test_unknown_per_cpu_evidence_refuses_instead_of_admitting(
             value['per_cpu_busy']['1'] = float('nan')
         return value
 
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', mutated)
+    cpu_sampler = mutated
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True) is None
+    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None

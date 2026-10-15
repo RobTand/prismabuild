@@ -35,15 +35,18 @@ def publish(q, key, memory, priority):
 
 
 def claim(q):
-    return q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+    return q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample)
+
+
+def _idle_sample():
+    return {
+        "sampled_unix": time.time(), "busy_cpus": 0., "psi_some": 0.,
+        "cpu_count": 3, "interval_s": 1.}
 
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-        "sampled_unix": time.time(), "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 3, "interval_s": 1.})
     q = pool.PoolQueue(tmp_path / "queue")
     for key in (BACKGROUND, OTHER_BACKGROUND):
         publish(q, key, 2, -10)

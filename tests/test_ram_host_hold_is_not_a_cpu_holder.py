@@ -29,9 +29,9 @@ def _idle_host(monkeypatch, *, measurement=False):
     from prismabuild import adaptive_cpu
     monkeypatch.setattr(adaptive_cpu, 'action_identity',
                         lambda item: ('shape', measurement))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
+    return lambda: {
         'sampled_unix': time.time(), 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': 0., 'psi_some': 0.})
+        'busy_cpus': 0., 'psi_some': 0.}
 
 
 def _queue_with_ram_fill(tmp_path, gib):
@@ -55,8 +55,8 @@ def test_a_ram_fill_hold_does_not_refuse_a_cpu_row(tmp_path, monkeypatch, measur
     """The refusal dl380g10 hit: a bounded row beside a RAM fill's hold."""
     from prismabuild import adaptive_cpu
     queue = _queue_with_ram_fill(tmp_path, 2)
-    _idle_host(monkeypatch, measurement=measurement)
-    controller = adaptive_cpu.Controller(queue.ledger(), TIERS)
+    cpu_sampler = _idle_host(monkeypatch, measurement=measurement)
+    controller = adaptive_cpu.Controller(queue.ledger(), TIERS, sampler=cpu_sampler)
     with controller.locked():
         decision = controller.decision({'action_key': 'a' * 64, 'cas_root': str(tmp_path)},
                                        {'cpu': 1, 'mem_gb': 1})
@@ -64,26 +64,26 @@ def test_a_ram_fill_hold_does_not_refuse_a_cpu_row(tmp_path, monkeypatch, measur
     assert decision is not None, controller.last_decision
 
     _publish(queue, tmp_path, 'b' * 64, {'cpu': 1, 'mem_gb': 1})
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'b' * 64
 
 
 def test_a_ram_fill_hold_does_not_block_an_unbounded_row(tmp_path, monkeypatch):
     """An undeclared-CPU row needs an empty host; a memory hold leaves it empty."""
     queue = _queue_with_ram_fill(tmp_path, 2)
-    _idle_host(monkeypatch)
+    cpu_sampler = _idle_host(monkeypatch)
     _publish(queue, tmp_path, 'c' * 64, {'mem_gb': 1})
-    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
     """Exempt from the CPU census, never from the memory pool."""
     queue = _queue_with_ram_fill(tmp_path, 7)
-    _idle_host(monkeypatch)
+    cpu_sampler = _idle_host(monkeypatch)
     _publish(queue, tmp_path, 'd' * 64, {'cpu': 1, 'mem_gb': 2})
-    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True) is None
+    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.release_tier_host_memory(queue.ledger().host, GRANT) == 7
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'd' * 64
 
 
@@ -99,8 +99,8 @@ def test_an_unknown_memory_reservation_blocks_until_released(tmp_path, monkeypat
     assert handle is not None
     if committed:
         assert ledger.commit_acquire(key, handle) == 1
-    _idle_host(monkeypatch)
-    controller = adaptive_cpu.Controller(ledger, TIERS)
+    cpu_sampler = _idle_host(monkeypatch)
+    controller = adaptive_cpu.Controller(ledger, TIERS, sampler=cpu_sampler)
     item = {'action_key': 'f' * 64, 'cas_root': str(tmp_path)}
     with controller.locked():
         assert controller.decision(item, {'cpu': 1, 'mem_gb': 1}) is None
