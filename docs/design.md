@@ -18062,8 +18062,12 @@ Index collisions compare canonical document values, preserving accepted retained
 formatting. Campaign adapts record read and collision errors to its existing
 `ManifestError` boundary. The direct immutable-file owner publishes both records.
 Reporter capture stops after an invalid plan; queue capture
-retains both document diagnostics. Campaign closure keeps its publication-only
-read against the already frozen plan. Stored paths, schemas, canonical bytes
+retains both document diagnostics. `complete_group` owns the publication-only
+read against the already frozen plan, exact sealed-batch checks, child receipts
+and results, exact-cover proof, and first-writer group receipt publication.
+Campaign closure renders the result and keeps its existing missing-child and
+refusal messages. The moved private result reader retains its existing lenient
+JSON parser and unbounded reads. Stored paths, schemas, canonical bytes
 and freeze-before-publication ordering retain their existing contracts.
 
 Execution passes one `ExecutionClock` to the loop and `ProgressWatch`. Monotonic

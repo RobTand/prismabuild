@@ -69,6 +69,7 @@ __all__ = [
     "PLAN_SCHEMA_V1",
     "PUBLICATION_INDEX_SCHEMA_V1",
     "RESULT_MANIFEST_INPUT_ID",
+    "MissingChildResult",
     "RecordError",
     "TASK_BATCH_INPUT_ID",
     "ROSTER_BATCH_POLICY_SCHEMA_V1",
@@ -82,6 +83,7 @@ __all__ = [
     "document_sha256",
     "write_document",
     "build_plan",
+    "complete_group",
     "freeze_common",
     "freeze_plan",
     "logical_batch_param",
@@ -1066,6 +1068,15 @@ class RecordError(Exception):
     """A retained decomposition record cannot be read or adopted."""
 
 
+class MissingChildResult(RecordError):
+    """A group cannot close while this child has no durable result."""
+
+    def __init__(self, ordinal: int, count: int):
+        self.ordinal = ordinal
+        self.count = count
+        super().__init__(f"child {ordinal} of {count} has no receipt")
+
+
 def _stored_record(path: Path) -> object | None:
     try:
         raw = path.read_bytes()
@@ -1128,6 +1139,97 @@ def publish_children(
             f"roster, so nothing that can legitimately vary produced this; "
             f"read both before touching either"
         )
+
+
+def _campaign_child_result_manifest(child, *, cas, receipt=None) -> dict | None:
+    if receipt is None:
+        receipt = cas.lookup(child)
+    if receipt is None:
+        return None
+    raw = cas.result_path(receipt, child).read_bytes()
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise RecordError(
+            f"child {str(child['action_key'])[:12]} published a result that is "
+            f"not a JSON document: {exc}"
+        ) from None
+
+
+def _publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
+    path = record_dir(cas.root, parent_key) / "group.json"
+    raw = document_bytes(receipt)
+    stored = _stored_record(path)
+    if stored is None:
+        if immutable_files.publish_immutable(path, raw):
+            return path
+        stored = _stored_record(path)
+    if document_bytes(stored) != raw:
+        raise RecordError(
+            f"the group receipt at {path} is not the one this run verified.  "
+            f"It is a function of the plan and of immutable child receipts, so "
+            f"nothing that can legitimately vary produced this; read both "
+            f"before touching either"
+        )
+    return path
+
+
+def complete_group(request, plan, children, *, cas) -> tuple[dict, Path]:
+    """Verify the frozen group's exact cover and publish its one receipt."""
+
+    if len(children) != len(plan["partitions"]):
+        raise RecordError(
+            f"the plan names {len(plan['partitions'])} children, but "
+            f"the group carries {len(children)} sealed actions"
+        )
+    index_path = record_dir(cas.root, plan["parent_key"]) / "publication.json"
+    index = _stored_record(index_path)
+    child_keys = [str(child["action_key"]) for child in children]
+    if (not isinstance(index, dict)
+            or index.get("parent_key") != plan["parent_key"]
+            or index.get("plan_key") != plan["plan_key"]
+            or index.get("child_action_keys") != child_keys):
+        raise RecordError(
+            f"the group children do not match the frozen publication "
+            f"index at {index_path}"
+        )
+    manifests = []
+    child_evidence = []
+    prepared_batches = PreparedBatches(request, plan)
+    for ordinal, child in enumerate(children):
+        expected_batch = prepared_batches.membership(ordinal)
+        params = child.get("params")
+        if (not isinstance(params, dict)
+                or params.get(LOGICAL_BATCH_PARAM) != expected_batch):
+            raise RecordError(
+                f"child {ordinal} does not seal the plan's exact batch "
+                f"membership and identity"
+            )
+        child_receipt = cas.lookup(child)
+        if child_receipt is None:
+            raise MissingChildResult(ordinal, len(children))
+        manifest = _campaign_child_result_manifest(
+            child, cas=cas, receipt=child_receipt)
+        if manifest is None:
+            raise MissingChildResult(ordinal, len(children))
+        checked = validate_child_result_manifest(manifest)
+        if checked["child_ordinal"] != ordinal:
+            raise RecordError(
+                f"child {ordinal}'s receipt carries a result manifest for "
+                f"ordinal {checked['child_ordinal']}"
+            )
+        manifests.append(manifest)
+        child_evidence.append({
+            "action_key": child_keys[ordinal],
+            "receipt_sha256": document_sha256(child_receipt),
+        })
+    receipt = {
+        **verify_exact_cover(request, plan, manifests),
+        "children": child_evidence,
+    }
+    path = _publish_group_receipt(
+        receipt, cas=cas, parent_key=plan["parent_key"])
+    return receipt, path
 
 
 def read_membership(

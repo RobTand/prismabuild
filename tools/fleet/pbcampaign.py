@@ -1390,131 +1390,17 @@ def decompose(
 # Closing a decomposed campaign
 # --------------------------------------------------------------------------
 
-def child_result_manifest(child, *, cas, receipt=None) -> dict | None:
-    """Read one finished child's result manifest, or ``None`` if it has none.
-
-    Through the receipt rather than off the worker's filesystem: a child's
-    manifest is its declared result, so ``result_path`` re-verifies the bytes
-    against the digest the receipt fixed before anything reads them.  There is
-    no second place to look, which is the point -- a child cannot pass while
-    answering for nothing, because a missing manifest is a missing result and
-    the action fails where it ran.
-    """
-
-    if receipt is None:
-        receipt = cas.lookup(child)
-    if receipt is None:
-        return None
-    raw = cas.result_path(receipt, child).read_bytes()
-    try:
-        return json.loads(raw)
-    except ValueError as exc:
-        raise ManifestError(
-            f"child {str(child['action_key'])[:12]} published a result that is "
-            f"not a JSON document: {exc}"
-        ) from None
-
-
-def publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
-    """Record the one receipt that says the whole roster was answered.
-
-    Written only after the cover is proved exact, and refused rather than
-    replaced when it differs from one already there.  Every field in it is a
-    function of the immutable plan and of child receipts that are themselves
-    immutable, so two runs cannot honestly disagree about it; if they do, the
-    disagreement is the finding and overwriting would hide it.
-    """
-
-    path = dc.record_dir(cas.root, parent_key) / "group.json"
-    raw = dc.document_bytes(receipt)
-    stored = _stored_document(path)
-    if stored is None:
-        if immutable_files.publish_immutable(path, raw):
-            return path
-        stored = _stored_document(path)
-    if dc.document_bytes(stored) != raw:
-        raise ManifestError(
-            f"the group receipt at {path} is not the one this run verified.  "
-            f"It is a function of the plan and of immutable child receipts, so "
-            f"nothing that can legitimately vary produced this; read both "
-            f"before touching either"
-        )
-    return path
-
-
 def close_group(group, *, cas) -> int:
-    """Prove the children between them answered the roster, once each.
-
-    The last gate of a decomposed campaign and the only one that can see the
-    whole of it: every earlier refusal is about one child in isolation.  An
-    incomplete, failed or withdrawn set is never a group success, so a child
-    without a receipt ends the campaign here -- the table above has already
-    named which one, and repeating that would be noise.
-
-    It runs after the table rather than before it because the table is what an
-    operator reads to find out what happened; this line says whether what
-    happened answers the request.
-    """
+    """Render the frozen group's closure verdict after the child table."""
 
     request, plan, children = group["request"], group["plan"], group["children"]
     try:
-        if len(children) != len(plan["partitions"]):
-            raise ManifestError(
-                f"the plan names {len(plan['partitions'])} children, but "
-                f"the group carries {len(children)} sealed actions"
-            )
-        index_path = dc.record_dir(cas.root, plan["parent_key"]) / "publication.json"
-        index = _stored_document(index_path)
-        child_keys = [str(child["action_key"]) for child in children]
-        if (not isinstance(index, dict)
-                or index.get("parent_key") != plan["parent_key"]
-                or index.get("plan_key") != plan["plan_key"]
-                or index.get("child_action_keys") != child_keys):
-            raise ManifestError(
-                f"the group children do not match the frozen publication "
-                f"index at {index_path}"
-            )
-        manifests = []
-        child_evidence = []
-        prepared_batches = dc.PreparedBatches(request, plan)
-        for ordinal, child in enumerate(children):
-            expected_batch = prepared_batches.membership(ordinal)
-            params = child.get("params")
-            if (not isinstance(params, dict)
-                    or params.get(dc.LOGICAL_BATCH_PARAM) != expected_batch):
-                raise ManifestError(
-                    f"child {ordinal} does not seal the plan's exact batch "
-                    f"membership and identity"
-                )
-            child_receipt = cas.lookup(child)
-            if child_receipt is None:
-                print(f"pbcampaign: no group receipt: child {ordinal} of "
-                      f"{len(children)} has no receipt", file=sys.stderr)
-                return 1
-            manifest = child_result_manifest(child, cas=cas,
-                                             receipt=child_receipt)
-            if manifest is None:
-                print(f"pbcampaign: no group receipt: child {ordinal} of "
-                      f"{len(children)} has no receipt", file=sys.stderr)
-                return 1
-            checked = dc.validate_child_result_manifest(manifest)
-            if checked["child_ordinal"] != ordinal:
-                raise ManifestError(
-                    f"child {ordinal}'s receipt carries a result manifest for "
-                    f"ordinal {checked['child_ordinal']}"
-                )
-            manifests.append(manifest)
-            child_evidence.append({
-                "action_key": child_keys[ordinal],
-                "receipt_sha256": dc.document_sha256(child_receipt),
-            })
-        receipt = {
-            **dc.verify_exact_cover(request, plan, manifests),
-            "children": child_evidence,
-        }
-        path = publish_group_receipt(
-            receipt, cas=cas, parent_key=plan["parent_key"])
-    except (ManifestError, pb.ActionContractError, pb.CASTamperError) as exc:
+        receipt, path = dc.complete_group(request, plan, children, cas=cas)
+    except dc.MissingChildResult as exc:
+        print(f"pbcampaign: no group receipt: child {exc.ordinal} of "
+              f"{exc.count} has no receipt", file=sys.stderr)
+        return 1
+    except (dc.RecordError, pb.ActionContractError, pb.CASTamperError) as exc:
         print(f"pbcampaign: {exc}", file=sys.stderr)
         return 1
     print(f"pbcampaign: group receipt "
