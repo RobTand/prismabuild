@@ -470,13 +470,14 @@ def test_owner_finish_race_serialized(tmp_path: Path) -> None:
     assert held_mover in (0, 1), (held_mover, results)
 
 
-def test_release_needs_nonexecution_proof(tmp_path: Path) -> None:
+def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     owner = _hexkey("rel-owner")
     mover = _hexkey("rel-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -643,14 +644,15 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert ledger.available().get(KIND, 0) == cap
 
 
-def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path) -> None:
+def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path, broker) -> None:
     """READY output mover before funding: claim refuses, stays READY (R2)."""
     owner = _hexkey("gate-owner")
     mover = _hexkey("gate-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -726,14 +728,15 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     q.finish(owner, status="executed")
 
 
-def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path) -> None:
+def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> None:
     """Corrupt/unreadable intent through normal finish: retain, reaper fixes."""
     owner = _hexkey("cor-owner")
     mover = _hexkey("cor-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -927,14 +930,15 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path, broker) -> None:
     assert ledger.available().get(KIND) == free_before
 
 
-def test_drive_refuses_stale_nonzero_publication(tmp_path: Path) -> None:
+def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None:
     """Reserved nonzero publication cannot be adopted by a fresh publication."""
     owner = _hexkey("stale-owner")
     mover = _hexkey("stale-mover")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = po.output_manifest_sha256(descs)
