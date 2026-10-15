@@ -29,10 +29,11 @@ def scope(tmp_path, monkeypatch):
     runtime = tier_loop.runtime_gate
     monkeypatch.setattr(runtime, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(runtime, "PARKED_ROOT", parked)
-    monkeypatch.setattr(runtime, "loaded_runtime_commit", lambda: "fixed")
-    monkeypatch.setattr(runtime, "published_commit", lambda: "fixed")
-    monkeypatch.setattr(runtime, "loaded_generation", lambda: "fixed")
-    monkeypatch.setattr(runtime, "published_generation_name", lambda: "fixed")
+    loaded, published = tmp_path / "loaded.json", tmp_path / "published.json"
+    for receipt in (loaded, published):
+        receipt.write_text(json.dumps({"commit": "fixed", "generation": "fixed"}))
+    monkeypatch.setattr(runtime, "GENERATION_VERSION", loaded)
+    monkeypatch.setattr(runtime, "RUNTIME_VERSION", published)
     args = SimpleNamespace(pool_root=str(tmp_path / "queue"), source_pool=None,
                            interval_s=1.0, once=True)
     events = []
@@ -56,7 +57,7 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(tier_loop, "tier_cycle_line", lambda *args: {"event": "cycle-final"})
     monkeypatch.setattr(tier_loop, "cycle", lambda *args, **kwargs: events.append("cycle") or [])
     return SimpleNamespace(gate=gate, parked=parked, args=args, events=events,
-                           root=tmp_path, Queue=Queue)
+                           root=tmp_path, Queue=Queue, published=published)
 
 
 def close(scope, epoch=101.5):
@@ -230,12 +231,19 @@ def test_startup_exception_restores_both_signal_handlers(scope, monkeypatch):
 
 
 def test_stop_during_initial_identity_reads_precedes_all_startup_writes(scope, monkeypatch):
-    def loaded():
-        os.kill(os.getpid(), signal.SIGTERM)
-        return "fixed"
+    previous = sys.getprofile()
 
-    monkeypatch.setattr(tier_loop.runtime_gate, "loaded_runtime_commit", loaded)
-    assert tier_loop._serve(scope.args) == 0
+    def read_finished(frame, event, value):
+        if (event == "return" and isinstance(value, str) and frame.f_code == Path.read_text.__code__
+                and frame.f_locals.get("self") == tier_loop.runtime_gate.GENERATION_VERSION):
+            sys.setprofile(previous)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    sys.setprofile(read_finished)
+    try:
+        assert tier_loop._serve(scope.args) == 0
+    finally:
+        sys.setprofile(previous)
     assert scope.events == []
     assert markers(scope) == []
 
@@ -261,7 +269,7 @@ def test_one_shot_cycle_closure_parks_only_after_final_output(scope, monkeypatch
 
 
 def test_runtime_rotation_precedes_layout_even_when_gate_is_open(scope, monkeypatch):
-    monkeypatch.setattr(tier_loop.runtime_gate, "published_commit", lambda: "successor")
+    scope.published.write_text(json.dumps({"commit": "successor", "generation": "fixed"}))
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == []
     assert markers(scope) == []

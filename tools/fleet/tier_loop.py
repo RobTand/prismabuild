@@ -43,6 +43,7 @@ import os
 import signal
 import socket
 import sys
+from threading import Event
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -51,7 +52,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
 
-from prismabuild import kept_reads
+from prismabuild import generation_receipt, kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import filesystem_capacity, filesystem_floor  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
@@ -11577,36 +11578,37 @@ def _serve(args) -> int:
     from prismabuild.role_session import stop_requests
 
     with stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
-        return _serve_cycles(args, stop.is_set)
+        return _serve_cycles(args, stop)
 
 
-def _serve_cycles(args, stop_requested) -> int:
+def _serve_cycles(args, stop: Event) -> int:
     global CYCLE_INTERVAL_S
     CYCLE_INTERVAL_S = float(args.interval_s)
     # No layout/adoption writes before the first open-gate boundary.
     queue = None
     receipts = liveness = None
     host = socket.gethostname()
-    loaded_commit = runtime_gate.loaded_runtime_commit()
-    loaded_generation = runtime_gate.loaded_generation()
+    loaded = runtime_gate.loaded_runtime()
     parked_epoch = None
     cycle_failed = False
 
-    def runtime_moved() -> bool:
-        return runtime_gate.generation_drift(
-            loaded_commit=loaded_commit,
-            loaded_generation=loaded_generation) is not None
+    def runtime_decision() -> generation_receipt.ReceiptDecision:
+        nonlocal loaded
+        if isinstance(loaded, generation_receipt.ReceiptUnavailable):
+            loaded = runtime_gate.loaded_runtime()
+        return generation_receipt.compare(loaded, runtime_gate.published_runtime())
 
     while True:
         # All adoption/cycle/final receipt and log writes have finished here.
         # A raised cycle is not a completed-cycle quiescence certificate.
-        if cycle_failed and stop_requested():
+        if cycle_failed and stop.is_set():
             return 75
-        if runtime_moved():
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
             print(json.dumps({
                 "event": "tier-runtime-moved", "unix": time.time(), "host": host,
-                "loaded": loaded_commit[:12] or "(unversioned)",
-                "published": runtime_gate.published_commit()[:12],
+                "loaded": decision.loaded.commit[:12],
+                "published": decision.published.commit[:12],
             }), flush=True)
             return 75 if args.once else 0
         gate = runtime_gate.read_maintenance_gate()
@@ -11628,26 +11630,37 @@ def _serve_cycles(args, stop_requested) -> int:
             parked_epoch = epoch if proven else None
             if args.once:
                 return 75
-            if stop_requested():
+            if stop.is_set():
                 return 0 if proven else 75
-            time.sleep(args.interval_s)
+            stop.wait(args.interval_s)
             continue
         parked_epoch = None
-        if stop_requested():
+        if stop.is_set():
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            print(json.dumps({"event": "tier-runtime-unknown", "unix": time.time(), "host": host, **{
+                name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+                for name, value in (("loaded", decision.loaded), ("published", decision.published))}}), flush=True)
+            if args.once:
+                return 75
+            stop.wait(args.interval_s)
+            continue
         if queue is None:
             # Constructor is read-only. Recheck before EACH startup write;
             # no signal handler raises through either composite operation.
             candidate = pool.PoolQueue(Path(args.pool_root))
-            if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+            if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
+                    or runtime_gate.read_maintenance_gate() is not None):
                 continue
             candidate.ensure_layout()
-            if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+            if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
+                    or runtime_gate.read_maintenance_gate() is not None):
                 continue
             receipts, liveness = _start(candidate, host=host,
                                          interval_s=float(args.interval_s))
             queue = candidate
-        if stop_requested() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+        if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
+                or runtime_gate.read_maintenance_gate() is not None):
             continue
         started = time.monotonic()
         try:
@@ -11668,13 +11681,13 @@ def _serve_cycles(args, stop_requested) -> int:
             filesystem_floor.loop_tick(queue.root, label=f"tier_loop {host}")
         if args.once:
             print(json.dumps(records, indent=1, default=str))
-            if stop_requested() or runtime_gate.read_maintenance_gate() is not None:
+            if stop.is_set() or runtime_gate.read_maintenance_gate() is not None:
                 # Even a one-shot stop must acknowledge only after final writes.
                 continue
             return 0
-        if stop_requested() or runtime_gate.read_maintenance_gate() is not None:
+        if stop.is_set() or runtime_gate.read_maintenance_gate() is not None:
             continue
-        time.sleep(max(0.0, args.interval_s - (time.monotonic() - started)))
+        stop.wait(max(0.0, args.interval_s - (time.monotonic() - started)))
 
 
 

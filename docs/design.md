@@ -4872,6 +4872,16 @@ stays attached to imported code. Receipt availability does not interrupt reader
 cleanup, final cycle accounting or the role's actual closed-gate park writer.
 Prewarm does not write drift incidents.
 
+Tier requires complete matching receipts before layout, adoption and cycle
+entry. UNKNOWN returns 75 from a one-shot or waits on the role's stop Event.
+It retries an unavailable loaded observation until known, then keeps that
+identity with imported code. Known drift retains its runtime-moved diagnostic
+and exits 75 from a one-shot or 0 from a continuous role. A completed idle tier
+can prove its actual stable maintenance epoch while receipts are unavailable.
+A failed cycle followed by stop returns 75 and never writes a park marker.
+Current cycles, final accounting and filesystem-floor work finish before the
+next receipt boundary. Tier writes no drift incidents.
+
 `generation_receipt.observe` reads both runtime identities from one receipt
 read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,
 unreadable, malformed and incomplete receipts remain distinct
