@@ -215,3 +215,13 @@ def test_local_tier_same_commit_new_generation_exits_before_cycle(
     argv = ["--pool-root", str(boundary.root / "queue")]
     assert local_tier_loop.main(argv + (["--once"] if once else [])) == (75 if once else 0)
     assert calls == [], "local tier served a same-commit retired generation"
+
+
+def test_local_tier_unknown_loaded_commit_keeps_its_existing_policy(boundary, monkeypatch):
+    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "")
+    monkeypatch.setattr(role_session, "published_commit", lambda: "known-published-commit")
+    monkeypatch.setattr(local_tier_loop.resident_sets, "read_policy", lambda _: {})
+    calls = []
+    monkeypatch.setattr(local_tier_loop, "local_tier_cycle", lambda *args: calls.append(True) or {})
+    assert local_tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--once"]) == 0
+    assert calls == [True]

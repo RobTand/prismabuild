@@ -4778,6 +4778,14 @@ stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
 
+Local tier now compares the runtime generation as well as the commit before
+each pass, so republication of the same commit retires the old role. A one-shot
+returns 75 without serving that pass; the continuous role returns 0 for
+supervisor replacement. Its existing unknown-loaded-commit policy remains:
+a known published commit alone does not prove that an unknown loaded commit
+moved. The worker loop keeps its existing generation-drift exit 0, including
+`--once`.
+
 ### The pre-publish shape gate (#987)
 
 The #965 defect reached production because nothing before a publish staged a

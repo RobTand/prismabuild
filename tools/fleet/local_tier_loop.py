@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
-from prismabuild import local_tier, pool, resident_sets, role_session
+from prismabuild import generation_receipt, local_tier, pool, resident_sets, role_session
 
 
 def local_tier_cycle(queue, host, policy):
@@ -42,10 +42,16 @@ def main(argv=None):
     try:
         with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
             loaded = runtime_gate.loaded_runtime_commit()
+            loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
             with runtime_gate.role_singleton(Path(__file__)):
                 while not stop.is_set():
                     published = runtime_gate.published_commit()
-                    if loaded and published and loaded != published:
+                    published_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
+                    if generation_receipt.drift(
+                            loaded_commit=loaded,
+                            loaded_generation=loaded_generation,
+                            published_commit=published if loaded else "",
+                            published_generation=published_generation) is not None:
                         return 75 if args.once else 0
                     gate = runtime_gate.read_maintenance_gate()
                     if gate is not None:
