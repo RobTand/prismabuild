@@ -650,9 +650,13 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
         queue.record_pass(waiting)
 
     def verdict():
-        answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 4},
+        observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 4},
                                          mode="tokens")
-        queue.record_pass(waiting)
+        queue._drain_accounting.stage(waiting, observed.notes)
+        if isinstance(observed, pool.drain_policy.DrainFailure):
+            raise observed.error
+        answer = observed.verdict
+        queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
         return answer
 
     assert verdict()["withhold"] is True
@@ -726,9 +730,13 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
     ledger.ensure_capacity({"cpu": 4, "gpu": 1})
     assert ledger.acquire(_key("shard"), {"cpu": 2}) is True
     waiting = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1})
-    answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 4, "gpu": 1},
+    observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 4, "gpu": 1},
                                      mode="tokens", gpu_sample=sample)
-    queue.record_pass(waiting)
+    queue._drain_accounting.stage(waiting, observed.notes)
+    if isinstance(observed, pool.drain_policy.DrainFailure):
+        raise observed.error
+    answer = observed.verdict
+    queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
     assert answer["gpu_first"] is gpu_first
     assert answer["eligible"] is gpu_first
     record = json.loads(queue.passes_path(waiting).read_text())
@@ -796,8 +804,12 @@ def test_a_usage_refusal_with_the_tokens_free_is_not_a_shortage(
     waiting = _publish(queue, clock, _key("waiting"), {"cpu": 2})
     for _ in range(pool.STARVATION_FLOOR):
         queue.record_pass(waiting)
-    answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 2},
+    observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 2},
                                      mode="tokens", adaptive=True)
+    queue._drain_accounting.stage(waiting, observed.notes)
+    if isinstance(observed, pool.drain_policy.DrainFailure):
+        raise observed.error
+    answer = observed.verdict
     assert answer["withhold"] is False and answer["why"] == "not_a_token_shortage"
 
 

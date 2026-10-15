@@ -1071,9 +1071,13 @@ def _claim_pass(queue: pool.PoolQueue, row, ledger: pool.ResourceLedger) -> dict
 
     key = str(row["action_key"])
     ready = json.loads(queue.item_path(pool.READY, key).read_text())
-    verdict = queue._withhold_verdict(key, ledger=ledger, need={"cpu": 2, "mem_gb": 1},
+    observed = queue._observe_drain(key, ledger=ledger, need={"cpu": 2, "mem_gb": 1},
                                       mode="tokens")
-    queue.record_pass(key)
+    queue._drain_accounting.stage(key, observed.notes)
+    if isinstance(observed, pool.drain_policy.DrainFailure):
+        raise observed.error
+    verdict = observed.verdict
+    queue.record_pass(key, drain_notes=queue._drain_accounting.for_key(key))
     reason = ("reservation_unavailable_withholding" if verdict["withhold"]
               else "reservation_unavailable" + pool._starved_suffix(verdict))
     queue.record_denial(ready, reason, {"withhold": verdict})

@@ -183,7 +183,7 @@ def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
     queue.ensure_layout()
     prior = {}
     if phase == "count":
-        prior["passes"] = float("inf")
+        prior["first_unix"] = 10 ** 1000
     elif phase == "ordinary":
         prior["blocked_unix"] = 10 ** 1000
     elif phase == "measurement":
@@ -301,7 +301,7 @@ def test_initial_history_coercion_failure_precedes_available_and_keeps_pending_n
     ledger = queue.ledger()
     ledger.ensure_capacity({"cpu": 4})
     queue._drain_accounting.stage(KEY, drain.OrdinaryNotes({"foreign_unix": 10.}))
-    pool._write_json_atomic(queue.passes_path(KEY), {"passes": float("inf")})
+    pool._write_json_atomic(queue.passes_path(KEY), {"first_unix": 10 ** 1000})
     reads = []
     available = ledger.available
 

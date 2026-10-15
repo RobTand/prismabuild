@@ -455,14 +455,14 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     entered, release = threading.Event(), threading.Event()
     account = getattr(rig, operation)
     if operation == 'withhold_age':
-        monkeypatch.setattr(pool, 'STARVATION_FLOOR', 1)
+        monkeypatch.setattr(pool.drain_policy, 'STARVATION_FLOOR', 1)
     outcome = {}
 
-    def stalled_pass(key):
+    def stalled_pass(key, **kwargs):
         assert key == KEYS[0]
         entered.set()
         assert release.wait(30), 'test did not release refusal accounting'
-        return account(key)
+        return account(key, **kwargs)
 
     monkeypatch.setattr(rig, operation, stalled_pass)
 
@@ -496,9 +496,9 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
     record_pass = rig.record_pass
     descriptors, preemptions = [], []
 
-    def account(key):
+    def account(key, **kwargs):
         assert _admission_is_free(rig)
-        result = record_pass(key)
+        result = record_pass(key, **kwargs)
         if contended:
             fd = os.open(_lock_path(rig), os.O_RDWR)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
