@@ -11,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PREBRIDGE = "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf"
+PREBRIDGE_UPDATER_SHA256 = "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9"
 CLIENT_SOURCES = {
     "resource_broker.py": ("tools/resource_broker.py", "tools/fleet/resource_broker.py"),
     "resource_payload.py": ("tools/resource_payload.py", "tools/fleet/resource_payload.py"),
@@ -107,6 +108,7 @@ def publication(tmp_path):
         path.mkdir(parents=True)
     historical = subprocess.check_output(
         ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
+    assert _sha(historical) == PREBRIDGE_UPDATER_SHA256
     for name in CLIENT_SOURCES:
         if name != "park_proof.py":
             (install / name).write_bytes(historical if name == "upgrade_client.py"
@@ -194,9 +196,12 @@ def test_proof_transaction_requires_both_actual_reader_capabilities_before_mutat
     candidate = (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
     if incapable == "candidate":
         (install / "upgrade_client.py").write_bytes(candidate)
-        candidate = candidate.replace(b"CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 1\n", b"")
+        candidate = subprocess.check_output(
+            ["git", "show", f"{PREBRIDGE}:tools/fleet/upgrade_client.py"], cwd=ROOT)
+        assert _sha(candidate) == PREBRIDGE_UPDATER_SHA256
         target = generation / "tools/upgrade_client.py"
         target.write_bytes(candidate)
+        assert target.read_bytes() == candidate
         receipt_path = generation / "RUNTIME_VERSION.json"
         receipt = json.loads(receipt_path.read_text())
         receipt["files"]["tools/upgrade_client.py"] = _sha(candidate)
