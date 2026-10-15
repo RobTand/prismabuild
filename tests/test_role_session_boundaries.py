@@ -195,6 +195,7 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
     try:
         assert entered.wait(5), (boundary.root / "prewarm.log").read_text()
         assert len(stage.objects()) == 1, "real partial sink was not created"
+        boundary.published.unlink()
         if gate_closed:
             _close_gate(boundary)
         os.kill(process.pid, signal.SIGTERM)
@@ -336,16 +337,19 @@ def test_stop_context_precedes_each_roles_startup_queue_boundary(
             return SimpleNamespace(root=boundary.root / "queue")
         return factory(*args, **kwargs)
 
-    def loaded():
-        os.kill(os.getpid(), signal.SIGTERM)
-        return "a" * 40
-
     if role == "worker":
         monkeypatch.setattr(worker_loop, "SH", boundary.root)
         main = lambda: worker_loop.main(argv=["--all-cores", "--cpu-slots", "1",
             "--mem-gb", "1", "--assume-idle", "--poll-s", "0", "--max-idle", "1"])
-    elif role == "localtier":
-        def local_main():
+    else:
+        if role == "storage":
+            args = Fleet(boundary.root / "fleet").args(once=False, dry_run=True)
+            monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
+            invoke = lambda: prewarm_loop.main([])
+        else:
+            invoke = lambda: local_tier_loop.main(["--pool-root", str(boundary.root / "queue")])
+
+        def observed_read_main():
             def read_finished(frame, event, value):
                 if (event == "return" and isinstance(value, str) and frame.f_code.co_name == "read_text"
                         and frame.f_locals.get("self") == role_session.GENERATION_VERSION):
@@ -353,15 +357,10 @@ def test_stop_context_precedes_each_roles_startup_queue_boundary(
                     os.kill(os.getpid(), signal.SIGTERM)
             sys.setprofile(read_finished)
             try:
-                return local_tier_loop.main(["--pool-root", str(boundary.root / "queue")])
+                return invoke()
             finally:
                 sys.setprofile(None)
-        main = local_main
-    else:
-        monkeypatch.setattr(role_session, "loaded_runtime_commit", loaded)
-        args = Fleet(boundary.root / "fleet").args(once=False, dry_run=True)
-        monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
-        main = lambda: prewarm_loop.main([])
+        main = observed_read_main
     monkeypatch.setattr(local_tier_loop.pool, "PoolQueue", queue_boundary)
     log = boundary.root / "entry.log"
     process = CONTEXT.Process(target=_run_role, args=(main, log))

@@ -4846,8 +4846,8 @@ behavior and the roles required by each drain observer remain unchanged by
 this ownership change.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
-Production callers read generation identities through `loaded_generation()`
-and `published_generation_name()`, alongside the commit readers.
+Callers awaiting typed-receipt migration read generation identities through
+`loaded_generation()` and `published_generation_name()`, alongside commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.
@@ -4862,6 +4862,15 @@ actual idle park marker while receipt identity is unavailable. No new queue work
 starts in UNKNOWN, and local tier does not write drift incidents. Its current
 pass finishes before the next receipt boundary. The worker loop keeps its
 existing generation-drift exit 0, including `--once`.
+
+Prewarm requires matching complete receipts before queue and topology setup,
+then observes publication again before each storage cycle. Known drift keeps
+its runtime-moved diagnostic and exits 75 from a one-shot or 0 from a continuous
+role. UNKNOWN returns 75 from a one-shot or waits on the existing stop Event.
+Only an unavailable loaded observation is retried; the first known identity
+stays attached to imported code. Receipt availability does not interrupt reader
+cleanup, final cycle accounting or the role's actual closed-gate park writer.
+Prewarm does not write drift incidents.
 
 `generation_receipt.observe` reads both runtime identities from one receipt
 read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,

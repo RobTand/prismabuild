@@ -214,6 +214,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
+from prismabuild import generation_receipt  # noqa: E402
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import manifest_layout
@@ -4090,22 +4091,23 @@ def _warm_storage(args, stop: threading.Event) -> int:
     # a replaced vdev is picked up, and hold time that reset with it would
     # answer "this poll" to an operator asking "since you started".
     ledger = HoldLedger()
-    loaded_commit = runtime_gate.loaded_runtime_commit()
-    loaded_generation = runtime_gate.loaded_generation()
+    loaded = runtime_gate.loaded_runtime()
 
     def announce(payload: dict[str, object]) -> None:
         print(json.dumps({**payload, "unix": round(time.time(), 3)}),
               file=sys.stderr, flush=True)
 
-    def runtime_moved() -> bool:
-        return runtime_gate.generation_drift(
-            loaded_commit=loaded_commit,
-            loaded_generation=loaded_generation) is not None
+    def runtime_decision() -> generation_receipt.ReceiptDecision:
+        nonlocal loaded
+        if isinstance(loaded, generation_receipt.ReceiptUnavailable):
+            loaded = runtime_gate.loaded_runtime()
+        return generation_receipt.compare(loaded, runtime_gate.published_runtime())
 
     while True:
         # Reader threads, partial sinks and cycle accounting have completed
         # before this boundary can acknowledge a stop or a drain.
-        if runtime_moved():
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
             print("prewarm: runtime moved; exiting for supervisor reload",
                   file=sys.stderr, flush=True)
             return 75 if args.once else 0
@@ -4122,6 +4124,14 @@ def _warm_storage(args, stop: threading.Event) -> int:
             continue
         if stop.is_set():
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            announce({"event": "prewarm-runtime-unknown", **{
+                name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+                for name, value in (("loaded", decision.loaded), ("published", decision.published))}})
+            if args.once:
+                return 75
+            stop.wait(args.poll_s)
+            continue
         if queue is None:
             queue = pool.PoolQueue(Path(args.pool_root))
             probe = pacer_from_args(args)
@@ -4134,7 +4144,8 @@ def _warm_storage(args, stop: threading.Event) -> int:
         pacer.notify = announce
         # Topology discovery may block. Re-enter the boundary if its setup
         # outlived an open gate or the runtime it was preparing to serve.
-        if stop.is_set() or runtime_moved() or runtime_gate.read_maintenance_gate() is not None:
+        if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
+                or runtime_gate.read_maintenance_gate() is not None):
             continue
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)
