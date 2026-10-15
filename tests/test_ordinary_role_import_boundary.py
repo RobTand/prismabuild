@@ -25,9 +25,19 @@ ROLE_MODULES = {
 }
 
 
-def _run(command, *, cwd, timeout=90):
+def _run(command, *, cwd, label, timeout=90):
+    removed = {name for name in os.environ if name.startswith("PIP_") or name in {
+        "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "VIRTUAL_ENV",
+        "_PIP_RUNNING_IN_SUBPROCESS"}}
+    environment = {name: value for name, value in os.environ.items() if name not in removed}
+    environment.update(PIP_CONFIG_FILE=os.devnull, PYTHONNOUSERSITE="1", PIP_NO_INPUT="1")
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                            timeout=timeout, env={**os.environ, "PIP_CONFIG_FILE": os.devnull})
+                            timeout=timeout, env=environment)
+    (cwd / f"{label}.stdout.txt").write_text(result.stdout)
+    (cwd / f"{label}.stderr.txt").write_text(result.stderr)
+    (cwd / f"{label}.json").write_text(json.dumps({
+        "command": command, "returncode": result.returncode,
+        "removed_environment_keys": sorted(removed)}, indent=2))
     assert result.returncode == 0, (
         f"{command!r} exited {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result.stdout
@@ -46,7 +56,8 @@ def installed(tmp_path_factory):
     wheels.mkdir()
     _run([sys.executable, "-I", "-m", "pip", "--disable-pip-version-check",
           "--no-cache-dir", "wheel", "--no-index", "--no-deps",
-          "--no-build-isolation", "--wheel-dir", str(wheels), str(ROOT)], cwd=root)
+          "--no-build-isolation", "--wheel-dir", str(wheels), str(ROOT)],
+         cwd=root, label="wheel-build")
     wheel, = wheels.glob("prismabuild-*.whl")
     with zipfile.ZipFile(wheel) as archive:
         source_bytes = {name: archive.read(name) for name in archive.namelist()
@@ -61,10 +72,28 @@ def installed(tmp_path_factory):
         environment = root / flavor
         venv.EnvBuilder(with_pip=False).create(environment)
         python = environment / "bin" / "python"
+        scheme = json.loads(_run([str(python), "-I", "-B", "-c",
+            "import json, sys, sysconfig; print(json.dumps({"
+            "'prefix':sys.prefix, 'purelib':sysconfig.get_path('purelib'), "
+            "'platlib':sysconfig.get_path('platlib')}))"],
+            cwd=root, label=f"{flavor}-scheme"))
+        assert Path(scheme["prefix"]).resolve() == environment.resolve(), scheme
+        for name in ("purelib", "platlib"):
+            assert Path(scheme[name]).resolve().is_relative_to(environment.resolve()), scheme
         _run([sys.executable, "-I", "-m", "pip", "--disable-pip-version-check",
               "--python", str(python), "install", "--no-index", "--no-deps",
-              "--no-compile", str(wheel)], cwd=root)
-        package, = environment.glob("lib/python*/site-packages/prismabuild")
+              "--ignore-installed", "--no-compile", str(wheel)],
+             cwd=root, label=f"{flavor}-install")
+        proof = json.loads(_run([str(python), "-I", "-B", "-c",
+            "import importlib.metadata as m, json; d=m.distribution('prismabuild'); "
+            "print(json.dumps({'location':str(d.locate_file('')), 'version':d.version, "
+            "'init':str(d.locate_file('prismabuild/__init__.py')), "
+            "'installer':d.read_text('INSTALLER')}))"],
+            cwd=root, label=f"{flavor}-installed-proof"))
+        package = Path(scheme["purelib"]) / "prismabuild"
+        assert Path(proof["location"]).resolve() == package.parent.resolve(), proof
+        assert Path(proof["init"]).resolve() == (package / "__init__.py").resolve(), proof
+        assert proof["version"] == "0.1.0" and proof["installer"].strip() == "pip", proof
         for name, raw in source_bytes.items():
             assert (package.parent / name).read_bytes() == raw, name
         if flavor == "leaves":
