@@ -64,6 +64,7 @@ _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
 sys.path.insert(0, str(CHECKOUT / "src"))
 from prismabuild import fleet_roster  # noqa: E402
+from prismabuild.digest_primitives import raw_sha256  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
@@ -1051,7 +1052,7 @@ def _candidate_roster(expected_sha256: str) -> dict:
 
     try:
         raw = (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_bytes()
-        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        if raw_sha256(raw) != expected_sha256:
             raise ValueError("bytes differ from publication manifest")
         document = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
