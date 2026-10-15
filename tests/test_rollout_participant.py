@@ -469,6 +469,40 @@ def test_prewarm_role_must_park_before_rollout_drain_proof(setup):
     assert updater.drain_evidence(status)["drained"] is False
 
 
+def test_gate_replacement_after_observation_cannot_publish_a_drained_marker(setup):
+    updater, broker, source = setup
+    for name, member in upgrade.MEMBERS.items():
+        (updater.install / name).write_bytes((source / member).read_bytes())
+    broker.holder = CLIENT
+    updater.gate.write_text(json.dumps({
+        "draining": True, "changed_unix": 458.0, "owner": CLIENT}))
+    updater.procs = lambda: []
+    _durable(updater)
+    intent = _intent(updater, source)
+    original = updater._refresh_epoch
+    witnessed = []
+
+    def refresh_then_replace(snapshot):
+        result = original(snapshot)
+        if not witnessed:
+            witnessed.append(updater.gate.read_bytes())
+            updater.gate.write_text(json.dumps({
+                "draining": True, "changed_unix": 459.0, "owner": CLIENT}))
+        return result
+
+    updater._refresh_epoch = refresh_then_replace
+    result = updater.run()
+    assert len(witnessed) == 1
+    assert json.loads(witnessed[0])["changed_unix"] == 458.0
+    assert json.loads(updater.gate.read_bytes())["changed_unix"] == 459.0
+    assert result["state"] == "rollout_draining"
+    markers = upgrade.read_rollout(updater.config, intent["epoch"])["markers"]
+    assert upgrade.marker_name(socket.gethostname(), "drained") not in markers
+    assert broker.holder == CLIENT
+    assert "maintenance_end" not in broker.operations
+    assert not updater.journal.exists()
+
+
 def test_failed_epoch_install_restores_bytes_but_keeps_the_gate(setup):
     updater, broker, source = setup
     for name, member in upgrade.MEMBERS.items():
