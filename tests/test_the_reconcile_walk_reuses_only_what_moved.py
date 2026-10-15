@@ -186,7 +186,7 @@ def _fragment(queue: pool.PoolQueue, paths: list[Path]) -> Path:
 def _settle() -> None:
     """Let the coarse clock tick so the first listing's stamp is trusted.
 
-    ``_trusted_directory_stamp`` refuses a version inside the tick it was
+    ``directory_before`` refuses a version inside the tick it was
     taken in; without the wait the first pass keeps nothing and the reuse
     assertions below would pass for the wrong reason.
     """
@@ -424,9 +424,9 @@ def test_a_refused_directory_stamp_lists_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj.bin"))
     _settle()
-    monkeypatch.setattr(kept_reads, 'trusted_directory_stamp',
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_before',
                         lambda path: None)
-    monkeypatch.setattr(kept_reads, 'keepable_version',
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_version',
                         lambda info, fence, **context: None)
     index = kept_reads.CensusIndex()
     calls = StageCalls(stage, monkeypatch)

@@ -9,7 +9,7 @@ lock the movers and egresses of the stage root wait for (~1.7 ms a name
 at the campaign's range size, action 1e0a9b624335).
 
 The hint: the range directory is listed once per
-``_trusted_directory_stamp`` -- the stamp taken before the scan, the
+``directory_before`` -- the stamp taken before the scan, the
 listing remembered only while a fresh directory version still equals it
 -- and every name revalidates with one directory version, re-listing only
 a directory that moved.  A version the directory's own clock tick
@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
+from kept_read_clock import after_paths
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
@@ -243,7 +244,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def _adoption_world(fleet, count: int):
+def _adoption_world(fleet, count: int, monkeypatch):
     """A campaign range of already-correct names nothing vouches for.
 
     The #1081 shape -- a promotion killed before it filed its records
@@ -252,7 +253,7 @@ def _adoption_world(fleet, count: int):
     three censuses and its lock per name and writes nothing, so the range
     directory holds still across the whole decision unless the test moves
     it.  Two coarse-clock ticks after the last write, so
-    :func:`_trusted_directory_stamp` will trust the directory at the
+    :func:`directory_before` will trust the directory at the
     first decision (a version in its own change tick is refused).
     """
 
@@ -264,7 +265,7 @@ def _adoption_world(fleet, count: int):
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
     queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, *destinations, destinations[0].parent, queue.dir(pool.CLAIMED))
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
     return publisher, destinations
@@ -272,7 +273,7 @@ def _adoption_world(fleet, count: int):
 
 def test_a_2048_name_range_decision_lists_the_range_directory_once(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
-    publisher, destinations = _adoption_world(fleet, NAMES)
+    publisher, destinations = _adoption_world(fleet, NAMES, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     holds = _count_lock_holds(monkeypatch, publisher)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
@@ -302,7 +303,7 @@ def test_a_partial_that_appears_mid_range_is_seen_by_the_next_name(
     """The hint is revalidated: the partial moves the directory, and the
     very next name of the same range re-lists and defers to it."""
 
-    publisher, destinations = _adoption_world(fleet, 3)
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
 
@@ -326,7 +327,7 @@ def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
     re-reads it and defers, and the name after that is free again."""
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3)
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
 
@@ -427,7 +428,7 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """Where the fence cannot hold, every name reads fresh -- #1208's rule.
 
-    ``_current_directory_version`` answers ``None`` for a filesystem whose
+    ``directory_current`` answers ``None`` for a filesystem whose
     directory times are not this kernel's clock (NFS); the hint must then
     be re-read for every name, never reused.  Counted: two names, two
     listings of the range directory; behavioral: a partial and a claim
@@ -435,8 +436,8 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     """
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3)
-    monkeypatch.setattr(kept_reads, 'current_directory_version',
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_current',
                         lambda path: None)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
@@ -468,13 +469,13 @@ def test_a_same_tick_partial_is_never_hidden_by_the_hint(
 
     With the range directory's ``lstat`` and the coarse clock pinned into
     one tick -- the fixture writes and the stamping read land together --
-    :func:`_trusted_directory_stamp` refuses every version, the hint is
+    :func:`directory_before` refuses every version, the hint is
     never stored, and every name of the range lists fresh.  Two names,
     two listings; a partial added after the first is still seen, because
     nothing stood between it and the second listing.
     """
 
-    publisher, destinations = _adoption_world(fleet, 2)
+    publisher, destinations = _adoption_world(fleet, 2, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     target = os.fspath(destinations[0].parent)
     real_lstat = os.lstat
@@ -522,7 +523,7 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
     pre-scan stamp: the next name lists again rather than reusing a scan
     the directory moved."""
 
-    publisher, destinations = _adoption_world(fleet, 2)
+    publisher, destinations = _adoption_world(fleet, 2, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     target = os.fspath(destinations[0].parent)
     scans: list[str] = []
@@ -545,7 +546,7 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
         "the raced partial names another entry; this name is free")
     # A scan the directory moved during is never kept under the pre-scan
     # stamp -- nothing sits between the next name and a fresh listing.
-    remembered = getattr(publisher, "_range_partials", {})
+    remembered = publisher._partial_names._slots
     assert remembered.get(os.path.normpath(target)) is None, (
         "the raced listing must not be remembered")
     assert publisher.try_adopt(entry, destinations[1]) is None, (

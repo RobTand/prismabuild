@@ -268,11 +268,10 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
             return answer
         return call
 
-    monkeypatch.setattr(kept_reads, 'trusted_directory_stamp',
-                        refused(kept_reads.trusted_directory_stamp))
-    # _current_directory_version calls this function. Do not wrap both.
-    monkeypatch.setattr(kept_reads, '_directory_version_at',
-                        refused(kept_reads._directory_version_at))
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_before',
+                        refused(kept_reads.filesystem_trust.directory_before))
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_current',
+                        refused(kept_reads.filesystem_trust.directory_current))
     return touches
 
 
@@ -482,5 +481,5 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
     assert touches.locked_directories == collections.Counter({
         name: 2 + extra_checks + extra_lists if name == target else 2
         for name in expected})
-    assert publisher._listed_root is not None
-    assert set(publisher._listed_children) == {"first", "second"}
+    assert str(root) in publisher._forest_roots._slots
+    assert set(publisher._forest_children._slots) == {str(root / "first"), str(root / "second")}

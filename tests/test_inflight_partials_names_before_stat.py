@@ -32,7 +32,7 @@ class _Stub:
 
     def __init__(self) -> None:
         self._range_lock = threading.Lock()
-        self._range_partials = {}
+        self._partial_names = stage_move.kept_reads.DirectoryCaptures()
 
 
 def _previous_implementation(mover: str, destination: Path) -> list[str] | None:

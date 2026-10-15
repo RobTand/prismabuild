@@ -31,6 +31,8 @@ import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import kept_reads
+from kept_read_clock import after_paths
 
 NAMES = red.NAMES
 
@@ -149,13 +151,14 @@ def test_an_owner_that_was_not_idle_carries_no_refusal(fleet, monkeypatch):
     assert _refused(cache) == {}
 
 
-def test_the_refusal_is_a_verdict_that_is_falsy(tmp_path):
+def test_the_refusal_is_a_verdict_that_is_falsy(tmp_path, monkeypatch):
     """The installer's answer is still usable as the bool it always was."""
 
     fragment = tmp_path / "fragment.json"
     fragment.write_text("{}")
     version = stage_release._path_version(fragment)
-    stamps = {str(tmp_path): stage_release._directory_version(tmp_path)}
+    after_paths(monkeypatch, fragment, tmp_path)
+    stamps = {str(tmp_path): kept_reads.filesystem_trust.directory_evidence(tmp_path)}
     key = ("tier", "consumer", "mover")
 
     refused = stage_release._install_skip_checkpoint(

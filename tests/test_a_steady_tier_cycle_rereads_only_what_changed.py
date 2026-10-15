@@ -290,9 +290,9 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
     # The namespace the fragment landed in was listed again and the new
     # fragment parsed, by every census the cycle took; nothing else was.
     assert reads["census_listed"] >= 1 and reads["census_parses"] >= 1, reads
-    kept = loop.receipts.census.namespaces.get(str(root / namespace))
+    kept = loop.receipts.census.namespaces._slots.get(str(root / namespace))
     assert kept is not None
-    assert [name for name, _document in kept[1]] == [late]
+    assert [name for name, _document in kept.value[0]] == [late]
 
 
 def _write_late_fragment(loop: _Loop, name: str) -> None:
@@ -337,12 +337,13 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
             assert paths == stage_release._fragment_stage_paths(fresh), key
     remembered = {id(document) for _version, document
                   in census.fragments.values()}
-    assert census.namespaces
-    for directory, (_stamp, found, _files) in census.namespaces.items():
+    assert census.namespaces._slots
+    for directory, slot in census.namespaces._slots.items():
+        found, _files = slot.value
         for mover, document in found:
             assert id(document) in remembered, (directory, mover)
     receipts = loop.queue.root / tier_loop.MOVER_RECEIPTS
-    kept = loop.receipts.records._directories[str(receipts)][1]
+    kept = loop.receipts.records._captures._slots[str(receipts)].value
     assert len(kept) >= 6000, len(kept)
     for name, (_version, record) in kept.items():
         assert record == pool._read_json(receipts / name), name
