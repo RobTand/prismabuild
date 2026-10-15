@@ -24,9 +24,11 @@ The three orderings this pins, in one poll:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
+from threading import Event
 
 import pytest
 
@@ -64,10 +66,11 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
     monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
     monkeypatch.setattr(loop, "SH", tmp_path)
-    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
-    monkeypatch.setattr(role_session, "published_generation_name", lambda: "test")
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "test"}))
+        monkeypatch.setattr(role_session, attribute, receipt)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     # Capability probes are not this fixture's subject; make them inert so
     # nothing they do can be mistaken for a poll.
@@ -119,6 +122,7 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
         return loop.PublicationResult("published", 0.0, None, "")
 
     monkeypatch.setattr(loop, "publish_offer", publish)
+    stop = Event()
 
     def sleeping(seconds):
         if make_root:
@@ -129,11 +133,13 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
         else:
             assert not parked.exists()
             polls.append(None)
+        if len(polls) >= 2:
+            stop.set()
 
     monkeypatch.setattr(loop.time, "sleep", sleeping)
     monkeypatch.setattr(sys, "argv", ["worker_loop.py", "--all-cores",
                                      "--cpu-slots", "1", "--poll-s", "0"])
-    assert loop._run_loop(lambda: len(polls) >= 2) == 0
+    assert loop._run_loop(stop) == 0
     assert len(polls) == 2, "the loop took exactly its own two poll sleeps"
     assert len(announces) == 2, "one advisory announce per parked poll"
     assert polls[0] == polls[1], "the second poll rewrote the marker"

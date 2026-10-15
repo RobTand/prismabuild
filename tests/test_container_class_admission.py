@@ -5,6 +5,7 @@ import copy
 import json
 from pathlib import Path
 import sys
+from threading import Event
 
 import pytest
 
@@ -294,7 +295,7 @@ def test_real_worker_poll_publishes_class_refusal_and_preserves_native_polling(t
     monkeypatch.setattr(loop.time, 'time', lambda: 1000.)
     seen = []
     monkeypatch.setattr(loop.pool.PoolQueue, 'serve_once', lambda *a, **k: seen.append(k))
-    assert loop._run_loop(lambda: False) == 0
+    assert loop._run_loop(Event()) == 0
     q = pool.PoolQueue(tmp_path / 'pb-queue')
     offer = json.loads((q.root / pool.WORKERS / (socket.gethostname()+'.json')).read_text())
     assert offer['container_class_verdict']['reason'] == 'required_image_missing'

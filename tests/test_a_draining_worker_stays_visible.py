@@ -21,6 +21,7 @@ import json
 import socket
 from pathlib import Path
 import sys
+from threading import Event
 import time
 
 import pytest
@@ -63,14 +64,14 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value,
     monkeypatch.setattr(loop, "SH", tmp_path)
     monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(role_session, "PARKED_ROOT", tmp_path / "rollout" / "parked")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     monkeypatch.setattr(loop, "PUBLICATION_LOCK_ROOT",
                         tmp_path / "offer-publish")
-    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
-    monkeypatch.setattr(role_session, "published_generation_name", lambda: "test")
-    monkeypatch.setattr(role_session, "generation_drift",
-                        lambda loaded_commit=None, loaded_generation=None: None)
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "test"}))
+        monkeypatch.setattr(role_session, attribute, receipt)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     # No Docker probe and no `ip` invocation on the offer path: both are
     # capability fields this test does not assert, and neither should make a
@@ -102,7 +103,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
-    assert _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(lambda: False) == 0
+    assert _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(Event()) == 0
 
     assert list(queue.dir(pool.READY).glob("*.json")) == []
     assert list(queue.dir(pool.CLAIMED).glob("*.json")) == []
@@ -147,7 +148,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     # is the existing safety polarity this change must not touch.
     (tmp_path / "maintenance.json").write_text(
         json.dumps({"draining": False, "changed_unix": 124.0}))
-    assert _load_loop(tmp_path, monkeypatch, None)._run_loop(lambda: False) == 0
+    assert _load_loop(tmp_path, monkeypatch, None)._run_loop(Event()) == 0
 
     reopened = json.loads(_offer_path(queue).read_text())
     assert reopened.get("state") in (None, "live")
@@ -179,7 +180,7 @@ def test_missing_or_malformed_gates_still_announce_draining(tmp_path, monkeypatc
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     loop = _load_loop(tmp_path, monkeypatch, contents)
-    assert loop._run_loop(lambda: False) == 0
+    assert loop._run_loop(Event()) == 0
 
     offer = json.loads(_offer_path(queue).read_text())
     assert offer["state"] == "draining"
@@ -241,6 +242,7 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
 
     real_publish = loop.publish_offer
     statuses: list[str] = []
+    stop = Event()
 
     def publish(announce, **kwargs):
         result = real_publish(announce, **kwargs)
@@ -248,10 +250,12 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
         if len(statuses) == 1:
             # The gate closes between the open poll and the next one.
             gate.write_text(json.dumps(DRAIN_GATE))
+        elif len(statuses) >= 2:
+            stop.set()
         return result
 
     monkeypatch.setattr(loop, "publish_offer", publish)
-    assert loop._run_loop(lambda: len(statuses) >= 2) == 0
+    assert loop._run_loop(stop) == 0
     assert statuses == ["published", "published"]
 
     offer = json.loads(_offer_path(queue).read_text())

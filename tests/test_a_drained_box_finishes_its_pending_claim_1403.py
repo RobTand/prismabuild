@@ -26,6 +26,7 @@ import importlib.util
 import json
 import socket
 import sys
+from threading import Event
 import time
 from pathlib import Path
 
@@ -182,14 +183,14 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value) -> object:
     monkeypatch.setattr(loop, "SH", tmp_path)
     monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(role_session, "PARKED_ROOT", tmp_path / "rollout" / "parked")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     monkeypatch.setattr(loop, "PUBLICATION_LOCK_ROOT",
                         tmp_path / "offer-publish")
-    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
-    monkeypatch.setattr(role_session, "published_generation_name", lambda: "test")
-    monkeypatch.setattr(role_session, "generation_drift",
-                        lambda loaded_commit=None, loaded_generation=None: None)
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "test"}))
+        monkeypatch.setattr(role_session, attribute, receipt)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     monkeypatch.setattr(loop.container_images.InventoryCache, "get",
                         lambda self, *a, **k: None)
@@ -207,8 +208,7 @@ def _forbid_execute(monkeypatch) -> None:
 
 
 def _drain_one_poll(tmp_path, monkeypatch) -> int:
-    return _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(
-        lambda: False)
+    return _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(Event())
 
 
 def test_a_drained_box_concludes_its_own_saved_finish(
