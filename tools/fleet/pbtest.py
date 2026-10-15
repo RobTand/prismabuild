@@ -40,13 +40,14 @@ import ast
 import importlib.util
 import json
 import os
-import posixpath
 import re
 import statistics
 import subprocess
 import sys
 import threading
 import time
+import tempfile
+import uuid
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -79,51 +80,6 @@ CLIENT_RSS_MB = 80
 #: shard.
 DEFAULT_MAX_CLIENTS = 8
 
-#: pytest's terminal summary line -- the one line that says pytest reached the
-#: end of a session.  Built from ``_pytest.terminal``'s own grammar:
-#: ``", ".join(parts) + " in " + duration``, where a part is ``N <word>`` from
-#: ``pluralize``, or the literal ``no tests ran``, or one of the
-#: ``--collect-only`` forms; and the duration is ``S.SSs``, with a
-#: ``(H:MM:SS)`` tail past a minute.
-#:
-#: The word-substring test this replaces matched any line containing
-#: ``" passed"``, ``" failed"`` or ``" error"``.  Two live examples of what it
-#: captured instead of a summary: pytest's own usage failure, whose second
-#: line is ``python -m pytest: error: unrecognized arguments: ...``, and
-#: pbrun's ``removed failed exchange probe /mnt/shared/pb-exchange-...``.
-#: Either one set ``ran=True`` for a shard that never started a case, which is
-#: exactly the "did not run" reading the ``ran`` flag exists to keep distinct.
-#:
-#: The ``=``-wrapped form is accepted too.  Shards run ``-q``, so
-#: ``summary_stats`` takes its undecorated ``write_line`` branch and a real
-#: summary looks like ``1 failed, 531 passed, 1 skipped in 17.82s``; the
-#: decoration appears only above ``-q``.  Matching it costs nothing and keeps
-#: a shard run at default verbosity from reading as "did not run".
-#: pytest-subtests reports ``N subtests passed`` (and ``failed``/``skipped``):
-#: the one two-word part.  Without it a shard that ran 16 cases and six
-#: subtests read as "did not run" (#256), which is this grammar producing the
-#: mirror of the defect it was tightened against.
-_COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
-_COLLECT_ONLY = (r"no tests collected(?: \(\d+ deselected\))?"
-                 r"|\d+/\d+ tests collected \(\d+ deselected\)"
-                 r"|\d+ tests? collected")
-_PARTS = rf"(?:no tests ran|{_COLLECT_ONLY}|{_COUNTED})(?:, {_COUNTED})*"
-_DURATION = r"\d+\.\d+s(?: \([^)]*\))?"
-PYTEST_SUMMARY = re.compile(rf"^(?:=+ )?{_PARTS} in {_DURATION}(?: =+)?$")
-#: Colour is off down a pipe, but ``FORCE_COLOR`` in a shard's environment
-#: would wrap the line in escapes and make it unmatchable.
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def pytest_summary(lines: list[str]) -> str:
-    """The last line that is pytest's terminal summary, or ``""``."""
-
-    for line in reversed(lines):
-        if PYTEST_SUMMARY.match(ANSI.sub("", line).strip()):
-            return line.strip()
-    return ""
-
-
 #: The line ``pbrun`` prints, with exit 74, when it could not read an action's
 #: ending: at zero patience, when a reader could not be reaped, or when a
 #: patient wait ended while the last read was unavailable.
@@ -134,7 +90,7 @@ def unobserved_outcome(lines: list[str]) -> str | None:
     """The 12-character key whose ending ``pbrun`` could not read, or ``None``."""
 
     for line in reversed(lines):
-        match = UNOBSERVED_OUTCOME.match(ANSI.sub("", line).strip())
+        match = UNOBSERVED_OUTCOME.match(pbtest_outcomes.ANSI.sub("", line).strip())
         if match:
             return match.group(1)
     return None
@@ -164,7 +120,7 @@ def offer_discovery_timed_out(lines: list[str], returncode: int | None) -> bool:
     if returncode != 1:
         return False
     for line in reversed(lines):
-        text = ANSI.sub("", line).strip()
+        text = pbtest_outcomes.ANSI.sub("", line).strip()
         if text:
             return bool(OFFER_DISCOVERY_TIMED_OUT.match(text))
     return False
@@ -252,7 +208,7 @@ def recovery_command(lines: list[str], key: str | None, deadline: float) -> list
 
 
 def run_shard(index: int, command: list[str], first, *, wait_s: float,
-              deadline: float, result: dict, files: list[str] = ()) -> None:
+              deadline: float, result: dict, files: list[str] = (), progress=None) -> None:
     """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
 
     ``first`` is the attempt the caller already launched, so shards start in
@@ -281,6 +237,8 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
         if result["action_key"] is not None:
             return
         result["action_key"] = key
+        if progress is not None:
+            progress.observe(index, result)
         _say(f"shard {index:>3} action {key} "
              f"({'queued' if verb == 'queued' else 'attached'}): "
              + " ".join(files))
@@ -298,7 +256,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
                 try:
                     observer = subprocess.Popen(
                         recovery, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, errors="replace")
+                        text=True, errors="replace", env=_client_environment())
                 except OSError as exc:
                     _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
                     return
@@ -324,7 +282,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
         try:
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, errors="replace")
+                text=True, errors="replace", env=_client_environment())
         except OSError as exc:
             # The first attempt launched this same command, so this is the
             # box, not the shard.  The refusal already recorded stands.
@@ -892,7 +850,7 @@ def summary_seconds(summary: str) -> float | None:
     if not summary:
         return None
     match = re.search(r" in (\d+\.\d+)s(?: \([^)]*\))?\s*$",
-                      ANSI.sub("", summary).strip())
+                      pbtest_outcomes.ANSI.sub("", summary).strip())
     return float(match.group(1)) if match else None
 
 SHARD_DIGEST_MODULE = "_prismabuild_pbtest_digest_primitives"
@@ -947,10 +905,14 @@ def preflight():
     # The reviewed-dependency guard, then the sealed capability
     # requirements (#1495): each refuses the shard before pytest, which
     # makes a drifted dependency a failed shard, never a skipped test.
-    refused = 0 if pins is None else pins.preflight()
-    if not refused and digest is not None:
-        refused = digest.verify_sealed(selection)
-    return refused
+    if pins is not None:
+        try:
+            pins.check_pins()
+        except ValueError as exc:
+            message = f"pbtest: dependency pin refused before pytest: {exc}"
+            print(message, file=sys.stderr, flush=True)
+            return 1, {"code": "dependency_pin", "message": message}
+    return (0 if digest is None else digest.verify_sealed(selection)), None
 
 
 raise SystemExit(load("pbtest_outcomes").main(
@@ -1168,21 +1130,6 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     return [python, "-c", program]
 
 
-def recorded_skips(record: dict | None) -> list[dict] | None:
-    """Every skip a shard's record holds, with its reason; ``None`` without one."""
-
-    if record is None:
-        return None
-    skips = []
-    for row in record.get("reports") or ():
-        entry = dict(zip(pbtest_outcomes.REPORT_FIELDS, row))
-        if entry.get("category") == "skipped":
-            skips.append({"nodeid": entry["nodeid"], "when": entry["when"],
-                          "reason": entry.get("reason") or "",
-                          "location": entry.get("location")})
-    return skips
-
-
 def summary_count(summary: str, word: str) -> int:
     """The ``N <word>`` count in a pytest summary line, ``0`` when absent."""
 
@@ -1207,109 +1154,6 @@ def validate_basetemp(root: str) -> None:
         raise ValueError("--basetemp must not contain NUL")
     if any(part == ".." for part in PurePath(root).parts):
         raise ValueError("--basetemp must not traverse: no '..' in the root")
-
-
-#: Summary parts that are not outcomes, though the same line prints them.
-NOT_OUTCOMES = {"warning", "warnings", "deselected"}
-_COLLECTED_COUNT = re.compile(r"^(?:no tests|(\d+)(?:/\d+)? tests?) collected\b")
-
-
-def summary_outcomes(summary: str) -> tuple[dict[str, int] | None, int | None]:
-    """A summary line's outcome counts by category, and its collected count.
-
-    Outcomes are keyed the way the outcome record keys them: pytest prints
-    ``N error``/``N errors`` for the ``error`` category, and every other
-    counted word is the category itself.  A ``--collect-only`` summary
-    counts items, not outcomes, and answers ``(None, N)``.
-    """
-
-    line = ANSI.sub("", summary).strip()
-    line = re.sub(r"^=+ | =+$", "", line)
-    body = line.rsplit(" in ", 1)[0]
-    collected = _COLLECTED_COUNT.match(body)
-    if collected:
-        return None, int(collected.group(1) or 0)
-    counts: dict[str, int] = {}
-    for part in body.split(", "):
-        match = re.fullmatch(r"(\d+) (.+)", part)
-        if match is None or match.group(2) in NOT_OUTCOMES:
-            continue
-        word = "error" if match.group(2) == "errors" else match.group(2)
-        counts[word] = counts.get(word, 0) + int(match.group(1))
-    return counts, None
-
-
-def reconcile_shards(results: list[dict]) -> None:
-    """Reconcile each shard by node ID, and the shards with each other (#941).
-
-    Each shard that reported a summary gets ``reconciliation``: its own
-    collection matched against its outcomes (``pbtest_outcomes.reconcile``).
-    A shard that reported a summary and printed no outcome record cannot be
-    reconciled, and says so.  Then every node ID collected by two shards is a
-    problem of each: files are disjoint across shards, so a test in two of
-    them ran twice.
-    """
-
-    owners: dict[str, list[int]] = {}
-    for result in results:
-        if not result["ran"]:
-            result["reconciliation"] = None
-            continue
-        record = pbtest_outcomes.parse(result["output"])
-        if record is None:
-            result["reconciliation"] = {"problems": [
-                "no outcome record: the shard's tests cannot be matched "
-                "against its collection"]}
-            continue
-        counts, collected = summary_outcomes(result["summary"])
-        reconciliation = pbtest_outcomes.reconcile(record, counts, collected)
-        rootdir = record.get("rootdir_relative", ".")
-        if not isinstance(rootdir, str):
-            rootdir = ""
-
-        def source_file(nodeid: str) -> str:
-            return posixpath.normpath(posixpath.join(
-                rootdir, nodeid.split("::", 1)[0]))
-
-        observed = {source_file(nodeid) for nodeid in record.get("collected") or ()}
-        observed.update(source_file(nodeid)
-                        for nodeid in record.get("deselected") or ())
-        observed.update(source_file(row[0])
-                        for row in record.get("reports") or ()
-                        if row[1] == "collect")
-        observed.update(source_file(nodeid)
-                        for nodeid in record.get("collect_seen") or ())
-        selection = record.get("file_selection")
-        if "file_selection" in record:
-            if (not isinstance(selection, dict) or set(selection) != {"files", "ignored"}
-                    or selection["files"] != result["files"]
-                    or not isinstance(selection["ignored"], list)
-                    or any(path not in result["files"] for path in selection["ignored"])
-                    or selection["ignored"] != sorted(set(selection["ignored"]))
-                    or set(selection["ignored"]) & observed
-                    or record.get("file_selection_error")):
-                reconciliation["problems"].append("invalid or inconsistent file selection evidence")
-            else:
-                observed.update(selection["ignored"])
-        missing = sorted(set(result["files"]) - observed)
-        reconciliation["missing_files"] = missing
-        if missing:
-            reconciliation["problems"].append(
-                "assigned file(s) had no collection or outcome: "
-                + ", ".join(missing))
-        result["reconciliation"] = reconciliation
-        for nodeid in dict.fromkeys(record.get("collected") or ()):
-            owners.setdefault(nodeid, []).append(result["shard"])
-    for nodeid, shards in owners.items():
-        if len(shards) < 2:
-            continue
-        for result in results:
-            if result["shard"] in shards:
-                reconciliation = result["reconciliation"]
-                reconciliation.setdefault("in_other_shards", []).append(nodeid)
-                message = "node ID(s) also collected by another shard"
-                if not any(message in problem for problem in reconciliation["problems"]):
-                    reconciliation["problems"].append(message)
 
 
 def _names(label: str, names, limit: int = 20) -> None:
@@ -1364,7 +1208,8 @@ def displayed(output: str) -> list[str]:
 
     return [line for line in (output or "").strip().splitlines()
             if not line.startswith((pbtest_outcomes.PREFIX,
-                                    pbtest_outcomes.COMPLETION_PREFIX))]
+                                    pbtest_outcomes.COMPLETION_PREFIX,
+                                    pbtest_outcomes.PREFLIGHT_PREFIX))]
 
 
 # A closed vocabulary prevents resource controls, config indirection, and
@@ -1454,6 +1299,82 @@ def shard_command(flags, *, environment, python_entry, arguments):
     """Bind a shard's child environment and entry at the pbrun boundary."""
     env_flags = [word for entry in environment for word in ("--env", entry)]
     return [*flags, *env_flags, "--", *python_entry, *arguments]
+
+
+def _client_environment():
+    return {key: value for key, value in os.environ.items()
+            if key not in ("PRISMABUILD_PBTEST_RUN_ID", "PRISMABUILD_PBTEST_ENTRYPOINT")}
+
+
+def _write_json(path, data, *, durable=False):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class _Progress:
+    def __init__(self, report):
+        self.path = pbtest_outcomes.progress_path(Path(report)) if report else None
+        self.lock = threading.Lock()
+        self.failed = False
+        self.value = {"schema": pbtest_outcomes.PROGRESS_SCHEMA,
+            "run_id": os.environ.get("PRISMABUILD_PBTEST_RUN_ID") or uuid.uuid4().hex,
+            "launch_entrypoint": os.environ.get("PRISMABUILD_PBTEST_ENTRYPOINT") or str(Path(__file__).resolve()),
+            "producer_pid": os.getpid(), "producer_entrypoint": str(Path(__file__).resolve()),
+            "producer_generation": str(RUNTIME_ROOT), "sequence": 0, "state": "running",
+            "total_shards": 0, "completed_shards": 0, "shards": [], "runtime_refusal": None}
+        self._write()
+
+    def _write(self):
+        if self.path is not None:
+            self.value["sequence"] += 1
+            _write_json(self.path, json.dumps(self.value, separators=(",", ":")).encode(),
+                        durable=self.value["state"] != "running")
+
+    def configure(self, count):
+        with self.lock:
+            self.value["total_shards"] = count
+            self.value["shards"] = [{"shard": i, "status": "pending", "attempts": 0,
+                "action_key": None, "returncode": None} for i in range(count)]
+            self._write()
+
+    def observe(self, index, result, *, completed=False):
+        with self.lock:
+            shard = self.value["shards"][index]
+            shard.update(status="completed" if completed else "submitted",
+                attempts=result["attempts"], action_key=result["action_key"],
+                returncode=result["returncode"] if completed else None)
+            self.value["completed_shards"] = sum(s["status"] == "completed" for s in self.value["shards"])
+            try:
+                self._write()
+            except OSError as exc:
+                self.failed = True
+                sys.stderr.write(f"pbtest: cannot write progress: {exc}\n")
+
+    def refuse(self, refusal):
+        with self.lock:
+            self.value.update(state="refused", runtime_refusal=refusal)
+            self._write()
+
+    def finish(self, report_bytes):
+        with self.lock:
+            self.value.update(state="finished", report_sha256=core.raw_sha256(report_bytes))
+            self._write()
 
 
 def main() -> int:
@@ -1600,6 +1521,11 @@ def main() -> int:
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
     args = ap.parse_args()
+    try:
+        progress = _Progress(args.json)
+    except OSError as exc:
+        sys.stderr.write(f"pbtest: cannot initialize requested output: {exc}\n")
+        return 2
 
     try:
         if pbrun.interpreter_of([args.python]) != args.python:
@@ -1859,6 +1785,10 @@ def main() -> int:
         if message is not None:
             sys.stderr.write(message + "\n")
         if kind == "refusal":
+            try:
+                progress.refuse({"code": "interpreter_absent", "message": message})
+            except OSError as exc:
+                sys.stderr.write(f"pbtest: cannot write refusal: {exc}\n")
             return 2
         if plan["selection"] is None:
             continue
@@ -2000,7 +1930,17 @@ def main() -> int:
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
           f"transport={args.transport}",
           flush=True)
+    try:
+        progress.configure(len(buckets))
+    except OSError as exc:
+        sys.stderr.write(f"pbtest: cannot initialize shard progress: {exc}\n")
+        return 2
     procs = []
+    def run_client(index, command, proc, **kwargs):
+        try:
+            run_shard(index, command, proc, progress=progress, **kwargs)
+        finally:
+            progress.observe(index, kwargs["result"], completed=True)
     requested_roots = [
         [os.path.normpath(os.path.relpath(checkout / raw, checkout)),
          "directory" if (checkout / raw).is_dir() else "file"]
@@ -2113,10 +2053,10 @@ def main() -> int:
         # which would leave the pipe to fill and the shard's wait blocked.
         proc = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            errors="replace")
+            errors="replace", env=_client_environment())
         shard_result: dict = {}
         drain = threading.Thread(
-            target=run_shard, args=(index, command, proc),
+            target=run_client, args=(index, command, proc),
             kwargs={"wait_s": args.wait_s, "deadline": deadline,
                     "result": shard_result, "files": bucket},
             name=f"pbtest-shard-{index}", daemon=True)
@@ -2135,11 +2075,11 @@ def main() -> int:
         # look through it to the payload before asking whether pytest reported.
         out = replayed_output(out or "") or (out or "")
         tail = [line for line in out.strip().splitlines() if line.strip()]
-        summary = pytest_summary(tail)
+        summary = pbtest_outcomes.pytest_summary(tail)
         test_completion = pbtest_outcomes.completion(out)
         timed_out = returncode != 0 and any(re.match(
             r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
-            ANSI.sub("", line)) for line in tail)
+            pbtest_outcomes.ANSI.sub("", line)) for line in tail)
         # Missing terminal output must stay visible: an empty summary once
         # hid 74 tests behind a killed submission (#208). But absence of the
         # summary cannot establish absence of execution (#1365): a deadline
@@ -2184,7 +2124,7 @@ def main() -> int:
                     summary += "; TEST COMPLETION UNVERIFIED"
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
-        skipped = recorded_skips(pbtest_outcomes.parse(out))
+        skipped = pbtest_outcomes.recorded_skips(pbtest_outcomes.parse(out))
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
         action_key = shard_result.get("action_key")
@@ -2243,7 +2183,10 @@ def main() -> int:
             print(f"  shard {index:>3} {skip['nodeid']}{when} - "
                   f"{skip['reason'] or '(no reason given)'}{where}")
 
-    reconcile_shards(results)
+    verdict = pbtest_outcomes.judge_shards(results, requested_files=files)
+    for row, shard_verdict in zip(results, verdict["shards"], strict=True):
+        row["reconciliation"] = shard_verdict["reconciliation"]
+        row["verdict"] = shard_verdict
     print_reconciliation(results)
     if predicted:
         # Item 4 of #1246: the run reports what the model promised against
@@ -2273,26 +2216,10 @@ def main() -> int:
         print(f"total predicted {total_want:.1f}s, total pytest "
               f"{total_have:.1f}s{total_note}")
 
-    # A shard is green when it exited 0 AND pytest reported a terminal summary.
-    # ``ran`` has been computed, printed and written to the JSON since #213, and
-    # the verdict never read it: ``returncode != 0`` alone called a shard that
-    # started no test green, and returned 0 to whoever was deciding a merge on
-    # it.  That is the #208 defect one level in -- the diagnostic improved and
-    # the thing acting on it did not read the diagnostic.  And it reconciled:
-    # a collected test with no outcome, or one two shards ran, is a missing or
-    # doubled result that no exit code reports (#941).
-    failed = [r for r in results if r["returncode"] != 0 or not r["ran"]
-              or (r.get("reconciliation") or {}).get("problems")]
-    # A positively excluded or collection-skipped quantum may succeed beside
-    # useful shards. The complete run still needs a real collected population.
-    population_empty = (bool(results) and all(
-        pbtest_outcomes.parse(r["output"]) is not None and
-        pbtest_outcomes.parse(r["output"]).get("file_selection") is not None
-        for r in results) and not any(
-            (r.get("reconciliation") or {}).get("collected", 0) for r in results))
-    if population_empty:
+    failed = [row for row, shard_verdict in zip(results, verdict["shards"], strict=True)
+              if not shard_verdict["green"]]
+    if any(p["code"] == "population_empty" for p in verdict["problems"]):
         print("pbtest: no tests collected in the requested population; no passing test coverage")
-        failed = results
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
@@ -2300,8 +2227,14 @@ def main() -> int:
         # busy shard. Keep the actual tracebacks visible without another run.
         print("\n".join(displayed(r["output"])))
     if args.json:
-        Path(args.json).write_text(json.dumps(results, indent=1))
-    return 1 if failed else 0
+        try:
+            report_bytes = json.dumps(results, indent=1).encode()
+            _write_json(Path(args.json), report_bytes, durable=True)
+            progress.finish(report_bytes)
+        except OSError as exc:
+            sys.stderr.write(f"pbtest: cannot publish requested output: {exc}\n")
+            return 1
+    return 0 if verdict["green"] and not progress.failed else 1
 
 
 if __name__ == "__main__":

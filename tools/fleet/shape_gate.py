@@ -1229,36 +1229,14 @@ def resolve_action_key(queue_root: Path, key: str) -> tuple[str, Path]:
     return matches[0].stem, matches[0]
 
 
-def judge_outcomes(outcomes: Mapping[str, object] | None, *, where: str) -> None:
-    """Refuse unless ``outcomes`` ran every reference table and all passed.
-
-    ``outcomes`` is a shard's ``pbtest_outcomes`` record.  The collection must
-    be exactly :func:`reference_nodes` -- a run filtered to one table, or one
-    that ran something else as well, is not this commit's gate -- and each
-    node's only reported outcome must be ``passed``.
-    """
-
-    if not isinstance(outcomes, Mapping) or outcomes.get("collect_only"):
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where}'s log carries no pbtest outcome record of a run; the "
-            f"gate runs through pbtest")
-    expected = reference_nodes()
-    collected = sorted(str(node) for node in outcomes.get("collected") or ())
-    if collected != expected:
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where} collected {collected}, not the reference set {expected}")
-    verdicts: dict[str, set[str]] = {}
-    for report in outcomes.get("reports") or ():              # type: ignore[union-attr]
-        verdicts.setdefault(str(report[0]), set()).add(str(report[2]))
-    failing = {node: sorted(verdicts.get(node, set())) for node in expected
-               if verdicts.get(node) != {"passed"}}
-    if failing or outcomes.get("uncounted"):
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where}: not every reference table passed: {failing}"
-            f"{'; uncounted outcomes' if outcomes.get('uncounted') else ''}")
+def judge_gate_log(log: str, *, where: str) -> None:
+    files = [REFERENCE_TEST.split("::", 1)[0]]
+    verdict = pbtest_outcomes.judge_shards([{"shard": 0, "files": files,
+        "returncode": 0, "output": log, "timed_out": False}],
+        requested_files=files, required_nodes=reference_nodes())
+    if not verdict["green"]:
+        raise ShapeGateFailure("receipt_refused", where + ": " + "; ".join(
+            p["message"] for p in verdict["problems"]))
 
 
 def closure_stamp_only(changed: Sequence[str], subdirectory: str) -> list[str]:
@@ -1352,7 +1330,7 @@ def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
         raise ShapeGateFailure("receipt_refused",
                                f"{key[:12]} has no verified CAS receipt")
     log = cas.result_path(receipt, action).read_text(errors="replace")
-    judge_outcomes(pbtest_outcomes.parse(log), where=key[:12])
+    judge_gate_log(log, where=key[:12])
     return {"verdict": "passed", "action_key": key,
             "tables": sorted(REFERENCE_TABLES),
             "finished_host": done.get("finished_host"),

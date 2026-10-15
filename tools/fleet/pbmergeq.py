@@ -43,13 +43,14 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
+from runtime_paths import generation_root
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from pbmergeq_runtime import (
     RuntimeSelectionError,
     baseline_identity,
-    runtime_refusal,
     select_runtime,
     validate_policy,
 )
@@ -152,6 +153,7 @@ class RunResult:
     runtime: dict = dataclasses.field(default_factory=dict)
     runtime_refusal: str = ""
     log: str = ""
+    problems: list[dict] = dataclasses.field(default_factory=list)
 
 
 def load_published_module(path: Path):
@@ -180,44 +182,16 @@ def load_outcomes(pbtest: Path):
     return load_published_module(pbtest.with_name("pbtest_outcomes.py"))
 
 
-def reduce_report(report: list[dict], outcomes) -> RunResult:
-    """Failing node IDs and inconclusive files out of a ``pbtest --json`` report.
-
-    A shard that ran and printed an outcome record contributes every node
-    pytest counted ``failed`` or ``error`` (a collection error is the file's
-    node ID), and every collected node that never ran. A shard without a
-    summary or without a record contributes its files as inconclusive.
-    """
-
-    failed: set[str] = set()
-    inconclusive: list[str] = []
-    files: list[str] = []
-    receipts: list[str] = []
-    actions: list[str] = []
-    refusals: list[str] = []
-    for shard in report:
-        files.extend(shard.get("files") or ())
-        if shard.get("action_key"):
-            actions.append(shard["action_key"])
-        if shard.get("receipt_path"):
-            receipts.append(shard["receipt_path"])
-        record = outcomes.parse(shard.get("output") or "") if shard.get("ran") else None
-        if record is None:
-            refusal = runtime_refusal(shard.get("output") or "")
-            if refusal:
-                refusals.append(refusal)
-            inconclusive.extend(shard.get("files") or ())
-            continue
-        for row in record.get("reports") or ():
-            entry = dict(zip(outcomes.REPORT_FIELDS, row, strict=False))
-            if entry["category"] in ("failed", "error"):
-                failed.add(entry["nodeid"])
-        reconciliation = shard.get("reconciliation") or {}
-        failed.update(f"{nodeid} (never ran)" for nodeid in reconciliation.get("never_ran") or ())
-        inconclusive.extend(reconciliation.get("missing_files") or ())
-    return RunResult(failed=failed, inconclusive=sorted(set(inconclusive)),
-                     files=files, receipts=receipts, actions=actions,
-                     runtime_refusal="\n".join(dict.fromkeys(refusals)))
+def reduce_report(report, outcomes, *, requested_files, client_returncode=0) -> RunResult:
+    verdict = outcomes.judge_shards(report, requested_files=requested_files,
+                                    client_returncode=client_returncode)
+    rows = [row for row in report if isinstance(row, dict)] if isinstance(report, list) else []
+    return RunResult(failed=set(verdict["failing_nodes"]),
+        inconclusive=verdict["unobserved_files"], files=list(requested_files),
+        receipts=[r["receipt_path"] for r in rows if r.get("receipt_path")],
+        actions=[r["action_key"] for r in rows if r.get("action_key")],
+        runtime_refusal="\n".join(dict.fromkeys(r["message"] for r in verdict["runtime_refusal"])),
+        problems=verdict["problems"])
 
 
 def node_file(nodeid: str) -> str:
@@ -673,6 +647,10 @@ class Runner:
     def __init__(self, cfg: Config, store: Store):
         self.cfg, self.store = cfg, store
         self.outcomes = load_outcomes(cfg.pbtest)
+        if (getattr(self.outcomes, "VERDICT_SCHEMA", None) != "prismabuild.pbtest_shard_verdict.v1"
+                or getattr(self.outcomes, "PROGRESS_SCHEMA", None) != "prismabuild.pbtest_progress.v1"
+                or not all(callable(getattr(self.outcomes, key, None)) for key in ("judge_shards", "read_progress", "progress_path"))):
+            raise ValueError("pbmergeq: selected pbtest generation lacks the complete verdict/progress contract")
         self._pbtest = None
 
     def discover(self, checkout: Path) -> tuple[list[str], list[str]]:
@@ -798,6 +776,7 @@ class Runner:
                     merged.failed = ({n for n in merged.failed if node_file(n) not in redo}
                                      | again[key].failed)
                     merged.inconclusive = again[key].inconclusive
+                    merged.problems = [p for p in merged.problems if not set(p["files"]) <= redo] + again[key].problems
                     merged.receipts += again[key].receipts
                     merged.actions += again[key].actions
                     merged.wall_s += again[key].wall_s
@@ -816,6 +795,7 @@ class Runner:
             report = outdir / f"{name}.json"
             log = outdir / f"{name}.log"
             report.unlink(missing_ok=True)
+            self.outcomes.progress_path(report).unlink(missing_ok=True)
             try:
                 runtime = checkout_runtime(self.cfg, checkout)
             except RuntimeSelectionError as exc:
@@ -832,9 +812,13 @@ class Runner:
             command = test_command(self.cfg, checkout, files, report, self.history(runtime),
                                    python=runtime["python"])
             handle = log.open("w", encoding="utf-8")
+            invocation = {"run_id": uuid.uuid4().hex, "launch_entrypoint": str(self.cfg.pbtest),
+                          "generation": str(generation_root(self.cfg.pbtest))}
+            child_env = {**env, "PRISMABUILD_PBTEST_RUN_ID": invocation["run_id"],
+                         "PRISMABUILD_PBTEST_ENTRYPOINT": invocation["launch_entrypoint"]}
             process = subprocess.Popen(command, stdout=handle,
-                                       stderr=subprocess.STDOUT, env=env, text=True)
-            live[name] = (process, handle, report, log, runtime, time.monotonic())
+                                       stderr=subprocess.STDOUT, env=child_env, text=True)
+            live[name] = (process, handle, report, log, runtime, time.monotonic(), invocation, {"sequence": -1, "completed": None})
             self.store.event(batch, f"run {name} started: {len(files)} file(s) on "
                                     f"{checkout.name}, pid {process.pid}, log {log}")
         last = time.monotonic()
@@ -842,17 +826,21 @@ class Runner:
             time.sleep(2)
             if time.monotonic() - last >= HEARTBEAT_S:
                 last = time.monotonic()
-                for name, (process, _, _, log, _, started) in live.items():
+                for name, (process, _, report, log, _, started, invocation, progress) in live.items():
                     if process.poll() is None:
+                        snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
+                        if snapshot is not None and snapshot["sequence"] >= progress["sequence"]:
+                            progress.update(sequence=snapshot["sequence"], completed=snapshot["completed_shards"])
+                        count = progress["completed"] if progress["completed"] is not None else "unknown"
                         self.store.event(batch, f"run {name} waiting "
                                                 f"{time.monotonic() - started:.0f}s: "
-                                                f"{self._progress(log)} shard(s) reported")
+                                                f"{count} shard(s) reported")
                 self.store.write_status()
-        for name, (process, handle, report, log, runtime, started) in live.items():
+        for name, (process, handle, report, log, runtime, started, invocation, _) in live.items():
             handle.close()
             wall = time.monotonic() - started
             files = next(f for n, _, f in jobs if n == name)
-            result = self.read_result(report, files, log=log, returncode=process.returncode)
+            result = self.read_result(report, files, log=log, returncode=process.returncode, invocation=invocation)
             result.runtime, result.log = runtime, str(log)
             result.report, result.wall_s = str(report), wall
             results[name] = result
@@ -862,26 +850,19 @@ class Runner:
         return results
 
     def read_result(self, report: Path, files: list[str], *, log: Path,
-                    returncode: int) -> RunResult:
-        if report.exists():
-            # The report owns classification: only its unobserved shards can
-            # name a refusal. Failed-client echoes of observed pytest cannot.
-            return reduce_report(json.loads(report.read_text(encoding="utf-8")),
-                                 self.outcomes)
-        result = RunResult(failed=set(), inconclusive=list(files), files=list(files),
-                           receipts=[])
-        if returncode:
-            result.runtime_refusal = runtime_refusal(log.read_text(encoding="utf-8", errors="replace"))
-        return result
-
-    @staticmethod
-    def _progress(log: Path) -> int:
+                    returncode: int, invocation: dict | None = None) -> RunResult:
         try:
-            text = log.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return 0
-        return sum(1 for line in text.splitlines()
-                   if line.startswith("shard ") and (" ok " in line or " rc=" in line))
+            rows = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rows = None
+        result = reduce_report(rows, self.outcomes, requested_files=files,
+                               client_returncode=returncode)
+        if rows is None and returncode and invocation is not None:
+            snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
+            if (snapshot is not None and snapshot["state"] == "refused"
+                    and not snapshot["completed_shards"] and snapshot["runtime_refusal"]):
+                result.runtime_refusal = snapshot["runtime_refusal"]["message"]
+        return result
 
 
 # --------------------------------------------------------------------------
@@ -959,7 +940,8 @@ class Queue:
             "files": len(result.files), "failed": sorted(result.failed),
             "inconclusive": result.inconclusive, "receipts": result.receipts,
             "actions": result.actions, "runtime": result.runtime,
-            "runtime_refusal": result.runtime_refusal, "log": result.log}
+            "runtime_refusal": result.runtime_refusal, "log": result.log,
+            "problems": result.problems}
         self.store.save()
 
     def check_results(self, batch: dict, results: dict[str, RunResult]) -> None:

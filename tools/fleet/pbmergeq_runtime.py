@@ -95,11 +95,3 @@ def baseline_identity(tree: str, runtime: dict, config: dict) -> str:
                 "runtime": {key: runtime[key] for key in ("python", "pins", "pin_sources", "pbtest")},
                 "config": config}
     return core.canonical_sha256(json.loads(json.dumps(identity, default=str)))
-
-
-def runtime_refusal(output: str) -> str:
-    """Recognize explicit pre-pytest pin/placement refusals, never missing summaries alone."""
-    prefixes = ("pbtest: dependency pin refused before pytest:",
-                "pbtest: every recorded worker that could take these shards names the interpreter absent:")
-    return next((line.strip() for line in output.splitlines()
-                 if line.strip().startswith(prefixes)), "")
