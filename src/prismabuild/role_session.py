@@ -221,6 +221,18 @@ def loaded_runtime_commit() -> str:
     return _commit_at(GENERATION_VERSION)
 
 
+def loaded_generation() -> str:
+    """The generation beside the immutable source tree this role imported."""
+
+    return generation_receipt.generation_at(GENERATION_VERSION)
+
+
+def published_generation() -> str:
+    """The generation at the live runtime boundary, or empty when unknown."""
+
+    return generation_receipt.generation_at(RUNTIME_VERSION)
+
+
 def record_generation_drift(drift: dict, *, actor: str,
                             queue_root, detail: dict | None = None) -> Path | None:
     """Stamp one immutable ``generation-drift/`` record, or ``None``.
@@ -271,4 +283,4 @@ def generation_drift(*, loaded_commit: str,
     return generation_receipt.drift(
         loaded_commit=loaded_commit, loaded_generation=loaded_generation,
         published_commit=published_commit(),
-        published_generation=_generation_at(RUNTIME_VERSION))
+        published_generation=published_generation())

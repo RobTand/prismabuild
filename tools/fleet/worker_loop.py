@@ -1098,7 +1098,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         if args.class_image_config is not None else None)
     # Immutable loaded generation, never the moving repo symlink. Old loops
     # cannot claim a successor publisher's privileged action.
-    loaded_generation = role_session._generation_at(role_session.GENERATION_VERSION)
+    loaded_generation = role_session.loaded_generation()
     def offered_tags(name: str) -> list[str]:
         """What this box offers, for the name it currently has.
 

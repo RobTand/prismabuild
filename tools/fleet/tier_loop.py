@@ -11592,7 +11592,7 @@ def _serve_cycles(args, stop_requested) -> int:
     receipts = liveness = None
     host = socket.gethostname()
     loaded_commit = runtime_gate.loaded_runtime_commit()
-    loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
+    loaded_generation = runtime_gate.loaded_generation()
     parked_epoch = None
     cycle_failed = False
 

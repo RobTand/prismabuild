@@ -42,11 +42,11 @@ def main(argv=None):
     try:
         with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
             loaded = runtime_gate.loaded_runtime_commit()
-            loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
+            loaded_generation = runtime_gate.loaded_generation()
             with runtime_gate.role_singleton(Path(__file__)):
                 while not stop.is_set():
                     published = runtime_gate.published_commit()
-                    published_generation = runtime_gate._generation_at(runtime_gate.RUNTIME_VERSION)
+                    published_generation = runtime_gate.published_generation()
                     if generation_receipt.drift(
                             loaded_commit=loaded,
                             loaded_generation=loaded_generation,

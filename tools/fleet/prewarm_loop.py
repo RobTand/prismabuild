@@ -4091,7 +4091,7 @@ def _serve_cycles(args, stop: threading.Event) -> int:
     # answer "this poll" to an operator asking "since you started".
     ledger = HoldLedger()
     loaded_commit = runtime_gate.loaded_runtime_commit()
-    loaded_generation = runtime_gate._generation_at(runtime_gate.GENERATION_VERSION)
+    loaded_generation = runtime_gate.loaded_generation()
 
     def announce(payload: dict[str, object]) -> None:
         print(json.dumps({**payload, "unix": round(time.time(), 3)}),
