@@ -66,7 +66,8 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
     monkeypatch.setattr(loop, "SH", tmp_path)
     monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
     monkeypatch.setattr(role_session, "published_commit", lambda: "test")
-    monkeypatch.setattr(role_session, "_generation_at", lambda path: "test")
+    monkeypatch.setattr(role_session, "loaded_generation", lambda: "test")
+    monkeypatch.setattr(role_session, "published_generation", lambda: "test")
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     # Capability probes are not this fixture's subject; make them inert so
     # nothing they do can be mistaken for a poll.
