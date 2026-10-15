@@ -177,27 +177,6 @@ PROGRESS_RECORD_SCHEMA_V1 = "prismabuild.action_progress.v1"
 # and parser work; use the existing stable regular-file reader in the watcher.
 MAX_ACTION_PROGRESS_BYTES = 64 * 1024
 
-#: The placement tag a worker offers when it can enforce the progress contract,
-#: and which the submitter requires of any action that declares one.
-#:
-#: The announcement in a worker's offer says who *understands* the contract; it
-#: is a diagnostic, and a diagnostic cannot stop a claim.  During a rolling
-#: upgrade the boxes on the previous generation are still polling, and a
-#: progress-admitted action they claim runs under their whole-run ceiling --
-#: killed by the very default the contract removes.  Requiring a tag they do
-#: not offer is what makes that unreachable, and it needs no matcher of its
-#: own: item tags must already be a subset of the worker's.
-#:
-#: Versioned with the record schema on purpose.  A future record format is a
-#: new tag, so an old worker cannot claim work whose reports it would reject as
-#: foreign and then kill for the silence.
-PROGRESS_TAG = "progress-v1"
-#: The action-side helper and phase-list environment added by #488.  It is a
-#: separate capability from :data:`PROGRESS_TAG`: an older v1 watcher accepts
-#: the record but cannot launch code that reads these names.
-PROGRESS_HELPER_TAG = "progress-helper-v1"
-# Optional cyclic phase semantics; older v1 policy readers reject the field.
-PROGRESS_CYCLE_TAG = "progress-cycle-v1"
 #: The sealed request key a stage mover declares beside its progress policy
 #: (#1010): the storage pool's member devices, the disk pacer's caps, the
 #: stage root its start gate locks and the rate its grace was priced at.  The
@@ -208,10 +187,6 @@ PROGRESS_CYCLE_TAG = "progress-cycle-v1"
 #: worker credits is a different action from one it does not.
 POOL_CONTENTION_PARAM = "progress_pool_contention"
 POOL_CONTENTION_SCHEMA_V1 = "prismabuild.progress_pool_contention.v1"
-#: Offered by a worker whose stall check reads :data:`POOL_CONTENTION_PARAM`.
-#: A worker without it would ignore the param and kill a paced mover at the
-#: bare copy grace, so a mover that declares it requires the tag.
-POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 #: The sealed request key a coordinator declares beside its progress policy
 #: (#1666): the batch it awaits, as parent and plan keys, and the
 #: controller-state directory whose accepted members name the awaited
@@ -219,36 +194,6 @@ POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 #: is a different action from one it does not.
 AWAITED_BATCH_PARAM = "progress_awaited_batch"
 AWAITED_BATCH_SCHEMA_V1 = "prismabuild.progress_awaited_batch.v1"
-#: Offered by a worker whose stall check credits a coordinator's wait on its
-#: declared queued children (#1666). A worker without it would ignore the
-#: declaration and end a valid queue wait as no_progress, so a coordinator
-#: that declares an awaited batch requires the tag.
-QUEUED_CHILD_TAG = "progress-queued-child-v1"
-#: Offered by a worker that names the holder of a stage's ownership lock
-#: from the holder's own record and never credits an action's own hold as a
-#: start-gate wait (#1021).  A stage egress takes that lock itself, so a
-#: worker without this would credit a wedged egress's own hold and never
-#: end it; an egress sealed with a progress policy requires the tag.
-EGRESS_PROGRESS_TAG = "progress-egress-v1"
-#: The placement tag a worker offers when it can check an action's declared
-#: container images against its own local Docker before claiming.
-#:
-#: Same shape and same reason as :data:`PROGRESS_TAG`: the claim check is code
-#: a worker either has or does not, and a loop from before the check would
-#: claim image-pinned work, consume the attempt and die inside the action --
-#: #714.  Item tags must already be a subset of the worker's, so requiring a
-#: tag the old loops do not offer is what makes that unreachable.  A worker
-#: without Docker still offers the tag: it performs the check, finds the
-#: presence unknown, and refuses, leaving the item ready for a box that can
-#: see it -- which is the fail-closed behavior this tag exists to reach, not
-#: a reason to hide the capability.
-CONTAINER_IMAGE_TAG = "container-image-v1"
-#: The capability tag an item that names an absolute interpreter carries
-#: (#1263).  A loop of this generation offers it; a loop from before the
-#: field does not, so an interpreter-naming item is never claimed by a box
-#: that cannot even see the requirement -- the same rolling-publish fence
-#: ``CONTAINER_IMAGE_TAG`` gives declared images (#714).
-INTERPRETER_TAG = "interpreter-path-v1"
 PBRUN_STAMP_PREFIX = ".pbrun-closure."
 PBRUN_RESULT_PREFIX = "pbrun_result."
 PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH = 16
@@ -9005,21 +8950,14 @@ __all__ = [
     "PROGRESS_PARAM",
     "PROGRESS_POLICY_SCHEMA_V1",
     "PROGRESS_RECORD_SCHEMA_V1",
-    "PROGRESS_TAG",
-    "PROGRESS_HELPER_TAG",
-    "PROGRESS_CYCLE_TAG",
     "POOL_CONTENTION_PARAM",
     "POOL_CONTENTION_SCHEMA_V1",
-    "POOL_CONTENTION_TAG",
     "AWAITED_BATCH_PARAM",
     "AWAITED_BATCH_SCHEMA_V1",
-    "QUEUED_CHILD_TAG",
     "action_awaited_batch",
     "validate_awaited_batch",
-    "EGRESS_PROGRESS_TAG",
     "action_pool_contention",
     "validate_pool_contention",
-    "CONTAINER_IMAGE_TAG",
     "action_progress_policy",
     "report_action_progress",
     "validate_progress_policy",

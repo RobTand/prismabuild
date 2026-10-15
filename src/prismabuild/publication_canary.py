@@ -14,10 +14,10 @@ from pathlib import Path
 import re
 from collections.abc import Callable, Mapping
 
-from . import core as pb, posix_lock
+from . import contracts, core as pb, posix_lock
 from .materialize import _write_json_atomic
 
-CAPABILITY = "publication-canary-slot-v1"
+CAPABILITY = contracts.PUBLICATION_CANARY_TAG
 SCHEMA = "prismabuild.publication_canary_slot.v1"
 # Verified same-image leg2 action 4ae5bc61d25fa5c5de7fcfc40b5e40430f5c137b6dce3eb8430ac944f3c0aa33:
 # elapsed execution 3.93170428276062s, excluding queue wait. Eightfold margin.

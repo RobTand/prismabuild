@@ -436,7 +436,6 @@ def _scratch_selections(variables: Mapping[str, str]) -> list[dict[str, str]]:
 
 
 SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = "prismabuild.scratch_lifetime_selection.v1"
-SCRATCH_LIFETIME_TAG = "scratch-lifetime-v1"
 SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = "prismabuild.scratch_lifetime_record.v1"
 SCRATCH_LIFETIME_FIELD = "scratch_lifetime_record"
 
@@ -1050,7 +1049,6 @@ def read_spool_offer(ledger_base) -> int | None:
 # -- opt-in measured I/O service placement (Refs #1182) ----------------------
 IO_ENV = "PRISMABUILD_LOCAL_SCRATCH_IO"
 IO_SCHEMA = "prismabuild.local_scratch_io.v1"
-IO_CAPABILITY = "local-scratch-io-v1"
 PROFILE_SCHEMA = "prismabuild.local_scratch_io_profile.v1"
 CONFIG_SCHEMA = "prismabuild.local_scratch_io_profiles.v1"
 PLACEMENT_SCHEMA = "prismabuild.local_scratch_io_placement.v1"

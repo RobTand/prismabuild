@@ -27,9 +27,9 @@ import os
 from pathlib import Path
 import uuid
 
-from . import core
+from . import contracts, core
 
-TAG = "gang-v1"
+TAG = contracts.GANG_TAG
 GANGS = "gangs"
 GROUP_SCHEMA = "prismabuild.gang_group.v1"
 ELECT_SCHEMA = "prismabuild.gang_election.v1"
