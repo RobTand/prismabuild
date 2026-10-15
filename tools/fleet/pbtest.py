@@ -2065,7 +2065,7 @@ def main() -> int:
         drain.start()
         procs.append((index, bucket, drain, shard_result))
 
-    results = []
+    observations = []
     for index, bucket, drain, shard_result in procs:
         # EOF comes when the shard's last pbrun exits, so the join is the wait.
         drain.join()
@@ -2077,11 +2077,21 @@ def main() -> int:
         # look through it to the payload before asking whether pytest reported.
         out = replayed_output(out or "") or (out or "")
         tail = [line for line in out.strip().splitlines() if line.strip()]
-        summary = pbtest_outcomes.pytest_summary(tail)
-        test_completion = pbtest_outcomes.completion(out)
         timed_out = returncode != 0 and any(re.match(
             r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
             pbtest_outcomes.ANSI.sub("", line)) for line in tail)
+        observations.append({"shard": index, "files": bucket, "returncode": returncode,
+            "output": out, "timed_out": timed_out, "attempts": attempts,
+            "action_key": shard_result.get("action_key")})
+    verdict = pbtest_outcomes.judge_shards(observations, requested_files=files)
+    results = []
+    for observation, shard_verdict in zip(observations, verdict["shards"], strict=True):
+        index, bucket = observation["shard"], observation["files"]
+        returncode, attempts = observation["returncode"], observation["attempts"]
+        out, timed_out = observation["output"], observation["timed_out"]
+        tail = [line for line in out.strip().splitlines() if line.strip()]
+        summary, ran = shard_verdict["summary"], shard_verdict["ran"]
+        test_completion = shard_verdict["completion"]
         # Missing terminal output must stay visible: an empty summary once
         # hid 74 tests behind a killed submission (#208). But absence of the
         # summary cannot establish absence of execution (#1365): a deadline
@@ -2090,7 +2100,6 @@ def main() -> int:
         # question the flag is actually asked.  It used to mean "some line
         # mentioned passing, failing or an error", and those are not the same
         # claim: the second is true of a shard that died in argparse.
-        ran = bool(summary)
         if not ran:
             # Preserve the observed ending without inventing coverage. A
             # signal, timeout, or refused submission may leave no summary;
@@ -2126,10 +2135,10 @@ def main() -> int:
                     summary += "; TEST COMPLETION UNVERIFIED"
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
-        skipped = pbtest_outcomes.recorded_skips(pbtest_outcomes.parse(out))
+        skipped = shard_verdict["skipped"]
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
-        action_key = shard_result.get("action_key")
+        action_key = observation["action_key"]
         predicted_s = (round(sum(predicted.get(name, model_default)
                                  for name in bucket), 1)
                        if predicted else None)
@@ -2147,7 +2156,8 @@ def main() -> int:
                         "test_completion": test_completion,
                         "timed_out": timed_out,
                         "ran": ran, "skipped": skipped, "attempts": attempts,
-                        "output": out})
+                        "output": out, "reconciliation": shard_verdict["reconciliation"],
+                        "verdict": shard_verdict})
         state = "ok" if returncode == 0 else f"rc={returncode}"
         # A resubmitted shard says so on its own line, so the receipt records
         # that its first submission was refused (#1102).
@@ -2185,10 +2195,6 @@ def main() -> int:
             print(f"  shard {index:>3} {skip['nodeid']}{when} - "
                   f"{skip['reason'] or '(no reason given)'}{where}")
 
-    verdict = pbtest_outcomes.judge_shards(results, requested_files=files)
-    for row, shard_verdict in zip(results, verdict["shards"], strict=True):
-        row["reconciliation"] = shard_verdict["reconciliation"]
-        row["verdict"] = shard_verdict
     print_reconciliation(results)
     if predicted:
         # Item 4 of #1246: the run reports what the model promised against
