@@ -9049,8 +9049,10 @@ thread it started. `ThreadingHTTPServer` uses daemon request threads, so
 The shutdown grace is 10 seconds in total, starting when accepts stop. This is
 a new stop-only bound, using the same operational patience as pbstatus's default
 read timeout. Ordinary metrics collection remains unbounded. After an explicit
-stop, if every request joins, the exporter posts the current gate's marker when
-one is in force and exits 0. With an open gate it exits without a marker. If the grace
+stop, if every request joins, the exporter posts the current closed gate's
+marker only when its identity is a finite numeric `changed_unix`, using the
+existing gate-identity validation. An open or missing gate produces no marker;
+the shared admission parser still treats a missing gate as draining. If the grace
 expires, it exits 0 without a marker or a request-completion claim; the process
 census must observe its exit before treating it as gone. The grace does not
 change the drain observer's required role set. If a future profile includes

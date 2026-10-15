@@ -2748,7 +2748,8 @@ def _serve_requests(args: argparse.Namespace, *, refused: int,
     completed = server.join_requests()
     if completed and stop.is_set():
         gate = role_session.read_maintenance_gate()
-        if gate is not None:
+        if (gate is not None
+                and "drain_changed_unix" in role_session.drain_offer_fields(gate)):
             role_session.post_park_marker(gate)
     elif not completed:
         print(f"pbmetrics: request threads still active after {SHUTDOWN_GRACE_S:g}s; "
