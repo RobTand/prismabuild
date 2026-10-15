@@ -17684,6 +17684,26 @@ verification and runtime activation recorded separately.
 
 ## Source ownership after the 2026-10-14 simplification
 
+`contracts.py` owns the worker code-capability tag strings and pure contract
+rows. Normalized publication facts declare requirements; worker facts enable
+offers and their companion tags. Gang enablement and a known loaded generation
+remain prerequisites for gang and canary offers. Image and scratch support are
+code capabilities even when their current availability is unknown. Class,
+hostname and `cpu` remain placement or host facts outside the rows.
+
+The registry imports only the standard library. Core retains the execution
+schema and parameter names, but no longer exports placement-only capability
+tags or imports their owner. The isolated scratch recorder and pbtest's
+embedded dependency verifier also retain their existing import closures.
+The public SDK's capability values remain unchanged.
+
+This extraction preserves existing publication verdicts. Pool publication still
+does not derive or reject progress-family tags, and manual worker tags still
+precede code enablement. Qualifying those changes remains separate work.
+Availability eligibility and the complete shared submission owner also remain
+separate work. Source changes establish no new deployed capability or
+staged-read workload proof.
+
 `src/prismabuild/kept_reads.py` owns local filesystem version trust and retained
 directory/census reads. Produced-output per-tick memos retain versions only
 inside `file_version_scope`; the tier cycle and blocked-origin observation
