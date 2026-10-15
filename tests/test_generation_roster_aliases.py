@@ -8,7 +8,7 @@ from test_publication_refuses_a_dropped_roster_option_1664 import (
 )
 from test_roster_presence_status import (
     _generation_with_roster, _offer, _roster, _roster_pair, fleet,
-    post, SHA, publish_runtime as barrier_publisher,
+    post, SHA, OFFLINE, publish_runtime as barrier_publisher,
 )
 
 
@@ -114,3 +114,15 @@ def test_candidate_preserves_its_roster_shape_policy(tmp_path, monkeypatch, docu
     mirror = _publish(tmp_path, monkeypatch, checkout, [])
     assert candidate_publisher.main() == 0
     assert mirror.is_symlink()
+
+
+@pytest.mark.parametrize("presence", [OFFLINE, {"status": "offline"}])
+def test_candidate_collision_check_includes_absent_declarations(
+        tmp_path, monkeypatch, presence):
+    boxes = {"old": {"_alias": "renamed"}, "renamed": dict(presence)}
+    checkout = _checkout(tmp_path / "checkout", {"boxes": boxes})
+    mirror = _publish(tmp_path, monkeypatch, checkout, [])
+    with pytest.raises(SystemExit, match="ambiguous.*renamed"):
+        candidate_publisher.main()
+    assert not mirror.exists()
+    assert not (mirror.parent / "runtime-generations").exists()

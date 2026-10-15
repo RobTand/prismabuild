@@ -1056,6 +1056,12 @@ def _candidate_roster() -> dict:
         raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
     if not isinstance(document, dict):
         raise SystemExit("cannot read the candidate roster: not a JSON object")
+    boxes = document.get("boxes")
+    if isinstance(boxes, dict):
+        try:
+            fleet_roster.generation_aliases(boxes)
+        except fleet_roster.RosterPresenceError as exc:
+            raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
     return document
 
 
@@ -1516,10 +1522,12 @@ def _barrier_roster(generations):
             boxes = json.loads((root / member).read_text())["boxes"]
             if not isinstance(boxes, dict) or not boxes:
                 raise ValueError("empty roster")
+            declared = fleet_roster.generation_aliases(boxes)
             for key, value in boxes.items():
-                names = {key}
+                names = set(declared[key])
                 if isinstance(value, dict) and value.get("_alias"):
-                    names.add(value["_alias"])
+                    if not isinstance(value["_alias"], str):
+                        raise ValueError("invalid roster name")
                 if any(not isinstance(n, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n) is None for n in names):
                     raise ValueError("invalid roster name")
                 try:
@@ -1902,9 +1910,9 @@ def _roster_entries() -> list[tuple[str, frozenset[str], object]]:
         boxes = roster["boxes"]
         if not isinstance(boxes, dict) or not boxes:
             raise ValueError("no boxes declared")
+        declared = fleet_roster.generation_aliases(boxes)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
-    declared = fleet_roster.generation_aliases(boxes)
     return [(key, names, boxes[key]) for key, names in declared.items()]
 
 
@@ -2239,6 +2247,8 @@ def _run_publication(args) -> int:
         )
 
     published = _publication_manifest()
+    if "tools/fleet/fleet_boxes.json" in published:
+        _candidate_roster()
     problems = _unshipped_imports(published)
     if problems:
         raise SystemExit(

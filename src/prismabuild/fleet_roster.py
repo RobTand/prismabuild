@@ -143,15 +143,22 @@ def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
 
 def generation_aliases(
         boxes: Mapping[str, object]) -> dict[str, frozenset[str]]:
-    """Declared names per canonical box within one generation."""
+    """Declared names per canonical box, refusing distinct owners of a name."""
 
     declared = {}
+    owners = {}
     for key in sorted(boxes):
         entry = boxes[key]
         names = {key}
         alias = entry.get("_alias") if isinstance(entry, dict) else None
         if isinstance(alias, str) and alias:
             names.add(alias)
+        for name in sorted(names):
+            if name in owners:
+                raise RosterPresenceError(
+                    f"ambiguous fleet hostname alias {name!r}: distinct roster "
+                    f"declarations {owners[name]!r} and {key!r}")
+            owners[name] = key
         declared[key] = frozenset(names)
     return declared
 

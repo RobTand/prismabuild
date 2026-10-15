@@ -17829,6 +17829,18 @@ Supervisor/membership prefer an explicit canonical entry; recorder evidence
 rejects ambiguous alias groups. Bootstrap and privileged policy checks retain
 their own input/authorization boundaries.
 
+Publication uses `generation_aliases` to refuse a name claimed by distinct
+declarations within one generation. This includes alias-to-key and
+alias-to-alias collisions across all declared boxes; an alias equal to its own
+key is valid. Candidate validation runs before staging when publication carries
+the roster, including bootstrap and rolling publication. Attestation and barrier
+readers apply the same ownership check. Each barrier generation is checked
+separately before the existing old/new rename groups are joined. This validates
+declarations, not physical-host identity. Host spelling, roster shape and
+presence validation remain caller policy, as do canonical lookup and recorder
+ambiguity handling. This source change does not activate a runtime or qualify
+barrier lifecycle behavior.
+
 `decomposition.py` owns decomposition addressing, membership capture and durable
 child verification. Reporter capture stops after an invalid plan; queue capture
 retains both document diagnostics. Campaign closure keeps its publication-only
