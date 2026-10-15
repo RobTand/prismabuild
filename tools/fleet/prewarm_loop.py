@@ -496,25 +496,6 @@ def stage_pool_rows(prefix: str,
     return rows
 
 
-def pool_mountpoint(name: str,
-                    runner: Callable[[list[str]], str] | None = None,
-                    ) -> str | None:
-    """Where the stage pool is mounted, asked of ZFS rather than assumed.
-
-    ``/<pool>`` is only the default; a pool with ``mountpoint=legacy`` or
-    ``none`` has no directory to write into, and that is a tier this loop
-    must report as unreadable rather than write beside.
-    """
-
-    try:
-        text = (runner or run_tool)(
-            [storage_tiers.zfs_binary(), "get", "-H", "-o", "value", "mountpoint", name])
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = text.strip()
-    return value if value.startswith("/") else None
-
-
 def dataset_available(name: str,
                       runner: Callable[[list[str]], str] | None = None,
                       ) -> int | None:
@@ -1166,10 +1147,10 @@ def discover_stage(prefix: str, *,
         return StageTier(state="unreadable",
                          reason=f"{name} health is {health}", **common)
     dataset = f"{name}/{STAGE_DATASET}"
-    mountpoint = pool_mountpoint(dataset, runner=runner)
+    mountpoint = storage_tiers.pool_mountpoint(dataset, runner=runner or run_tool)
     if not mountpoint:
         dataset = name
-        mountpoint = pool_mountpoint(name, runner=runner)
+        mountpoint = storage_tiers.pool_mountpoint(name, runner=runner or run_tool)
     common["dataset"] = dataset
     if not mountpoint:
         return StageTier(
