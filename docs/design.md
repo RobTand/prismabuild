@@ -4431,6 +4431,9 @@ network or live broker mount. The source is read-only, and only the private
 worker-owned campaign subtree is shared writable storage. Campaign rows declare
 their already-local immutable native image, CPU1, memory3GiB, GPU0, native
 threads1 and priority -10. The container memory limit is 2GiB within that total.
+Manifest rows omit `cwd`, so admitted emission never captures a disposable worker
+checkout. Run `pbcampaign.py` from the pinned coordinator candidate checkout.
+The campaign's default working directory selects that source tree for sealing.
 The fake broker, systemctl and process census remain simulated. Source support
 does not establish ARM reader/NFS qualification or the four distinct-host
 scenario outcomes. Those gates remain required before public integration.

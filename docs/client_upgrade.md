@@ -287,3 +287,5 @@ actual unprivileged subprocesses. The coordinator and fixture writes use worker
 filesystem credentials. Native ARM/NFS reader evidence and all four distinct-host
 scenario outcomes remain required before integration. Its fake broker and
 process census do not establish physical-fleet quiescence.
+Run `pbcampaign.py` from the pinned coordinator candidate checkout. Emitted rows
+omit `cwd` and use the campaign's submitting directory as the source to seal.

@@ -662,7 +662,6 @@ def emit_manifest(path, root, *, x86_image, gb10_image):
             rows.append({"argv": ["/usr/bin/python3", script, "--role", role,
                                  "--scenario", scenario, "--root", str(scenario_root),
                                  "--image", image], "container_images": [image],
-                         "cwd": str(Path(__file__).resolve().parents[2]),
                          "demand": {"cpu": 1, "mem_gb": 3}, "tags": [tag],
                          "env": THREAD_ENV, "priority": -10, "timeout_s": 240})
     Path(path).write_bytes(_qualify_rollout_canonical(rows))
