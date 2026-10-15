@@ -28,8 +28,10 @@ import pbcampaign  # noqa: E402
 import pbwait  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue  # noqa: E402
+from file_open_observer import observe_file_opens  # noqa: E402
 
 EVIDENCE = "cas:sha256:" + "0" * 64
+CHILD_RESULT_LIMIT_BYTES = 1024 * 1024
 
 #: A producer, in the only sense this test needs one: it reads the envelope it
 #: was handed, answers for exactly the tasks in it, and writes the manifest at
@@ -132,6 +134,23 @@ def _group_path(tmp_path: Path, group: dict) -> Path:
             / "group.json")
 
 
+def _small_request(work: Path, producer: str) -> dict:
+    request = _request(work)
+    request["common"]["argv"][2] = producer
+    request["roster"]["tasks"] = request["roster"]["tasks"][:3]
+    request["batch_policy"]["residencies"][0]["setup_seconds"] = 20.0
+    request["batch_policy"]["max_setup_fraction"] = 0.5
+    return request
+
+
+def _producer_rewriting_result(expression: str) -> str:
+    return PRODUCER.replace("OUTPUT", 'task["output_id"]') + (
+        '\nfrom pathlib import Path\n'
+        'result = Path(batch["result_manifest_path"])\n'
+        'raw = result.read_bytes()\n'
+        f'result.write_bytes({expression})\n')
+
+
 # --------------------------------------------------------------------------
 # The cover closes
 # --------------------------------------------------------------------------
@@ -190,6 +209,142 @@ def test_closing_the_same_group_twice_publishes_the_same_bytes(
     assert _group_path(tmp_path, group).read_bytes() == first
 
 
+@pytest.mark.parametrize("extra_byte", [0, 1], ids=["at-limit", "over-limit"])
+def test_campaign_child_result_byte_limit(
+    tmp_path: Path, fleet, capsys, extra_byte,
+) -> None:
+    work, queue = fleet
+    size = CHILD_RESULT_LIMIT_BYTES + extra_byte
+    producer = _producer_rewriting_result(f'raw + b" " * ({size} - len(raw))')
+    _, group = _decompose(_small_request(work, producer))
+    assert len(group["children"]) == 1
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    child = group["children"][0]
+    child_receipt = cas.lookup(child)
+    assert child_receipt is not None
+    assert child_receipt["result"]["bytes"] == size
+
+    assert pbcampaign.close_group(group, cas=cas) == extra_byte
+    assert _group_path(tmp_path, group).exists() is (extra_byte == 0)
+    if extra_byte:
+        assert "byte bound" in capsys.readouterr().err
+
+
+def test_campaign_refuses_an_oversized_result_before_opening_its_blob(
+    tmp_path: Path, fleet, monkeypatch, capsys,
+) -> None:
+    work, queue = fleet
+    size = CHILD_RESULT_LIMIT_BYTES + 1
+    producer = _producer_rewriting_result(f'raw + b" " * ({size} - len(raw))')
+    _, group = _decompose(_small_request(work, producer))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    child_receipt = cas.lookup(group["children"][0])
+    assert child_receipt is not None
+    blob = cas.blob_path(child_receipt["result"]["sha256"])
+    assert blob.stat().st_size == size
+    opened = observe_file_opens(monkeypatch, blob)
+
+    status = pbcampaign.close_group(group, cas=cas)
+    assert opened == [], "an over-limit declared result must refuse before its first open"
+    assert status == 1
+    assert "byte bound" in capsys.readouterr().err
+    assert not _group_path(tmp_path, group).exists()
+
+
+@pytest.mark.parametrize("damage", [
+    "schema", "unknown-field", "missing-digests", "invalid-digest", "digest-count",
+])
+def test_campaign_refuses_a_malformed_publication_with_matching_children(
+    tmp_path: Path, fleet, damage,
+) -> None:
+    work, queue = fleet
+    producer = PRODUCER.replace("OUTPUT", 'task["output_id"]')
+    _, group = _decompose(_small_request(work, producer))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    path = dc.record_dir(cas.root, group["plan"]["parent_key"]) / "publication.json"
+    publication = json.loads(path.read_bytes())
+    if damage == "schema":
+        publication["schema"] = "wrong-schema"
+    elif damage == "unknown-field":
+        publication["unexpected"] = True
+    elif damage == "missing-digests":
+        del publication["batch_input_sha256"]
+    elif damage == "invalid-digest":
+        publication["batch_input_sha256"][0] = "not-a-digest"
+    else:
+        publication["batch_input_sha256"] = []
+    damaged = dc.document_bytes(publication)
+    path.unlink()
+    path.write_bytes(damaged)
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert path.read_bytes() == damaged
+    assert not _group_path(tmp_path, group).exists()
+
+
+@pytest.mark.parametrize("representation", ["duplicate-key", "utf16"])
+def test_campaign_requires_strict_utf8_child_manifest_json(
+    tmp_path: Path, fleet, representation,
+) -> None:
+    work, queue = fleet
+    if representation == "duplicate-key":
+        expression = (
+            'b\'{"schema":"prismabuild.child_result_manifest.v1",\' + raw[1:]')
+    else:
+        expression = 'raw.decode("utf-8").encode("utf-16")'
+    _, group = _decompose(_small_request(work, _producer_rewriting_result(expression)))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    child_receipt = cas.lookup(group["children"][0])
+    assert child_receipt is not None
+    assert child_receipt["result"]["bytes"] < CHILD_RESULT_LIMIT_BYTES
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert not _group_path(tmp_path, group).exists()
+
+
+@pytest.mark.parametrize("binding", ["parent_key", "plan_key", "child_action_keys"])
+def test_campaign_still_refuses_a_publication_for_another_group(
+    tmp_path: Path, fleet, binding,
+) -> None:
+    work, queue = fleet
+    producer = PRODUCER.replace("OUTPUT", 'task["output_id"]')
+    _, group = _decompose(_small_request(work, producer))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    path = dc.record_dir(cas.root, group["plan"]["parent_key"]) / "publication.json"
+    publication = json.loads(path.read_bytes())
+    publication[binding] = ["f" * 64] if binding == "child_action_keys" else "f" * 64
+    path.unlink()
+    path.write_bytes(dc.document_bytes(publication))
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert not _group_path(tmp_path, group).exists()
+
+
+def test_campaign_accepts_retained_publication_formatting(
+    tmp_path: Path, fleet,
+) -> None:
+    work, queue = fleet
+    producer = PRODUCER.replace("OUTPUT", 'task["output_id"]')
+    _, group = _decompose(_small_request(work, producer))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    path = dc.record_dir(cas.root, group["plan"]["parent_key"]) / "publication.json"
+    publication = json.loads(path.read_bytes())
+    retained = json.dumps(dict(reversed(list(publication.items()))), indent=3).encode()
+    assert retained != dc.document_bytes(publication)
+    path.unlink()
+    path.write_bytes(retained)
+
+    assert pbcampaign.close_group(group, cas=cas) == 0
+    assert path.read_bytes() == retained
+    assert _group_path(tmp_path, group).exists()
+
+
 # --------------------------------------------------------------------------
 # The cover does not close
 # --------------------------------------------------------------------------
@@ -210,31 +365,46 @@ def test_a_child_without_a_receipt_is_never_a_group_success(
     assert not _group_path(tmp_path, group).exists()
 
 
-def test_a_manifest_attached_to_another_child_receipt_fails_the_cover(
-    tmp_path: Path, fleet, monkeypatch: pytest.MonkeyPatch, capsys,
+def test_a_receipted_manifest_for_another_ordinal_fails_the_cover(
+    tmp_path: Path, fleet, capsys,
+) -> None:
+    work, queue = fleet
+    producer = PRODUCER.replace("OUTPUT", 'task["output_id"]')
+    producer = producer.replace(
+        '"child_ordinal": batch["child_ordinal"],',
+        '"child_ordinal": batch["child_ordinal"] + 1,')
+    _, group = _decompose(_small_request(work, producer))
+    assert _serve(queue) == 1
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    child = group["children"][0]
+    receipt = cas.lookup(child)
+    assert receipt is not None
+    assert json.loads(cas.result_path(receipt, child).read_bytes())["child_ordinal"] == 1
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert "ordinal" in capsys.readouterr().err
+    assert not _group_path(tmp_path, group).exists()
+
+
+def test_a_receipt_for_another_child_cannot_close_the_group(
+    tmp_path: Path, fleet,
 ) -> None:
     work, queue = fleet
     _, group = _decompose(_request(work))
     assert len(group["children"]) >= 2
     assert _serve(queue) == len(group["children"])
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    first, second = group["children"][:2]
+    assert cas.lookup(first) is not None
+    assert cas.lookup(second) is not None
+    path = cas._receipt_path(first["action_key"])
+    foreign = cas._receipt_path(second["action_key"]).read_bytes()
+    path.unlink()
+    path.write_bytes(foreign)
+    path.chmod(0o444)
 
-    # Each manifest is valid for its declared ordinal. The defect is accepting
-    # one as the result of a different sealed child action and CAS receipt.
-    original = pbcampaign.child_result_manifest
-    manifests = [original(child, cas=cas) for child in group["children"]]
-    ordinal_by_key = {
-        child["action_key"]: ordinal
-        for ordinal, child in enumerate(group["children"])
-    }
-
-    def wrong_receipt_result(child, *, cas, receipt=None):
-        ordinal = ordinal_by_key[child["action_key"]]
-        return manifests[1 - ordinal] if ordinal < 2 else manifests[ordinal]
-
-    monkeypatch.setattr(pbcampaign, "child_result_manifest", wrong_receipt_result)
     assert pbcampaign.close_group(group, cas=cas) == 1
-    assert "ordinal" in capsys.readouterr().err
+    assert path.read_bytes() == foreign
     assert not _group_path(tmp_path, group).exists()
 
 
@@ -259,7 +429,7 @@ def test_a_child_answering_under_the_wrong_output_id_fails_the_cover(
 
 
 def test_a_group_receipt_is_refused_rather_than_replaced(
-    tmp_path: Path, fleet,
+    tmp_path: Path, fleet, capsys,
 ) -> None:
     """Two runs cannot honestly disagree here, so a difference is the finding."""
 
@@ -269,13 +439,15 @@ def test_a_group_receipt_is_refused_rather_than_replaced(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     assert pbcampaign.close_group(group, cas=cas) == 0
 
-    stored = json.loads(_group_path(tmp_path, group).read_text())
-    with pytest.raises(pbcampaign.ManifestError) as refusal:
-        pbcampaign.publish_group_receipt(
-            {**stored, "task_count": stored["task_count"] + 1},
-            cas=cas, parent_key=group["plan"]["parent_key"],
-        )
-    assert "not the one this run verified" in str(refusal.value)
+    path = _group_path(tmp_path, group)
+    stored = json.loads(path.read_bytes())
+    damaged = dc.document_bytes({**stored, "task_count": stored["task_count"] + 1})
+    path.unlink()
+    path.write_bytes(damaged)
+
+    assert pbcampaign.close_group(group, cas=cas) == 1
+    assert "not the one this run verified" in capsys.readouterr().err
+    assert path.read_bytes() == damaged
 
 
 # --------------------------------------------------------------------------

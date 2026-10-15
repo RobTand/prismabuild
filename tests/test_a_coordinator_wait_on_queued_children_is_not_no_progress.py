@@ -31,6 +31,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 from prismabuild.durable_child_reporter import DurableChildReporter  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from file_open_observer import observe_file_opens  # noqa: E402
 from test_progress_keeps_a_working_action_alive import _policy  # noqa: E402
 
 EVIDENCE = "cas:sha256:" + "0" * 64
@@ -122,12 +123,21 @@ def _frozen() -> dict:
     }
 
 
-def _batch(tmp_path: Path):
+def _batch(
+    tmp_path: Path, *, producer: str = PRODUCER,
+    setup_seconds: float = 1.0, max_setup_fraction: float = 0.4,
+):
     """One validated plan with sealed children in an isolated CAS."""
 
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    request = dc.validate_logical_request(_request())
-    plan = dc.build_plan(request, _frozen())
+    proposed = _request()
+    proposed["common"]["argv"][2] = producer
+    proposed["batch_policy"]["residencies"][0]["setup_seconds"] = setup_seconds
+    proposed["batch_policy"]["max_setup_fraction"] = max_setup_fraction
+    request = dc.validate_logical_request(proposed)
+    frozen = _frozen()
+    frozen["argv"][2] = producer
+    plan = dc.build_plan(request, frozen)
     prepared = dc.PreparedBatches(request, plan)
     checkout = tmp_path / "child-src"
     checkout.mkdir()
@@ -140,7 +150,7 @@ def _batch(tmp_path: Path):
         batch_input, _ = cas.ingest_bytes(
             dc.document_bytes(envelope), input_id=dc.TASK_BATCH_INPUT_ID)
         command = dc.resolve_task_batch(
-            [sys.executable, "-c", PRODUCER, dc.TASK_BATCH_PLACEHOLDER],
+            request["common"]["argv"],
             batch_path=str(cas.blob_path(str(batch_input["sha256"]))))
         child = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -175,6 +185,23 @@ def _queue(tmp_path: Path, cas) -> AdmittedQueueFixture:
         pool.PoolQueue(tmp_path / "queue"),
         capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
+
+
+def _finish_child(tmp_path: Path, queue, cas, child):
+    worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
+    queue.publish(
+        action_key=child["action_key"], cas_root=cas.root,
+        checkout_root=tmp_path / "child-src", worker_script=worker)
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
+    assert claimed is not None
+    assert claimed["action_key"] == child["action_key"]
+    outcome = queue.execute(
+        claimed, timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed", outcome
+    queue.finish(child["action_key"], status="executed", detail=outcome)
+    receipt = cas.lookup(child)
+    assert receipt is not None
+    return receipt
 
 
 def _controller_state(tmp_path: Path, children, *, name: str = "controller-state"):
@@ -719,9 +746,9 @@ def test_a_non_verifying_child_counts_zero(tmp_path: Path) -> None:
     assert reporter.newly_durable() == []
     assert reporter.units == 0
 
-def test_a_reporter_rejects_a_manifest_for_another_ordinal(
+def test_a_reporter_rejects_a_supplied_request_for_another_child(
         tmp_path: Path) -> None:
-    """A valid receipt with a valid digest but a foreign ordinal counts zero."""
+    """Supplied request identity must match the native request for its key."""
 
     cas, plan, children = _batch(tmp_path)
     queue = _queue(tmp_path, cas)
@@ -746,50 +773,77 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     assert reporter.newly_durable() == []
     assert reporter.units == 0
 
-def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
-    """A manifest that answers one task of a three-task batch counts zero."""
-
-    checkout = tmp_path / "child-src"
-    checkout.mkdir()
-    (checkout / "t.py").write_text("x")
-    request = dc.validate_logical_request({
-        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
-        "common": {
-            "argv": [sys.executable, "-c", PRODUCER,
-                     dc.TASK_BATCH_PLACEHOLDER],
-            "cwd": ".", "demand": {"cpu": 1, "mem_gb": 1},
-            "gpu_memory_gb": None, "data_manifest": None, "env": {}},
-        "roster": {
-            "schema": dc.LOGICAL_TASK_ROSTER_SCHEMA_V1,
-            "tasks": [
-                {"id": f"q{index}", "payload": {"v": index},
-                 "residency_key": "r", "estimated_seconds": 8.2,
-                 "estimate_evidence": EVIDENCE, "output_id": f"z{index}"}
-                for index in range(3)]},
-        "batch_policy": {
-            "schema": dc.ROSTER_BATCH_POLICY_SCHEMA_V1,
-            "residencies": [{"key": "r", "setup_seconds": 20.0,
-                             "setup_evidence": EVIDENCE}],
-            "max_setup_fraction": 0.5,
-            "max_estimated_wall_seconds": 300.0},
-    })
-    frozen = _frozen()
-    frozen["argv"] = [sys.executable, "-c", PRODUCER,
-                      dc.TASK_BATCH_PLACEHOLDER]
-    plan = dc.build_plan(request, frozen)
+@pytest.mark.parametrize("result_kind", ["complete", "partial", "wrong-ordinal"])
+def test_a_reporter_checks_the_actual_receipted_manifest(
+    tmp_path: Path, result_kind,
+) -> None:
+    producer = PRODUCER
+    if result_kind == "partial":
+        producer = producer.replace(
+            'for task in batch["tasks"]', 'for task in batch["tasks"][:1]')
+    elif result_kind == "wrong-ordinal":
+        producer = producer.replace(
+            '"child_ordinal": batch["child_ordinal"],',
+            '"child_ordinal": batch["child_ordinal"] + 1,')
+    cas, plan, children = _batch(
+        tmp_path, producer=producer, setup_seconds=20.0, max_setup_fraction=0.5)
     assert len(plan["partitions"]) == 1, plan["partitions"]
     assert len(plan["partitions"][0]) == 3, plan["partitions"]
-    batch = dc.PreparedBatches(request, plan).membership(0)
-    manifest = {
-        "schema": dc.CHILD_RESULT_MANIFEST_SCHEMA_V1,
-        "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
-        "child_ordinal": 0,
-        "results": [{
-            "task_id": batch["ordered_task_ids"][0],
-            "output_id": f"z0", "value_sha256": "0" * 64}]}
-    checked = dc.validate_child_result_manifest(manifest)
-    assert sorted(entry["task_id"] for entry in checked["results"]) != sorted(
-        batch["ordered_task_ids"])
+    child = children[0]
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"]],
+        controller_state=_controller_state(tmp_path, children), phase="run")
+    assert reporter.establish_baseline() == set()
+    receipt = _finish_child(tmp_path, _queue(tmp_path, cas), cas, child)
+    manifest = json.loads(cas.result_path(receipt, child).read_bytes())
+    assert len(manifest["results"]) == (1 if result_kind == "partial" else 3)
+    assert manifest["child_ordinal"] == (1 if result_kind == "wrong-ordinal" else 0)
+
+    expected = [child["action_key"]] if result_kind == "complete" else []
+    assert reporter.newly_durable() == expected
+    assert reporter.units == len(expected)
+    assert reporter.newly_durable() == []
+
+
+@pytest.mark.parametrize("consumer", ["reporter", "queue"])
+@pytest.mark.parametrize("oversized", [False, True], ids=["within-limit", "over-limit"])
+def test_child_result_blob_opens_respect_the_size_bound(
+    tmp_path: Path, monkeypatch, consumer, oversized,
+) -> None:
+    producer = PRODUCER
+    if oversized:
+        producer += (
+            '\nwith open(batch["result_manifest_path"], "a") as result:\n'
+            '    result.write(" " * (1024 * 1024 + 1))\n')
+    cas, plan, children = _batch(tmp_path, producer=producer)
+    child = children[0]
+    state = _controller_state(tmp_path, [child])
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"]], controller_state=state, phase="run")
+    assert reporter.establish_baseline() == set()
+    queue = _queue(tmp_path, cas)
+    receipt = _finish_child(tmp_path, queue, cas, child)
+    assert (receipt["result"]["bytes"] > 1024 * 1024) is oversized
+    queue.item_path(pool.DONE, child["action_key"]).unlink()
+    blob = cas.blob_path(receipt["result"]["sha256"])
+    opened = observe_file_opens(monkeypatch, blob)
+
+    if consumer == "reporter":
+        expected = [] if oversized else [child["action_key"]]
+        assert reporter.newly_durable() == expected
+        assert reporter.units == len(expected)
+    else:
+        verdict = queue.queued_child_wait_verdict(
+            "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state),
+            admitted={child["action_key"]: {}})
+        assert verdict["exempt"] is False
+        assert (verdict["children"][0]["state"] == "durable") is (not oversized)
+    if oversized:
+        assert opened == [], "a byte cap after an unbounded lookup does not bound the read"
+    else:
+        assert opened, "the observer must witness actual reads of an accepted result"
 
 
 def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
