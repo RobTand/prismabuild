@@ -1,10 +1,11 @@
 """A run's own exit status never impersonates one of ``pbrun``'s conditions.
 
-``pbrun`` reserves four non-zero exit codes for things it decides itself: 2 for
-a refusal, 74 for a record it could not write, 75 for no verdict yet, and 143
-for a withdrawal.  Both report paths used to return the number out of the
-terminal record verbatim, so a run whose launcher exited on one of those
-numbers reached the caller as ``pbrun``'s own word for something else.
+``pbrun`` reserves five non-zero exit codes for things it decides itself: 2 for
+a refusal, 74 for a record it could not write, 75 for no verdict yet, 76 for
+an exact publication supersession, and 143 for a withdrawal. Both report paths
+used to return the number out of the terminal record verbatim. A run whose
+launcher exited on one of those numbers reached the caller as ``pbrun``'s own
+word for something else.
 
 143 is not hypothetical.  ``core._sigterm_unwinds_this_process`` raises
 ``SystemExit(128 + signum)``, so any SIGTERM that is not a withdrawal leaves
@@ -97,7 +98,7 @@ def test_a_run_that_exits_seventy_five_is_not_no_verdict_yet(
 
 #: What the fix reserves.  Spelled out here rather than imported, so this file
 #: still collects against the code that has no such constant.
-RESERVED = (2, 74, 75, 143)
+RESERVED = (2, 74, 75, 76, 143)
 
 
 @pytest.mark.parametrize("returncode", RESERVED)
@@ -151,7 +152,7 @@ def test_the_lane_reports_a_job_that_exited_143_as_a_failure(
 
 
 def test_the_reserved_set_is_exactly_pbruns_own_words() -> None:
-    """2, 74, 75 and 143 are the codes ``pbrun`` decides for itself."""
+    """2, 74, 75, 76 and 143 are the codes ``pbrun`` decides for itself."""
 
     assert sorted(pbrun.RESERVED_EXITS) == sorted(RESERVED)
     assert pbrun.GAVE_UP_EXIT in pbrun.RESERVED_EXITS
