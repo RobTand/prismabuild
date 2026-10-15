@@ -210,6 +210,7 @@ def test_the_retire_is_not_conditional_on_anything(tmp_path: Path) -> None:
              wl.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(box_capacity.CapacityObserver, "offer",
                            side_effect=lambda declared, _held, **_kw: dict(declared)), \
+         mock.patch.object(box_capacity, "trusted_gpu_sample", side_effect=_gpu_sample), \
          mock.patch.object(box_capacity, "mem_available_gb", return_value=512), \
          mock.patch.object(box_capacity, "run_queue", return_value=0.0), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
