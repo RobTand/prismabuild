@@ -77,9 +77,10 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def idle_host(clock, monkeypatch):
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-        "psi_some": 0., "busy_cpus": 0.})
+        "psi_some": 0., "busy_cpus": 0.}
+    return cpu_sampler
 
 
 @pytest.fixture()
@@ -134,11 +135,12 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claimer(q: pool.PoolQueue, *, adaptive: bool):
+def _claimer(q: pool.PoolQueue, *, adaptive: bool, cpu_sampler):
     def claim() -> str | None:
         item = (q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                        tags=PROGRESS_CAPABILITIES)
-                if adaptive else q.claim(capacity=CAPACITY, tags=PROGRESS_CAPABILITIES))
+                        tags=PROGRESS_CAPABILITIES, cpu_sampler=cpu_sampler)
+                if adaptive else q.claim(capacity=CAPACITY, tags=PROGRESS_CAPABILITIES,
+                    cpu_sampler=cpu_sampler))
         return None if item is None else str(item["action_key"])
     return claim
 
@@ -188,7 +190,7 @@ def test_a_released_gpu_goes_to_the_ready_gpu_row_not_the_cpu_row_ahead_of_it(
     the row's residency lead was not yet resident.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     if order == "published-first":
         shard = _publish(queue, clock, _key("shard"), SHARD)
@@ -226,7 +228,7 @@ def test_a_gpu_row_whose_lock_is_busy_still_keeps_its_room(
     word on it was ``_starved``, so no withhold is on file to carry.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     gpu_row = _publish(queue, clock, _key("row-001"), GPU_ROW)
     shard = _publish(queue, clock, _key("shard"), SHARD)
@@ -265,7 +267,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
     it keeps, not its own evaluation, is what stops the shard.
     """
 
-    claim = _claimer(queue, adaptive=True)
+    claim = _claimer(queue, adaptive=True, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     shard = _publish(queue, clock, _key("shard"), SHARD)
     key, cas_root, checkout = _sealed(tmp_path, "row-001", variables={
@@ -299,7 +301,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
 def test_a_gpu_producers_room_and_claim_omit_an_allowance_that_exceeds_capacity(
         queue, clock, idle_host, tmp_path, monkeypatch, demand, measured_slots):
     """A busy producer keeps only the room its next claim actually charges."""
-    claim = _claimer(queue, adaptive=True)
+    claim = _claimer(queue, adaptive=True, cpu_sampler=idle_host)
     key, cas_root, checkout = _sealed(tmp_path, "producer-boundary", variables={
         adaptive_cpu.SPOOL_ROOT_ENV: str(tmp_path / "spool")})
     producer = _publish(queue, clock, key, demand,
@@ -345,7 +347,7 @@ def test_cpu_work_that_fits_beside_the_gpu_row_is_still_admitted(
     the row's.  Behind a row whose lock is busy, it claims on the same pass.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     if busy:
         gpu_row = _publish(queue, clock, _key("row-001"), GPU_ROW)

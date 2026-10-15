@@ -126,10 +126,10 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q, capacity, *, adaptive, tiers=None):
+def _claim(q, capacity, *, adaptive, tiers=None, cpu_sampler=None):
     if not adaptive:
-        return q.claim(capacity=capacity)
-    return q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+        return q.claim(capacity=capacity, cpu_sampler=cpu_sampler)
+    return q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _key_of(item):
@@ -142,12 +142,12 @@ def _key_of(item):
 def _twenty_cpu_gpu_box(queue, clock, monkeypatch, *, adaptive):
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-        "psi_some": 0., "busy_cpus": 0.})
+        "psi_some": 0., "busy_cpus": 0.}
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers, cpu_sampler=cpu_sampler))
 
     # A multi-hour GPU holder, and a GPU action that has waited behind it
     # long enough that its own first-denial clock is past the ceiling.
@@ -296,15 +296,15 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     holder, cas_root, checkout = _sealed(tmp_path, "bounded", timeout_s=timeout_s)
     clock[0] = T0 - 2000
@@ -518,15 +518,15 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     first = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == first
@@ -574,15 +574,15 @@ def test_load_the_pool_does_not_own_never_withholds_a_measurement(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 2.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     _publish(queue, clock, measurement, {"cpu": 1, "mem_gb": 1})
     for _ in range(pool.STARVATION_FLOOR - 1):
@@ -605,15 +605,15 @@ def test_a_holder_tail_is_bounded_by_one_sample_window(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     holder = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == holder
