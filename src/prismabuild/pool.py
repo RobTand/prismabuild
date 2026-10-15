@@ -6012,11 +6012,7 @@ class PoolQueue:
         # after import gets the root it named rather than the live store.
         defaulted = root is None
         self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
-        self._cpu_deferrals: dict[tuple[str, str], float] = {}
-        self._cross_resource_deferrals: dict[tuple[str, str], float] = {}
-        #: When this process first left each CPU-only row generation to a host
-        #: without a GPU (#1262): evidence for the denial, never a timer.
-        self._cpu_host_yields: dict[tuple[str, str], float] = {}
+        self._placement_history = _peer_placement.PlacementHistory()
         self._claim_denial_bases: dict[str, Path] = {}
         # An unseen member must reset inherited evidence. Failed resets stay
         # owed until storage accepts them; a restart cannot inherit eligibility.
@@ -20385,8 +20381,7 @@ class PoolQueue:
         delays another host, nor does incompatible placement.
         """
         identity = (str(item["action_key"]), repr(item.get("published_unix")))
-        started = self._cpu_deferrals.setdefault(identity, time.monotonic())
-        if time.monotonic() - started >= 20.0:
+        if placement.timer_expired(_peer_placement.TimedPreference.PREFERRED_CPU, identity):
             return None
         for offer in self._matching_offers(item, live=placement.offers()):
             host = str(offer.get("host") or "")
@@ -20488,8 +20483,7 @@ class PoolQueue:
         if load is None or load < self.CROSS_RESOURCE_BUSY:
             return None           # this box is not taking anything from anyone
         identity = (str(item["action_key"]), repr(item.get("published_unix")))
-        started = self._cross_resource_deferrals.setdefault(identity, time.monotonic())
-        if time.monotonic() - started >= 20.0:
+        if placement.timer_expired(_peer_placement.TimedPreference.CROSS_RESOURCE, identity):
             return None           # preference spent; place it here
         # Only now, behind that local check, does this read other boxes'
         # ledgers: at most one remote read per compatible offer, on the rare
@@ -20914,12 +20908,9 @@ class PoolQueue:
             capacity = view.remaining
             if not capacity.fits_measured(demand):
                 continue
-            since = self._cpu_host_yields.setdefault(
-                (str(item["action_key"]), repr(item.get("published_unix"))), _now())
-            evidence = {"host": remote_host, "available": dict(capacity.available),
-                        "free_preferred": capacity.free_preferred,
-                        "observed_capacity": dict(capacity.observed),
-                        "demand": dict(demand), "yielding_s": round(_now() - since, 3)}
+            evidence = placement.cpu_host_evidence(
+                (str(item["action_key"]), repr(item.get("published_unix"))),
+                remote_host, capacity, demand)
             view.charge(demand)
             return evidence
         return None
@@ -21065,9 +21056,7 @@ class PoolQueue:
                     # shared ledger prelude can stall while holding admission;
                     # do not let an empty snapshot block a sibling's new work.
                     # Match _claim's retirement of absent-generation hints.
-                    self._cpu_deferrals.clear()
-                    self._cross_resource_deferrals.clear()
-                    self._cpu_host_yields.clear()
+                    self._placement_history.clear()
                     return None
                 # ``_claim`` takes admission itself, once per candidate and only
                 # around the decision that has to be exclusive. Wrapping the
@@ -21837,7 +21826,9 @@ class PoolQueue:
         # guard lists the index fresh under the key's transition lock (#964),
         # so a release that lands after this scan listed it is still seen.
         released = self.released_origin_consumer_keys()
-        placement = _peer_placement.PlacementPass(self.offers, self._read_peer_observation)
+        placement = _peer_placement.PlacementPass(
+            self.offers, self._read_peer_observation, history=self._placement_history,
+            wall_clock=lambda: _now())
 
         ledger = None
         host_gate = controller
@@ -21874,11 +21865,7 @@ class PoolQueue:
             ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
-        for deferrals in (self._cpu_deferrals, self._cross_resource_deferrals,
-                          self._cpu_host_yields):
-            for generation in list(deferrals):
-                if generation not in live_generations:
-                    deferrals.pop(generation, None)
+        self._placement_history.retain(live_generations)
         # The reason ring's memo, bounded the same way (#991).
         self._retire_denial_memo({
             (str(item.get("action_key", "")), repr(float(item["published_unix"])))
@@ -23556,9 +23543,7 @@ class PoolQueue:
                 claimed.pop("idle_baseline", None)
                 claimed.pop("tier_fill_borrowed", None)
                 generation = (key, repr(moved.get("published_unix")))
-                self._cpu_deferrals.pop(generation, None)
-                self._cross_resource_deferrals.pop(generation, None)
-                self._cpu_host_yields.pop(generation, None)
+                self._placement_history.discard(generation)
                 claimed["claimed_by"] = owner
                 claimed["claimed_unix"] = _now()
                 claimed["claimed_host"] = socket.gethostname()

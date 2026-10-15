@@ -297,7 +297,8 @@ def test_fallback_deferral_leaves_gpu_sample_for_preferred_candidate(gpu_rig):
     smaller = publish(3)
     tick()
     admitted = claim()
-    assert queue._cpu_deferrals, 'the real fallback deferral must run'
+    assert any(record['reason'] == 'deferred_for_preferred_cpu'
+               for record in queue.latest_denials({deferred})[deferred])
     assert admitted is not None, 'fallback deferral spent the next candidate GPU sample'
     assert admitted['action_key'] == smaller
     assert admitted['cpu_allocation'] == {'preferred': [1], 'fallback': []}

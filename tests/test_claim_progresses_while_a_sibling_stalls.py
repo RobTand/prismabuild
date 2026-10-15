@@ -663,15 +663,12 @@ def test_empty_adaptive_poll_leaves_capacity_and_active_holders_untouched(rig, m
     assert first is not None
     ledger = rig.ledger()
     capacity, held = ledger.capacity(), ledger.held()
-    # Seed old fallback pacing state: absence from READY retires that hint.
-    rig._cpu_deferrals[('f' * 64, '1.0')] = time.monotonic()
     with monkeypatch.context() as patch:
         patch.setattr(rig, 'ready_items', lambda: [])
         assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
                          adaptive_cpu=True) is None
     assert ledger.capacity() == capacity, 'empty discovery rewrote capacity'
     assert ledger.held() == held
-    assert not rig._cpu_deferrals
     # The lower offer still applies when this loop actually sees a candidate.
     assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
                      adaptive_cpu=True) is None

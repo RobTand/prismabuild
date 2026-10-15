@@ -3,6 +3,36 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
+import time
+
+
+class TimedPreference(Enum):
+    PREFERRED_CPU = "preferred_cpu"
+    CROSS_RESOURCE = "cross_resource"
+
+
+class PlacementHistory:
+    def __init__(self) -> None:
+        self._deferrals: dict[tuple[TimedPreference, tuple[str, str]], float] = {}
+        self._cpu_host_yields: dict[tuple[str, str], float] = {}
+
+    def clear(self) -> None:
+        self._deferrals.clear()
+        self._cpu_host_yields.clear()
+
+    def retain(self, generations: set[tuple[str, str]]) -> None:
+        for preference, generation in list(self._deferrals):
+            if generation not in generations:
+                self._deferrals.pop((preference, generation), None)
+        for generation in list(self._cpu_host_yields):
+            if generation not in generations:
+                self._cpu_host_yields.pop(generation, None)
+
+    def discard(self, generation: tuple[str, str]) -> None:
+        for preference in TimedPreference:
+            self._deferrals.pop((preference, generation), None)
+        self._cpu_host_yields.pop(generation, None)
 
 
 @dataclass
@@ -41,11 +71,28 @@ class PlacementPass:
     def __init__(
         self, offers: Callable[[], Sequence[Mapping]],
         peer: Callable[[str, Mapping], PeerObservation | None],
+        *, history: PlacementHistory, wall_clock: Callable[[], float],
     ) -> None:
         self._read_offers = offers
         self._read_peer = peer
         self._offers: Sequence[Mapping] | None = None
         self._peers: dict[str, PeerObservation | Exception | None] = {}
+        self._history = history
+        self._wall_clock = wall_clock
+
+    def timer_expired(self, preference: TimedPreference, generation: tuple[str, str]) -> bool:
+        started = self._history._deferrals.setdefault((preference, generation), time.monotonic())
+        return time.monotonic() - started >= 20.0
+
+    def cpu_host_evidence(
+        self, generation: tuple[str, str], host: str, capacity: PeerCapacity,
+        demand: Mapping[str, int],
+    ) -> dict[str, object]:
+        since = self._history._cpu_host_yields.setdefault(generation, self._wall_clock())
+        return {"host": host, "available": dict(capacity.available),
+                "free_preferred": capacity.free_preferred,
+                "observed_capacity": dict(capacity.observed),
+                "demand": dict(demand), "yielding_s": round(self._wall_clock() - since, 3)}
 
     def offers(self) -> Sequence[Mapping]:
         if self._offers is None:

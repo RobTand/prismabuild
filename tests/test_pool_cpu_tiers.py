@@ -154,16 +154,24 @@ def test_incompatible_or_too_small_remote_does_not_delay(tmp_path, remote_tags, 
                        cpu_tiers={'preferred': [4], 'fallback': [5]})
 
 
-def test_finished_remote_generation_drops_local_deferral(tmp_path):
+def test_finished_remote_generation_drops_local_deferral(tmp_path, clock):
     queue = pool.PoolQueue(tmp_path / 'queue')
     remote_offer(queue)
     key = publish(queue, tmp_path, 0)
     tiers = {'preferred': [], 'fallback': [4]}
+    clock.set(monotonic=10.)
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers) is None
-    assert queue._cpu_deferrals
-    queue.item_path(pool.READY, key).unlink()
+    ready = queue.item_path(pool.READY, key)
+    original = ready.read_bytes()
+    ready.unlink()
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers) is None
-    assert queue._cpu_deferrals == {}
+    clock.set(monotonic=31.)
+    ready.write_bytes(original)
+    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers) is None
+    assert queue.latest_denials({key})[key][0]['reason'] == 'deferred_for_preferred_cpu'
+    assert queue.ledger().available() == {'cpu': 1}
+    clock.set(monotonic=51.)
+    assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers)['action_key'] == key
 
 
 def test_legacy_cpu_reservation_prevents_map_activation(tmp_path):
