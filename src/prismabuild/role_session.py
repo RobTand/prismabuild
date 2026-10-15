@@ -1,13 +1,27 @@
 """Shared role operations; serving loops own their completion policies."""
 from contextlib import contextmanager
-import signal
 import fcntl
+import hashlib
 import os
 from pathlib import Path
+import signal
+import socket
 import stat
-
-from . import adaptive_cpu
 import threading
+import time
+
+from . import adaptive_cpu, core as pb, generation_receipt, park_proof
+from .generation_receipt import (commit_at as _commit_at,
+                                 generation_at as _generation_at)
+from .park_proof import _gate_key, _proc_starttime, drain_offer_fields
+
+GENERATION_VERSION = Path(__file__).resolve().parents[2] / "RUNTIME_VERSION.json"
+RUNTIME_VERSION = Path("/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")
+MAINTENANCE_GATE = Path(os.environ.get("PRISMABUILD_MAINTENANCE_GATE")
+                        or "/run/prismabuild/maintenance.json")
+PARKED_ROOT = MAINTENANCE_GATE.parent / "rollout" / "parked"
+GENERATION_DRIFT_DIR = "generation-drift"
+GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
 
 
 @contextmanager
@@ -179,3 +193,82 @@ def role_singleton_holder(script: str | Path) -> tuple[bool, int | None]:
         return True, held.holder
     os.close(descriptor)
     return False, None
+
+
+
+def read_maintenance_gate() -> dict | None:
+    return park_proof.read_gate(MAINTENANCE_GATE)
+
+
+def post_park_marker(gate: dict) -> Path | None:
+    return park_proof.post_marker(PARKED_ROOT, gate)
+
+
+
+def maintenance_requested() -> bool:
+    return read_maintenance_gate() is not None
+
+
+def published_commit() -> str:
+    """The commit at the live generation boundary, or "" if unknown."""
+
+    return _commit_at(RUNTIME_VERSION)
+
+
+def loaded_runtime_commit() -> str:
+    """The commit beside the immutable source tree this loop imported."""
+
+    return _commit_at(GENERATION_VERSION)
+
+
+def record_generation_drift(drift: dict, *, actor: str,
+                            queue_root, detail: dict | None = None) -> Path | None:
+    """Stamp one immutable ``generation-drift/`` record, or ``None``.
+
+    The loud half of the handshake.  On 2026-09-19 the fleet's active
+    generation sat on a four-day-old tree for hours while workers and roles
+    kept executing, and the drift was found by forensic inspection because
+    nothing anywhere had written a word: loops printed to logs that scroll
+    away, and no record named both generations.  This is that record.  It
+    follows the queue's own conventions -- canonical JSON, published by
+    atomic first-writer link under the queue root, mode 0444 so not even
+    its writer can quietly edit it -- and it is written once per incident,
+    because every caller stamps on the way out the door (a worker exits;
+    a supervisor restarts a role), not per poll.
+
+    Best effort in the same direction as the park marker: a loop that
+    cannot write the stamp still refuses, because the refusal is the
+    safety and the stamp is the evidence.
+    """
+
+    record = {
+        "schema": GENERATION_DRIFT_SCHEMA,
+        "actor": actor,
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "unix": round(time.time(), 3),
+        "loaded_commit": str(drift.get("loaded_commit") or ""),
+        "loaded_generation": str(drift.get("loaded_generation") or ""),
+        "published_commit": str(drift.get("published_commit") or ""),
+        "published_generation": str(drift.get("published_generation") or ""),
+        "detail": dict(detail or {}),
+    }
+    raw = pb._canonical_bytes(record) + b"\n"
+    digest = hashlib.sha256(raw).hexdigest()[:8]
+    path = (Path(queue_root) / GENERATION_DRIFT_DIR
+            / (f"{int(record['unix'] * 1000):013d}-{record['host']}"
+               f"-{record['pid']}-{digest}.json"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pb._atomic_publish(path, raw)
+    except OSError:
+        return None
+    return path
+
+
+def generation_drift(*, loaded_commit: str,
+                     loaded_generation: str) -> dict | None:
+    return generation_receipt.drift(
+        loaded_commit=loaded_commit, loaded_generation=loaded_generation,
+        published_commit=published_commit(),
+        published_generation=_generation_at(RUNTIME_VERSION))
