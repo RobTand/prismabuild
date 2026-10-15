@@ -25,6 +25,14 @@ from prismabuild import role_session
 from prewarm_fixture import Fleet, StagePool
 
 CONTEXT = multiprocessing.get_context("fork")
+WORK_UNIT_ROLES = ("storage", "tiers", "localtier")
+
+
+def test_production_roles_have_metrics_as_the_only_observer():
+    import supervise
+
+    assert set(WORK_UNIT_ROLES) <= supervise.ROLE_SCRIPTS.keys()
+    assert set(supervise.ROLE_SCRIPTS) - set(WORK_UNIT_ROLES) == {"metrics"}
 
 
 @pytest.fixture
@@ -158,8 +166,9 @@ def test_metrics_stop_waits_for_real_handlers_before_park(
             request.join(3)
 
 
+@pytest.mark.parametrize(("once", "gate_closed"), [(True, True), (False, False)])
 def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
-        boundary, monkeypatch):
+        boundary, monkeypatch, once, gate_closed):
     fleet = Fleet(boundary.root / "fleet")
     key = fleet.action("cancelled", [fleet.file("row.pt", prewarm_loop.BLOCK * 2)])
     stage = StagePool(boundary.root / "stage")
@@ -174,7 +183,7 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
         assert release.wait(10), "test did not release stage writer"
         return result
 
-    args = fleet.args(readers=1, stage=True, stage_free_floor_bytes=0,
+    args = fleet.args(once=once, readers=1, stage=True, stage_free_floor_bytes=0,
                       log=str(boundary.root / "cycle.jsonl"))
     monkeypatch.setattr(prewarm_loop.StageObject, "write", blocked_write)
     monkeypatch.setattr(prewarm_loop, "require_storage_pacing", lambda _: None)
@@ -186,7 +195,8 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
     try:
         assert entered.wait(5), (boundary.root / "prewarm.log").read_text()
         assert len(stage.objects()) == 1, "real partial sink was not created"
-        _close_gate(boundary)
+        if gate_closed:
+            _close_gate(boundary)
         os.kill(process.pid, signal.SIGTERM)
         process.join(0.15)
         assert process.is_alive(), "SIGTERM unwound the reader before sink cleanup"
@@ -202,7 +212,7 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
         event = json.loads((boundary.root / "cycle.jsonl").read_text())
         assert event["stage"]["aborted_entries"] == 1
         assert event["stage"]["aborted_bytes"] == prewarm_loop.BLOCK
-        assert len(list(boundary.parked.iterdir())) == 1
+        assert len(list(boundary.parked.iterdir())) == int(gate_closed)
     finally:
         _finish(process, sender)
 
@@ -308,5 +318,125 @@ def test_prewarm_sigterm_interrupts_idle_wait(boundary, monkeypatch, gate_closed
         assert process.exitcode == 0, (boundary.root / "idle-prewarm.log").read_text()
         assert cycles.value == int(not gate_closed), "stop started another storage cycle"
         assert len(list(boundary.parked.iterdir())) == int(gate_closed)
+    finally:
+        _finish(process)
+
+
+@pytest.mark.parametrize("role", ["worker", "storage", "localtier"])
+def test_stop_context_precedes_each_roles_startup_queue_boundary(
+        boundary, monkeypatch, role):
+    import worker_loop
+
+    queue_entries = CONTEXT.Value("i", 0, lock=False)
+    factory = local_tier_loop.pool.PoolQueue
+
+    def queue_boundary(*args, **kwargs):
+        queue_entries.value += 1
+        if role == "worker":
+            os.kill(os.getpid(), signal.SIGTERM)
+            return SimpleNamespace(root=boundary.root / "queue")
+        return factory(*args, **kwargs)
+
+    def loaded():
+        os.kill(os.getpid(), signal.SIGTERM)
+        return "a" * 40
+
+    if role == "worker":
+        monkeypatch.setattr(worker_loop, "SH", boundary.root)
+        main = lambda: worker_loop.main(argv=["--all-cores", "--cpu-slots", "1",
+            "--mem-gb", "1", "--assume-idle", "--poll-s", "0", "--max-idle", "1"])
+    else:
+        monkeypatch.setattr(role_session, "loaded_runtime_commit", loaded)
+        if role == "storage":
+            args = Fleet(boundary.root / "fleet").args(once=False, dry_run=True)
+            monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
+            main = lambda: prewarm_loop.main([])
+        else:
+            main = lambda: local_tier_loop.main(["--pool-root", str(boundary.root / "queue")])
+    monkeypatch.setattr(local_tier_loop.pool, "PoolQueue", queue_boundary)
+    log = boundary.root / "entry.log"
+    process = CONTEXT.Process(target=_run_role, args=(main, log))
+    process.start()
+    try:
+        process.join(5)
+        assert process.exitcode == 0, log.read_text()
+        assert queue_entries.value == int(role == "worker")
+        assert list(boundary.parked.iterdir()) == []
+        assert not (boundary.root / "pb-queue/workers").exists()
+    finally:
+        _finish(process)
+
+
+@pytest.mark.parametrize("role", WORK_UNIT_ROLES)
+def test_generation_change_after_one_cycle_prevents_a_second_unit(
+        boundary, monkeypatch, role):
+    import tier_loop
+
+    cycles = CONTEXT.Value("i", 0, lock=False)
+    completed = boundary.root / "completed-unit"
+
+    def cycle(*args, **kwargs):
+        cycles.value += 1
+        completed.write_text(str(cycles.value))
+        if cycles.value == 1:
+            boundary.published.write_text(json.dumps({
+                "commit": "a" * 40, "generation": "successor"}))
+        else:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return [] if role == "tiers" else {}
+
+    if role == "tiers":
+        monkeypatch.setattr(tier_loop, "cycle", cycle)
+        monkeypatch.setattr(tier_loop, "_start", lambda *a, **k: (object(), object()))
+        monkeypatch.setattr(tier_loop, "tier_cycle_line", lambda *a: {})
+        monkeypatch.setattr(tier_loop, "CYCLE_INTERVAL_S", tier_loop.CYCLE_INTERVAL_S)
+        main = lambda: tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--interval-s", "0.001"])
+    elif role == "storage":
+        args = Fleet(boundary.root / "fleet").args(once=False, poll_s=0, dry_run=True)
+        monkeypatch.setattr(prewarm_loop, "cycle", cycle)
+        monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
+        main = lambda: prewarm_loop.main([])
+    else:
+        monkeypatch.setattr(local_tier_loop, "local_tier_cycle", cycle)
+        monkeypatch.setattr(local_tier_loop.resident_sets, "read_policy", lambda _: {})
+        main = lambda: local_tier_loop.main(["--pool-root", str(boundary.root / "queue"), "--interval-s", "0.001"])
+    log = boundary.root / "second-unit.log"
+    process = CONTEXT.Process(target=_run_role, args=(main, log))
+    process.start()
+    try:
+        process.join(5)
+        assert process.exitcode == 0, log.read_text()
+        assert cycles.value == 1
+        assert completed.read_text() == "1"
+        assert list(boundary.parked.iterdir()) == []
+    finally:
+        _finish(process)
+
+
+@pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
+def test_local_tier_signal_finishes_its_unit_and_starts_no_second_cycle(
+        boundary, monkeypatch, stop_signal):
+    cycles = CONTEXT.Value("i", 0, lock=False)
+    final = boundary.root / "local-final-write"
+
+    def cycle(*args):
+        cycles.value += 1
+        os.kill(os.getpid(), stop_signal)
+        assert list(boundary.parked.iterdir()) == []
+        final.write_text("complete")
+        return {}
+
+    monkeypatch.setattr(local_tier_loop, "local_tier_cycle", cycle)
+    monkeypatch.setattr(local_tier_loop.resident_sets, "read_policy", lambda _: {})
+    log = boundary.root / "local-stop.log"
+    process = CONTEXT.Process(target=_run_role, args=(lambda: local_tier_loop.main([
+        "--pool-root", str(boundary.root / "queue"), "--interval-s", "3600"]), log))
+    process.start()
+    try:
+        process.join(5)
+        assert process.exitcode == 0, log.read_text()
+        assert cycles.value == 1
+        assert final.read_text() == "complete"
+        assert list(boundary.parked.iterdir()) == []
     finally:
         _finish(process)
