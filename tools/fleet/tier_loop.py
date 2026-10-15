@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import role_session as runtime_gate  # noqa: E402
 
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
@@ -75,7 +76,6 @@ import stage_release  # noqa: E402
 #: The same generation gate ``prewarm_loop`` reads, under the same name, for
 #: the same reason: a loop holds the modules it imported for its whole life,
 #: so a fix published under a running fleet reaches none of it (#615).
-import worker_loop as runtime_gate  # noqa: E402
 
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.

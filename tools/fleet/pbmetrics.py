@@ -2571,7 +2571,7 @@ def main(argv: list[str] | None = None) -> int:
     # beside the supervised role -- refuses instead of scanning the queue
     # twice.  ``--once`` answers one question and keeps nothing, so it takes
     # no lock.
-    import worker_loop as runtime_gate  # noqa: PLC0415 -- the server only
+    from prismabuild import role_session as runtime_gate  # noqa: PLC0415
 
     refused = runtime_gate.ROLE_SINGLETON_HELD_EXIT
     lock = runtime_gate.role_lock_path(Path(__file__))

@@ -78,13 +78,9 @@ from typing import Collection, TextIO
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 import role_log_identity  # noqa: E402
-# The generation readers, and the drift-record writer beside them, live in
-# the worker loop module -- the same object the role loops import as
-# ``runtime_gate`` -- so the supervisor, the workers and the roles all stamp
-# refusals through one code path rather than three near-identical ones.
-import worker_loop as runtime_gate  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import filesystem_capacity, fleet_roster, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")

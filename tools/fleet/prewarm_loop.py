@@ -211,9 +211,9 @@ from pathlib import Path
 # be resolved by the rule that knows both layouts (the rule ``pbtest.py`` uses).
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
-import worker_loop as runtime_gate  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import role_session as runtime_gate  # noqa: E402
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import manifest_layout

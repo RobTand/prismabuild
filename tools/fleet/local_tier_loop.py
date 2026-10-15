@@ -10,8 +10,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import local_tier, pool, resident_sets, role_session
-import worker_loop as runtime_gate
 
 
 def local_tier_cycle(queue, host, policy):

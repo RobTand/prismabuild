@@ -25,7 +25,7 @@ from runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 import worker_loop
-from worker_loop import (  # noqa: E402
+from prismabuild.role_session import (  # noqa: E402
     GENERATION_VERSION, RUNTIME_VERSION, _generation_at, maintenance_requested,
 )
 
