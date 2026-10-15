@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 import contextvars
+from dataclasses import dataclass
+from typing import Protocol
 import os
 from pathlib import Path
 import select
@@ -368,147 +370,297 @@ def _object_filesystem_type(info: os.stat_result, *,
             os.close(owned)
 
 
-def trusted_directory_stamp(path: Path) -> tuple[int, int, int, int] | None:
-    """A directory version a listing taken after this call may be reused under.
+class FilesystemTrust(Protocol):
+    """Filesystem evidence; file fences must precede their stat or open."""
+    def directory_before(self, path): ...
+    def directory_current(self, path): ...
+    def file_fence(self): ...
+    def file_version(self, info, fence, *, path=None, descriptor=None,
+                     follow_symlinks=True): ...
+    def directory_evidence(self, directory): ...
+    def ancestor_evidence(self, directory): ...
+    def directory_observations(self, directories): ...
+    def holds(self, evidence): ...
+    def scrape_view(self): ...
 
-    ``(device, inode, mtime, ctime)``, or ``None`` when no listing of this
-    directory may ever be reused (#992).  The argument that a later ``lstat``
-    returning the same version proves the listing still current:
 
-    * The coarse realtime clock ``T0`` is read first, then the directory's
-      ``lstat``.  The version is refused unless both its mtime and its ctime
-      are strictly before ``T0``.
-    * Every change to a directory's entries -- a create, an unlink, a rename
-      in or out -- stamps its mtime and ctime with the filesystem's current
-      time.  On a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS` that time is
-      read from the same clock, and a change made after ``T0`` reads a value
-      at or after ``T0``.  So once a version with both stamps before ``T0`` is
-      observed, any later entry change moves the version off it, and a
-      directory replaced by another has another inode.
-    * A listing taken after this call is therefore still the directory's
-      entries for as long as a fresh ``lstat`` returns this version.
+@dataclass(frozen=True)
+class DirectoryEvidence:
+    directory: str
+    _proof: tuple
 
-    The refusal closes the one hole a bare stat comparison leaves: two
-    changes in one clock tick share a timestamp (a coarse tick is 1 ms on
-    the Sparks), so a listing taken between them would carry a version the
-    second change does not move.  A refused directory is listed again on
-    every pass until a tick has gone by with no change to it.
 
-    Two things are outside the argument and stated here.  A file rewritten in
-    place does not touch its directory; every writer of the documents this
-    guards writes by rename (``residency_map.write_fragment``, the queue's
-    ``_write_json_atomic``), which does.  And a backward step of the realtime
-    clock could in principle stamp a later change with an earlier value; to
-    reproduce a remembered version it would have to land on the same
-    nanosecond in both mtime and ctime.
-    """
+@dataclass(frozen=True)
+class EvidenceSet:
+    evidence: tuple[DirectoryEvidence, ...]
 
-    if _COARSE_REALTIME is None:
-        return None
+    def __iter__(self):
+        return iter(self.evidence)
+
+
+def _directory_metadata(path):
     try:
-        before = time.clock_gettime_ns(_COARSE_REALTIME)
         info = os.lstat(path)
     except OSError:
         return None
     if not statmod.S_ISDIR(info.st_mode):
         return None
-    if _object_filesystem_type(info, path=path,
-                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
-        return None
-    ctime = int(getattr(info, "st_ctime_ns", 0))
-    if info.st_mtime_ns >= before or ctime >= before:
-        return None
-    return (info.st_dev, info.st_ino, info.st_mtime_ns, ctime)
-
-
-def version_fence() -> int | None:
-    """The coarse realtime clock, read before a listing or an open (#1045).
-
-    What :func:`keepable_version` compares a file's ctime with.  ``None``
-    where the coarse clock is not the one this kernel stamps file times from
-    (off Linux), and then no file version is kept.
-    """
-
-    if _COARSE_REALTIME is None:
-        return None
-    return time.clock_gettime_ns(_COARSE_REALTIME)
-
-
-def keepable_version(info: "os.stat_result", fence: int | None, *,
-                      local: dict[int, bool] | None = None,
-                      path: Path | str | None = None,
-                      descriptor: int | None = None,
-                      follow_symlinks: bool = True,
-                      ) -> tuple[int, int, int, int, int] | None:
-    """A file's #761 version when a record read at it may be kept, else ``None``.
-
-    :func:`trusted_directory_stamp`'s rule, applied to one file (#1045).
-    ``fence`` is :func:`version_fence`, read before the ``stat`` or
-    ``fstat`` that gave ``info``.  A kept record is reused while a later
-    ``stat`` returns the same ``(dev, ino, size, mtime_ns, ctime_ns)``, and
-    that proves the file unchanged only if no change can reproduce it: a file
-    unlinked and another created under its name in one clock tick can be
-    given the freed inode number, and with the same size all five fields
-    match.  So the version is refused unless its ctime is strictly before
-    ``fence``: every later change to the file, a new file under its name
-    included, is stamped at or after the fence and so moves the ctime.  A
-    refused version is not kept, and the record is read again next pass, as
-    a refused directory is listed again.
-
-    Only on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`, whose file
-    times come from the clock the fence reads; a network filesystem's come
-    from the server's, so none of its versions is kept. ``path`` preserves
-    the stat's follow policy; ``descriptor`` is the still-open fstat source.
-    Without either, only a direct mount-table device match can grant trust.
-    ``local`` remains accepted for compatibility but is not trust evidence:
-    a listing-local device boolean cannot survive a mount/namespace change.
-    """
-
-    if fence is None or int(getattr(info, "st_ctime_ns", 0)) >= fence:
-        return None
-    trusted = _object_filesystem_type(
-        info, path=path, descriptor=descriptor,
-        follow_symlinks=follow_symlinks) in _LOCAL_CLOCK_FILESYSTEMS
-    return metadata_version(info) if trusted else None
-
-
-def current_directory_version(path: Path) -> tuple[int, int, int, int] | None:
-    """The same four fields as :func:`trusted_directory_stamp`, trust re-checked.
-
-    What a remembered stamp is compared with.  ``None`` for anything that is
-    not a directory or cannot be stat-ed, and for a directory whose device is
-    not currently on a filesystem in :data:`_LOCAL_CLOCK_FILESYSTEMS`; none of
-    those ever equals a stamp.  The trust re-check is what keeps the stamp's
-    proof across a mount change (#1208): a remembered stamp was only sound
-    while the directory's times came from this kernel's clock, so a comparison
-    that skipped the check would go on reusing a listing after its filesystem
-    left :data:`_LOCAL_CLOCK_FILESYSTEMS`.  :func:`_filesystem_type` remembers
-    the answer per device only until the kernel says the mount table changed,
-    so an unchanged table costs a memo lookup, not a mount-table read.
-    """
-
-    return _directory_version_at(os.fspath(path))
-
-
-def _directory_version_at(name: str) -> tuple[int, int, int, int] | None:
-    """:func:`current_directory_version` of a path already a string.
-
-    The census compares one of these per directory per decision. Direct
-    device matches use ``lstat`` and the namespace/watch-fenced table memo,
-    with no path object; unlisted devices need the exact descriptor probe.
-    """
-
-    try:
-        info = os.lstat(name)
-    except OSError:
-        return None
-    if not statmod.S_ISDIR(info.st_mode):
-        return None
-    if _object_filesystem_type(info, path=name,
-                               follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
-        return None
     return (info.st_dev, info.st_ino, info.st_mtime_ns,
             int(getattr(info, "st_ctime_ns", 0)))
+
+
+@dataclass(frozen=True)
+class _DirectoryObservations:
+    trusted: dict[str, DirectoryEvidence | None]
+    _before: dict[str, tuple | None]
+
+    def unchanged(self):
+        after = {name: _directory_metadata(name) for name in self._before}
+        return self._before == after
+
+
+class ScrapeTrustView:
+    def __init__(self, trust):
+        self._trust = trust
+        self._versions = {}
+
+    def available(self, directory):
+        return self._current(os.fspath(directory)) is not None
+
+    def _current(self, name):
+        if name not in self._versions:
+            self._versions[name] = self._trust.directory_current(name)
+        return self._versions[name]
+
+    def holds(self, evidence):
+        if evidence is None:
+            return False
+        if isinstance(evidence, EvidenceSet):
+            return all(self.holds(item) for item in evidence)
+        return self._current(evidence.directory) == evidence._proof
+
+
+class LinuxFilesystemTrust:
+    def directory_before(self, path):
+        if _COARSE_REALTIME is None:
+            return None
+        try:
+            before = time.clock_gettime_ns(_COARSE_REALTIME)
+            info = os.lstat(path)
+        except OSError:
+            return None
+        if not statmod.S_ISDIR(info.st_mode):
+            return None
+        if _object_filesystem_type(info, path=path,
+                                   follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
+            return None
+        ctime = int(getattr(info, "st_ctime_ns", 0))
+        if info.st_mtime_ns >= before or ctime >= before:
+            return None
+        return (info.st_dev, info.st_ino, info.st_mtime_ns, ctime)
+
+    def file_fence(self):
+        if _COARSE_REALTIME is None:
+            return None
+        return time.clock_gettime_ns(_COARSE_REALTIME)
+
+    def file_version(self, info, fence, *, path=None, descriptor=None,
+                     follow_symlinks=True):
+        if fence is None or int(getattr(info, "st_ctime_ns", 0)) >= fence:
+            return None
+        trusted = _object_filesystem_type(
+            info, path=path, descriptor=descriptor,
+            follow_symlinks=follow_symlinks) in _LOCAL_CLOCK_FILESYSTEMS
+        return metadata_version(info) if trusted else None
+
+    def directory_current(self, path):
+        name = os.fspath(path)
+        try:
+            info = os.lstat(name)
+        except OSError:
+            return None
+        if not statmod.S_ISDIR(info.st_mode):
+            return None
+        if _object_filesystem_type(info, path=name,
+                                   follow_symlinks=False) not in _LOCAL_CLOCK_FILESYSTEMS:
+            return None
+        return (info.st_dev, info.st_ino, info.st_mtime_ns,
+                int(getattr(info, "st_ctime_ns", 0)))
+
+    def directory_evidence(self, directory):
+        proof = self.directory_before(directory)
+        return (None if proof is None else
+                DirectoryEvidence(os.fspath(directory), proof))
+
+    def ancestor_evidence(self, directory):
+        current = Path(directory)
+        while True:
+            evidence = self.directory_evidence(current)
+            if evidence is not None:
+                return evidence
+            if os.path.lexists(current) or current.parent == current:
+                return None
+            current = current.parent
+
+    def directory_observations(self, directories):
+        trusted = {os.fspath(path): self.directory_evidence(path)
+                   for path in directories}
+        before = {name: (evidence._proof if evidence is not None
+                         else _directory_metadata(name))
+                  for name, evidence in trusted.items()}
+        return _DirectoryObservations(trusted, before)
+
+    def holds(self, evidence):
+        if evidence is None:
+            return False
+        if isinstance(evidence, EvidenceSet):
+            return all(self.holds(item) for item in evidence)
+        return self.directory_current(evidence.directory) == evidence._proof
+
+    def scrape_view(self):
+        return ScrapeTrustView(self)
+
+
+filesystem_trust = LinuxFilesystemTrust()
+NoCapture = object()
+
+
+@dataclass(frozen=True)
+class _CaptureSlot:
+    proof: tuple | None
+    value: object = NoCapture
+    candidates: object = NoCapture
+
+
+class CaptureRead:
+    def __init__(self, owner, name, identity, old):
+        self._owner = owner
+        self._name = name
+        self._identity = identity
+        self._old = old
+        self._before = None
+        self._current = None
+        self._fence = None
+        self._finished = False
+        self.hit = False
+        self.value = NoCapture
+        self.previous = (NoCapture if old is None else
+                         old.candidates if old.candidates is not NoCapture
+                         else old.value)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        self._abort()
+
+    def _abort(self):
+        if not self._finished:
+            self._owner._finish(self, NoCapture)
+            self._finished = True
+
+    def commit(self, value, *, complete=True, candidates=NoCapture):
+        if self._finished:
+            raise RuntimeError("capture already finalized")
+        try:
+            proof = self._before
+            if (not complete or proof is None
+                    or self._owner.trust.directory_current(self._name) != proof):
+                proof = None
+            slot = (None if proof is None and candidates is NoCapture else
+                    _CaptureSlot(proof, value if proof is not None else NoCapture,
+                                 candidates))
+            self._owner._finish(self, slot)
+            self._finished = True
+            return value
+        except BaseException:
+            self._abort()
+            raise
+
+
+class FileCaptureRead(CaptureRead):
+    def file_version(self, info, *, path=None, descriptor=None,
+                     follow_symlinks=True):
+        return self._owner.trust.file_version(
+            info, self._fence, path=path, descriptor=descriptor,
+            follow_symlinks=follow_symlinks)
+
+
+class DirectoryCaptures:
+    """Listing proofs and untrusted candidates owned by one reader meaning.
+
+    Acquisition detaches old state before I/O. Only the newest acquisition
+    can publish; forget and retain revoke in-flight ownership too.
+    """
+    def __init__(self, trust=None):
+        self.trust = filesystem_trust if trust is None else trust
+        self._slots = {}
+        self._active = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, directory):
+        return self._acquire(directory, CaptureRead)
+
+    def acquire_files(self, directory):
+        return self._acquire(directory, FileCaptureRead)
+
+    def _acquire(self, directory, read_type):
+        name = os.fspath(directory)
+        identity = object()
+        with self._lock:
+            old = self._slots.pop(name, None)
+            self._active[name] = identity
+        read = read_type(self, name, identity, old)
+        try:
+            if old is not None:
+                read._current = self.trust.directory_current(name)
+                if (old.proof is not None and old.value is not NoCapture
+                        and read._current == old.proof):
+                    read.hit = True
+                    read.value = old.value
+                    read._before = old.proof
+                    with self._lock:
+                        if self._active.get(name) is identity:
+                            self._slots[name] = old
+                    return read
+            read._before = self.trust.directory_before(name)
+            if read_type is FileCaptureRead:
+                read._fence = self.trust.file_fence()
+            return read
+        except BaseException:
+            read._abort()
+            raise
+
+    def _finish(self, read, slot):
+        with self._lock:
+            if self._active.get(read._name) is read._identity:
+                self._active.pop(read._name)
+                if slot is not NoCapture:
+                    self._slots.pop(read._name, None)
+                    if slot is not None:
+                        self._slots[read._name] = slot
+
+    def forget(self, directory):
+        name = os.fspath(directory)
+        with self._lock:
+            self._slots.pop(name, None)
+            self._active.pop(name, None)
+
+    def retain(self, directories):
+        wanted = {os.fspath(directory) for directory in directories}
+        with self._lock:
+            for kept in (self._slots, self._active):
+                for name in set(kept) - wanted:
+                    del kept[name]
+
+    def forget_tree(self, directory):
+        name = os.fspath(directory)
+        prefix = name.rstrip(os.sep) + os.sep
+        with self._lock:
+            for kept in (self._slots, self._active):
+                for known in list(kept):
+                    if known == name or known.startswith(prefix):
+                        del kept[known]
 
 
 class CensusMemo:
@@ -539,7 +691,8 @@ class CensusMemo:
     census work ran inside its hold (:func:`_locked_parse_record`).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, trust=None) -> None:
+        self.trust = filesystem_trust if trust is None else trust
         self.fragments: dict[str, tuple[tuple, dict[str, object]]] = {}
         self.paths: dict[int, frozenset[str]] = {}
         self.normalized: dict[int, frozenset[str]] = {}
@@ -635,7 +788,7 @@ class CensusIndex(CensusMemo):
     * **A directory** is not listed again while its ``lstat`` version equals
       a stamp taken before its last listing, and no document in it is opened
       while its ``stat`` version still equals the one it was parsed at
-      (:func:`kept_reads.trusted_directory_stamp` has the argument for the
+      (:func:`kept_reads.filesystem_trust.directory_before` has the argument for the
       directory; a stamp is refused inside the clock tick it was taken in,
       on a network filesystem, and on anything that is not a directory).
       The stamp is taken before the listing and compared again after it,
@@ -658,30 +811,15 @@ class CensusIndex(CensusMemo):
     path sets, which only an egress reads.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
-        #: Stage directory (as ``str``) -> ``(stamp, children, entries)`` for
-        #: :func:`_unattributed_candidates`.  ``stamp`` is
-        #: :func:`kept_reads.trusted_directory_stamp`'s version, or ``None``
-        #: when no listing of the directory may be reused; ``children`` are
-        #: the real subdirectories the walk recursed into; ``entries`` maps a
-        #: file name to ``(version, kind, mover)``, its classification from
-        #: the last probe.  A stale entry is a probe hint only: the directory
-        #: is listed again, and a file's classification is reused only while
-        #: its own version holds (#1045).
-        self.stage_walk: dict[str, tuple[
-            tuple | None, tuple[str, ...],
-            dict[str, tuple[tuple | None, str, str]]]] = {}
+    def __init__(self, *, trust=None) -> None:
+        super().__init__(trust=trust)
+        self.stage_walk = DirectoryCaptures(self.trust)
         self.walk_listed = 0    # stage directories listed
         self.walk_kept = 0      # stage directories whose listing was reused
         self.walk_probed = 0    # stage files whose marks were read
         self.walk_reused = 0    # stage files whose classification was reused
-        #: Namespace directory -> ``(stamp, [(mover, document)], file keys)``.
-        self.namespaces: dict[str, tuple[tuple, list[tuple[str, dict[str, object]]],
-                                         frozenset[str]]] = {}
-        #: Level directory -> ``(stamp, [(name, kind)])``, ``kind`` one of
-        #: ``dir``, ``link``, ``other`` or an ``error: ...`` string.
-        self.levels: dict[str, tuple[tuple, list[tuple[str, str]]]] = {}
+        self.namespaces = DirectoryCaptures(self.trust)
+        self.levels = DirectoryCaptures(self.trust)
         #: File keys the last listing of each namespace directory read.
         self._files: dict[str, frozenset[str]] = {}
         self.listed = 0       # directories listed
@@ -703,101 +841,23 @@ class CensusIndex(CensusMemo):
         self.pins = _PinMemo()
         return self.pins
 
-    def stage_hit(self, directory: str,
-                  ) -> tuple[tuple[str, ...],
-                             dict[str, tuple[tuple | None, str, str]]] | None:
-        """One stage directory's listing, when its stamp still holds.
-
-        ``None`` for a directory never listed, one whose stamp cannot be
-        trusted, or one whose version moved: the caller lists it again.
-        """
-
-        kept = self.stage_walk.get(directory)
-        if kept is None or kept[0] is None:
-            return None
-        if current_directory_version(directory) != kept[0]:
-            return None
-        self.walk_kept += 1
-        return kept[1], kept[2]
-
-    def stage_memo(self, directory: str,
-                   ) -> tuple[tuple | None, tuple[str, ...],
-                              dict[str, tuple[tuple | None, str, str]]] | None:
-        """A stage directory's last listing, stale stamps included.
-
-        A probe hint only: the caller that cannot reuse the listing reads
-        the directory again and compares each file's version before reusing
-        its classification.
-        """
-
-        return self.stage_walk.get(directory)
-
-    def remember_stage(self, directory: str, stamp: tuple | None,
-                       children: "list[str]",
-                       entries: dict[str, tuple[tuple | None, str, str]],
-                       previous_children: "list[str] | None" = None, *,
-                       retry: bool = False) -> None:
-        """Record one stage listing, and drop what left it.
-
-        The stamp is kept only while a fresh ``lstat`` still returns it, and
-        only when it was trusted before the listing; otherwise ``None``,
-        which carries the entries as a probe hint and nothing more.  A
-        ``retry`` listing -- one where a name could not be stat-ed -- never
-        keeps its stamp, because the failure did not move the directory's
-        version and the name must be tried again rather than lost.  A child
-        directory that is no longer in the listing loses its own listing and
-        every descendant's, so the memo owns no name that is not on disk.
-        """
-
-        self.walk_listed += 1
-        name = str(directory)
-        if previous_children is not None:
-            for gone in set(previous_children) - set(children):
-                self.forget_stage(gone)
-        if (retry or stamp is None
-                or current_directory_version(directory) != stamp):
-            stamp = None
-        self.stage_walk[name] = (stamp, tuple(children), entries)
-
-    def refresh_stage(self, directory: str,
-                      entries: dict[str, tuple[tuple | None, str, str]],
-                      *, retry: bool = False,
-                      ) -> None:
-        """Replace a reused listing's per-file classifications.
-
-        ``retry`` drops the stamp, so a name whose ``lstat`` failed is listed
-        again on the next pass instead of being hidden by the listing that
-        could not read it.
-        """
-
-        kept = self.stage_walk.get(str(directory))
-        if kept is not None:
-            self.stage_walk[str(directory)] = (None if retry else kept[0],
-                                               kept[1], entries)
-
     def forget_stage(self, directory: str) -> None:
-        """Drop one stage directory's listing and every descendant's."""
+        self.stage_walk.forget_tree(directory)
 
-        name = str(directory)
-        self.stage_walk.pop(name, None)
-        prefix = name.rstrip(os.sep) + os.sep
-        for known in [path for path in self.stage_walk
-                      if path.startswith(prefix)]:
-            self.stage_walk.pop(known, None)
-
-    def namespace_hit(self, directory: Path,
-                      ) -> list[tuple[str, dict[str, object]]] | None:
-        """The fragments a remembered listing of ``directory`` holds, or ``None``."""
-
-        kept = self.namespaces.get(str(directory))
-        if kept is None:
-            return None
-        if (current_directory_version(directory) != kept[0]
-                or not self._documents_hold(kept[2])):
-            self.namespaces.pop(str(directory), None)
-            return None
-        self.kept += 1
-        return kept[1]
+    def namespace(self, directory):
+        capture = self.namespaces.acquire(directory)
+        try:
+            if capture.hit and not self._documents_hold(capture.value[1]):
+                self.namespaces._finish(capture, None)
+                capture._finished = True
+                capture = self.namespaces.acquire(directory)
+            if capture.hit:
+                self.kept += 1
+            return capture
+        except BaseException:
+            self.namespaces._finish(capture, None)
+            capture._finished = True
+            raise
 
     def _documents_hold(self, keys: frozenset[str]) -> bool:
         """Whether every document a kept listing read is the version parsed.
@@ -810,7 +870,7 @@ class CensusIndex(CensusMemo):
         keeps that promise for less than a listing costs.
         """
 
-        fence = version_fence()
+        fence = self.trust.file_fence()
         for key in keys:
             parsed = self.fragments.get(key)
             if parsed is None:
@@ -819,50 +879,25 @@ class CensusIndex(CensusMemo):
                 info = os.stat(key)
             except OSError:
                 return False
-            if keepable_version(info, fence, path=key) != parsed[0]:
+            if self.trust.file_version(info, fence, path=key) != parsed[0]:
                 return False
         return True
 
-    def remember_namespace(self, directory: Path, stamp: tuple | None,
-                           found: list[tuple[str, dict[str, object]]],
-                           read: set[str], tainted: bool) -> None:
-        """Record one listing of ``directory``: what it found and what it read."""
-
-        name = str(directory)
+    def remember_namespace(self, directory, capture, found, read, tainted):
+        name = os.fspath(directory)
         self.listed += 1
         for gone in self._files.get(name, frozenset()) - read:
             self.forget(gone)
         self._files[name] = frozenset(read)
-        if (stamp is None or tainted
-                or current_directory_version(directory) != stamp):
-            self.namespaces.pop(name, None)
-            return
-        self.namespaces[name] = (stamp, list(found), frozenset(read))
+        capture.commit((list(found), frozenset(read)), complete=not tainted)
 
     def forget_namespace(self, directory: str) -> None:
-        """Drop a namespace directory that left its level, and its documents."""
-
-        self.namespaces.pop(directory, None)
+        self.namespaces.forget(directory)
         for gone in self._files.pop(directory, frozenset()):
             self.forget(gone)
 
-    def level_hit(self, directory: Path) -> list[tuple[str, str]] | None:
-        """A remembered classification of ``directory``'s children, or ``None``."""
-
-        kept = self.levels.get(str(directory))
-        if kept is None:
-            return None
-        if current_directory_version(directory) != kept[0]:
-            self.levels.pop(str(directory), None)
-            return None
-        self.kept += 1
-        return kept[1]
-
-    def remember_level(self, directory: Path, stamp: tuple | None,
-                       children: list[tuple[str, str]]) -> None:
-        """Record one listing of a level; forget namespaces that left it."""
-
-        name = str(directory)
+    def remember_level(self, directory, capture, children):
+        name = os.fspath(directory)
         self.listed += 1
         present = {os.path.join(name, child) for child, kind in children
                    if kind == "dir"}
@@ -872,12 +907,8 @@ class CensusIndex(CensusMemo):
                       and os.sep not in path[len(prefix):]
                       and path not in present]:
             self.forget_namespace(known)
-        if (stamp is None
-                or any(kind.startswith("error") for _child, kind in children)
-                or current_directory_version(directory) != stamp):
-            self.levels.pop(name, None)
-            return
-        self.levels[name] = (stamp, list(children))
+        capture.commit(list(children), complete=not any(
+            kind.startswith("error") for _child, kind in children))
 
 
 class DirectoryRecords:
@@ -887,7 +918,7 @@ class DirectoryRecords:
     and prewarm receipt, and every ``ready/`` and ``claimed/`` record, three
     times over.  This keeps each directory's parsed records by file version
     and each directory's listing by the stamp of
-    :func:`kept_reads.trusted_directory_stamp`, so a directory nothing was
+    :func:`kept_reads.filesystem_trust.directory_before`, so a directory nothing was
     filed in since is not listed, and a record whose version holds is not
     read.  Every writer of these records files by rename
     (``pool._write_json_atomic``), which is what both fences stand on.
@@ -906,17 +937,14 @@ class DirectoryRecords:
     nor the listing's inode number says a record is unchanged.  The #761
     version, ctime included, does -- once its clock tick has passed: two
     files in one tick can share all five fields, so a version is kept only
-    under :func:`kept_reads.keepable_version`'s rule (#1045).
+    under :func:`kept_reads.filesystem_trust.file_version`'s rule (#1045).
     """
 
-    def __init__(self) -> None:
-        #: Directory -> ``(stamp or None, {name: (version, record)})``.
-        self._directories: dict[str, tuple[tuple | None,
-                                           dict[str, tuple[tuple, object]]]] = {}
-        #: Directory -> a count that moves whenever its record set changes.
+    def __init__(self, *, trust=None) -> None:
+        self.trust = filesystem_trust if trust is None else trust
+        self._captures = DirectoryCaptures(self.trust)
+        self._names = DirectoryCaptures(self.trust)
         self._generations: dict[str, int] = {}
-        #: Directory -> ``(stamp, names)`` for :meth:`names`.
-        self._names: dict[str, tuple[tuple, frozenset[str]]] = {}
         self.listed = 0
         self.kept = 0
         self.parsed = 0
@@ -936,24 +964,19 @@ class DirectoryRecords:
         absence, for authoritative ledger censuses that must refuse it.
         """
 
-        name = str(directory)
-        kept = self._names.get(name)
-        if kept is not None and current_directory_version(directory) == kept[0]:
-            self.kept += 1
-            return kept[1]
-        self._names.pop(name, None)
-        stamp = trusted_directory_stamp(directory)
-        try:
-            listed = os.listdir(directory)
-        except FileNotFoundError:
-            if not missing_ok:
-                raise
-            return frozenset()
-        self.listed += 1
-        found = frozenset(child for child in listed if select(child))
-        if stamp is not None and current_directory_version(directory) == stamp:
-            self._names[name] = (stamp, found)
-        return found
+        with self._names.acquire(directory) as capture:
+            if capture.hit:
+                self.kept += 1
+                return capture.value
+            try:
+                listed = os.listdir(directory)
+            except FileNotFoundError:
+                if not missing_ok:
+                    raise
+                return frozenset()
+            self.listed += 1
+            found = frozenset(child for child in listed if select(child))
+            return capture.commit(found)
 
     def retain(self, directories) -> None:
         """Forget the listing and records of every directory not named.
@@ -966,9 +989,12 @@ class DirectoryRecords:
         """
 
         wanted = {str(directory) for directory in directories}
-        for kept in (self._directories, self._names):
-            for name in [name for name in kept if name not in wanted]:
-                del kept[name]
+        self._captures.retain(wanted)
+        self._names.retain(wanted)
+
+    def forget(self, directory) -> None:
+        self._captures.forget(directory)
+        self._names.forget(directory)
 
     def generation(self, directory: Path) -> int:
         """A number that changes whenever ``directory``'s records change.
@@ -1038,32 +1064,21 @@ class DirectoryRecords:
     def _read(self, directory: Path, *, select, parse, keep,
               stat_parse: bool = False,
               checkpoint=None, readers: int = 1) -> list[tuple[Path, object]]:
+        with self._captures.acquire_files(directory) as capture:
+            return self._read_capture(directory, capture, select=select, parse=parse,
+                                      keep=keep, stat_parse=stat_parse,
+                                      checkpoint=checkpoint, readers=readers)
+
+    def _read_capture(self, directory, capture, *, select, parse, keep,
+                      stat_parse, checkpoint, readers):
         name = str(directory)
-        kept = self._directories.get(name)
-        current = None
-        if kept is not None:
-            current = current_directory_version(directory)
-        if kept is not None and kept[0] is not None and current == kept[0]:
+        if capture.hit:
             self.kept += 1
             return [(directory / child, record)
-                    for child, (_version, record) in sorted(kept[1].items())]
-        previous = kept[1] if kept is not None else {}
-        if kept is not None and current is None:
-            # The kept listing's proof left with its filesystem's trust
-            # (#1208): its stamp was only sound while the directory's times
-            # came from this kernel's clock.  What it parsed is then no
-            # evidence for any entry, even one whose bare stat still reads the
-            # same, so every entry is read again -- as a plain read on that
-            # filesystem reads it -- and the fresh parses are kept only if
-            # the fence below lets them.  A stamp refused for the tick the
-            # directory changed in leaves ``current`` non-None: the
-            # filesystem still answers for its clock, so the entries' own
-            # versions are evidence and are reused.
+                    for child, (_version, record) in sorted(capture.value.items())]
+        previous = capture.previous
+        if previous is NoCapture or capture._current is None:
             previous = {}
-        stamp = trusted_directory_stamp(directory)
-        # Read before any entry is stat-ed: a version whose ctime is not
-        # strictly before it is not kept (#1045, :func:`keepable_version`).
-        fence = version_fence()
         try:
             if checkpoint is None:
                 entries = sorted((entry for entry in os.scandir(directory)
@@ -1080,7 +1095,7 @@ class DirectoryRecords:
                         checkpoint()
                 entries = sorted(selected, key=lambda entry: entry.name)
         except (FileNotFoundError, NotADirectoryError):
-            if self._directories.pop(name, None) is not None:
+            if capture._old is not None:
                 self._generations[name] = self._generations.get(name, 0) + 1
             return []
         self.listed += 1
@@ -1114,7 +1129,7 @@ class DirectoryRecords:
             hit = previous.get(entry.name)
             if (info is not None and version is not None
                     and hit is not None and hit[0] == version
-                    and keepable_version(info, fence, path=entry.path) is not None):
+                    and capture.file_version(info, path=entry.path) is not None):
                 return info, version, False, hit[1]
             record = parse(path, info) if stat_parse else parse(path)
             return info, version, True, record
@@ -1140,22 +1155,18 @@ class DirectoryRecords:
                     # by a new file under this name given the freed inode
                     # (#1045): not kept, so it is read again next pass, and
                     # neither is the listing, which would lack it.
-                    version = keepable_version(info, fence, path=entry.path)
+                    version = capture.file_version(info, path=entry.path)
                     if version is None:
                         complete = False
                 if version is not None:
                     records[entry.name] = (version, record)
                 out.append((path, record))
         except BaseException:
-            self._directories.pop(name, None)
             self._generations[name] = self._generations.get(name, 0) + 1
             raise
         if changed or set(previous) != set(records) or not complete:
             self._generations[name] = self._generations.get(name, 0) + 1
-        if (not complete or stamp is None
-                or current_directory_version(directory) != stamp):
-            stamp = None
-        self._directories[name] = (stamp, records)
+        capture.commit(records, complete=complete, candidates=records)
         return out
 
 
