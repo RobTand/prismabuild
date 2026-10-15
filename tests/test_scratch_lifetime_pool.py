@@ -372,14 +372,23 @@ def test_published_ending_tombstone_recovers_without_rewriting_ending(
     key = item["action_key"]
     ending = queue.item_path(state, key)
     write = pool._write_json_atomic
+    link = pool.os.link
 
     def interrupt(path, value):
         write(path, value)
         if path == ending:
             raise OSError("fixture after ending publication")
 
+    def interrupt_link(source, destination, *args, **kwargs):
+        link(source, destination, *args, **kwargs)
+        if Path(destination) == ending:
+            raise OSError("fixture after ending publication")
+
     with monkeypatch.context() as fault:
-        fault.setattr(pool, "_write_json_atomic", interrupt)
+        if state == pool.READY:
+            fault.setattr(pool.os, "link", interrupt_link)
+        else:
+            fault.setattr(pool, "_write_json_atomic", interrupt)
         with pytest.raises(OSError, match="fixture after ending publication"):
             queue.finish(key, status=outcome["status"], detail=outcome, claim_snapshot=item)
     before = ending.read_bytes()
