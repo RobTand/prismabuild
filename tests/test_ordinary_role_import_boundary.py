@@ -157,6 +157,16 @@ def test_installed_leaf_import_needs_no_broad_owner(installed, tmp_path, leaf):
         import importlib
         import prismabuild
         importlib.import_module('prismabuild' + {('.' + leaf) if leaf else ''!r})
+        if {not leaf!r}:
+            for attempt in range(2):
+                assert 'core' not in vars(prismabuild)
+                try:
+                    prismabuild.core
+                except ModuleNotFoundError as error:
+                    assert error.name == 'prismabuild.core', error
+                else:
+                    raise AssertionError('unavailable core export was supplied')
+                assert 'core' not in vars(prismabuild)
         for name in {BROAD!r}:
             try:
                 importlib.import_module('prismabuild.' + name)
@@ -305,5 +315,35 @@ def test_installed_sdk_uses_the_real_owners(installed, tmp_path):
         assert core.CASTamperError is immutable_files.CASTamperError
         queue = client.PoolQueue(work / 'queue')
         assert client.read_claimed_record(queue, 'a' * 64) is None
+        print(json.dumps(origins(), sort_keys=True))
+    """)
+
+
+def test_installed_module_exports_keep_identity_across_access_orders(installed, tmp_path):
+    _child(installed, "complete", tmp_path / "module-first", """
+        import importlib
+        core = importlib.import_module('prismabuild.core')
+        residency = importlib.import_module('prismabuild.residency_map')
+        import prismabuild
+        from prismabuild import core as exported_core, residency_map as exported_residency
+        assert core is exported_core is prismabuild.core
+        assert residency is exported_residency is prismabuild.residency_map
+        print(json.dumps(origins(), sort_keys=True))
+    """)
+    _child(installed, "complete", tmp_path / "concurrent-first", """
+        from concurrent.futures import ThreadPoolExecutor
+        import importlib, threading
+        import prismabuild
+        ready = threading.Barrier(4, timeout=10)
+        def request(name):
+            ready.wait()
+            return getattr(prismabuild, name)
+        names = ['core', 'core', 'residency_map', 'residency_map']
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            modules = list(workers.map(request, names))
+        for name, module in zip(names, modules):
+            assert module is getattr(prismabuild, name)
+            assert module is importlib.import_module('prismabuild.' + name)
+        assert modules[0] is modules[1] and modules[2] is modules[3]
         print(json.dumps(origins(), sort_keys=True))
     """)

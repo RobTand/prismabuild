@@ -4925,9 +4925,22 @@ boundary imposes no commit grammar or additional receipt schema.
 unavailable observation proves neither agreement nor movement. Each decision
 carries its evidence. Roles retain their own refusal, wait and retirement
 policies. Roles consume typed observations and decisions at work boundaries.
-Scalar receipt getters and comparison APIs are absent. `role_session` still
-imports `adaptive_cpu` and `core`; removing those dependencies is a separate
-change.
+Scalar receipt getters and comparison APIs are absent. `role_session` uses
+`digest_primitives` for canonical bytes, `immutable_files` for drift publication
+and `flock_owner` for lock-holder diagnostics, without importing `core`, `pool`
+or `adaptive_cpu`.
+
+An ordinary package import loads the stdlib-only progress helper and exports
+its exact `commit` and `report_action_progress` functions. The advertised
+`core` and `residency_map` module attributes load on first request through
+Python's normal import machinery and cache the real module objects.
+The ordered package `__all__`, version and documented imports remain unchanged.
+The advertised names remain discoverable through `dir`. Import-star requests
+every export and therefore loads both broad modules. Before first request,
+those modules are absent from
+the package's raw dictionary and `sys.modules`. Receipt, park and role imports
+can run with those broad modules unavailable. This boundary adds no receipt
+strictness or serving-loop policy.
 
 The worker observes the loaded receipt beside its imported source and the
 published receipt through `role_session.loaded_runtime` and `published_runtime`.

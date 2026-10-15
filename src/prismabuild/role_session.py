@@ -15,11 +15,11 @@ import stat
 import threading
 import time
 
-from . import core as pb, generation_receipt, park_proof
+from . import generation_receipt, park_proof
 from . import flock_owner
 from . import immutable_files
 from .park_proof import drain_offer_fields
-from .digest_primitives import raw_sha256
+from .digest_primitives import _canonical_bytes, raw_sha256
 
 GENERATION_VERSION = Path(__file__).resolve().parents[2] / "RUNTIME_VERSION.json"
 RUNTIME_VERSION = Path("/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")
@@ -255,7 +255,7 @@ def record_generation_drift(drift: dict, *, actor: str,
         "published_generation": str(drift.get("published_generation") or ""),
         "detail": dict(detail or {}),
     }
-    raw = pb._canonical_bytes(record) + b"\n"
+    raw = _canonical_bytes(record) + b"\n"
     digest = raw_sha256(raw)[:8]
     path = (Path(queue_root) / GENERATION_DRIFT_DIR
             / (f"{int(record['unix'] * 1000):013d}-{record['host']}"
