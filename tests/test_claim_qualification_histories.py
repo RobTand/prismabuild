@@ -214,7 +214,7 @@ def test_scratch_root_replacement_after_placement_keeps_boundary_exception_conte
         evidence, yielding = placement(*args, **kwargs)
         assert evidence["selected_host"] == FAST
         assert not yielding
-        scratch_fleet.devices[FAST]["root_inode"] += 1
+        scratch_fleet.devices[FAST]["root_inode"] = "999"
         return evidence, yielding
 
     def fail_after_record(item, reason, evidence=None):
