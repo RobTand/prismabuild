@@ -6376,8 +6376,12 @@ unreadable claim census freezes the count in both directions. Only excess loops
 proven idle by one batched claim census plus local process state receive
 `SIGTERM`; active work is never selected. Busy or backlogged cycles use a short
 bounded tick, spawning is amortized, and monotonically allocated log slots
-preserve append evidence across shrink and growth. `--loops` explicitly selects
-fixed mode, while `--once` tops up only to the configured floor.
+preserve append evidence across shrink and growth. A regular owning cycle
+prunes at most 256 worker logs that nothing has written for 7 days, that lie
+below the highest index and that no live loop holds as stdout or stderr; the
+highest index survives, so a restarted supervisor still never reuses a slot.
+`--loops` explicitly selects fixed mode, while `--once` tops up only to the
+configured floor.
 
 Ownership requires an interpreter/script in a proven runtime, the supervisor's
 host ownership environment, **and kernel session/process-group leadership**

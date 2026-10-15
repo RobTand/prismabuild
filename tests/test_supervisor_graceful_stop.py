@@ -158,7 +158,7 @@ def isolated_supervisor(monkeypatch, tmp_path):
     monkeypatch.setattr(supervise, '_reexec_if_published', lambda *a: False)
     monkeypatch.setattr(supervise, '_reap_children', lambda: 0)
     monkeypatch.setattr(supervise, 'declared_shape', lambda *a, **k: (1, []))
-    monkeypatch.setattr(supervise, '_next_log_index', lambda: 0)
+    monkeypatch.setattr(supervise, '_worker_log_census', lambda: [])
     monkeypatch.setattr(supervise.time, 'sleep', lambda _: None)
 
 

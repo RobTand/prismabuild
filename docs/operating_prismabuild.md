@@ -4238,6 +4238,19 @@ short bounded interval; idle boxes keep the ordinary interval. Spawns are
 batched, and log indices are never reused, so contraction and later growth do
 not mix two live workers' append evidence.
 
+A regular owning cycle also prunes worker logs (`pb-worker-<index>.log` under
+`LOG_DIR`, default `/home/rob/tmp`). A log goes when it is a single-link
+regular file this user owns, nothing has written to it for 7 days
+(`WORKER_LOG_RETENTION_S`), it is not the highest index (which a restarted
+supervisor counts from, so a slot is still never reused), and no live
+supervised loop holds it as stdout or stderr (`/proc/<pid>/fd/1` and `/2`).
+The directory is listed once per supervisor start; each cycle then inspects
+at most 256 logs (`WORKER_LOG_PRUNES_PER_TICK`) from that list and from the
+loops it has spawned since, so tens of thousands drain over cycles without
+holding up a spawn. A live loop whose descriptors cannot be read stops that
+cycle's pruning. `--once` and non-owning supervisors prune nothing. Role logs
+keep their own retention (#1396); `pb-supervisor.log` is not pruned.
+
 An idle loop with waiting work retries at a bounded one-second cadence so a
 fresh adaptive CPU or GPU verdict is used promptly. With no ready work it
 returns to the box's configured 10--20 second delay. The fast path reads the
@@ -4310,8 +4323,9 @@ promised. Truncation follows only a complete tail copy and renewed checks.
 These role leaves are not authoritative action stdout/stderr: actual action
 PIPE capture and attempt/CAS streams in `src/prismabuild/pool.py`, tiers verdict
 sidecars and storage prewarm receipts remain separate and untouched. So do
-worker/supervisor logs, custom storage `--log`, existing archives and the
-separately bounded mount collector. The local diagnostic fixture is not an
+worker logs (pruned by their own rule, see "Elastic worker loops"), the
+supervisor log, custom storage `--log`, existing archives and the separately
+bounded mount collector. The local diagnostic fixture is not an
 end-to-end receipt-integrity test. This change alone claims no live file trim,
 role restart, root-disk recovery or measured speedup.
 
