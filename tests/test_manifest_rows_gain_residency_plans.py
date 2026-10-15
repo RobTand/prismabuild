@@ -549,7 +549,6 @@ def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
     """REVIEW-1252-r3 [P3]: the receipt gate is real, not a comment."""
 
     import os
-    import time
     fleet = Fleet(tmp_path)
     key = _manifest_row(fleet, "row-stuck",
                         annotations={"phases": phase_table(NAMED_FILES)})
@@ -561,9 +560,9 @@ def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
         fleet.queue, fleet.cas_root, broken,
         ready=[_ready_item(fleet, key)])
     assert record.exists()
+    os.utime(record, ns=(record.stat().st_atime_ns, 0))
     before = record.stat().st_mtime_ns
     content = record.read_text()
-    time.sleep(0.05)
 
     manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, broken,
