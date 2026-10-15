@@ -66,8 +66,8 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q, capacity, *, tiers):
-    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+def _claim(q, capacity, *, tiers, cpu_sampler):
+    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     return None if item is None else item["action_key"]
 
 
@@ -100,14 +100,13 @@ def test_a_busy_holder_with_subthreshold_foreign_withholds(
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.06, quiet=())
     per_cpu["0"] = 0.9          # the holder's own CPU, busy with its work
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=per_cpu))
+    cpu_sampler = lambda: _sample(clock, per_cpu=per_cpu)
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _claim(queue, capacity, tiers=tiers)
+        return _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler)
 
     holder = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == holder
@@ -137,14 +136,13 @@ def test_thin_foreign_spread_below_the_per_cpu_line_admits(
     capacity = {"cpu": 20, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     state = {"level": 0.015}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=_flat(state["level"])))
+    cpu_sampler = lambda: _sample(clock, per_cpu=_flat(state["level"]))
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _claim(queue, capacity, tiers=tiers)
+        return _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler)
 
     # Seed the idle window at busy 0.3 with no holder: the prior does not
     # refuse 0.3 (<= .05 x 20), so the sample joins the baseline.
@@ -183,14 +181,14 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
         per_cpu["0"] = per_cpu["1"] = level
         return _sample(clock, per_cpu=per_cpu)
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: sample())
+    cpu_sampler = lambda: sample()
     holder = publish("holder", cpu=2, gpu=0, mem_gb=1)
-    assert claim() == holder
+    assert claim(cpu_sampler=cpu_sampler) == holder
     measurement = publish("measurement", measurement=True, cpu=4, gpu=0, mem_gb=40)
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = publish("behind", cpu=4, gpu=0, mem_gb=40)
-    assert claim() is None, "the holder's own busy load must still withhold"
+    assert claim(cpu_sampler=cpu_sampler) is None, "the holder's own busy load must still withhold"
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding", denial
     assert denial["evidence"]["decision"]["reason"] == "measurement_holder"
@@ -199,4 +197,4 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     queue.finish(holder, status="executed")
     state["busy"] = False
     clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
-    assert claim() == measurement
+    assert claim(cpu_sampler=cpu_sampler) == measurement

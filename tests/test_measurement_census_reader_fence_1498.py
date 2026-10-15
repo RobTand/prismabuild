@@ -24,6 +24,8 @@ import os
 import threading
 import time
 
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
@@ -96,7 +98,9 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
     def admit():
         outcome["claimed"] = queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record])
+            has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record],
+            cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+            gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
 
     def observe():
         census = reservation.CensusReader(other, other.ledger())
@@ -170,7 +174,9 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
         started = time.monotonic()
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
                              adaptive_cpu=True, has_gpu=True,
-                             tags=["gb10", "sparklina"], ready=[candidate_record])
+                             tags=["gb10", "sparklina"], ready=[candidate_record],
+                             cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                             gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
         elapsed = time.monotonic() - started
         assert result is None
         row = _denial(queue, candidate)

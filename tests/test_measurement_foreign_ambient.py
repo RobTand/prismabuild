@@ -79,8 +79,8 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q, capacity, *, tiers):
-    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+def _claim(q, capacity, *, tiers, cpu_sampler):
+    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     return None if item is None else item["action_key"]
 
 
@@ -115,14 +115,13 @@ def test_foreign_excess_on_the_measurements_own_cpus_is_typed_ambient(
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
     per_cpu["0"] = per_cpu["1"] = 0.60
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=per_cpu))
+    cpu_sampler = lambda: _sample(clock, per_cpu=per_cpu)
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _claim(queue, capacity, tiers=tiers)
+        return _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler)
 
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
     for _ in range(pool.STARVATION_FLOOR - 1):
@@ -154,8 +153,7 @@ def test_foreign_only_off_the_measurements_cpus_admits_the_measurement(
     per_cpu = _flat(0.01)
     for cpu in range(10, 20):
         per_cpu[str(cpu)] = 0.30
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=per_cpu))
+    cpu_sampler = lambda: _sample(clock, per_cpu=per_cpu)
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
@@ -164,7 +162,7 @@ def test_foreign_only_off_the_measurements_cpus_admits_the_measurement(
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
-    assert _claim(queue, capacity, tiers=tiers) == measurement
+    assert _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler) == measurement
     assert queue.item_path(pool.CLAIMED, measurement).exists()
     assert queue.item_path(pool.READY, behind).exists()
 
@@ -187,8 +185,7 @@ def test_provisional_depth_measures_a_loaded_host(
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
     per_cpu["0"] = per_cpu["1"] = 0.60
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=per_cpu))
+    cpu_sampler = lambda: _sample(clock, per_cpu=per_cpu)
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
@@ -200,13 +197,13 @@ def test_provisional_depth_measures_a_loaded_host(
     for _ in range(2):
         clock[0] += 60.0
         queue.record_pass(measurement)
-        assert _claim(queue, capacity, tiers=tiers) is None
+        assert _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler) is None
     # Past depth the steady load is the baseline: the measurement runs.
     admitted = False
     for _ in range(4):
         clock[0] += 60.0
         queue.record_pass(measurement)
-        if _claim(queue, capacity, tiers=tiers) == measurement:
+        if _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler) == measurement:
             admitted = True
             break
     assert admitted, "five refused seeds spanning 180 s must measure the host"
@@ -247,14 +244,13 @@ def test_ambient_refusal_names_foreign_pids(
     tiers = {"preferred": list(range(20)), "fallback": []}
     per_cpu = _flat(0.01)
     per_cpu["0"] = per_cpu["1"] = 0.60
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample",
-                        lambda self: _sample(clock, per_cpu=per_cpu))
+    cpu_sampler = lambda: _sample(clock, per_cpu=per_cpu)
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
-    assert _claim(queue, capacity, tiers=tiers) != measurement
+    assert _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler) != measurement
     decision = _denial(queue, measurement)["evidence"]["decision"]
     assert decision["reason"] == "measurement_foreign_ambient", decision
     pids = decision["foreign_pids"]

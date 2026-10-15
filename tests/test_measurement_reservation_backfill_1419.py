@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import adaptive_cpu, adaptive_gpu, pool
 
 fleet = fleet_fixture
@@ -92,8 +94,9 @@ def _observe_real_sharing_permission(fleet, candidate):
     permission = None
     for _ in range(2):
         tick(adaptive_gpu.SETTLE_S + 1)
-        cpu = adaptive_cpu.Controller(queue.ledger(), TIERS)
-        gpu = adaptive_gpu.Controller(queue.ledger())
+        cpu = adaptive_cpu.Controller(queue.ledger(), TIERS,
+            sampler=lambda: fleet_cpu_sample(clock, readings))
+        gpu = adaptive_gpu.Controller(queue.ledger(), sampler=lambda: fleet_gpu_sample(sample, readings))
         with cpu.locked():
             permission = gpu.decision(item, item["resources"])
     assert gpu is not None
