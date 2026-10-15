@@ -63,6 +63,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import (  # noqa: E402
+    Absent, Present, QueueRow, RecordStore,
+)
 from test_a_released_consumers_row_is_refused_at_claim import (  # noqa: E402
     _assert_refused, _declared_by_old_code,
 )
@@ -150,7 +153,10 @@ class _ClaimScan:
 
 def _row_is_ready(queue: pool.PoolQueue, key: str) -> None:
     assert queue.item_path(pool.READY, key).exists()
-    assert po._key_generation(queue, key)[0] == pool.READY
+    standing = RecordStore(queue.root).standing(key)
+    assert isinstance(standing, Present)
+    assert isinstance(standing.value, QueueRow)
+    assert standing.value.state == pool.READY
 
 
 def _assert_held_by_the_live_consumer(queue, key: str, origin: Path) -> None:
@@ -179,7 +185,7 @@ def test_an_old_submitters_row_landing_before_the_record_is_still_refused(
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
     _publish(tmp_path, "g-next")
-    assert po._key_generation(queue, key)[0] == "absent"
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
 
     scan = _ClaimScan(monkeypatch)
     try:
@@ -241,7 +247,7 @@ def test_a_scan_listing_before_the_entry_is_still_refused(
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
     _publish(tmp_path, "g-next")
-    assert po._key_generation(queue, key)[0] == "absent"
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
 
     scan = _ClaimScan(monkeypatch)
     try:

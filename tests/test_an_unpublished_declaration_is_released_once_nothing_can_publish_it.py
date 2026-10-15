@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
@@ -96,7 +97,7 @@ def _dies_after_declaring(tmp_path: Path, queue, monkeypatch, *argv: str) -> str
         patch.setattr(pbrun, "publish_consumer_row", died)
         assert "submitter died" in _refused(monkeypatch, *argv)
     [key] = seen
-    assert po._key_generation(queue, key)[0] == "absent"
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
     return key
 
 
@@ -215,7 +216,7 @@ def test_a_pinned_deferred_release_still_lands_so_its_key_is_refused(
         events = edges._without_summary(dr.release_tick(queue))
     assert [event["event"] for event in events] == [dr.REFUSED_EVENT]
     key = str(ae.read_release(queue.root, pending)["action_key"])
-    assert po._key_generation(queue, key)[0] == "absent"
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
     assert ae.request_wrapper(tmp_path / "cas", key, where="test") == str(old)
     assert po._consumer_state(queue, key) == "unpublished"
 
@@ -285,7 +286,8 @@ def test_a_released_key_cannot_declare_the_batch_again(
 
     refusal = _refused(monkeypatch, *argv)
     assert "origin-consumer-released" in refusal and key[:12] in refusal
-    assert po._key_generation(queue, key)[0] == "absent", "no row was published"
+    assert isinstance(RecordStore(queue.root).standing(key), Absent), (
+        "no row was published")
     with pytest.raises(po.ProducedOutputError, match="origin-consumer-released"):
         po.declare_origin_consumer(queue, committed["ref"], consumer_action_key=key)
 

@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import adaptive_cpu, pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 import pbrun  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
@@ -92,7 +93,7 @@ def _old_submitter(monkeypatch, *argv: str):
         assert "paused before its row" in _refused(monkeypatch, *argv)
     [(name, q, publication, kwargs)] = paused
     key = str(publication["action_key"])
-    assert po._key_generation(q, key)[0] == "absent"
+    assert isinstance(RecordStore(q.root).standing(key), Absent)
 
     def resume() -> None:
         getattr(pbrun, name)(q, publication, **kwargs)

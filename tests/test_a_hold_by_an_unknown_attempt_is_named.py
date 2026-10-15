@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import pbstatus  # noqa: E402
 
@@ -63,7 +64,7 @@ def _drop_row(queue: pool.PoolQueue, key: str) -> None:
     """The holder's queue row is lost: no record of its key anywhere."""
 
     queue.item_path(pool.CLAIMED, key).unlink()
-    assert po._key_generation(queue, key) == ("absent", None)
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
 
 
 def _age(queue: pool.PoolQueue, instance: dict, seconds: float) -> None:
