@@ -1065,28 +1065,7 @@ def test_a_withhold_past_its_ceiling_with_a_fresh_pass_is_waited_on(
 # the claim pass was still stamping ``*_withholding`` every pass.
 
 
-class _OneHolderLedger:
-    """The stage host's ledger, as ``_withhold_verdict`` reads it: every
-    token held by one holder, and none free."""
-
-    def __init__(self, holder: str, base: Path) -> None:
-        self.holder = holder
-        self.base = base
-
-    def available(self) -> dict[str, int]:
-        return {"cpu": 0, "mem_gb": 0}
-
-    def held_keys(self) -> list[str]:
-        return [self.holder]
-
-    def holder_tokens(self, holder: str) -> dict[str, int]:
-        return {"cpu": 4, "mem_gb": 8} if holder == self.holder else {}
-
-    def holds_gpu(self, holder: str) -> bool:
-        return False
-
-
-def _claim_pass(queue: pool.PoolQueue, row, ledger: _OneHolderLedger) -> dict:
+def _claim_pass(queue: pool.PoolQueue, row, ledger: pool.ResourceLedger) -> dict:
     """What one claim pass does for the mover on a token shortage: judge the
     withhold, count the denial and record its reason (``PoolQueue.claim``)."""
 
@@ -1105,7 +1084,7 @@ def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, ro
                                        now: float):
     """The issue's scenario at t=1060: a measurement claimed at t=0 with a
     25 min timeout holds the stage host, and the mover's episode began at
-    t=60, 1000 s ago, with no refill since.  Returns the fake ledger."""
+    t=60, 1000 s ago, with no refill since."""
 
     from test_a_ready_gpu_action_is_not_starved_by_cpu_shards import _sealed
 
@@ -1122,7 +1101,10 @@ def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, ro
         "first_unix": now - 1060.0, "updated_unix": now - 5.0,
         "epoch_unix": now - 1000.0}))
     assert queue.holder_bound(holder, now=now)["bound"] == "transient"
-    return _OneHolderLedger(holder, queue.ledger().base)
+    ledger = queue.ledger(host="stage-host")
+    ledger.ensure_capacity({"cpu": 4, "mem_gb": 8})
+    assert ledger.acquire(holder, {"cpu": 4, "mem_gb": 8})
+    return ledger
 
 
 def test_a_withhold_the_pool_still_holds_past_the_ceiling_is_waited_on(
