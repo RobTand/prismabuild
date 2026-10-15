@@ -7,6 +7,8 @@ does not complete its implementation. The whole 31-card refactor remains open.
 
 The [completion ledger](refactor_completion_2026-10-15.md) preserves all 111 original
 requirements, corrects the historical credit, and names the remaining scope.
+The later [cc58 completion snapshot](refactor_completion_cc58_2026-10-15.md)
+records current-source progress separately from that historical ledger.
 
 The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
@@ -23,7 +25,7 @@ The discussion is append-only in
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
-| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Public names are integrated and qualified in the 303-case check. Strict leaf/member source `52b803d3bf63` passed 110 scoped cases; 17 host assertions remain deliberately deselected. The nonconsuming bridge passed 53 cases and 22 byte-replacement/recovery histories. These units remain outside the accumulation branch while prior-trust preservation, strict host consumption and typed receipt authorization are unfinished. Profile membership awaits Rob. |
+| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Public names are integrated and qualified in the 303-case check. Strict leaf/member source `52b803d3bf63` passed 110 scoped cases; 17 host assertions remain deliberately deselected. The nonconsuming bridge passed 53 cases and 22 byte-replacement/recovery histories. These units remain outside the accumulation branch while equal-digest untrusted-proof repair, strict host consumption and typed receipt authorization are unfinished. The metadata and reader checkpoints below qualify prior-trust preservation separately. Profile membership awaits Rob. |
 | D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. Eighteen normal binding setups still use fabricated scope controls, so broader fixture ownership remains owed. There is no blanket raw-write ban. |
 | D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
 
@@ -94,7 +96,7 @@ success receipt, as expected. Skips are stated explicitly below.
 | Typed receipt observation, `156c5f71cef2` | 39 passed, no skips, including atomic pair publication and read counting. Caller migration remains unfinished and unintegrated. | `652615a37daa293c2e0a9c60cd0cf970e8eae62410cb7ec62f87c6544f3f377e` |
 | Supersession corrected RED, `30733ed686d0` | 31 intended failures, 15 controls. The earlier invalid legacy fixture remains separately recorded. | `091478a3917d3f96533db9289c97bee33d0df1a43668f877045ac51d047d5227` |
 | Supersession queue owner, `93c86e1ad595` | 39 passed, no skips. Direct tombstone settlement preserves the existing no-reinjection rule. | `f7a02bb8e2a5071fc20d264beb615a8e1856899608c6eae47c0a75c788682167` |
-| Supersession reader and IPC, `f54a959c8290` | 150 passed, no skips. The campaign/canary wave and final review remain separate. | `cffbac421a4b5c4e7b9d9414c1455153c1aa2180f9d3a55e38305393318d5ad2`, `d2ff6f35050d4e56e0de5b3c96c34ca4177dbec51c4c0e68ea22dd6c629af076` |
+| Supersession reader and IPC, `f54a959c8290` | 150 passed, no skips. Subsequent caller and review qualification is recorded below. | `cffbac421a4b5c4e7b9d9414c1455153c1aa2180f9d3a55e38305393318d5ad2`, `d2ff6f35050d4e56e0de5b3c96c34ca4177dbec51c4c0e68ea22dd6c629af076` |
 | Prior proof trust RED, `fb7d8038ee09` | Five intended failures, three controls in admitted UID 0 container with inherited affinity. Both worker-controlled leaves gain root trust after rollback. | `40b87bb97c4f3fa456bed25cb62576a0214549df0d1cfc3f7e1ee648fffc6744` |
 
 The combined 55-file cohort at `1943a388ecd1` passed all 1,264 cases. It covers
@@ -138,10 +140,16 @@ exponent-sign bytes, preserves ordinary decimal spellings, and rejects the
 ambiguous legacy exponent spelling. Physical park proof stays independent of
 runtime receipt availability. Strict leaf/member source passed 110 scoped cases.
 The nonconsuming bridge and its fresh-process recovery cuts passed 53 and 22
-cases respectively. The root consumer still needs prior-trust preservation and
-strict acceptance qualification. Rollback must not turn a worker-writable proof
+cases respectively. The root consumer still needs strict acceptance qualification. Rollback must not turn a worker-writable proof
 leaf into root-trusted code by copying it with stronger ownership and modes.
-Typed receipt authorization is a separate unfinished caller migration.
+Proof snapshot and rollback source `79c6a3669a60` now preserves UID, GID and
+all mode bits. It rejects incomplete recovery metadata before service or file
+mutation. The corrected root-container cohort at `e3bd5960d540` passed all 30
+cases. Protocol-two positive readers at `61de730a6ae9` passed 79 native cases;
+the affected real-root reader cohort at `82b45f3a203a` passed eight. Actual
+`f834a061b448` protocol-one negatives and `30ca9a6f6041` adoption controls remain.
+The equal-digest but untrusted-proof repair case and strict host consumers remain
+unfinished. Typed receipt authorization is a separate caller migration.
 The independent bridge review
 and D11 source finding were sent to Claude in `20261015T030349Z`; no reply has
 arrived. This is not a mutually closed discussion or a completed B09 card.
@@ -153,19 +161,29 @@ because its tooling snapshot omitted pytest's `py.py` shim; that is retained as
 a setup failure. The corrected snapshot copies and verifies installed RECORD
 files. No test ran outside PrismaBuild.
 
-## Remaining requeue observations
+## Publication ending qualification
 
-An exact old-generation waiter still lacks a terminal result after generic
-supersession. B16 will give it a typed supersession ending with a verified
-successor and a distinct exit status. This is not an execution verdict or
-permission to follow the successor. B04 preserves this existing limitation
-while protecting the newer publication.
+An exact old-generation waiter now receives an immutable typed supersession
+ending when a validated newer READY publication ends it. The wait exits 76.
+The ending supplies no execution verdict, receipt, resource release or authority
+to follow the successor. Existing exact execution and withdrawal evidence keep
+precedence. Campaigns stop their suffix while actual occupancy remains held.
 
-B16's corrected desired RED has 31 intended failures and 15 controls. Its queue
-owner then passed 39 cases and its reader/IPC migration passed 150. These units
-remain outside the accumulation branch until campaign/canary closure and the
-untyped-terminal impersonation boundary are qualified. The new ending supplies
-no execution verdict, receipt, resource release or successor-follow authority.
+B16's corrected desired RED has 31 intended failures and 15 controls. The queue
+owner passed 39 cases, reader and IPC migration passed 150, caller closure passed
+190, and the untyped execution-evidence guard passed 213. Independent review
+reproduced nine failures and two positive controls at the demand, oversized
+identity and cached-negative READY boundaries. Their fixes passed 139 cases.
+The reviewer independently verified the result artifacts and closed all three
+findings at `6932572a90a2`. The whole bounded wave is integrated through
+`1e076b0d09c2`.
+
+The combined source `961290a01b4d` passed all 677 cases across 48 files in four
+PB actions. Root verified every terminal, source pin, retained log hash, CAS
+receipt and payload. The cohort includes the reservation owner, exact readers,
+withdrawal and preemption, campaign, canary, status and duplication guard.
+These results complete this publication-ending unit. The full await module,
+independent lifecycle facts and destination-based conclude remain owed.
 
 F1 cleans only aged, exactly named requeue staging siblings after their
 authoritative tombstone disappears. Its qualified cases include a real process
@@ -195,3 +213,34 @@ one product-choice card. All eight reproducible artifacts matched on root's
 independent regeneration. This historical pin receives no credit for later
 units. Card 22 is complete for its original structural and result-preservation
 scope. Other unfinished requirements and product choices remain explicit.
+
+
+## Assembled baseline and fixture corrections
+
+The broad source `d8f8703a0d93` run covered 971 files in 32 PB actions. It recorded
+14,093 passed, 80 failed and 26 skipped nodes. Six passing subtest reports are
+additional reports, not nodes. All action evidence verified. Failed-action CAS
+receipt absence is expected and does not turn a failure into a pass.
+
+Three normal fixtures lacked the fixed progress/helper capabilities their
+sealed actions require. A fourth campaign fixture advertised progress tags
+without its canonical sealed declaration. Actual denial records reproduced all
+four causes. Source `97db1b964c30` corrected four test paths and passed all 342
+cases across 37 affected modules. Its 169 assertions, four exception checks,
+function signatures and decorators remain, with the campaign key taken from the
+actual sealed request. The correction is integrated at `4801e5aa4580`.
+
+Six metadata-admission failures came from a shard admitting one CPU while the
+fixture explicitly needs two inherited CPU IDs. The unchanged full file passed
+21 cases with an actual two-CPU reservation. The status read-only assertion also
+raced an asynchronous publisher started by its own fixture. Source
+`d6aa04996bf6` waits for the actual returned publisher processes before taking the
+read-only snapshot. All 14 test function ASTs remain identical and all 23 cases
+passed. It is integrated at `961290a01b4d`. These scoped corrections do not
+replace a final full-suite run on the completed source.
+
+The typed receipt worker boundary passed 55 cases, including real unavailable,
+repair and sticky-loaded-identity processes. Two assertion-preserving caller
+cohorts passed 51 and 29 cases. The remaining production role callers, final
+legacy API deletion and combined qualification are still outside the accumulation
+branch. No deployment is claimed.
