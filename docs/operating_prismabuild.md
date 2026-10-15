@@ -1704,12 +1704,20 @@ collisions; it does not truncate an action key or an attempt identity.
 The standard eight-character suffix leaves an 86-byte socket path under
 `/home/rob/tmp`, with `popen-gw0`, a 30-character test name plus its counter,
 and a 12-character file name (#1709).
-The worker removes only that attempt's directory after pytest exits 0.
-It keeps the directory on a non-zero exit, as the failed-only retention policy does.
-Expiry of kept directories is out of scope. With `--basetemp root` pytest does not
-remove the directory at the end of the session: it deletes and recreates
-the root at the start of the next session that uses that path, so a leftover
-root has to be cleaned by whoever sealed it.
+After pytest exits 0 the worker removes that attempt's directory, including
+any read-only directory a test left in it. Any other ending (a failure, a
+deadline, SIGKILL, OOM) keeps the directory, as the failed-only retention
+policy does, for 24 hours (`owned_tree.RETENTION_S`) after the attempt ended;
+a killed attempt's 24 hours start when a later attempt first finds it dead.
+A later attempt in the same `TMPDIR` then removes it, a few per attempt.
+Liveness is the attempt's owner lock, `pb-owner.lock`, which the shard holds
+for its whole life, never the directory's age, so a long shard is never
+reaped. Only directories that carry PrismaBuild's lock for this host are
+removed: others of the same name shape, and attempts made before the lock
+existed, are left alone. The xdist plugin roster lives inside the attempt
+directory, not beside it. See "Owned trees" in `docs/design.md`.
+pytest itself removes no `--basetemp` at the end of a session: it deletes and
+recreates the directory at the start of the next session that uses that path.
 
 `--basetemp root` seals a separate scratch root for pytest's own temporary
 files (#1469), so selecting real test scratch no longer moves the process
@@ -1730,17 +1738,19 @@ added; xdist worker children inherit the derived basetemp and stay under the
 action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
-Nothing removes the derived `root/<action-key>/<attempt>/pytest` namespaces
-of a sealed `--basetemp` automatically. pytest deletes only the basetemp it
-is handed, at its own start. A sealed root is not PrismaBuild-admitted
-scratch: the attempt lifetime contract (#1463, refs #1360) owns declared,
-registered ephemeral roots, not a caller-provisioned `--basetemp` root, so
-D1 disk admission does not see what accumulates there. A relative root needs
-no extra owner -- it lives inside the attempt's materialized checkout and is
-removed with it. An absolute root grows outside every PB accounting path, so
-the caller who provisions ROOT owns the removal of its action namespaces;
-until #1360 extends scratch lifetime to sealed client roots, provision
-absolute roots under a retention policy of your own.
+The worker removes the derived `root/<action-key>/<attempt>` namespace of a
+sealed `--basetemp` after pytest exits 0, and the `<action-key>` directory
+when that leaves it empty. Any other ending keeps the namespace for 24 hours
+after the attempt ended, by the same owner lock and clock as the default
+attempt directory, and a later attempt under the same root then removes it.
+The root itself is never removed or changed. A sealed root is still not
+PrismaBuild-admitted scratch: the attempt lifetime contract (#1463, refs
+#1360) owns declared, registered ephemeral roots, not a caller-provisioned
+`--basetemp` root, so D1 disk admission does not see what a root holds while
+a failed attempt is kept there. A relative root lives inside the attempt's
+materialized checkout and is removed with it. Namespaces written before the
+owner lock existed carry none and are never removed automatically; whoever
+provisioned the root removes those.
 
 Every requested path must be a file or directory. A missing or invalid path
 refuses the whole submission with exit code 2 and a diagnostic before any
@@ -4228,6 +4238,19 @@ short bounded interval; idle boxes keep the ordinary interval. Spawns are
 batched, and log indices are never reused, so contraction and later growth do
 not mix two live workers' append evidence.
 
+A regular owning cycle also prunes worker logs (`pb-worker-<index>.log` under
+`LOG_DIR`, default `/home/rob/tmp`). A log goes when it is a single-link
+regular file this user owns, nothing has written to it for 7 days
+(`WORKER_LOG_RETENTION_S`), it is not the highest index (which a restarted
+supervisor counts from, so a slot is still never reused), and no live
+supervised loop holds it as stdout or stderr (`/proc/<pid>/fd/1` and `/2`).
+The directory is listed once per supervisor start; each cycle then inspects
+at most 256 logs (`WORKER_LOG_PRUNES_PER_TICK`) from that list and from the
+loops it has spawned since, so tens of thousands drain over cycles without
+holding up a spawn. A live loop whose descriptors cannot be read stops that
+cycle's pruning. `--once` and non-owning supervisors prune nothing. Role logs
+keep their own retention (#1396); `pb-supervisor.log` is not pruned.
+
 An idle loop with waiting work retries at a bounded one-second cadence so a
 fresh adaptive CPU or GPU verdict is used promptly. With no ready work it
 returns to the box's configured 10--20 second delay. The fast path reads the
@@ -4300,8 +4323,9 @@ promised. Truncation follows only a complete tail copy and renewed checks.
 These role leaves are not authoritative action stdout/stderr: actual action
 PIPE capture and attempt/CAS streams in `src/prismabuild/pool.py`, tiers verdict
 sidecars and storage prewarm receipts remain separate and untouched. So do
-worker/supervisor logs, custom storage `--log`, existing archives and the
-separately bounded mount collector. The local diagnostic fixture is not an
+worker logs (pruned by their own rule, see "Elastic worker loops"), the
+supervisor log, custom storage `--log`, existing archives and the separately
+bounded mount collector. The local diagnostic fixture is not an
 end-to-end receipt-integrity test. This change alone claims no live file trim,
 role restart, root-disk recovery or measured speedup.
 
