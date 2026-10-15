@@ -1,10 +1,10 @@
 """Owner locks, retention and removal for the trees PrismaBuild creates.
 
-A tree PB makes for one owner (a pbtest attempt's base temp, a pbrun
-snapshot) carries an owner lock: a regular file the owner holds ``flock``-ed
-for its whole life. The kernel drops the lock with the owner's last
-descriptor, even under SIGKILL, so a reaper that takes it without waiting
-knows the owner is gone. Age alone proves nothing.
+A tree PB makes for one owner (a pbtest attempt's base temp, a worker's
+private checkout, a pbrun snapshot) carries an owner lock: a regular file the
+owner holds ``flock``-ed for its whole life. The kernel drops the lock with
+the owner's last descriptor, even under SIGKILL, so a reaper that takes it
+without waiting knows the owner is gone. Age alone proves nothing.
 
 The lock also keeps the retention clock. The owner writes a header naming
 this format and host, then ``running``. An owner that ends but keeps its
@@ -26,7 +26,7 @@ import time
 #: How long a failed or dead owner's tree stays once its clock starts.
 RETENTION_S = 24 * 3600
 #: The lock inside an owned directory, or the suffix of one kept beside a
-#: tree that must not carry it (such as a tree that actions hash).
+#: tree that must not carry it (a checkout, which actions hash).
 LOCK_NAME = "pb-owner.lock"
 LOCK_SUFFIX = ".lock"
 #: The most one reaping call inspects and removes.

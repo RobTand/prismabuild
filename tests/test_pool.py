@@ -553,14 +553,15 @@ def test_execution_checkout_records_cleanup_failure_without_hiding_success(
     item = _materialization_item(tmp_path)
     local_root = tmp_path / "materialized"
     monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", local_root, raising=False)
-    real_rmtree = pool.shutil.rmtree
+    real_remove = pool.materialize._remove_checkout_tree
 
-    def leave_materialization(path, *args, **kwargs):
+    def leave_materialization(path):
         if Path(path).parent == local_root:
             return None
-        return real_rmtree(path, *args, **kwargs)
+        return real_remove(path)
 
-    monkeypatch.setattr(pool.shutil, "rmtree", leave_materialization)
+    monkeypatch.setattr(pool.materialize, "_remove_checkout_tree",
+                        leave_materialization)
     with pool._execution_checkout(item) as checkout:
         temporary = checkout.parent
 
@@ -576,7 +577,7 @@ def test_execution_checkout_records_cleanup_failure_without_hiding_success(
     assert record["path"] == str(temporary)
     assert "still exists" in record["error"]
     assert "checkout cleanup failed" in capsys.readouterr().err
-    real_rmtree(temporary)
+    real_remove(temporary)
 
 
 def test_execution_checkout_still_materializes_a_v1_record(

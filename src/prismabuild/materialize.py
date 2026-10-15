@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 import os
 from pathlib import Path
-import shutil
+import re
 import socket
 import subprocess
 import sys
@@ -33,6 +33,7 @@ import time
 import uuid
 
 from . import core as pb
+from . import owned_tree
 
 # The snapshot bundle travels through the shared CAS, but execution trees stay
 # on each worker's local disk. Same spelling on every box, different storage.
@@ -48,6 +49,10 @@ DEFAULT_LOCAL_CHECKOUT_ROOT = "/home/rob/tmp/prismabuild-checkouts"
 LOCAL_CHECKOUT_ROOT = Path(
     os.environ.get(LOCAL_CHECKOUT_ROOT_ENV, DEFAULT_LOCAL_CHECKOUT_ROOT)
 )
+#: The only names ``_execution_checkout`` gives its private trees:
+#: ``<action key 12>.<mkdtemp suffix>``.  Each carries a sibling owner lock
+#: (``owned_tree``), never one inside the tree, which actions hash.
+CHECKOUT_TREE = re.compile(r"[0-9a-f]{12}\.[a-z0-9_]{8}")
 
 
 class MaterializationError(pb.PrismaBuildError):
@@ -202,6 +207,16 @@ def _run_materializer_git(
         raise MaterializationError(f"{where} failed: {detail or completed.returncode}")
     return completed.stdout
 
+def _remove_checkout_tree(temporary: Path) -> None:
+    """Remove one private tree on its own filesystem, read-only parts too."""
+
+    parent = os.open(temporary.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        owned_tree.remove_tree(parent, temporary.name)
+    finally:
+        os.close(parent)
+
+
 def _cleanup_execution_checkout(
     base: Path, temporary: Path, item: Mapping[str, object]
 ) -> None:
@@ -209,7 +224,7 @@ def _cleanup_execution_checkout(
 
     error = ""
     try:
-        shutil.rmtree(temporary)
+        _remove_checkout_tree(temporary)
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = str(exc)
     try:
@@ -246,6 +261,55 @@ def _cleanup_execution_checkout(
         file=sys.stderr,
         flush=True,
     )
+
+
+def _new_owned_checkout(base: Path, prefix: str) -> tuple[Path, int]:
+    """Reap dead siblings, then make and lock this action's private tree.
+
+    A worker killed mid-action never reaches its cleanup, so each new
+    checkout reaps the trees whose owner lock is free and whose retention
+    window has passed (``owned_tree``), a bounded few per call.  Reaping is
+    housekeeping: it never fails the action.
+    """
+
+    root = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            owned_tree.reap_dead_trees(root, CHECKOUT_TREE, beside=True)
+        except Exception as exc:                                 # noqa: BLE001
+            print(f"prismabuild: dead checkout reaping failed in {base}: {exc}",
+                  file=sys.stderr, flush=True)
+        temporary = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base)))
+        try:
+            return temporary, owned_tree.take_owner_lock(
+                root, temporary.name + owned_tree.LOCK_SUFFIX)
+        except BaseException:
+            os.rmdir(temporary)
+            raise
+    finally:
+        os.close(root)
+
+
+def _release_checkout(base: Path, temporary: Path, lock: int) -> None:
+    """Drop the tree's lock: with the tree, or starting its retention clock.
+
+    Like the removal before it, this never fails completed work.
+    """
+
+    try:
+        root = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        os.close(lock)
+        print(f"prismabuild: checkout owner lock kept in {base}: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    try:
+        owned_tree.drop_owner_lock(root, temporary.name, lock)
+    except OSError as exc:
+        print(f"prismabuild: checkout owner lock kept in {base}: {exc}",
+              file=sys.stderr, flush=True)
+    finally:
+        os.close(root)
 
 
 @contextmanager
@@ -345,11 +409,8 @@ def _execution_checkout(
             "PRISMABUILD_LOCAL_CHECKOUT_ROOT must be an absolute non-root path"
         )
     base.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(
-            prefix=f"{str(item['action_key'])[:12]}.", dir=str(base)
-        )
-    )
+    temporary, owner_lock = _new_owned_checkout(
+        base, f"{str(item['action_key'])[:12]}.")
     if on_temporary is not None:
         on_temporary(temporary)
     repository = temporary / "checkout"
@@ -433,6 +494,9 @@ def _execution_checkout(
         # never widen this cleanup to the root itself. A root-owned container
         # dropping can leave residue inside this bounded root, but cleanup
         # failure must not change an already-published action into a failure.
-        _cleanup_execution_checkout(base, temporary, item)
+        try:
+            _cleanup_execution_checkout(base, temporary, item)
+        finally:
+            _release_checkout(base, temporary, owner_lock)
 
 

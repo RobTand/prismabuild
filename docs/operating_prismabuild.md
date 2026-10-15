@@ -3679,6 +3679,16 @@ only after an exact plan has been reviewed and root has authorized its canonical
 SHA256 (RootGO). It does not stop services, change admission, release a broker
 hold, rewrite a queue/token, bank files, or install privileged source.
 
+A tree made by a runtime that writes the checkout owner lock (`<tree>.lock`
+beside it) does not need this command when its worker dies: a later checkout
+on the same box removes it 24 hours after first finding the lock free (see
+"Owned trees" in `docs/design.md`). Use this command for trees made before
+that lock existed, for a tree whose automatic removal keeps failing (for
+example, root-owned files a container left), and whenever the original tree
+must be banked first. The rules below are this command's own: in it, age,
+terminal status, an unlocked lock or a bare archive digest never authorize
+deletion.
+
 Before planning, separately establish host quiescence under the **existing**
 root-owned closed `/run/prismabuild/maintenance.json` gate and retain its exact
 owner/epoch. A stopped supervisor alone is insufficient. Separately make and

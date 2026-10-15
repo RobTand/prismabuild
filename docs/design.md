@@ -2237,15 +2237,16 @@ refused attempts took.
 
 ### Owned trees: owner locks, retention and removal
 
-PrismaBuild makes two kinds of directory for a single owner, and takes each
+PrismaBuild makes three kinds of directory for a single owner, and takes each
 back even when the owner is killed: a pbtest attempt's base temp
-(`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`) and a
+(`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
+worker's private checkout (`<checkout root>/<key12>.<mkdtemp suffix>`) and a
 pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
-`src/prismabuild/owned_tree.py` is the one implementation behind both.
+`src/prismabuild/owned_tree.py` is the one implementation behind all three.
 
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
-  or `<tree>.lock` beside a tree whose contents must stay exactly as made.
+  or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
   The kernel drops the lock with the owner's last descriptor, under SIGKILL
   and OOM too, so a reaper that takes the lock without waiting knows the owner
   is gone. A long shard's top directory does not change while it runs, so age
@@ -2260,20 +2261,20 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
   pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), and each pbrun snapshot reaps its `TMPDIR`. One call inspects
-  at most 256 candidates and removes at most 4, in random order, so a crowded
-  directory never holds up an attempt or a submission, and nothing starves.
-  Reaping never fails the work that triggered it. Each call lists the parent
-  through a fresh open of it: btrfs lists, through one open directory, only
-  the entries that existed when it was opened or last rewound (seen on
-  dl380g10, Linux 7.0).
+  sealed root), each new checkout reaps its checkout root, and each pbrun
+  snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
+  removes at most 4, in random order, so a crowded directory never holds up an
+  attempt or a claim, and nothing starves. Reaping never fails the work that
+  triggered it. Each call lists the parent through a fresh open of it: btrfs
+  lists, through one open directory, only the entries that existed when it was
+  opened or last rewound (seen on dl380g10, Linux 7.0).
 - **Only PrismaBuild's own trees.** A candidate must match its creator's exact
   name shape, be a directory this user owns on the parent's device and mount,
   and carry a lock that is a single-link regular file this user owns, whose
   header names this host. A name alone selects nothing: an agent folder such
   as `pb-cachetop` matches the shape and is never touched. Trees made before
   the lock existed carry none and are left to the operator. The parent
-  (`TMPDIR`, the sealed root) is never removed or changed.
+  (`TMPDIR`, the sealed root, the checkout root) is never removed or changed.
 - **Removal never follows a link and never leaves the filesystem.** The
   remover walks held directory descriptors and unlinks symlinks without
   entering them. A directory on another device or mount stays, with its
@@ -2823,8 +2824,14 @@ miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
   plan-first source command, `pbrecover_checkout.py`, backed by
   `checkout_recovery.prepare_checkout_recovery` and `apply_checkout_recovery`.
   Its 1–32 explicitly selected generated roots remain owned for deletion by
-  `materialize._cleanup_execution_checkout`; no second recursive remover,
-  chmod/chown path, automatic reaper or deployment-default change is added.
+  `materialize._cleanup_execution_checkout`; #1465 itself added no second
+  recursive remover, chmod/chown path, automatic reaper or deployment-default
+  change. Since then every private tree carries a sibling owner lock
+  (`<tree>.lock`, see "Owned trees"), `_cleanup_execution_checkout` removes
+  with `owned_tree.remove_tree`, and a later checkout on the same box reaps a
+  tree whose owner died, 24 hours after its lock was first found free. A tree
+  made before the lock carries none and still needs this recovery, as does a
+  tree whose automatic removal keeps failing.
   The `prismabuild.checkout_recovery_plan.v1` plan binds original selection,
   directory/member identities, terminal generation/attempt/snapshot, validated
   sealed Core request and verified CAS snapshot input, original full-tree bank
