@@ -969,14 +969,15 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
 
 
-def test_unreadable_census_finish_retains(tmp_path: Path) -> None:
+def test_unreadable_census_finish_retains(tmp_path: Path, broker) -> None:
     """Actual unreadable funding dir through finish: retain all, reaper frees."""
     import os as _os
     owner = _hexkey("unc-owner")
     q = _queue(tmp_path)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, _, _, _ = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
     cap = ledger.capacity().get(KIND)
     funding_dir = q.root / pool.TIER_FUNDING
@@ -1723,7 +1724,7 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) ->
 
 
 def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broker) -> None:
     """The other new state at the post-acquisition drop sites: an owner.
 
     `_claim` blanket-releases every tier token under a key at
@@ -1748,7 +1749,10 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     q = _queue(tmp_path, gib=4)
     ledger = q.tier_ledger(TIER)
     template = _template(str(tmp_path / "outputs"))
-    inst, claimed, _control, _env = _bind(q, template, owner)
+    inst = Outputs(q, tmp_path, broker).bind(template, owner)
+    owner = inst["owner_action_key"]
+    claimed = pool.read_queue_record(q.item_path(pool.CLAIMED, owner))
+    assert isinstance(claimed, dict), claimed
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
 
     descs = _descriptors(tmp_path, template, inst)
