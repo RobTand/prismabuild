@@ -22,6 +22,18 @@ T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
 
 
+def cpu_sample(clock, readings):
+    return {
+        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.0,
+        "psi_some": 0.0, "busy_cpus": readings["busy_cpus"],
+        "foreign_per_cpu_busy": dict(readings["foreign"]),
+    }
+
+
+def gpu_sample(sample, readings):
+    return None if readings.get("gpu_missing") else dict(sample)
+
+
 @pytest.fixture()
 def fleet(tmp_path, monkeypatch):
     clock = [T0]
@@ -43,13 +55,8 @@ def fleet(tmp_path, monkeypatch):
         "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
         "cpu_pressure_some": 0.0, "foreign_processes": [], "jobs": [],
     }
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.0,
-        "psi_some": 0.0, "busy_cpus": readings["busy_cpus"],
-        "foreign_per_cpu_busy": dict(readings["foreign"]),
-    })
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self:
-                        None if readings.get("gpu_missing") else dict(sample))
+    cpu_sampler = lambda: cpu_sample(clock, readings)
+    gpu_sampler = lambda: gpu_sample(sample, readings)
     monkeypatch.setattr(adaptive_cpu.Controller, "_foreign_pids", lambda *args: {})
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -99,12 +106,15 @@ def fleet(tmp_path, monkeypatch):
             sample["jobs"].append({"action_key": key, "nonce": record["nonce"],
                                    "scope_id": record["scope_unit"], "complete": True})
 
-    def claim(host="sparklina", q=None):
+    def claim(host="sparklina", q=None, *, cpu_sampler=cpu_sampler,
+              gpu_sampler=gpu_sampler):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(0.01)
         active = q or queue
         result = active.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
-                              has_gpu=True, tags=["gb10", host])
+                              has_gpu=True, tags=["gb10", host],
+                              cpu_sampler=cpu_sampler,
+                              gpu_sampler=gpu_sampler)
         if result is not None and len(active.ledger(host).held_keys()) == 1:
             key = result["action_key"]
             record = pool._read_json(active.item_path(pool.CLAIMED, key))
@@ -115,8 +125,8 @@ def fleet(tmp_path, monkeypatch):
                 # broker or reserve/spend this permission: the next claim must
                 # still decide for itself, and its metadata proves a probe.
                 tick(adaptive_gpu.SETTLE_S + 1)
-                cpu = adaptive_cpu.Controller(active.ledger(host), tiers)
-                gpu = adaptive_gpu.Controller(active.ledger(host))
+                cpu = adaptive_cpu.Controller(active.ledger(host), tiers, sampler=cpu_sampler)
+                gpu = adaptive_gpu.Controller(active.ledger(host), sampler=gpu_sampler)
                 with cpu.locked():
                     permission = gpu.decision(record, record["resources"])
                 assert permission is not None and permission["probe"] is True, gpu.last_decision
@@ -154,8 +164,9 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
     assert queue.holder_bound(holder)["bound"] == "long"
     for _ in range(2):
         tick(1)
-        cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []})
-        gpu = adaptive_gpu.Controller(queue.ledger())
+        cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
+            sampler=lambda: cpu_sample(clock, readings))
+        gpu = adaptive_gpu.Controller(queue.ledger(), sampler=lambda: gpu_sample(sample, readings))
         record = pool._read_json(queue.item_path(pool.CLAIMED, holder))
         with cpu.locked():
             permission = gpu.decision(record, record["resources"])
@@ -244,12 +255,13 @@ def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episo
                                "missing_gpu", "future_gpu", "incomplete_gpu", "unattributed_gpu"])
 def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monkeypatch, bad):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    cpu_sampler = lambda: cpu_sample(clock, readings)
     holder = publish("incumbent")
-    assert claim() == holder
+    assert claim(cpu_sampler=cpu_sampler) == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     readings["busy_cpus"] = 2.0
     readings["foreign"]["2"] = 0.2
-    assert claim() is None
+    assert claim(cpu_sampler=cpu_sampler) is None
     assert denial(measurement)["evidence"]["withhold"]["why"] == "foreign_load"
     def foreign_stamp():
         record = pool._read_json(queue.passes_path(measurement))
@@ -269,11 +281,11 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
         readings["foreign"]["2"] = -0.1
     elif bad in ("stale_cpu", "future_cpu"):
         offset = -adaptive_cpu.MAX_SAMPLE_AGE_S - 1 if bad == "stale_cpu" else 1
-        monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+        cpu_sampler = lambda: {
             "sampled_unix": clock[0] + offset, "cpu_count": 20, "interval_s": 1.0,
             "psi_some": 0.0, "busy_cpus": 2.0,
             "foreign_per_cpu_busy": dict(readings["foreign"]),
-        })
+        }
     elif bad == "stale_gpu":
         readings["gpu_stale"] = True
     elif bad == "missing_gpu":
@@ -284,7 +296,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
         sample["complete"] = False
     else:
         sample["attributed"] = False
-    assert claim() is None
+    assert claim(cpu_sampler=cpu_sampler) is None
     waiting = denial(measurement)["evidence"]
     if bad in ("stale_cpu", "future_cpu"):
         assert waiting["decision"]["reason"] == "measurement_sampler_unknown"
