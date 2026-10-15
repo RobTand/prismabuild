@@ -604,6 +604,10 @@ def _judge_row(row, index):
             for message in complete["problems"]:
                 if message == "no selected test execution" and (record.get("collect_only") or not verdict["collected"]):
                     continue
+                if (record.get("collect_only") and complete.get("collect_only")
+                        and message in ("selected tests have no completed teardown", "selected tests have no observed outcome")
+                        and not complete["teardown_finished"] and not complete["outcome_nodeids"]):
+                    continue
                 if failed and complete.get("collection_errors") and message in (
                         "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
                     continue

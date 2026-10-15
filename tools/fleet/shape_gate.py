@@ -59,6 +59,7 @@ import argparse
 import contextlib
 import gzip
 import hashlib
+import importlib.util
 import io
 import itertools
 import json
@@ -1229,9 +1230,15 @@ def resolve_action_key(queue_root: Path, key: str) -> tuple[str, Path]:
     return matches[0].stem, matches[0]
 
 
+_OUTCOMES_PATH = Path(__file__).parent.resolve() / "pbtest_outcomes.py"
+
+
 def judge_gate_log(log: str, *, where: str) -> None:
+    spec = importlib.util.spec_from_file_location(__name__ + "_outcomes", _OUTCOMES_PATH)
+    outcomes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(outcomes)
     files = [REFERENCE_TEST.split("::", 1)[0]]
-    verdict = pbtest_outcomes.judge_shards([{"shard": 0, "files": files,
+    verdict = outcomes.judge_shards([{"shard": 0, "files": files,
         "returncode": 0, "output": log, "timed_out": False}],
         requested_files=files, required_nodes=reference_nodes())
     if not verdict["green"]:
@@ -1286,8 +1293,6 @@ def verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
 
 def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
                          queue_root: Path, cas_root: Path) -> dict[str, object]:
-    import pbtest_outcomes
-
     key, terminal = resolve_action_key(queue_root, action_key)
     done = pool._read_json(terminal)
     detail = done.get("detail") if isinstance(done, dict) else None
