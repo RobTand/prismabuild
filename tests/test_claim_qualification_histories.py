@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from prismabuild import local_scratch, pool
+from test_local_scratch_measured_placement import FAST, SLOW, fleet as scratch_fleet
 from test_measurement_drains_gpu_backfill import fleet
 
 
@@ -74,6 +75,7 @@ def test_persisted_handler_denial_keeps_its_active_exception_and_holder(
     _assert_unclaimed(queue, candidate, ready_bytes)
     assert queue.item_path(pool.CLAIMED, holder).read_bytes() == holder_bytes
     assert queue.lease_path(holder).read_bytes() == lease_bytes
+
     assert queue.ledger().available() == available
     assert set(queue.ledger().held_keys()) == {holder}
     assert queue.ledger().holder_tokens(holder) == {"cpu": 2, "mem_gb": 8}
@@ -133,3 +135,107 @@ def test_unreadable_residency_carries_a_real_measurement_drain_across_two_polls(
     assert set(queue.ledger().held_keys()) == {holder}
     assert queue.item_path(pool.CLAIMED, holder).read_bytes() == holder_bytes
     assert queue.lease_path(holder).read_bytes() == lease_bytes
+
+
+def test_scratch_yield_publication_failure_is_caught_before_handler_publication(
+    scratch_fleet, monkeypatch,
+):
+    scratch_fleet.publish()
+    queue, key = scratch_fleet.queue, scratch_fleet.key
+    ready_bytes = queue.item_path(pool.READY, key).read_bytes()
+    original = queue.record_denial
+    yield_error = OSError("scratch yield diagnostic failed after persistence")
+    handler_error = OSError("scratch handler diagnostic failed after persistence")
+
+    def fail_after_record(item, reason, evidence=None):
+        if reason == "deferred_for_local_scratch_io":
+            assert sys.exception() is None
+            assert evidence["yield_to"] == FAST
+            original(item, reason, evidence)
+            raise yield_error
+        if reason == "local_scratch_io_profile_invalid":
+            assert sys.exception() is yield_error
+            original(item, reason, evidence)
+            raise handler_error
+        return original(item, reason, evidence)
+
+    with monkeypatch.context() as faulted:
+        faulted.setattr(queue, "record_denial", fail_after_record)
+        with pytest.raises(OSError) as caught:
+            scratch_fleet.claim(SLOW)
+    assert caught.value is handler_error
+    assert caught.value.__context__ is yield_error
+    persisted = scratch_fleet.denial(SLOW)
+    assert persisted["reason"] == "local_scratch_io_profile_invalid"
+    assert persisted["evidence"] == {"error": str(yield_error)}
+    assert queue.item_path(pool.READY, key).read_bytes() == ready_bytes
+    assert queue.tier_holdings(key) == {}
+    scratch_fleet.ready_unspent()
+
+
+def test_scratch_yield_publication_preserves_an_uncaught_error_and_diagnostic(
+    scratch_fleet, monkeypatch,
+):
+    scratch_fleet.publish()
+    queue, key = scratch_fleet.queue, scratch_fleet.key
+    ready_bytes = queue.item_path(pool.READY, key).read_bytes()
+    original = queue.record_denial
+    publication_error = RuntimeError("scratch diagnostic transport failed after persistence")
+
+    def fail_after_record(item, reason, evidence=None):
+        original(item, reason, evidence)
+        if reason == "deferred_for_local_scratch_io":
+            raise publication_error
+
+    with monkeypatch.context() as faulted:
+        faulted.setattr(queue, "record_denial", fail_after_record)
+        with pytest.raises(RuntimeError) as caught:
+            scratch_fleet.claim(SLOW)
+    assert caught.value is publication_error
+    assert caught.value.__context__ is None
+    persisted = scratch_fleet.denial(SLOW)
+    assert persisted["reason"] == "deferred_for_local_scratch_io"
+    assert persisted["evidence"]["yield_to"] == FAST
+    assert queue.item_path(pool.READY, key).read_bytes() == ready_bytes
+    assert queue.tier_holdings(key) == {}
+    scratch_fleet.ready_unspent()
+
+
+def test_scratch_root_replacement_after_placement_keeps_boundary_exception_context(
+    scratch_fleet, monkeypatch,
+):
+    scratch_fleet.publish()
+    queue, key = scratch_fleet.queue, scratch_fleet.key
+    ready_bytes = queue.item_path(pool.READY, key).read_bytes()
+    placement, record = queue._scratch_placement, queue.record_denial
+    publication_error = OSError("scratch boundary diagnostic failed after persistence")
+
+    def replace_root_after_placement(*args, **kwargs):
+        evidence, yielding = placement(*args, **kwargs)
+        assert evidence["selected_host"] == FAST
+        assert not yielding
+        scratch_fleet.devices[FAST]["root_inode"] += 1
+        return evidence, yielding
+
+    def fail_after_record(item, reason, evidence=None):
+        if reason == "local_scratch_io_profile_invalid":
+            assert isinstance(sys.exception(), local_scratch.LocalScratchError)
+            assert str(sys.exception()) == "scratch profile/root changed before admission"
+            record(item, reason, evidence)
+            raise publication_error
+        return record(item, reason, evidence)
+
+    with monkeypatch.context() as faulted:
+        faulted.setattr(queue, "_scratch_placement", replace_root_after_placement)
+        faulted.setattr(queue, "record_denial", fail_after_record)
+        with pytest.raises(OSError) as caught:
+            scratch_fleet.claim(FAST)
+    assert caught.value is publication_error
+    assert isinstance(caught.value.__context__, local_scratch.LocalScratchError)
+    assert str(caught.value.__context__) == "scratch profile/root changed before admission"
+    persisted = scratch_fleet.denial(FAST)
+    assert persisted["reason"] == "local_scratch_io_profile_invalid"
+    assert persisted["evidence"] == {"error": "scratch profile/root changed before admission"}
+    assert queue.item_path(pool.READY, key).read_bytes() == ready_bytes
+    assert queue.tier_holdings(key) == {}
+    scratch_fleet.ready_unspent()
