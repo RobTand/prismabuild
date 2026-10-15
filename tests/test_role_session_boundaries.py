@@ -8,7 +8,6 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
-import socket
 import sys
 import threading
 from types import SimpleNamespace
@@ -41,6 +40,7 @@ def boundary(tmp_path, monkeypatch):
     monkeypatch.setattr(worker_loop, "PARKED_ROOT", parked)
     monkeypatch.setattr(worker_loop, "GENERATION_VERSION", loaded)
     monkeypatch.setattr(worker_loop, "RUNTIME_VERSION", published)
+    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     return SimpleNamespace(root=tmp_path, gate=gate, parked=parked,
                            published=published)
 
@@ -84,11 +84,13 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         boundary, monkeypatch, release_before_deadline):
     entered, release, ready = (CONTEXT.Event() for _ in range(3))
     errors = []
+    port = CONTEXT.Value("i", 0)
     server_type = pbmetrics.ThreadingHTTPServer
 
     class ReadyServer(server_type):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+        def __init__(self, address, *args, **kwargs):
+            super().__init__((address[0], 0), *args, **kwargs)
+            port.value = self.server_address[1]
             ready.set()
 
     def collect(*args, **kwargs):
@@ -96,19 +98,17 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
         assert release.wait(10), "test did not release HTTP handler"
         return "controlled_metric 1\n"
 
-    with socket.socket() as reserve:
-        reserve.bind(("127.0.0.1", 0))
-        port = reserve.getsockname()[1]
     monkeypatch.setattr(pbmetrics, "ThreadingHTTPServer", ReadyServer)
     monkeypatch.setattr(pbmetrics, "collect_metrics", collect)
     monkeypatch.setattr(pbmetrics, "SHUTDOWN_GRACE_S", 0.5, raising=False)
-    argv = ["--queue-root", str(boundary.root / "queue"), "--port", str(port)]
+    argv = ["--queue-root", str(boundary.root / "queue"), "--port", "9469"]
     process = CONTEXT.Process(target=_run_role,
         args=(lambda: pbmetrics.main(argv), boundary.root / "metrics.log"))
     process.start()
-    request = threading.Thread(target=_metrics_request, args=(port, errors), daemon=True)
+    request = None
     try:
         assert ready.wait(5), "metrics never bound the test port"
+        request = threading.Thread(target=_metrics_request, args=(port.value, errors), daemon=True)
         request.start()
         assert entered.wait(5), "real HTTP handler never entered collection"
         _close_gate(boundary)
@@ -129,7 +129,7 @@ def test_metrics_sigterm_waits_for_real_handlers_before_park(
             assert errors == []
     finally:
         _finish(process, release)
-        if request.ident is not None:
+        if request is not None and request.ident is not None:
             request.join(3)
 
 
