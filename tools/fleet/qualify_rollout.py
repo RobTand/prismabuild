@@ -548,7 +548,7 @@ def coordinator_actor(root, scenario, source, upgrade, publisher, *, local, read
     print(json.dumps(result, sort_keys=True), flush=True)
 
 
-def source_identity(source):
+def qualification_source_hashes(source):
     return {name: sha256((source / name).read_bytes()) for name in SOURCE_FILES}
 
 
@@ -575,7 +575,7 @@ def run_container(args):
     context = ActorContext(os.getuid(), os.getgid(), socket.gethostname(), slices.pop(),
                            tuple(sorted(os.sched_getaffinity(0))),
                            os.environ["PRISMABUILD_CONTAINER_OWNER"], image, machine,
-                           source_identity(source))
+                           qualification_source_hashes(source))
     root.parent.mkdir(mode=0o755, exist_ok=True)
     if root.parent.is_symlink() or root.parent.stat().st_uid != context.reader_uid:
         raise RuntimeError("qualification campaign root must belong to the worker UID")
@@ -618,7 +618,7 @@ def container_actor(args):
     assert set(re.findall(r"prismabuild-job[0-9a-f]{32}\.slice", cgroup)) == {context.job_slice}
     assert tuple(sorted(os.sched_getaffinity(0))) == context.affinity
     assert os.environ["PRISMABUILD_CONTAINER_OWNER"] == context.owner
-    assert source_identity(source) == context.source_sha256
+    assert qualification_source_hashes(source) == context.source_sha256
     assert sys.version_info >= (3, 12)
     try:
         account = pwd.getpwuid(context.reader_uid)
