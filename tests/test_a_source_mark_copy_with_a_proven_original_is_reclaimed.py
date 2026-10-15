@@ -184,6 +184,30 @@ def test_apply_moves_only_digest_equal_pairs_to_quarantine(fleet) -> None:
     assert len(manifest["entries"]) == len(NAMES)
 
 
+def test_a_prewarm_temporary_is_excluded_before_its_marks_are_read(
+        fleet, monkeypatch) -> None:
+    _queue, stage, _mount, _quarantine, good = fleet
+    temporary = stage / "alpha.bin.pbstage@0+4096.7.1.tmp"
+    temporary.write_bytes(good)
+    os.setxattr(temporary, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
+    real_getxattr = os.getxattr
+    probed = []
+
+    def observe(path, *args, **kwargs):
+        probed.append(path)
+        return real_getxattr(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "getxattr", observe)
+
+    got = _reclaim(fleet, apply=True)
+
+    assert got["complete"] is True
+    assert got["entries_moved"] == len(NAMES)
+    assert got["refused_reasons"] == {}
+    assert temporary.read_bytes() == good
+    assert str(temporary) not in {os.fspath(path) for path in probed}
+
+
 def test_a_crash_between_copy_and_removal_loses_no_data(
         fleet, monkeypatch) -> None:
     queue, stage, mount, quarantine, good = fleet
