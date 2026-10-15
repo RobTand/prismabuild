@@ -9,7 +9,7 @@ import pytest
 
 from c26_native_support import (EXIT_BLOCK, ROOT, consume, dispatch, mq, pbtest,
                                 record, repository)
-from prismabuild import core, pool
+from prismabuild import core, materialize, pool
 import pbrun
 import shape_gate
 
@@ -194,16 +194,19 @@ def gate_receipt(tmp_path, monkeypatch, fault):
     assert item is not None, 'private native receipt action was not claimed'
     # Core publishes only after the actual argv exits zero and source is attested.
     # A checkout worker's runtime-upgrade gate is unrelated to log judgment.
-    ending = core.run_local_action(action, cas_root=cas.root, checkout_root=root,
-                                   timeout_seconds=90)
-    assert ending['status'] == 'executed' and ending.get('receipt'), ending
-    terminal = queue.finish(action['action_key'], status=ending['status'],
+    with materialize._execution_checkout(item, local_checkout_root=tmp_path / 'materialized') as execution_root:
+        ending = core.run_local_action(action, cas_root=cas.root, checkout_root=execution_root,
+                                       timeout_seconds=90)
+    assert ending['status'] == 'published' and ending.get('receipt'), ending
+    terminal = queue.finish(action['action_key'], status='executed',
                             detail={**ending, 'returncode': 0}, claim_snapshot=item)
     assert terminal.parent.name == pool.DONE
     receipt = cas.lookup(action)
     assert receipt is not None
     log = cas.result_path(receipt, action).read_text()
     (tmp_path / 'verified-gate.log').write_text(log)
+    print('C26_NATIVE_GATE_RECEIPT ' + json.dumps({'action_key': action['action_key'],
+        'receipt': receipt, 'terminal': json.loads(terminal.read_text()), 'log': log}, sort_keys=True))
     observed = record(log)
     assert sorted(observed['collected']) == shape_gate.reference_nodes()
     assert len(observed['reports']) == len(names) + bool(fault)
