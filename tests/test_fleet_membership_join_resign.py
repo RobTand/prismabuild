@@ -541,7 +541,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
                         "owner": me})
     gate = Path(authority.maintenance_path)
     owner = queue_root.stat().st_uid
-    epoch = fm.gate_key(fm.read_gate(gate))
+    epoch = fm.gate_label(fm.read_gate(gate))
     parked = gate.parent / "rollout" / "parked"
     parked.mkdir(parents=True)
     (parked / f"111-s1-{epoch}").touch()

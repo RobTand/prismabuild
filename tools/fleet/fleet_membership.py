@@ -94,8 +94,8 @@ def gate_epoch(gate: dict[str, Any] | None) -> Any:
     return gate.get("changed_unix")
 
 
-def gate_key(gate: dict[str, Any] | None) -> str:
-    """Filename-safe drain identity shared with the loop's park markers."""
+def gate_label(gate: dict[str, Any] | None) -> str:
+    """The open-state label or a closed gate's filename-safe drain key."""
     if gate is None:
         return "open"
     return park_proof.gate_key(gate)
@@ -427,7 +427,7 @@ def parked_markers(parked_root: Path, gate: dict[str, Any] | None) -> list[Path]
     """Markers naming exactly this drain epoch (old epochs never count)."""
     if gate is None:
         return []
-    key = gate_key(gate)
+    key = gate_label(gate)
     if not parked_root.is_dir():
         return []
     try:
@@ -442,7 +442,7 @@ def expected_markers(
     """Full marker names each live loop must post (pid + starttime + epoch)."""
     if gate is None:
         return set()
-    key = gate_key(gate)
+    key = gate_label(gate)
     return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
 
 
@@ -1159,7 +1159,7 @@ def resign(
                 "owner": owner, "reason": "gate open after begin",
                 "broker": began}
     epoch = gate_epoch(gate_now)
-    key = gate_key(gate_now)
+    key = gate_label(gate_now)
     if queue_root is None:
         return {"status": "resigning", "host": host, "owner": owner,
                 "gate_key": key,
@@ -1936,7 +1936,7 @@ def status(
         "roster_active": active,
         "roster_detail": roster_detail,
         "gate": gate_now,
-        "gate_key": gate_key(gate_now),
+        "gate_key": gate_label(gate_now),
         "parked_markers": len(parked_markers(parked_root, gate_now)),
         "live_loops": len(census),
         "loop_census": ("unknown" if census_error is not None
