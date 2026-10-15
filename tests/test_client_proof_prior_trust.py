@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from client_proof_bridge_fixture import (
-    CAPABLE_BRIDGE, CAPABLE_BRIDGE_SHA256, ROOT, _fresh, _sha,
+    PROTOCOL_ONE_UPDATER, PROTOCOL_ONE_UPDATER_SHA256, ROOT, _fresh, _sha,
     fixed_source_artifact, member_bytes, publication, reader_process,
 )
 
@@ -157,8 +157,8 @@ def test_legacy_journal_without_previous_proof_metadata_refuses_before_service_o
 def test_unpublished_protocol_one_cannot_participate_in_proof_metadata_transaction(root_publication, incapable):
     generation, install, state, _, backend_path, _ = root_publication
     fixed = fixed_source_artifact(
-        "protocol-one-upgrader.py", CAPABLE_BRIDGE, "tools/fleet/upgrade_client.py",
-        CAPABLE_BRIDGE_SHA256)
+        "protocol-one-upgrader.py", PROTOCOL_ONE_UPDATER, "tools/fleet/upgrade_client.py",
+        PROTOCOL_ONE_UPDATER_SHA256)
     assert _sha(fixed) == "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e"
     if incapable == "previous":
         (install / "upgrade_client.py").write_bytes(fixed)
@@ -166,7 +166,7 @@ def test_unpublished_protocol_one_cannot_participate_in_proof_metadata_transacti
         (generation / "tools/upgrade_client.py").write_bytes(fixed)
         receipt_path = generation / "RUNTIME_VERSION.json"
         receipt = json.loads(receipt_path.read_text())
-        receipt["files"]["tools/upgrade_client.py"] = CAPABLE_BRIDGE_SHA256
+        receipt["files"]["tools/upgrade_client.py"] = PROTOCOL_ONE_UPDATER_SHA256
         receipt_path.write_text(json.dumps(receipt))
     target = install / "upgrade_client.py" if incapable == "previous" else generation / "tools/upgrade_client.py"
     assert target.read_bytes() == fixed

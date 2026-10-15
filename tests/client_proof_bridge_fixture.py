@@ -16,8 +16,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PREBRIDGE = "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf"
 PREBRIDGE_UPDATER_SHA256 = "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9"
-CAPABLE_BRIDGE = "f834a061b448e2bbfed686e5ef00ca21f6b2b65c"
-CAPABLE_BRIDGE_SHA256 = "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e"
+PROTOCOL_ONE_UPDATER = "f834a061b448e2bbfed686e5ef00ca21f6b2b65c"
+PROTOCOL_ONE_UPDATER_SHA256 = "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e"
+CAPABLE_BRIDGE = "79c6a3669a60b1edf4d66e40e576bd59e438e914"
+CAPABLE_BRIDGE_SHA256 = "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d"
 CLIENT_SOURCES = {
     "resource_broker.py": ("tools/resource_broker.py", "tools/fleet/resource_broker.py"),
     "resource_payload.py": ("tools/resource_payload.py", "tools/fleet/resource_payload.py"),
@@ -306,7 +308,7 @@ def _fresh(publication, mode="run"):
 def capable_publication(publication):
     _, install, _, _, _, _ = publication
     code = fixed_source_artifact(
-        "protocol-one-upgrader.py", CAPABLE_BRIDGE, "tools/fleet/upgrade_client.py",
+        "protocol-two-upgrader.py", CAPABLE_BRIDGE, "tools/fleet/upgrade_client.py",
         CAPABLE_BRIDGE_SHA256)
     (install / "upgrade_client.py").write_bytes(code)
     return publication
