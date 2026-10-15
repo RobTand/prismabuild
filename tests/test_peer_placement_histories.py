@@ -17,6 +17,7 @@ CAPACITY = {"cpu": 4, "mem_gb": 4, "gpu": 1}
 TIERS = {"preferred": [0, 1, 2, 3], "fallback": []}
 RULES = ("cpu_host", "cross_resource", "preferred_cpu")
 OBSERVATIONS = ("fresh", "partial", "stale", "zero", "map_mismatch", "ledger_failure")
+SCRATCH_OBSERVATIONS = (*OBSERVATIONS, "replacement")
 
 
 def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 31.)):
@@ -135,6 +136,21 @@ def _scratch_history(root, monkeypatch, observation):
         else:
             offer["observed_detail"]["observed_unix"] -= 10
         pool._write_json_atomic(peer_path, offer)
+    if observation == "map_mismatch":
+        offer = pool._read_json(peer_path)
+        fleet.queue.announce(
+            host=FAST, tags=offer["tags"], has_gpu=True, capacity=offer["capacity"],
+            observed_capacity=offer["observed_capacity"], observed_detail=offer["observed_detail"],
+            cpu_tiers={"preferred": [4, 5, 6, 7], "fallback": []})
+    if observation == "ledger_failure":
+        original = pool.ResourceLedger.available
+
+        def unavailable(ledger):
+            if ledger.base == fleet.queue.ledger(FAST).base:
+                raise OSError("injected scratch peer ledger read failure")
+            return original(ledger)
+
+        monkeypatch.setattr(pool.ResourceLedger, "available", unavailable)
     replacements = []
     if observation == "replacement":
         original = pool.ResourceLedger.available
@@ -161,12 +177,15 @@ def _scratch_history(root, monkeypatch, observation):
             "replacement_read": bool(replacements)}
 
 
-@pytest.mark.parametrize("observation", ("fresh", "partial", "stale", "zero", "replacement"))
+@pytest.mark.parametrize("observation", SCRATCH_OBSERVATIONS)
 def test_scratch_measured_fit_and_replacement_offer(tmp_path, monkeypatch, observation):
     history = _scratch_history(tmp_path, monkeypatch, observation)
     assert history["claimed"] is (observation != "fresh"), history
     if observation == "fresh":
         assert history["reason"] == "deferred_for_local_scratch_io"
+    if observation in {"map_mismatch", "ledger_failure"}:
+        assert any(candidate["exclusion"] == "host_view_unknown"
+                   for candidate in history["candidates"])
     if observation == "replacement":
         assert history["replacement_read"]
         assert any(candidate["exclusion"] == "full_demand_does_not_fit"
@@ -199,7 +218,7 @@ def replay():
         for observation in OBSERVATIONS:
             with tempfile.TemporaryDirectory() as root, pytest.MonkeyPatch.context() as patch:
                 histories[f"{rule}/{observation}"] = _history(Path(root), patch, rule, observation)
-    for observation in ("fresh", "partial", "stale", "zero", "replacement"):
+    for observation in SCRATCH_OBSERVATIONS:
         with tempfile.TemporaryDirectory() as root, pytest.MonkeyPatch.context() as patch:
             histories[f"scratch/{observation}"] = _scratch_history(Path(root), patch, observation)
     for rule in ("cpu_host", "cross_resource"):
