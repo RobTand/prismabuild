@@ -8,7 +8,9 @@ does not complete its implementation. The whole 31-card refactor remains open.
 The [completion ledger](refactor_completion_2026-10-15.md) preserves all 111 original
 requirements, corrects the historical credit, and names the remaining scope.
 The later [cc58 completion snapshot](refactor_completion_cc58_2026-10-15.md)
-records current-source progress separately from that historical ledger.
+records its source separately from that historical ledger. The newer
+[93424 audit](refactor_completion_93424_2026-10-15.md) preserves all 111
+requirements and finds five complete source cards; the full brief remains open.
 
 The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
@@ -25,8 +27,8 @@ The discussion is append-only in
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
-| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Public names are integrated and qualified in the 303-case check. Strict leaf/member source `52b803d3bf63` passed 110 scoped cases; 17 host assertions remain deliberately deselected. The nonconsuming bridge passed 53 cases and 22 byte-replacement/recovery histories. These units remain outside the accumulation branch while equal-digest untrusted-proof repair, strict host consumption and typed receipt authorization are unfinished. The metadata and reader checkpoints below qualify prior-trust preservation separately. Profile membership awaits Rob. |
-| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. Eighteen normal binding setups still use fabricated scope controls, so broader fixture ownership remains owed. There is no blanket raw-write ban. |
+| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Typed receipt authorization and the role caller migration are integrated through `32b79024ec9f`, with qualification and limits recorded below. Strict privileged proof and the retained-reader corpus remain isolated pending actual actor entry, native ARM/NFS and paired-host qualification. Their prior-trust repair is implemented and source-qualified separately. Ordinary package/role stdlib import closure remains unfinished. Named-profile membership awaits Rob. |
+| D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. The final eighteen fabricated binding setups have since migrated to real ownership and causal funding/finish controls; the complete funding/broker file passed 45 cases and is recorded below. Repository-wide fixture ownership remains owed. There is no blanket raw-write ban. |
 | D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
 
 The detailed agreement and source citations are in messages
@@ -504,3 +506,27 @@ receipt/payload, or verified expected receipt absence for a failure. The
 populations overlap. The strict host-proof and root/reader qualifier work
 remain isolated pending actual ARM and paired transport qualification. No
 push, PR state change or deployment is claimed.
+
+
+## Qualified pretransition wave and fresh audit
+
+The independent 93424 audit is a full-brief checkpoint, not a completion claim.
+Its five complete source cards are c02, c04, c08, c19 and c22. The linked ledger
+retains every original requirement and separates source from qualification.
+
+C01 pretransition wave 2 at `8e3222524f509d01c47e110397751819425a8ce4`
+passed 2,096 unique cases across 106 complete files, without skips. All 2,067
+prior nodes remain, with 29 added. All three source, terminal, retained-log and
+CAS receipt/payload chains are verified. Independent review found no blocker.
+Integration `3667f11dc2ed62a9aa0dbbe14276e0d6f385e74d` preserves all four
+qualified changed files byte-for-byte. The retained scan reader and staged
+pretransition/busy policy preserve conditional observations and their phases.
+The driver still has 723 executable AST statements; six C01 waves remain.
+The existing unbounded ready-GPU veto is unchanged.
+
+Immutable-file owner P2 is still under qualification. Its first complete
+77-file run at `16a44b327fd5bbdd154495ea299235ceae095756` had 2,626 passes,
+18 existing capability skips and one stale four-source assertion failure.
+The separate test correction at `8210201e7ab53472e547e4861785155e80c75f92`
+checks all five actual materialized source hashes. Its complete rerun is
+pending. No P2 integration or final pass is claimed here.
