@@ -1145,16 +1145,27 @@ already finished, and exited 75.
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
 | 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. A wait that ends while its last terminal-record read was unavailable is also 74, not 75: nothing was read, so the work may already be done. Read the named `pb-queue` record or run `pbwait` again. `pbtest` reports such a shard as `OUTCOME UNOBSERVED`, not as files that did not run. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
+| 76 | The exact publication being watched was superseded. Both publication identities are reported. This ends the publication wait without an execution, receipt or cleanup verdict and grants no successor-follow or automatic resubmission. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
-Those four codes are `pbrun`'s own, and a run never gets to speak them. A run
-whose recorded status is 2, 74, 75 or 143 is reported as 1, with its real
+Those five nonzero codes are `pbrun`'s own, and a run never gets to speak them. A run
+whose recorded status is 2, 74, 75, 76 or 143 is reported as 1, with its real
 number on a line of its own and under `detail.returncode` in the record. Every
 other status reaches the caller unchanged: a run that exits 7 exits 7. The case
 this exists for is 143. `core._sigterm_unwinds_this_process` raises
 `SystemExit(128 + signum)`, so any SIGTERM that is not a withdrawal leaves 143
 in the record, and a caller reading that was told an operator had made a
 decision that nothing on disk records.
+
+Supersession is exact to the original `(action_key, published_unix)`. The queue
+retains an immutable typed decision with the verified successor item when an
+older claim's retry or unstarted release collides with a newer publication.
+`pbwait --json` reports `status: superseded`, original `published_unix` and
+`superseded_by_published_unix`; its execution and receipt fields are absent or
+null. Same-generation retries do not create this ending. Existing preemption
+lineage following remains unchanged. Old untyped dropped evidence does not
+grant a supersession verdict, and old clients do not gain the new behavior
+merely because a newer worker writes these decisions.
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
@@ -1637,12 +1648,18 @@ use `--detach`, then `pbwait` on the keys it printed.
 | --- | --- |
 | 0 | Every row's work is done. A cache hit counts as done. |
 | 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
+| 74 | An outcome or actual slot-occupancy observation was unavailable. No new submission is authorized by that uncertainty. |
 | 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. Under `--max-inflight`, this includes a row whose worker-offer discovery was still timing out. |
+| 76 | An exact submitted publication was superseded. Under `--max-inflight`, further publication stops and the suffix stays `not_submitted`. Any successor work or old claim cleanup retains its actual occupancy. |
 
 A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under
 `--detach` the campaign returns 0, or 1 if any row was refused; it does not
 wait, so it never returns 75.
+
+For observed rows, an observation error outranks an ordinary failure, which
+outranks supersession, which outranks waiting. Supersession never cancels
+existing work, follows the successor, or releases capacity on its own.
 
 ## Fan a test suite out
 

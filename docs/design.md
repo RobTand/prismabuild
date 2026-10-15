@@ -1064,6 +1064,26 @@ never the old tombstone's to release. No original claim is restored beside a
 newer READY merely to reconstruct an ending, and no synthetic attempt is
 created for an unstarted release.
 
+Exact pool waiters expose the publication ending as a typed value rather than
+an execution summary. It retains the watched generation; only the existing
+verified preemption lineage changes which generation a waiter follows.
+Execution/withdrawal evidence for the exact generation takes precedence, and
+an exact publication ending outranks an unstamped legacy terminal fallback.
+Bounded IPC uses the queue's public decoder for the same immutable proof.
+Unavailable or invalid publication evidence is an observation I/O failure 74;
+the existing immutable attempt-history integrity rules remain separate.
+`pbrun` reports original and successor identities and exits 76 without CAS
+success or attempt-log rendering. An action's own 76 is reserved and maps to
+ordinary failure 1, with its actual number retained in the record.
+`pbwait` returns `status: superseded`, original `published_unix`, exact
+`superseded_by_published_unix` and `succeeded: false`, with no execution,
+receipt or cleanup verdict. Aggregate precedence is observation error 74,
+ordinary failure 1, supersession 76, waiting 75, success 0.
+Campaigns stop publishing their suffix on supersession while preserving that
+identity and actual READY/CLAIMED/tombstone/late-finish occupancy. A publication
+ending grants no free slot; an unreadable occupancy check reports 74.
+The staged-wait canary accepts no execution evidence from a publication ending.
+
 **A mutable ending carries a bounded tail of a stream, not the stream
 (#1203).** An action that prints megabytes made the terminal row itself the
 bulk: `pbstatus` bounds an ending record at 8 MiB, so one 8.4 MB stdout

@@ -620,7 +620,8 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
         q = pbrun.pool.PoolQueue(Path(paths["queue_root"]))
         landed, observed_generation = pbrun.bounded_outcome_observation(
             q, action_key, generation, budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)
-        if landed is None or observed_generation != generation:
+        if (landed is None or isinstance(landed, pbrun.pool.PublicationSupersession)
+                or observed_generation != generation):
             return None
         rendered = pbrun.bounded_outcome_render(
             q, landed[0], landed[1], budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)

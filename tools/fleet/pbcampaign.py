@@ -994,6 +994,9 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                               and time.monotonic() < deadline):
                         stopped = True
                 elif row["status"] != "waiting":
+                    superseded = row["status"] == "superseded"
+                    if superseded:
+                        stopped = True
                     try:
                         occupied = transport == "pool" and _pool_slot_occupied(queue, key)
                     except OSError as exc:
@@ -1002,8 +1005,13 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                         stopped = True
                     else:
                         if occupied:
-                            row = dict(row, status="waiting", succeeded=False,
-                                       note="queue work or claim cleanup still present")
+                            if superseded:
+                                row = dict(row, note=(
+                                    f"{row.get('note') or ''}; queue work or claim cleanup still present"
+                                ).lstrip("; "))
+                            else:
+                                row = dict(row, status="waiting", succeeded=False,
+                                           note="queue work or claim cleanup still present")
                         else:
                             pending.pop(key, None)
                             # A pbrun cache hit already verified reusable
