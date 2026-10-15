@@ -7195,7 +7195,7 @@ class PoolQueue:
                 raise PoolContractError("publication canary capability requires sealed intent")
             scratch_io = self._sealed_scratch_io(
                 sealed_request, tags=normalized_tags, resources=demand)
-            if scratch_io is None and local_scratch.IO_CAPABILITY in normalized_tags:
+            if scratch_io is None and contracts.SCRATCH_IO_TAG in normalized_tags:
                 raise PoolContractError("scratch I/O capability requires sealed traffic intent")
             lifetime = local_scratch._scratch_lifetime_publication(
                 sealed_request["environment"]["variables"] if sealed_request is not None else {})
@@ -7204,8 +7204,8 @@ class PoolQueue:
                 if demand.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]:
                     raise PoolContractError("scratch lifetime intent lacks its sealed reservation")
                 normalized_tags = normalize_placement_tags(
-                    [*normalized_tags, local_scratch.SCRATCH_LIFETIME_TAG])
-            elif local_scratch.SCRATCH_LIFETIME_TAG in normalized_tags:
+                    [*normalized_tags, contracts.SCRATCH_LIFETIME_TAG])
+            elif contracts.SCRATCH_LIFETIME_TAG in normalized_tags:
                 raise PoolContractError("scratch lifetime capability requires sealed lifetime intent")
         except PoolContractError:
             raise
@@ -19366,7 +19366,7 @@ class PoolQueue:
             raise local_scratch.LocalScratchError("scratch registration requires the worker lease")
         if (self.resolve_claim_holder(action_key, live) != socket.gethostname()
                 or expected["claimed_host"] != socket.gethostname()
-                or local_scratch.SCRATCH_LIFETIME_TAG not in live.get("tags", [])):
+                or contracts.SCRATCH_LIFETIME_TAG not in live.get("tags", [])):
             raise local_scratch.LocalScratchError("scratch lifetime writer lacks owner/capability")
         field = local_scratch.SCRATCH_LIFETIME_FIELD
         if field in live:
@@ -20361,7 +20361,7 @@ class PoolQueue:
             return None
         params = request["params"]
         required = set(params["placement"]["required_tags"])
-        if (local_scratch.IO_CAPABILITY not in required or not required.issubset(set(tags))
+        if (contracts.SCRATCH_IO_TAG not in required or not required.issubset(set(tags))
                 or params["demand"] != resources
                 or resources.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]):
             raise PoolContractError("scratch I/O sealed demand/placement disagrees with row")
@@ -22515,7 +22515,7 @@ class PoolQueue:
                     scratch_intent = self._sealed_scratch_io(
                         request, tags=item.get("tags") or [], resources=sealed_demand)
                     if (item.get(local_scratch.IO_ENV) != scratch_intent
-                            or (scratch_intent is None and local_scratch.IO_CAPABILITY in
+                            or (scratch_intent is None and contracts.SCRATCH_IO_TAG in
                                 (item.get("tags") or []))):
                         raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
                     if scratch_intent is not None:

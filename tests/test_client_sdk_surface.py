@@ -169,7 +169,7 @@ REEXPORTS = {
     "ephemeral_scratch_path": local_scratch.ephemeral_scratch_path,
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
     "record_ephemeral_scratch_declarations": local_scratch.record_ephemeral_scratch_declarations,
-    "SCRATCH_LIFETIME_TAG": local_scratch.SCRATCH_LIFETIME_TAG,
+    "SCRATCH_LIFETIME_TAG": contracts.SCRATCH_LIFETIME_TAG,
     "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
     "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
     "SCRATCH_LIFETIME_FIELD": local_scratch.SCRATCH_LIFETIME_FIELD,
@@ -299,7 +299,7 @@ def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES
     assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
-    assert client.SCRATCH_LIFETIME_TAG == local_scratch.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
+    assert client.SCRATCH_LIFETIME_TAG == contracts.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
     assert "SCRATCH_LIFETIME_TAG" in (ROOT / "tools" / "fleet" / "worker_loop.py").read_text()
     assert "require_native_producer_context" in inspect.signature(client.read_verified_action_result).parameters
     assert callable(client.read_verified_action_result)

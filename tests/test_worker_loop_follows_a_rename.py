@@ -159,6 +159,6 @@ def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
         module.contracts.INTERPRETER_TAG,
         module.local_dependencies.TAG,
         module.contracts.DEPENDENCY_DIGEST_TAG,
-        module.local_scratch.IO_CAPABILITY,
-        module.local_scratch.SCRATCH_LIFETIME_TAG,
+        module.contracts.SCRATCH_IO_TAG,
+        module.contracts.SCRATCH_LIFETIME_TAG,
     ], offer["tags"]

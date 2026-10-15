@@ -228,7 +228,7 @@ record_ephemeral_scratch_declarations = _local_scratch.record_ephemeral_scratch_
 #: The capability tag the pool derives from sealed lifetime intent. A worker
 #: that offers it runs this tree's registration and cleanup code; an older
 #: worker offers no such tag and cannot claim versioned lifetime actions.
-SCRATCH_LIFETIME_TAG = _local_scratch.SCRATCH_LIFETIME_TAG
+SCRATCH_LIFETIME_TAG = _contracts.SCRATCH_LIFETIME_TAG
 #: The schema of the sealed selection :func:`build_scratch_lifetime_selection`
 #: returns for ``PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS``.
 SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1

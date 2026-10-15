@@ -5569,7 +5569,7 @@ def freeze_action_template(
     recorder = None
     if scratch_io is not None:
         from prismabuild import local_scratch
-        if local_scratch.IO_CAPABILITY not in placement.get("required_tags", []):
+        if contracts.SCRATCH_IO_TAG not in placement.get("required_tags", []):
             raise SystemExit("pbrun: sealed scratch I/O declaration requires local-scratch-io-v1")
     if "tools/fleet/local_scratch_profile.py" in command:
         from prismabuild import local_scratch
@@ -7882,7 +7882,7 @@ def prepare_submission(args: argparse.Namespace) -> dict[str, object]:
             [*tags, *container_image_required_tags(images)])
     if scratch_io_intent(variables, transport=args.transport) is not None:
         from prismabuild import local_scratch
-        tags = pool.normalize_placement_tags([*tags, local_scratch.IO_CAPABILITY])
+        tags = pool.normalize_placement_tags([*tags, contracts.SCRATCH_IO_TAG])
     if requirements:
         # The capability rides the tags, not the bytes (#714 shape, #1495):
         # a loop that cannot hash the row's requirements must not be able to

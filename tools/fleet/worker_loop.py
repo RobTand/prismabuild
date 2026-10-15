@@ -1617,9 +1617,9 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # Code capability only; configured executed profiles and current root
         # observations separately decide admission. Old workers cannot ignore
         # opted-in sealed traffic during a rolling publication.
-        tags.append(local_scratch.IO_CAPABILITY)
+        tags.append(contracts.SCRATCH_IO_TAG)
         # Versioned lifetime actions cannot run on declaration-only workers.
-        tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
+        tags.append(contracts.SCRATCH_LIFETIME_TAG)
         if args.gang_admission:
             # Default off (#1517): without this no box offers the tag, so no
             # gang member is ever claimed and no gang code runs in a pass.
