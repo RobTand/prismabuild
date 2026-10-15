@@ -239,6 +239,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import immutable_files  # noqa: E402
 from prismabuild import (  # noqa: E402
     core as pb, decomposition as dc, pool, residency_plan,
 )
@@ -1133,7 +1134,7 @@ def frozen_plan(request, frozen_common, *, cas) -> dict:
     stored = _stored_document(path)
     if stored is None:
         plan = dc.build_plan(request, frozen_common)
-        if not pb._atomic_publish(path, dc.document_bytes(plan)):
+        if not immutable_files.publish_immutable(path, dc.document_bytes(plan)):
             stored = _stored_document(path)
         else:
             return plan
@@ -1166,7 +1167,7 @@ def publish_index(index, *, cas, parent_key: str) -> None:
     raw = dc.document_bytes(index)
     stored = _stored_document(path)
     if stored is None:
-        if pb._atomic_publish(path, raw):
+        if immutable_files.publish_immutable(path, raw):
             return
         stored = _stored_document(path)
     if dc.document_bytes(stored) != raw:
@@ -1293,7 +1294,7 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
         proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
                     "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
                     "children": rows}
-        if pb._atomic_publish(path, dc.document_bytes(proposed)):
+        if immutable_files.publish_immutable(path, dc.document_bytes(proposed)):
             stored = proposed
         else:
             stored = _stored_document(path)
@@ -1493,7 +1494,7 @@ def publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
     raw = dc.document_bytes(receipt)
     stored = _stored_document(path)
     if stored is None:
-        if pb._atomic_publish(path, raw):
+        if immutable_files.publish_immutable(path, raw):
             return path
         stored = _stored_document(path)
     if dc.document_bytes(stored) != raw:

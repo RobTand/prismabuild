@@ -81,6 +81,7 @@ from typing import Callable
 import uuid
 
 from . import core as pb
+from . import immutable_files
 from . import posix_lock
 from . import pool
 from .materialize import _write_json_atomic
@@ -852,7 +853,7 @@ def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
 
     raw = pb._canonical_file_bytes(dict(payload))
     path.parent.mkdir(parents=True, exist_ok=True)
-    if pb._atomic_publish(path, raw):
+    if immutable_files.publish_immutable(path, raw):
         return
     observed = pb._read_regular_file_nofollow(
         path, where="SLURM lane submission record", require_readonly=True

@@ -159,6 +159,7 @@ from .denial_records import (
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
+from . import immutable_files
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
     _cleanup_execution_checkout,
@@ -2451,7 +2452,7 @@ def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
 def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
     """First-writer-publish one attempt artifact; refuse conflicting bytes."""
 
-    won = pb._atomic_publish(path, raw)
+    won = immutable_files.publish_immutable(path, raw)
     if won:
         return
     observed = pb._read_regular_file_nofollow(
@@ -4108,7 +4109,7 @@ class ResourceLedger:
             if self.held().get("cpu", 0):
                 raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
             self.base.mkdir(parents=True, exist_ok=True)
-            pb._atomic_publish(path, pb._canonical_bytes(record))
+            immutable_files.publish_immutable(path, pb._canonical_bytes(record))
             existing = _read_json(path)
         if existing != record:
             raise PoolContractError("CPU tier map differs: stop workers, drain reservations "
@@ -24148,7 +24149,7 @@ class PoolQueue:
         )
         if not any(self.item_path(state, key).exists()
                    for state in (DONE, FAILED)):
-            pb._atomic_publish(
+            immutable_files.publish_immutable(
                 self.item_path(FAILED, key),
                 pb._canonical_bytes({
                     "schema": POOL_OUTCOME_SCHEMA_V1,
@@ -24398,7 +24399,7 @@ class PoolQueue:
                 # a new live record under the same key belongs to this stub.
                 if not any(self.item_path(state, path.stem).exists()
                            for state in (READY, CLAIMED, DONE, FAILED)):
-                    pb._atomic_publish(self.item_path(FAILED, path.stem),
+                    immutable_files.publish_immutable(self.item_path(FAILED, path.stem),
                                        pb._canonical_bytes(record))
                 # A ready stub supplies no authority over committed reservations.
                 self._finish_ready_transition(captured)
@@ -24644,7 +24645,7 @@ class PoolQueue:
         # links first is the causal record the mutable queue must adopt.  This
         # also repairs a crash after immutable publication but before the
         # ready/terminal summary kept its link.
-        pb._atomic_publish(path, pb._canonical_bytes(outcome))
+        immutable_files.publish_immutable(path, pb._canonical_bytes(outcome))
         history.append(link)
         self.attempt_outcomes(
             {
@@ -25797,7 +25798,7 @@ class PoolQueue:
                     if current:
                         _write_json_atomic(dst, filed)
                     else:
-                        pb._atomic_publish(archive, pb._canonical_bytes(filed))
+                        immutable_files.publish_immutable(archive, pb._canonical_bytes(filed))
                 if ("scratch_declaration_record" in record
                         or local_scratch.SCRATCH_LIFETIME_FIELD in record):
                     self._file_superseded(record, key=action_key,
@@ -26797,7 +26798,7 @@ class PoolQueue:
         path = self.withdrawal_decision_path(record)
         if path is None:
             return dict(record)
-        pb._atomic_publish(path, pb._canonical_bytes(record))
+        immutable_files.publish_immutable(path, pb._canonical_bytes(record))
         return self._read_withdrawal_decision(path)
 
     def _read_withdrawal_decision(self, path: Path) -> dict[str, object]:

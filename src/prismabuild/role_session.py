@@ -17,6 +17,7 @@ import time
 
 from . import core as pb, generation_receipt, park_proof
 from . import flock_owner
+from . import immutable_files
 from .park_proof import drain_offer_fields
 from .digest_primitives import raw_sha256
 
@@ -261,7 +262,7 @@ def record_generation_drift(drift: dict, *, actor: str,
                f"-{record['pid']}-{digest}.json"))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        pb._atomic_publish(path, raw)
+        immutable_files.publish_immutable(path, raw)
     except OSError:
         return None
     return path

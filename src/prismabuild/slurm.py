@@ -31,6 +31,7 @@ import time
 from typing import Literal
 
 from . import core as pb
+from . import immutable_files
 
 
 _SLURM_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
@@ -988,7 +989,7 @@ def publish_action_request(action: object, *, cas_root: str | Path) -> Path:
     )
     request_path = root / "requests" / action_key[:2] / f"{action_key}.json"
     raw = pb._canonical_file_bytes(normalized)
-    pb._atomic_publish(
+    immutable_files.publish_immutable(
         request_path,
         raw,
         where="PrismaBuild action request",
@@ -1060,7 +1061,7 @@ def _ensure_real_directory(path: Path, *, root: Path, where: str) -> None:
 
     # The walk below starts at ``root.parent`` and creates each component
     # through a directory FD, so name the whole path to audit hooks (#1019).
-    sys.audit(pb.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
+    sys.audit(immutable_files.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
     try:
         relative = path.relative_to(root)
     except ValueError as exc:
@@ -1125,7 +1126,7 @@ def _open_directory_nofollow(path: Path, *, where: str) -> int:
         raise pb.CASTamperError(
             f"{where} directory must be absolute and contain no parent traversal"
         )
-    sys.audit(pb.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
+    sys.audit(immutable_files.NOFOLLOW_DIRECTORY_AUDIT_EVENT, str(path))
     # PrismaBuild's SLURM adapter is Linux-only.  Do not silently weaken the
     # no-follow contract on a platform lacking these openat flags.
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -1431,7 +1432,7 @@ class SlurmAdapter:
             root=self.cas_root,
             where="SLURM durable state",
         )
-        return pb._atomic_publish(
+        return immutable_files.publish_immutable(
             path,
             raw,
             where="SLURM durable state",
