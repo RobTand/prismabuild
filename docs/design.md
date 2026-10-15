@@ -4847,8 +4847,6 @@ this ownership change.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
 Worker, tier, local tier and prewarm admission use typed receipt observations.
-Scalar getter APIs remain until the remaining fixtures close in the private
-caller wave.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.
@@ -4910,7 +4908,11 @@ It requires `Match` at both poll top and claim boundary. Known `Drift` keeps the
 existing immutable worker incident and exit 0, including `--once`. `Unknown`
 claims no work and files no drift incident. A one-shot returns 75; a continuous
 worker waits at its poll interval, interruptibly by its SIGTERM stop Event,
-before observing again. While loaded identity is unavailable, retries can
+before observing again. At poll top, a closed maintenance gate can still record
+the worker's actual idle park marker before that return or wait. UNKNOWN at
+that boundary performs no queue housekeeping, reconciliation, saved-finish
+retry or offer publication.
+While loaded identity is unavailable, retries can
 recover its complete receipt. Once known, that loaded identity stays attached
 to the imported code even if the receipt path changes. Offers use the captured
 known commit and generation. Existing admitted actions finish before these

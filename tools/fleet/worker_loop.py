@@ -1186,6 +1186,9 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             return 0
         if isinstance(decision, generation_receipt.Unknown):
             report_unknown(decision, "poll top")
+            gate = role_session.read_maintenance_gate()
+            if gate is not None:
+                role_session.post_park_marker(gate)
             if args.once:
                 return 75
             stop.wait(args.poll_s)
