@@ -66,7 +66,7 @@ class _Ledger:
         return {"cpu": 2}
 
 
-def _announced(module, names: list[str], *, gang=False, generation="", gpu=False,
+def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=False,
                extra_tags=()) -> list[dict]:
     """One poll of the real loop, with ``gethostname`` answering ``names``.
 
@@ -126,9 +126,19 @@ def _announced(module, names: list[str], *, gang=False, generation="", gpu=False
         gate.write_text(json.dumps({"draining": False}))
         receipt = private_root / "RUNTIME_VERSION.json"
         receipt.write_text(json.dumps({"commit": "audit", "generation": generation}))
+        queue_type = _Queue
+        actual_queue = None
+        key = "f" * 64
+        if not generation:
+            actual_queue = pool.PoolQueue(private_root / "fleet" / "pb-queue")
+            actual_queue.publish(action_key=key, cas_root=private_root / "cas",
+                                 checkout_root=private_root, worker_script="worker.py",
+                                 resources={"cpu": 1, "mem_gb": 1})
+            ready = actual_queue.item_path(pool.READY, key).read_bytes()
+            queue_type = pool.PoolQueue
         inventory = module.container_images.InventoryCache
         trusted_sample = module.gpu_admission.trusted_sample
-        with mock.patch.object(module.pool, "PoolQueue", _Queue), \
+        with mock.patch.object(module.pool, "PoolQueue", queue_type), \
          mock.patch.dict(module.os.environ, {"PRISMABUILD_GANG_ADMISSION": "0"}), \
          mock.patch.object(module, "SH", private_root / "fleet"), \
          mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
@@ -142,13 +152,17 @@ def _announced(module, names: list[str], *, gang=False, generation="", gpu=False
              probe=lambda *_args, **_kwargs: None)), \
          mock.patch.object(module.gpu_admission, "trusted_sample", side_effect=lambda: trusted_sample(
              private_root / "gpu-capacity.json")), \
-         mock.patch.object(role_session, "published_commit", return_value="audit"), \
-         mock.patch.object(role_session, "loaded_runtime_commit", return_value="audit"), \
          mock.patch.object(module.os, "sched_getaffinity",
                            lambda _pid: {2, 3}), \
          mock.patch.object(module.socket, "gethostname", gethostname), \
          mock.patch.object(sys, "argv", argv):
-            assert module.main() == 0
+            assert module.main() == (0 if generation else 75)
+        if actual_queue is not None:
+            assert actual_queue.item_path(pool.READY, key).read_bytes() == ready
+            assert actual_queue.terminal_keys() == frozenset()
+            assert list(actual_queue.dir(pool.CLAIMED).iterdir()) == []
+            assert actual_queue.offers() == []
+            assert list((actual_queue.root / "generation-drift").glob("*.json")) == []
     return calls
 
 
@@ -185,8 +199,12 @@ def test_a_box_that_was_not_renamed_announces_its_current_name() -> None:
 def test_worker_enablement_reaches_the_published_offer_and_claim_matcher(
         tmp_path, gang, generation, gpu):
     module = _worker_loop()
-    announcement = _announced(module, ["testbox"], gang=gang,
-                              generation=generation, gpu=gpu)[-1]
+    announcements = _announced(module, ["testbox"], gang=gang,
+                               generation=generation, gpu=gpu)
+    if not generation:
+        assert announcements == []
+        return
+    announcement = announcements[-1]
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.announce(**announcement)
     offer = queue.offers()[0]

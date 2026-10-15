@@ -26,6 +26,26 @@ PROGRESS_TAGS = (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG,
                  contracts.EGRESS_PROGRESS_TAG, contracts.QUEUED_CHILD_TAG)
 
 
+@pytest.mark.parametrize("gang", [False, True])
+@pytest.mark.parametrize("generation", ["", "g1"])
+def test_registry_enablement_and_generation_companions_are_pure_facts(tmp_path, gang, generation):
+    tags = frozenset(contracts.offered_contract_tags(contracts.WorkerFacts(
+        gang_admission=gang, loaded_generation=generation)))
+    queue = pool.PoolQueue(tmp_path / "queue")
+    assert contracts.CONTAINER_IMAGE_TAG in tags
+    assert contracts.SCRATCH_IO_TAG in tags
+    assert contracts.SCRATCH_LIFETIME_TAG in tags
+    assert (contracts.GANG_TAG in tags) is gang
+    assert (contracts.PUBLICATION_CANARY_TAG in tags) is bool(generation)
+    assert {tag for tag in tags if tag.startswith("runtime-generation:")} == (
+        {f"runtime-generation:{generation}"} if generation else set())
+    assert queue._placement_matches(
+        {"tags": [contracts.GANG_TAG]}, tags=tags, has_gpu=False) is gang
+    assert queue._placement_matches(
+        {"tags": [contracts.PUBLICATION_CANARY_TAG]}, tags=tags,
+        has_gpu=False) is bool(generation)
+
+
 def _sealed_request(tmp_path, params, *, movement_tool=None):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
