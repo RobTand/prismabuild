@@ -100,6 +100,7 @@ import sys
 import time
 from collections import namedtuple
 from pathlib import Path
+from threading import Event
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
@@ -111,7 +112,7 @@ from prismabuild import capability_eligibility, contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology,
-                         filesystem_floor, local_scratch,
+                         filesystem_floor, generation_receipt, local_scratch,
                          park_proof, pool, publication_canary, role_session, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
@@ -176,9 +177,15 @@ DISCOVERY_TIMEOUT_S = 30.0
 PUBLICATION_LOCK_ROOT = Path(f"/tmp/prismabuild-offer-publish-{os.getuid()}")
 
 
-def _refuse_moved_runtime(drift: dict, *, host: str, boundary: str) -> None:
+def _refuse_moved_runtime(decision: generation_receipt.Drift, *, host: str, boundary: str) -> None:
     """Stamp the drift, say it loudly, and leave the exit to the caller."""
 
+    drift = {
+        "loaded_commit": decision.loaded.commit,
+        "loaded_generation": decision.loaded.generation,
+        "published_commit": decision.published.commit,
+        "published_generation": decision.published.generation,
+    }
     stamped = role_session.record_generation_drift(
         drift, actor="worker_loop", queue_root=SH / "pb-queue")
     print(f"[{host}] runtime moved "
@@ -640,9 +647,7 @@ def main(argv=None, *, on_outcome=None):
     the queue withdrawal protocol.
     """
     with role_session.stop_requests(signal.SIGTERM) as stop:
-        if argv is None and on_outcome is None:
-            return _run_loop(stop.is_set)
-        return _run_loop(stop.is_set, argv=argv, on_outcome=on_outcome)
+        return _run_loop(stop, argv=argv, on_outcome=on_outcome)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -961,7 +966,7 @@ def scratch_observed_detail(observer, profile_inputs):
     return detail
 
 
-def _run_loop(stop_requested, *, argv=None, on_outcome=None):
+def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     ap = build_parser()
     args = ap.parse_args(argv)
     validate_args(ap, args)
@@ -1031,7 +1036,22 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         if args.class_image_config is not None else None)
     # Immutable loaded generation, never the moving repo symlink. Old loops
     # cannot claim a successor publisher's privileged action.
-    loaded_generation = role_session.loaded_generation()
+    loaded = role_session.loaded_runtime()
+
+    def runtime_decision() -> generation_receipt.ReceiptDecision:
+        nonlocal loaded
+        if isinstance(loaded, generation_receipt.ReceiptUnavailable):
+            loaded = role_session.loaded_runtime()
+        return generation_receipt.compare(loaded, role_session.published_runtime())
+
+    def report_unknown(decision: generation_receipt.Unknown, boundary: str) -> None:
+        reasons = {
+            name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+            for name, value in (("loaded", decision.loaded), ("published", decision.published))
+        }
+        print(f"[{host}] runtime receipt unknown at {boundary}; {json.dumps(reasons)}; "
+              "admission paused", flush=True)
+
     def offered_tags(name: str) -> list[str]:
         """What this box offers, for the name it currently has.
 
@@ -1055,11 +1075,11 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             tags.append("cpu")
         tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
             gang_admission=args.gang_admission,
-            loaded_generation=loaded_generation)))
+            loaded_generation=(loaded.generation if isinstance(
+                loaded, generation_receipt.RuntimeIdentity) else ""))))
         return tags
 
     host = socket.gethostname()
-    offered = offered_tags(host)
     if pinned is not None:
         print(f"[{host}] pinned to {cpu_topology.as_range(pinned)} "
               f"({len(pinned)} of {len(cpu_topology.classify()[0]) + len(cpu_topology.classify()[1])} cpus)",
@@ -1086,7 +1106,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     #: launch another reader: the survivor holds no lock, but a stalled mount
     #: must not accumulate one D-state process per poll per loop.
     abandoned_discoveries: list = []
-    loaded_commit = role_session.loaded_runtime_commit()
+    loaded_commit = loaded.commit if isinstance(loaded, generation_receipt.RuntimeIdentity) else ""
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}",
           flush=True)
     print(f"[{host}] offer publication bounded to {OFFER_PUBLISH_TIMEOUT_S:g}s "
@@ -1099,7 +1119,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     # runtime must not touch the queue first.
     swept_dead_offers = False
     while True:
-        if stop_requested():
+        if stop.is_set():
             print(f"[{host}] shutdown requested; current action drained", flush=True)
             return 0
         # Fence stale imported bytes before the first queue read or mutation,
@@ -1131,7 +1151,6 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             print(f"[{host}] renamed to {renamed_to}; announcing under the new "
                   f"name from this poll on", flush=True)
             host = renamed_to
-            offered = offered_tags(host)
         # Fence stale imported bytes before the first queue read or mutation,
         # and again at the top of every later poll.  In particular, an old
         # orphan reaper must never classify a record emitted by a successor's
@@ -1161,11 +1180,18 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # The old name's `workers/<name>.json` is left to expire on its own
         # rather than removed here: this loop is one of many on the box and
         # cannot know whether a sibling still answers to the old name.
-        drift = role_session.generation_drift(loaded_commit=loaded_commit,
-                                 loaded_generation=loaded_generation)
-        if drift is not None:
-            _refuse_moved_runtime(drift, host=host, boundary="poll top")
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
+            _refuse_moved_runtime(decision, host=host, boundary="poll top")
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            report_unknown(decision, "poll top")
+            if args.once:
+                return 75
+            stop.wait(args.poll_s)
+            continue
+        loaded_commit = decision.identity.commit
+        offered = offered_tags(host)
         if not swept_dead_offers:
             swept_dead_offers = True
             swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
@@ -1507,7 +1533,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # SystemExit must still stop the loop.  And the count is consecutive,
         # so a box whose every poll raises stops rather than spinning: that
         # shape is the box being broken, not the items.
-        if stop_requested():
+        if stop.is_set():
             return 0
         # Membership handoff reconciliation, through the existing retry
         # path: a resign CLI that died after withdrawing leaves owed rows
@@ -1591,11 +1617,16 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # publish_runtime's rolling convergence depends on -- loops cycle at
         # their own boundaries while a publish converges, and nothing here
         # fights that by interrupting work in flight.
-        drift = role_session.generation_drift(loaded_commit=loaded_commit,
-                                 loaded_generation=loaded_generation)
-        if drift is not None:
-            _refuse_moved_runtime(drift, host=host, boundary="claim boundary")
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
+            _refuse_moved_runtime(decision, host=host, boundary="claim boundary")
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            report_unknown(decision, "claim boundary")
+            if args.once:
+                return 75
+            stop.wait(args.poll_s)
+            continue
         # The claim's own evidence, taken after publication so it is not the
         # offer's TTL that answers a claim.  While image-pinned work is
         # waiting, the shared record is re-probed at CLAIM_FRESHNESS_S, once
@@ -1637,7 +1668,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                       f"the items -- exiting for the supervisor to replace",
                       flush=True)
                 return 1
-            if stop_requested():
+            if stop.is_set():
                 return 0
             time.sleep(args.poll_s)
             continue

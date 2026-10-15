@@ -214,6 +214,14 @@ def maintenance_requested() -> bool:
     return read_maintenance_gate() is not None
 
 
+def loaded_runtime() -> generation_receipt.ReceiptObservation:
+    return generation_receipt.observe(GENERATION_VERSION)
+
+
+def published_runtime() -> generation_receipt.ReceiptObservation:
+    return generation_receipt.observe(RUNTIME_VERSION)
+
+
 def published_commit() -> str:
     """The commit at the live generation boundary, or "" if unknown."""
 

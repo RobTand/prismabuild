@@ -4725,8 +4725,8 @@ daemon:
   The same check runs at startup before the first claim, in both
   directions: a loop resurrected from a generation newer than the fleet
   retreated to refuses just as an old one does. An unreadable receipt is
-  "unknown", not "moved", and never licenses a refusal — the same rule the
-  reload fence has always kept.
+  "unknown", not "moved". The worker's typed observation boundary pauses
+  admission on unknown evidence without filing a drift incident.
 * **`--ensure` ensures the declared role, not a process's existence.** A
   running role whose argv differs from the current `fleet_boxes.json`
   declaration, or whose executable resolves outside the active generation,
@@ -4869,8 +4869,20 @@ boundary imposes no commit grammar or additional receipt schema.
 `Unknown(loaded, published)`. Drift requires two complete identities; an
 unavailable observation proves neither agreement nor movement. Each decision
 carries its evidence. Roles retain their own refusal, wait and retirement
-policies. This leaf is qualified separately before role callers migrate;
-the existing scalar comparison paths remain until that closed caller wave.
+policies. The existing scalar paths remain for role callers awaiting migration
+in the closed caller wave.
+
+The worker observes the loaded receipt beside its imported source and the
+published receipt through `role_session.loaded_runtime` and `published_runtime`.
+It requires `Match` at both poll top and claim boundary. Known `Drift` keeps the
+existing immutable worker incident and exit 0, including `--once`. `Unknown`
+claims no work and files no drift incident. A one-shot returns 75; a continuous
+worker waits at its poll interval, interruptibly by its SIGTERM stop Event,
+before observing again. While loaded identity is unavailable, retries can
+recover its complete receipt. Once known, that loaded identity stays attached
+to the imported code even if the receipt path changes. Offers use the captured
+known commit and generation. Existing admitted actions finish before these
+checks run again.
 
 ### The pre-publish shape gate (#987)
 
