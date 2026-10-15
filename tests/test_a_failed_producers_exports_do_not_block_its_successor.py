@@ -33,6 +33,7 @@ from pathlib import Path
 import test_prepaid_writer_integration as fx
 from test_produced_spool import claim_export, prepare, world
 from prismabuild import core, pool, produced_output as po, produced_spool as ps
+from prismabuild.record_store import Present, RecordStore
 
 
 # -- the two attempts -----------------------------------------------------------
@@ -114,11 +115,13 @@ def _new_key(spool, label):
 def _fail_export(spool, key):
     """Fail an export row until no attempt of it is left to run."""
 
-    while po._mover_live_state(spool.queue, key) == pool.READY:
+    while (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.READY):
         claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
         assert claimed["action_key"] == key
         spool.queue.finish(key, status="failed")
-    assert po._mover_live_state(spool.queue, key) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.FAILED)
 
 
 def _proof(spool, batch, index=0):
@@ -258,7 +261,8 @@ def test_a_live_export_of_another_group_does_not_hold_the_destination(tmp_path):
 
     answer = _try_export(second, "b39")
 
-    assert po._mover_live_state(first.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(first.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.CLAIMED)
     assert answer["ok"], f"another group's live export holds this path: {answer}"
     assert destination.read_bytes() == payload
 
@@ -290,7 +294,8 @@ def test_a_failed_groups_export_that_may_still_run_holds_the_destination(tmp_pat
     first = world(tmp_path)
     destination, running = _landed(first, "b39", b"landed by a live export",
                                    finish=False)
-    assert po._mover_live_state(first.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(first.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.CLAIMED)
     second = _retry(first)
     _source, _destination, entries = prepare(second, batch="b39",
                                              payload=b"the successor's bytes")
@@ -358,7 +363,8 @@ def test_every_dead_attempt_in_a_retry_chain_is_asked_about_its_export(tmp_path,
     claimed = second.queue.claim(owner="a-worker-that-is-still-copying", tags=[second.host])
     assert claimed["action_key"] == running["export_key"]
     third = _new_key(second, "resubmit-2")
-    assert po._mover_live_state(third.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(third.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.CLAIMED)
     _source, _destination, entries = prepare(third, batch="b39", payload=b"key C's bytes")
     handle = third.submit_group("b39", entries)
     claim_export(third, handle)

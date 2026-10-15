@@ -24,6 +24,7 @@ from test_produced_spool import claim_export, prepare, world
 from prismabuild import pool, produced_spool as ps
 import worker_loop
 from prismabuild import role_session
+from prismabuild.record_store import Present, RecordStore
 
 
 def _tree(root: Path) -> dict[str, tuple]:
@@ -61,11 +62,13 @@ def _failed(spool, batch, payload):
     _source, _destination, entries = prepare(spool, batch=batch, payload=payload)
     handle = spool.submit_group(batch, entries)
     key = handle["export_key"]
-    while ps.po._mover_live_state(spool.queue, key) == pool.READY:
+    while (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.READY):
         claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
         assert claimed is not None and claimed["action_key"] == key
         spool.queue.finish(key, status="failed")
-    assert ps.po._mover_live_state(spool.queue, key) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.FAILED)
     return handle
 
 
@@ -135,7 +138,8 @@ def test_a_claimed_export_is_never_touched(tmp_path):
     running = spool.submit_group("b2", entries)
     claim_export(spool, running)
     _withdraw_owner(spool)
-    assert ps.po._mover_live_state(spool.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.CLAIMED)
     group = spool.directory / "b2"
     before = _tree(group)
 

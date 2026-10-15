@@ -11458,7 +11458,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   26.3 s to 26.6 s after a 4 s copy, on every staged group; with the parent
   opened first the same read saw the receipt in 0.04 s to 0.25 s
   (`tools/fleet/qualify_record_visibility.py`, both arms run on the real
-  mount). `PoolQueue.move_record` and every leg of `_mover_live_state`
+  mount). `PoolQueue.move_record` and every leg of `RecordStore.mover`
   therefore go through `pool._read_json_fresh`: a miss opens and closes the
   parent, then reads once more. The live legs matter as much as the terminal
   ones, because `_publish_output_mover_row` republishes on "absent" and
@@ -18094,6 +18094,21 @@ non-finite-number behavior.
 These reads acquire no lock, impose no deadline, and do not refresh cached
 missing names. They use the existing `pool.read_queue_record` transport, whose
 empty-file and I/O behavior is unchanged. Queue names and record bytes are
-unchanged. Mover polling, the other claim readers, plain and kept-read adapter
-closure, queue publication, and the remaining liveness and prefix readers are
-unfinished c05 work. The documented PoolQueue and SDK read APIs are preserved.
+unchanged.
+
+`RecordStore(root).mover(key)` owns the separate polling question. It reads
+claimed, ready, done, failed, and withdrawn in fixed order and returns the
+first readable row as `Present[QueueRow]`. It preserves the live legs' non-None
+predicate and the terminal legs' Mapping predicate. Every leg uses the
+existing `pool._read_json_fresh` transport: a missing or empty record gets a
+best-effort parent open and one retry, while a hit needs no parent open. A
+parent-open failure preserves the missing answer. Any other Exception leaves
+the poll `Unknown`, retaining the failing path and original exception object.
+Five missing answers produce `Absent`. Polling reads no sidecars, compares no
+publication stamps, and makes no second complete observation. Each caller
+keeps its existing publication, receipt, recovery, or retention policy and
+observation lifetime, including separate repeated polls within recovery.
+
+The other claim readers, plain and kept-read adapter closure, queue
+publication, and the remaining liveness and prefix readers are unfinished c05
+work. The documented PoolQueue and SDK read APIs are preserved.

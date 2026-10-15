@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild.record_store import Present, RecordStore  # noqa: E402
 from prismabuild import residency_map as map_mod  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -384,7 +385,8 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     assert str(again["mover_key"]) == mover0
     record = world.q.read_output_funding(mover0, TIER)
     assert record is not None and str(record["state"]) == "consumed"
-    assert po._mover_live_state(world.q, mover0) == pool.DONE
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(mover0), Present)
+            and mover_row.value.state == pool.DONE)
     assert map_mod.read_fragments(world.out_base, ns) == []
     assert not world.stage_path("p1.bin").exists()
 

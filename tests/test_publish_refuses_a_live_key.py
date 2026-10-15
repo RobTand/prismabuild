@@ -38,6 +38,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
+from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
 
@@ -136,8 +137,8 @@ def test_a_stale_mover_republication_does_not_queue_a_second_run(
     assert queue.claim(capacity={"cpu": 4}) is not None
     claimed = _row(queue, pool.CLAIMED, KEY)
 
-    monkeypatch.setattr(produced_output, "_mover_live_state",
-                        lambda *args, **kwargs: "absent")
+    monkeypatch.setattr(RecordStore, "mover",
+                        lambda *args, **kwargs: Absent())
     answer = produced_output._publish_output_mover_row(
         queue, mover_key=KEY, cas_root=str(tmp_path / "cas"),
         launch={"worker_script": str(tmp_path / "w.py"), "priority": 0,
