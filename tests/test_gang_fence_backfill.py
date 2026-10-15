@@ -200,12 +200,15 @@ def test_release_telemetry_failure_does_not_gate_cleanup(gang_fleet, monkeypatch
     assert claim("sparky") is None
     assert claim("sparklina") is None
     original = pool._write_json_atomic
+    failed_observations = []
     def broken_observation(path, value):
         if str(path).endswith(".withdrawn-finish.json") and "gang_backfill_release" in value:
+            failed_observations.append(path)
             raise OSError("telemetry write unavailable")
         return original(path, value)
     monkeypatch.setattr(pool, "_write_json_atomic", broken_observation)
     finish(key, "sparklina")
+    assert failed_observations, "finish never reached the injected telemetry failure"
     assert queue.ledger("sparklina").held_keys() == []
     assert not queue.item_path(pool.CLAIMED, key).exists()
     assert claim("sparklina") == keys[0]
