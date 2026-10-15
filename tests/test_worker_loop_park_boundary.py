@@ -31,6 +31,9 @@ import sys
 import pytest
 
 
+from prismabuild import role_session
+
+
 @pytest.mark.parametrize("contents,stamp,make_root", [
     ('{"draining": true, "changed_unix": 100.5}', "100.5", True),
     ('{}', "unknown", True),
@@ -58,11 +61,12 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
     spec.loader.exec_module(loop)
     # Also point the pre-feature baseline at the private gate, so its failure
     # proves missing evidence, rather than a missing environment override.
-    monkeypatch.setattr(loop, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", parked)
     monkeypatch.setattr(loop, "SH", tmp_path)
-    monkeypatch.setattr(loop, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(loop, "published_commit", lambda: "test")
-    monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
+    monkeypatch.setattr(role_session, "loaded_runtime_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "published_commit", lambda: "test")
+    monkeypatch.setattr(role_session, "_generation_at", lambda path: "test")
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     # Capability probes are not this fixture's subject; make them inert so
     # nothing they do can be mistaken for a poll.

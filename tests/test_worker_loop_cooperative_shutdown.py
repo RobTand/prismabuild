@@ -13,6 +13,9 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 from prismabuild import pool
 
 
+from prismabuild import role_session
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_sigterm_during_execution_files_the_claim_before_exiting(tmp_path, fails):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
@@ -30,10 +33,11 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
+from prismabuild import role_session
 wl.SH = Path({str(tmp_path)!r})
 wl.PUBLICATION_LOCK_ROOT = Path({str(tmp_path / "publication-lock")!r})
-wl.loaded_runtime_commit = lambda: "test"
-wl.published_commit = lambda: "test"
+role_session.loaded_runtime_commit = lambda: "test"
+role_session.published_commit = lambda: "test"
 def execute(self, item, **kwargs):
     assert kwargs.get("containment") is True
     os.kill(os.getpid(), signal.SIGTERM)

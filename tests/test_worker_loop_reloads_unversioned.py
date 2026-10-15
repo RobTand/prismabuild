@@ -34,6 +34,9 @@ from prismabuild import pool  # noqa: E402
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _worker_loop():
     spec = importlib.util.spec_from_file_location("wl_reload_under_test", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
@@ -53,11 +56,11 @@ def _run(tmp_path: Path, receipts: list[dict], capsys) -> str:
     live = tmp_path / "repo" / "RUNTIME_VERSION.json"
     live.parent.mkdir(parents=True, exist_ok=True)
     with mock.patch.object(wl, "SH", tmp_path), \
-         mock.patch.object(wl, "RUNTIME_VERSION", live), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", live), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "loaded_runtime_commit",
+         mock.patch.object(role_session, "loaded_runtime_commit",
                            return_value=str(receipts[0].get("commit") or "")), \
-         mock.patch.object(wl, "_generation_at",
+         mock.patch.object(role_session, "_generation_at",
                            side_effect=lambda _path: str(
                                receipts[0].get("generation") or "")), \
          mock.patch.object(sys, "argv",
@@ -99,10 +102,10 @@ def test_a_stale_loop_reloads_before_touching_the_queue(
     live.parent.mkdir(parents=True, exist_ok=True)
     live.write_text(json.dumps({"commit": "new-runtime"}))
     with mock.patch.object(wl, "SH", tmp_path), \
-         mock.patch.object(wl, "RUNTIME_VERSION", live), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", live), \
          mock.patch.object(wl.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(wl, "loaded_runtime_commit", return_value="old-runtime"), \
-         mock.patch.object(wl, "_generation_at", return_value=""), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="old-runtime"), \
+         mock.patch.object(role_session, "_generation_at", return_value=""), \
          mock.patch.object(wl.pool, "PoolQueue", return_value=UntouchableQueue()), \
          mock.patch.object(
              sys,

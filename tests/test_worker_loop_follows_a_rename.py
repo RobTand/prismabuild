@@ -33,6 +33,9 @@ from prismabuild import contracts, pool
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _worker_loop():
     """The real entry point, loaded under a private name."""
 
@@ -128,19 +131,19 @@ def _announced(module, names: list[str], *, gang=False, generation="", gpu=False
         with mock.patch.object(module.pool, "PoolQueue", _Queue), \
          mock.patch.dict(module.os.environ, {"PRISMABUILD_GANG_ADMISSION": "0"}), \
          mock.patch.object(module, "SH", private_root / "fleet"), \
-         mock.patch.object(module, "MAINTENANCE_GATE", gate), \
-         mock.patch.object(module, "PARKED_ROOT", private_root / "parked"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", private_root / "parked"), \
          mock.patch.object(module, "PUBLICATION_LOCK_ROOT", private_root / "offer-locks"), \
-         mock.patch.object(module, "ROLE_LOCK_ROOT", private_root / "role-locks"), \
-         mock.patch.object(module, "RUNTIME_VERSION", receipt), \
-         mock.patch.object(module, "GENERATION_VERSION", receipt), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", private_root / "role-locks"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", receipt), \
+         mock.patch.object(role_session, "GENERATION_VERSION", receipt), \
          mock.patch.object(module.container_images, "InventoryCache", side_effect=lambda: inventory(
              root=private_root / "images", docker=str(private_root / "docker"),
              probe=lambda *_args, **_kwargs: None)), \
          mock.patch.object(module.gpu_admission, "trusted_sample", side_effect=lambda: trusted_sample(
              private_root / "gpu-capacity.json")), \
-         mock.patch.object(module, "published_commit", return_value="audit"), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
+         mock.patch.object(role_session, "published_commit", return_value="audit"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="audit"), \
          mock.patch.object(module.os, "sched_getaffinity",
                            lambda _pid: {2, 3}), \
          mock.patch.object(module.socket, "gethostname", gethostname), \

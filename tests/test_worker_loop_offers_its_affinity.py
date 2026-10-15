@@ -29,6 +29,9 @@ import pytest
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
 
+from prismabuild import role_session
+
+
 def _worker_loop():
     """The real entry point, loaded under a private name."""
 
@@ -92,8 +95,8 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
     with tempfile.TemporaryDirectory(prefix="pb-affinity-", dir="/home/rob/tmp") as scratch, \
          mock.patch.object(module, "SH", Path(scratch)), \
          mock.patch.object(module.pool, "PoolQueue", _Queue), \
-         mock.patch.object(module, "published_commit", return_value="audit"), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
+         mock.patch.object(role_session, "published_commit", return_value="audit"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="audit"), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred",
                            return_value=pinned), \
          mock.patch.object(module.os, "cpu_count", return_value=cpu_count), \

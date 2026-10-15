@@ -18,6 +18,9 @@ BASE = ["--class", "gb10", "--gpu", "--mem-gb", "72",
         "--cpu-slots", "10", "--all-cores", "--poll-s", "0"]
 
 
+from prismabuild import role_session
+
+
 def sample(*, foreign=(), jobs=(), complete=True):
     return {
         "schema": box_capacity.GPU_CAPACITY_SCHEMA,
@@ -52,8 +55,8 @@ def _run(tmp_path: Path, argv, *, gpu_sample, mem_gb=100):
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "loaded_runtime_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "published_commit", return_value="deadbeef"), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=gpu_sample), \
          mock.patch.object(worker.box_capacity, "mem_available_gb", return_value=mem_gb), \
          mock.patch.object(worker.box_capacity, "run_queue", return_value=0.0), \
