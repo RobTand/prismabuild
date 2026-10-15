@@ -339,6 +339,17 @@ receipts, the privileged proof consumer and broader RecordStore work are still
 isolated or unfinished. No final complete-brief or full-current-suite result,
 push, PR state change or deployment is claimed.
 
+The combined qualification at `a230804e91b65011ccb8f082b770da77bd313c0b`
+passed all 5,230 unique tests across 356 files and eight actions. It retains
+every one of the 5,229 nodes in the earlier receipt, drain and mover runs.
+The additional node checks `drain_policy.py` in the existing live-store
+constant parametrization. Source, terminal records, retained logs and CAS
+receipts/payloads are verified for every action. No test was skipped.
+The `merged-receipts-drain-mover-verified` evidence and population artifacts
+and the corresponding node-retention artifact preserve these checks.
+This combined population covers those units; the complete brief and final
+suite over all changes remain open.
+
 
 ## Qualified receipt, drain and queue-reader steps
 
