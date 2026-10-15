@@ -125,6 +125,13 @@ def replacement(source, target):
     prefix = 'restore-' if phase['value'] == 'recover' else ''
     watched = Path(target).parent == install and event is not None
     if watched:
+        if (phase['value'] == 'recover' and event == 'leaf'
+                and controls.get('restore_observation')):
+            info = Path(source).stat()
+            Path(controls['restore_observation']).write_text(json.dumps({
+                'source': str(source), 'uid': info.st_uid, 'gid': info.st_gid,
+                'mode': info.st_mode & 0o7777,
+                'sha256': hashlib.sha256(Path(source).read_bytes()).hexdigest()}))
         pause(prefix + event + '-before-replace')
     original_replace(source, target)
     if watched:

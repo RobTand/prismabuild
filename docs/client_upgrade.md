@@ -218,11 +218,26 @@ then require bridge convergence again.
 `src/prismabuild/park_proof.py`. It participates in export, exact installed
 hashes, the previous/target member union and presence/absence recovery. Broker
 loaded equality excludes only this leaf and `upgrade_client.py`; GPU modules
-remain broker-owned. `CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 1` declares this
-transport/recovery contract. It does not claim strict marker acceptance.
+remain broker-owned. `CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2` declares this
+transport/recovery contract, including prior proof metadata preservation. The
+unpublished protocol 1 intermediate is not a capable rollback reader. The proof
+protocol does not claim strict marker acceptance.
 Whenever either side names the proof leaf, both the captured previous updater
 and verified exported candidate must declare that capability as well as the
 existing optional-member protocol 2.
+
+One no-follow regular file descriptor supplies bounded previous proof bytes and
+uid/gid/mode together. Missing files are explicit absence; unavailable, oversized
+or nonregular files refuse before journal or service mutation. Worker-owned or
+worker-writable regular files remain repairable through the existing owned
+zero-scope drain, without receipt MATCH or physical park evidence. Whenever the
+member union includes the leaf, the journal requires `previous_proof_file`: null
+for known absence, or exact integer `uid`, `gid`, `mode` fields for a previous
+file. Missing legacy metadata is unknown and cannot authorize rollback. Recovery
+validates it before service I/O, restores uid/gid and then permission mode on an
+exclusive temporary file, fsyncs, and atomically replaces the installed path.
+Root recopy therefore cannot turn retained worker-controlled bytes into trusted
+code. The existing GPU/optional-member protocol 2 remains independent.
 
 First converge a non-consuming bridge. An old installed reader exports only its
 known names and can adopt that bridge while the proof source remains in the

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import NamedTuple
 import uuid
 
 MEMBERS = {
@@ -75,7 +76,7 @@ MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
-CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 1
+CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2
 MAINTENANCE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_ROLLOUT_PROTOCOL = 1
@@ -332,6 +333,70 @@ def bounded_read(path, limit):
     if len(data) > limit:
         raise ValueError(f'oversized runtime member: {path.name}')
     return data
+
+
+class ProofFileMetadata(NamedTuple):
+    uid: int
+    gid: int
+    mode: int
+
+
+class ProofFileSnapshot(NamedTuple):
+    data: bytes
+    metadata: ProofFileMetadata
+
+
+class InstalledClientSnapshot(NamedTuple):
+    member_bytes: dict[str, bytes | None]
+    proof_file: ProofFileSnapshot | None
+
+
+def read_proof_file(path):
+    """Known absence or bounded regular bytes and metadata from one no-follow FD."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('installed proof member is not a regular file')
+        data = stream.read(MAX_MEMBER + 1)
+        if len(data) > MAX_MEMBER:
+            raise ValueError('oversized installed proof member')
+        after = os.fstat(stream.fileno())
+        fields = ('st_dev', 'st_ino', 'st_uid', 'st_gid', 'st_mode',
+                  'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if (any(getattr(before, name) != getattr(after, name) for name in fields)
+                or len(data) != after.st_size):
+            raise ValueError('installed proof member changed during snapshot')
+    return ProofFileSnapshot(data, ProofFileMetadata(
+        before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)))
+
+
+def previous_proof_metadata(transaction, previous):
+    """Parse proof-specific rollback facts before service or filesystem mutation."""
+    if 'park_proof.py' not in previous:
+        desired_version = transaction.get('desired')
+        desired_files = desired_version.get('files') if isinstance(desired_version, dict) else None
+        if isinstance(desired_files, dict) and 'park_proof.py' in desired_files:
+            raise ValueError('previous proof member presence is unavailable')
+        return None
+    if 'previous_proof_file' not in transaction:
+        raise ValueError('previous proof file metadata is unavailable')
+    value = transaction['previous_proof_file']
+    if previous['park_proof.py'] is None:
+        if value is not None:
+            raise ValueError('absent previous proof file has metadata')
+        return None
+    if not isinstance(value, dict) or set(value) != {'uid', 'gid', 'mode'}:
+        raise ValueError('invalid previous proof file metadata fields')
+    if any(type(value[name]) is not int or not 0 <= value[name] < 2**32 - 1
+           for name in ('uid', 'gid')):
+        raise ValueError('invalid previous proof file owner')
+    if type(value['mode']) is not int or not 0 <= value['mode'] <= 0o7777:
+        raise ValueError('invalid previous proof file mode')
+    return ProofFileMetadata(**value)
 
 
 def desired(config):
@@ -1419,7 +1484,7 @@ class Upgrader:
             if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
                 raise ValueError('invalid installed client hash or absent required member')
 
-    def copy_files(self, source, files):
+    def copy_files(self, source, files, *, proof_metadata=None):
         self.validate_files(files)
         for name, expected in files.items():
             target = self.install / name
@@ -1431,18 +1496,28 @@ class Upgrader:
             data = (source / name).read_bytes()
             if digest(data) != expected:
                 raise RuntimeError(f'staged client hash mismatch: {name}')
-            temporary = self.install / ('.' + name + '.upgrade')
-            with temporary.open('wb') as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.chmod(0o644)
-            os.replace(temporary, target)
+            fd, temporary_name = tempfile.mkstemp(prefix='.' + name + '.upgrade-',
+                                                 dir=self.install)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(data)
+                    stream.flush()
+                    if name == 'park_proof.py' and proof_metadata is not None:
+                        os.fchown(stream.fileno(), proof_metadata.uid, proof_metadata.gid)
+                        os.fchmod(stream.fileno(), proof_metadata.mode)
+                    else:
+                        os.fchmod(stream.fileno(), 0o644)
+                    os.fsync(stream.fileno())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
         sync_dir(self.install)
 
     def recover(self, transaction, *, keep_drain=False):
         previous = transaction.get('previous')
         self.validate_files(previous)
+        proof_metadata = previous_proof_metadata(transaction, previous)
         actual = {name: digest((self.state / 'previous' / name).read_bytes())
                   if expected is not None else None for name, expected in previous.items()}
         if actual != previous:
@@ -1457,7 +1532,7 @@ class Upgrader:
             if status.get('active_scopes') != 0 or status.get('draining') is not True:
                 raise RuntimeError('rollback deferred: broker still owns active work')
             self.ctl('stop')
-        self.copy_files(self.state / 'previous', previous)
+        self.copy_files(self.state / 'previous', previous, proof_metadata=proof_metadata)
         if self.installed(previous) != previous:
             raise RuntimeError('restored client hash mismatch')
         self.ctl('start')
@@ -1474,25 +1549,30 @@ class Upgrader:
                     if name not in UPDATER_ONLY_MEMBERS}
         return reply.get('installed_sha256') == expected
 
-    def read_installed_member_bytes(self, names=None):
-        """One bounded byte observation per member, including optional absence."""
+    def read_installed_snapshot(self, names=None):
+        """Capture member bytes once, retaining proof metadata from the same FD."""
         if names is None:
-            names = [*MEMBERS, *(name for name in OPTIONAL_MEMBERS
-                                if (self.install / name).exists())]
+            names = [*MEMBERS, *OPTIONAL_MEMBERS]
         result = {}
+        proof_file = None
         for name in names:
             path = self.install / name
+            if name == 'park_proof.py':
+                proof_file = read_proof_file(path)
+                result[name] = proof_file.data if proof_file is not None else None
+                continue
             try:
                 result[name] = bounded_read(path, MAX_MEMBER)
             except FileNotFoundError:
                 if name not in OPTIONAL_MEMBERS:
                     raise
                 result[name] = None
-        return result
+        return InstalledClientSnapshot(result, proof_file)
 
     def installed(self, names=None):
         return {name: digest(data) if data is not None else None
-                for name, data in self.read_installed_member_bytes(names).items()}
+                for name, data in self.read_installed_snapshot(names).member_bytes.items()
+                if data is not None or names is not None}
 
     def run(self):
         self.active_rollout = None
@@ -1577,7 +1657,8 @@ class Upgrader:
                                    installed=result.get('installed'), error=failed['error'])
             return result
         version, blobs = self.reader(self.config)
-        installed_bytes = self.read_installed_member_bytes([*MEMBERS, *OPTIONAL_MEMBERS])
+        installed_snapshot = self.read_installed_snapshot()
+        installed_bytes = installed_snapshot.member_bytes
         installed = {name: digest(data) for name, data in installed_bytes.items()
                      if data is not None}
         if rollout is not None:
@@ -1656,10 +1737,10 @@ class Upgrader:
                 if re.search(pattern, code) is None:
                     raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
         if 'park_proof.py' in names:
-            pattern = rb'(?m)^CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
+            pattern = rb'(?m)^CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
             for code in (blobs['upgrade_client.py'], installed_bytes['upgrade_client.py']):
                 if re.search(pattern, code) is None:
-                    raise ValueError('proof client transaction requires proof-member recovery protocol 1')
+                    raise ValueError('proof client transaction requires proof-member recovery protocol 2')
         previous = {name: installed.get(name) for name in names}
         target_files = {name: version['files'].get(name) for name in names}
         self.validate_files(target_files)
@@ -1697,6 +1778,10 @@ class Upgrader:
         transaction = {'desired': version, 'previous': previous,
                        **({'rollout_epoch': rollout['intent']['epoch']}
                           if rollout is not None else {})}
+        if 'park_proof.py' in names:
+            proof_file = installed_snapshot.proof_file
+            transaction['previous_proof_file'] = (
+                proof_file.metadata._asdict() if proof_file is not None else None)
         atomic(self.journal, transaction)
         try:
             self.ctl('stop')

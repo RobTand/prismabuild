@@ -4794,12 +4794,22 @@ consumer migration; strict package proof does not claim that migration.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
 The privileged client can transport `park_proof.py` as an optional installed
-sibling under a non-consuming bridge. Its separate proof-member protocol 1
+sibling under a non-consuming bridge. Its separate proof-member protocol 2
 requires both captured previous and verified candidate updater capability;
-protocol 2 alone is insufficient. One bounded previous byte map supplies all
+the main GPU/optional-member protocol 2 alone is insufficient. The unpublished
+proof-member protocol 1 intermediate is not a capable rollback reader.
+One bounded previous byte map supplies all
 capability checks, digests and backups. The leaf remains updater-owned and is
 excluded from exact broker loaded-member equality. This transport bridge does
 not establish strict root proof acceptance or change ordinary repair gates.
+The proof leaf's bytes and uid/gid/mode come from the same no-follow regular
+file descriptor. Its required `previous_proof_file` journal field distinguishes
+known absence from metadata, and missing legacy facts refuse recovery before
+service I/O. Rollback restores ownership then permission mode on a fresh
+exclusive temporary file before fsync and replacement, preserving prior trust
+at interruption cuts. Unavailable, oversized or nonregular installed proof
+files refuse before journal/service mutation. Bounded worker-controlled regular
+files retain ordinary owned-zero-scope repair without receipt or physical proof.
 Production callers read generation identities through `loaded_generation()`
 and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
