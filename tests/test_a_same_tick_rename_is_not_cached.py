@@ -9,7 +9,7 @@ replaces a leaf in that tick leaves the recorded stamp current, the next pass
 hits the checkpoint, and the stale path is never pruned while nothing else
 touches the directory.
 
-``kept_reads.trusted_directory_stamp`` closes that hole for the #992
+``kept_reads.filesystem_trust.directory_before`` closes that hole for the #992
 listings: it reads the coarse clock first and refuses a stamp whose mtime or
 ctime is not strictly before it.  These tests hold the checkpoint to the same
 rule.  A directory stamped in the tick of its last change is never cached

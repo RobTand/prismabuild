@@ -907,11 +907,12 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     # The capacity test installs checkpoints directly, but their evidence
     # must be acquired by the same settled, trusted rule as a real sweep.
     # Bare versions captured in the write's coarse tick are not checkpoints.
-    time.sleep(0.05)
-    fence = kept_reads.version_fence()
+    from kept_read_clock import after_paths
+    after_paths(monkeypatch, fragment, material, tmp_path)
+    fence = kept_reads.filesystem_trust.file_fence()
     fragment_version = stage_release._fenced_path_version(fragment, fence)[1]
     material_version = stage_release._fenced_path_version(material, fence)[1]
-    directory_stamp = kept_reads.trusted_directory_stamp(tmp_path)
+    directory_stamp = kept_reads.filesystem_trust.directory_evidence(tmp_path)
     assert fragment_version is not None and material_version is not None
     assert directory_stamp is not None, "checkpoint fixture needs trusted local storage"
     stamps = {str(tmp_path): directory_stamp}

@@ -13,7 +13,7 @@ fence.
 #1062 closed that hole for the parent-directory stamps and #1045 for the
 co-owner fragments (the census memo keeps only a version older than a clock
 read taken before the open).  These tests hold the owner's own fragment and
-material to the same rule (``kept_reads.keepable_version``): a document
+material to the same rule (``kept_reads.filesystem_trust.file_version``): a document
 whose ctime is not strictly before a coarse clock read taken before its
 ``lstat`` is not installed, the owner takes one extra uncached pass, and a
 document older than that read still installs and hits.

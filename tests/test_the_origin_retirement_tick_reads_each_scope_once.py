@@ -119,8 +119,8 @@ def _version_keepable(path: Path) -> bool:
     for one re-reads by design, and the count assertions below do not apply.
     """
 
-    fence = kept_reads.version_fence()
-    return kept_reads.keepable_version(path.stat(), fence, path=path) is not None
+    fence = kept_reads.filesystem_trust.file_fence()
+    return kept_reads.filesystem_trust.file_version(path.stat(), fence, path=path) is not None
 
 
 class _Reads:

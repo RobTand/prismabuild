@@ -296,7 +296,7 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
     fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
     monkeypatch.setattr(kept_reads, '_filesystem_type', lambda _device: filesystem)
-    monkeypatch.setattr(kept_reads, 'version_fence', lambda: fence)
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: fence)
 
     parsing = threading.Event()
     release = threading.Event()
@@ -437,7 +437,7 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
         def unreadable_mount_id(_descriptor, _info):
             raise PermissionError("the fixture mount ID is unavailable")
         monkeypatch.setattr(kept_reads, "_descriptor_mount_id", unreadable_mount_id)
-    monkeypatch.setattr(kept_reads, 'version_fence', lambda: (
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: (
         None if trust == "no-clock" else
         repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
     real_ownership = queue.recorded_stage_ownership

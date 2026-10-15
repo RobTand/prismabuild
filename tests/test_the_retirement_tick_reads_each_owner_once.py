@@ -101,8 +101,8 @@ def _fleet_file_versions():
 def _version_keepable(path: Path) -> bool:
     """Whether this host can vouch for a version of this file (#1045)."""
 
-    fence = kept_reads.version_fence()
-    return kept_reads.keepable_version(path.stat(), fence, path=path) is not None
+    fence = kept_reads.filesystem_trust.file_fence()
+    return kept_reads.filesystem_trust.file_version(path.stat(), fence, path=path) is not None
 
 
 def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
@@ -165,7 +165,7 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # Each sibling record once where the host can vouch for its version:
     # the tick's scan parse is reused (`_TickReads.batches`, #992).  On a
     # filesystem that cannot (a network mount), that parse is not kept
-    # (`kept_reads.keepable_version`), so `owned` reads the document once
+    # (`kept_reads.filesystem_trust.file_version`), so `owned` reads the document once
     # for itself after the scan read it: two, never one per asker.
     expected = 1 if _version_keepable(sibling_scope / "commitments.json") else 2
     assert reads.of("_read_commitments",
