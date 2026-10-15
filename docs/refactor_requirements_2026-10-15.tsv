@@ -1,0 +1,112 @@
+id	requirement	corrected_baseline_state	current_state	evidence_backlog_ids
+c01.r01	Extract a pure per-candidate verdict, including fairness decisions.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:21615;c01.e01;c01.e03
+c01.r02	Give denial record encoding one owner while preserving reason and evidence keys.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:9718;c01.e02;c01.e03
+c01.r03	Own tokens, borrow, GPU probe, tier handles, and funding in a reservation transaction with one abandon path.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:21615;c01.e01;c01.e04;c01.e05;c01.e06;c01.e07;B03;D04
+c01.r04	Reduce _claim_pass to a driver with structural lock phases.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:21615;c01.e01;c01.e05
+c02.r01	Read offers and peer ledgers once per pass through a pass-scoped fleet view.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:20210;c02.e01;c02.e05;c02.e06;B08a;D07
+c02.r02	Expose shared observations, charge, fits_or_ledger and fits_measured while retaining each rule's freshness, pass-on and timer predicates.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:20236;c02.e02;c02.e04;c02.e05;B08a;B08b;D07
+c02.r03	Express the five yield preferences as policies asked once per candidate.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:20210;c02.e01;c02.e03;c02.e06;B08a;B08b;D07
+c03.r01	Give each capability one declaration, observation, advertisement, unknown rule, and denial rule.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:6394;c03.e01;c03.e03;c03.e04;c03.e05
+c03.r02	Provide offer and live-host adapters for the same capability predicate.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:6394;c03.e01;c03.e04
+c03.r03	Migrate worker, matcher, submission, and claim callers, reducing announce arguments.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:6394;c03.e01;c03.e03;c03.e05
+c04.r01	Return typed holders from one holder census rather than path-level metadata readers.	remaining	remaining	986cedeffae8:src/prismabuild/adaptive_cpu.py:1833;c04.e01;c04.e02
+c04.r02	Put valid, fresh, and foreign-clear GPU sample facts beside gpu_capacity.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:20432;c04.e03;c04.e04
+c04.r03	Inject the sampler through the controller and claim interfaces.	remaining	remaining	986cedeffae8:src/prismabuild/adaptive_cpu.py:1746;c04.e05
+c05.r01	Own queue name grammar and atomic record publication in one module.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:2630;c05.e01;c05.e02;c05.e05
+c05.r02	Expose present, absent, and unknown-with-reason read results; keep NFS rules inside the module.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:2630;c05.e01;c05.e04;c05.e05
+c05.r03	Place plain and kept-read adapters behind the same questions.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:2630;c05.e01;c05.e05
+c05.r04	Migrate key standing first, then the other liveness and prefix readers.	remaining	remaining	986cedeffae8:src/prismabuild/produced_output.py:7806;c05.e02;c05.e03;c05.e06
+c06.r01	Use one pure model over a capture for point-in-time, generation-exact, attempt, and preemption-successor answers.	preexisting	preexisting	986cedeffae8:src/prismabuild/pool.py:27319;c06.e01;c06.e02;c06.e03;c06.e04
+c06.r02	Own deadlines, retries, bounded reads, patience, and typed endings in one await module.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:2947;c06.e03;c06.e05
+c06.r03	Derive exit codes and recovery from the typed ending instead of stderr or CLI internals.	remaining	remaining	986cedeffae8:tools/fleet/pbwait.py:213;c06.e05;c06.e06
+c07.r01	Name legal action transitions and classify a capture.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:5983;c07.e01;c07.e03;c07.e04;B03;D04
+c07.r02	Own the complete conclude sequence for a chosen destination.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:5983;c07.e01;c07.e02;c07.e03;c07.e04;B03;B04;B16;F1;D04
+c07.r03	Make finish, reaper, quarantine and sweeps policies over conclude; retain withdraw as a decision that never concludes a live claim.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:24352;c07.e02;c07.e03;c07.e04;B03;D04
+c08.r01	Take wait-evidence sources as adapters and own rung order.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:29157;c08.e04;c08.e05;c08.e06
+c08.r02	Own checkpoint accounting and credit for the whole rung.	partial	partial	986cedeffae8:src/prismabuild/pool.py:1949;c08.e01;c08.e03;c08.e05
+c08.r03	Own the stall record.	implemented	implemented	986cedeffae8:src/prismabuild/pool.py:1957;c08.e02
+c08.r04	Reduce the loop to one no-progress question and move rung tests behind the watch interface.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:29142;c08.e03;c08.e04;c08.e05;c08.e06
+c09.r01	Own publish, shrink, reissue and withdraw of the vouch pair in fixed orders.	remaining	remaining	986cedeffae8:tools/fleet/stage_release.py:1259;c09.e01;c09.e04;c09.e05
+c09.r02	Own the complete staged-path ownership census.	remaining	remaining	986cedeffae8:tools/fleet/stage_release.py:1891;c09.e02;c09.e06
+c09.r03	Own hint, lock, re-census and act as one guarded operation.	remaining	remaining	986cedeffae8:tools/fleet/stage_release.py:1891;c09.e02;c09.e03
+c09.r04	Move library ownership into src and migrate all production and test callers.	remaining	remaining	986cedeffae8:tools/fleet/stage_release.py:1594;c09.e03;c09.e06
+c10.r01	Own the tier ledger and report holder holdings, holder state and mint supply.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:13083;c10.e01;c10.e06
+c10.r02	Expose take, hand over, settle egress, release unspent and reclaim idle rates as distinct domain operations.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:13698;c10.e02;c10.e03;c10.e04
+c10.r03	Update RAM-host mirrors inside those operations.	remaining	remaining	986cedeffae8:src/prismabuild/prelaunch_group.py:817;c10.e03;c10.e05
+c10.r04	Migrate callers and raw-ledger fixture setup.	remaining	remaining	986cedeffae8:src/prismabuild/prelaunch_group.py:817;c10.e03;c10.e04;c10.e06
+c11.r01	Move version primitives, directory records and census memos into one src module.	implemented	implemented	986cedeffae8:src/prismabuild/kept_reads.py:371;c11.e02;c11.e03;c11.e04
+c11.r02	Keep action reads untrusted unless a fleet caller explicitly grants retention.	implemented	implemented	986cedeffae8:src/prismabuild/kept_reads.py:18;c11.e01;c11.e07
+c11.r03	Put filesystem trust behind a caller-facing port.	remaining	remaining	986cedeffae8:src/prismabuild/kept_reads.py:371;c11.e02;c11.e05;c11.e06;c29.e09
+c11.r04	Let directory callers ask for records and only reread changed data through the shared capture protocol.	partial	partial	986cedeffae8:src/prismabuild/kept_reads.py:883;c11.e03;c11.e05;c11.e06;c29.e09
+c12.r01	Step 1: share funding record write, rotate and advance mechanics for both bindings.	implemented	implemented	986cedeffae8:src/prismabuild/pool.py:13938;c12.e01;c12.e02
+c12.r02	Step 1: give record validation and evidence reads a common owner and remove dead pass-throughs.	partial	partial	986cedeffae8:src/prismabuild/pool.py:13791;c12.e03;c12.e04;c12.e05;c12.e09;B08c;D07
+c12.r03	Step 2: own bind, handoff with crash repair, funded cover and release behind a typed verdict.	remaining	remaining	986cedeffae8:tools/fleet/tier_loop.py:8318;c12.e06;c12.e07
+c12.r04	Retire the legacy commit_batch acquisition branch only after proving no live legacy funding files remain.	conditional_design	conditional_design	986cedeffae8:src/prismabuild/produced_output.py:4011;c12.e08
+c13.r01	Own commitments, batch records, materialization history and prewrites in one batch ledger.	remaining	remaining	986cedeffae8:src/prismabuild/produced_output.py:2606;c13.e01;c13.e02;c13.e07
+c13.r02	Expose independent BatchFacets for kind, lifetime, copies, origin and consumers, retaining _batch_state as a projection.	remaining	remaining	986cedeffae8:src/prismabuild/produced_output.py:3175;c13.e02;c13.e03;c13.e04;c13.e05;B03;D04
+c13.r03	Unify scope addressing and the four path-ownership rules, then migrate all callers.	remaining	remaining	986cedeffae8:src/prismabuild/produced_output.py:2606;c13.e01;c13.e03;c13.e04;c13.e05;c13.e06;c13.e07
+c14.r01	Own typed request vocabulary, template freeze/seal and snapshot construction in src.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:7610;c14.e01;c14.e06
+c14.r02	Own cache hit, attachment, floor, D38, supersession and staged-lane publication in one tail.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:9143;c14.e02;c14.e03;c14.e04
+c14.r03	Take a fleet store argument and return typed outcomes or refusals.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:7610;c14.e01;c14.e02;c14.e05
+c14.r04	Migrate all five entry paths; leave pbrun parsing and printing.	remaining	remaining	986cedeffae8:tools/fleet/pbcampaign.py:1173;c14.e04;c14.e05;c14.e06
+c15.r01	Find a generation and read its receipt once at one strictness level in a stdlib module.	remaining	remaining	986cedeffae8:tools/fleet/publish_runtime.py:1462;c15.e01;c15.e02;c15.e03;c15.e05;c15.e06;B09;D08
+c15.r02	Verify selected members on demand and compare generations through explicit operations.	remaining	remaining	986cedeffae8:tools/fleet/upgrade_client.py:339;c15.e02;c15.e03
+c15.r03	Ship the reader beside root programs and replace source-regex capability detection and duplicate fixture builders.	remaining	remaining	986cedeffae8:tools/fleet/publish_runtime.py:1489;c15.e04
+c16.r01	Obtain Rob's retain, deprecate or retire ruling on the Phase 3 hold.	rob_choice	rob_choice	986cedeffae8:README.md:178;c16.e01;c16.e02;c16.e03;c16.e04;c16.e05;B13;D01
+c16.r02	If retired, delete both modules, dedicated tests and superseded design sections; shrink duplication baseline.	remaining_if_chosen	remaining_if_chosen	986cedeffae8:README.md:178;c16.e01;c16.e03;c16.e05;B13;D01
+c16.r03	Keep slurm_lane; if retiring the adapters, revise the recorded choice of Dagster accurately.	remaining_if_chosen	remaining_if_chosen	986cedeffae8:README.md:178;c16.e01;c16.e06;c16.e07;B13;D01
+c17.r01	Own shared stop, fence-and-stamp, generation comparison, parking, sleep and exits in a stdlib role module.	remaining	remaining	986cedeffae8:tools/fleet/worker_loop.py:712;c17.e01;c17.e02;c17.e03;c17.e04;c17.e05;B06;D05
+c17.r02	Supply each role's name, singleton policy and completion boundaries through a role_session kit with one switch, retaining each role's loop.	remaining	remaining	986cedeffae8:tools/fleet/worker_loop.py:1165;c17.e02;c17.e05;c17.e06;B06;D05
+c17.r03	Migrate every role and qualify cooperative storage stop and same-commit generation drift.	remaining	remaining	986cedeffae8:tools/fleet/local_tier_loop.py:45;c17.e03;c17.e04;c17.e07;c17.e08;B05;B06;B09;D05;D08
+c17.r04	Preserve script-stem locks, exit codes, park spelling and drift record bytes.	remaining	remaining	986cedeffae8:tools/fleet/worker_loop.py:712;c17.e01;c17.e02;B06;B09;D05;D08
+c18.r01	Own epoch key, marker path/name, strict start-tick reading and posting in one stdlib module.	remaining	remaining	986cedeffae8:tools/fleet/worker_loop.py:319;c18.e01;c18.e02;c18.e03;c18.e04;B09;D08
+c18.r02	Choose HOST_QUIESCENT and MEMBER_LOOPS profile membership, including resign coverage of one-shot workers.	rob_choice	rob_choice	986cedeffae8:tools/fleet/fleet_membership.py:413;c18.e04;c18.e05;c18.e06;B09;D08
+c18.r03	Own serving-set selection and drain proof, then migrate roles, resign, root updater and rollout qualification.	remaining	remaining	986cedeffae8:tools/fleet/fleet_membership.py:413;c18.e04;c18.e05;c18.e06;c18.e07;c18.e08;c18.e09;B09;D08
+c18.r04	Ship the root member with a reader-first bridge while preserving old marker names.	remaining	remaining	986cedeffae8:tools/fleet/worker_loop.py:319;c18.e01;c18.e02;c18.e03;B09;D08
+c19.r01	Own each contract's tag, sealed declaration, offered(WorkerFacts), gated companions and remedy in one pure registry.	remaining	remaining	986cedeffae8:src/prismabuild/core.py:194;c19.e01;c19.e02;c19.e03;c19.e07;c19.e08;B07;D06
+c19.r02	Derive enabled worker offers and every publisher's required tags from that owner; refuse orphan requirements.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:2030;c19.e02;c19.e03;c19.e04;c19.e05;c19.e06;c19.e07;c19.e08;B07;D06
+c19.r03	Use the same rows for pbrun requirements and diagnostics, then move tags out of attested core where safe.	remaining	remaining	986cedeffae8:src/prismabuild/core.py:194;c19.e01;c19.e02;c19.e03;B07;D06
+c20.r01	Keep run-local as one attested file.	preexisting	preexisting	986cedeffae8:src/prismabuild/core.py:2485;c20.e01;c20.e02;c20.e05;c20.e07
+c20.r02	Move unreachable contract tags and manifest read/validate code to their package owners.	remaining	remaining	986cedeffae8:src/prismabuild/core.py:2485;c20.e01;c20.e02;c20.e09;c20.e10;c20.e11;B02;B13;D03;D01
+c20.r03	Give record-I/O primitives public library names and migrate callers.	remaining	remaining	986cedeffae8:src/prismabuild/core.py:3412;c20.e03;c20.e04;c20.e10;B13
+c20.r04	Keep or delete the initial-miss rendezvous according to Rob's qualification decision.	rob_choice	rob_choice	986cedeffae8:src/prismabuild/core.py:7978;c20.e05;c20.e06;c20.e08;B15;D03
+c21.r01	Own typed filing options, reuse/reseal, freeze and renewal under the consumer lock.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:6356;c21.e01;c21.e02;c21.e03;c21.e04
+c21.r02	Own filed consumers, active supersessions, shared ranges and prelaunch-leg registry facts.	remaining	remaining	986cedeffae8:tools/fleet/pbcampaign.py:1218;c21.e03;c21.e05;c21.e06
+c21.r03	Return one window decision per consumer per cycle; remove leaked window math and duplicate inputs.	remaining	remaining	986cedeffae8:src/prismabuild/residency_plan.py:3021;c21.e05;c21.e06
+c21.r04	Migrate submit, campaign, promotion and tier callers to the same ownership operations.	remaining	remaining	986cedeffae8:tools/fleet/pbrun.py:6356;c21.e01;c21.e02;c21.e03;c21.e04
+c22.r01	Own phase ranges, ordered entries, byte-range entries, aligned cuts, consumed bytes and budget frontier.	implemented	implemented	986cedeffae8:src/prismabuild/manifest_layout.py:257;c22.e01;c22.e02;c22.e03;c22.e04;c22.e05
+c22.r02	Migrate every caller to the shared read-order and phase-frontier rule.	partial	implemented	986cedeffae8:src/prismabuild/manifest_layout.py:386;c22.e04;c22.e06;c22.e07;c22.e08;c22.e09;c22.e10;c22.e11;c22.e12;c22.e13;U1;Q-manifest-behavior;Q-manifest-original;Q-manifest-frontier;Q-requeue-integrated
+c22.r03	Preserve results for every accepted manifest and retire agreement-only tests after common ownership.	partial	implemented	986cedeffae8:src/prismabuild/manifest_layout.py:28;c22.e03;c22.e06;c22.e10;c22.e11;c22.e12;c22.e13;U1;Q-manifest-behavior;Q-manifest-original;Q-manifest-frontier;Q-requeue-integrated
+c23.r01	Make storage_tiers the one stage-pool and ARC probe owner; pacer imports it.	partial	implemented	986cedeffae8:src/prismabuild/storage_tiers.py:538;c23.e01;c23.e02;c23.e08;B01;Q-stage;D02
+c23.r02	Move all four stage marks, source identity and temporary-name grammar to the stdlib stage_marks leaf and migrate every caller.	remaining	implemented	986cedeffae8:src/prismabuild/stage_marks.py:8;c23.e03;c23.e04;c23.e05;c23.e06;c23.e09;c23.e10;B01;Q-stage;D02
+c23.r03	Choose whether to retire --stage and its dedicated implementation/tests.	rob_choice	rob_choice	986cedeffae8:tools/fleet/prewarm_loop.py:4025;c23.e07;B14;D02
+c23.r04	If retiring, drain old prewarm temporary writers/files before removing exclusions.	remaining_if_chosen	remaining_if_chosen	986cedeffae8:src/prismabuild/stage_marks.py:12;c23.e04;c23.e06;B14;D02
+c24.r01	Own lifetime selection, record shape, state-before-step writes, owner checks and finalize in one module.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:19351;c24.e01;c24.e02;c24.e03;c24.e04
+c24.r02	Take an owner-record store and containment proof from PoolQueue.	remaining	remaining	986cedeffae8:src/prismabuild/pool.py:19408;c24.e02;c24.e03
+c24.r03	Leave pairs and profiles in local_scratch and reduce profile identity churn from lifetime-only edits.	remaining	remaining	986cedeffae8:src/prismabuild/local_scratch.py:1073;c24.e05
+c25.r01	Own decomposition record locations.	implemented	implemented	986cedeffae8:src/prismabuild/decomposition.py:1056;c25.e01
+c25.r02	Own publish-once first-writer plan and publication-index writes plus strict parent/plan-bound read-back.	partial	partial	986cedeffae8:src/prismabuild/decomposition.py:1061;c25.e02;c25.e04;c25.e05;c25.e06
+c25.r03	Own child membership queries and bounded child-result reads across every caller.	partial	partial	986cedeffae8:src/prismabuild/decomposition.py:1139;c25.e03;c25.e08;c25.e09
+c25.r04	Make validators private after migrating all callers through record operations.	remaining	remaining	986cedeffae8:tools/fleet/pbcampaign.py:1108;c25.e04;c25.e07;c25.e08
+c26.r01	Own failing nodes, unobserved files, all unreconciled problems and runtime refusal in pbtest_outcomes' shard verdict.	remaining	remaining	986cedeffae8:tools/fleet/pbtest_outcomes.py:293;c26.e01;c26.e02;c26.e03;c26.e05
+c26.r02	Derive pbtest exit, pbmergeq failure sets and shape_gate decisions from the shared verdict.	remaining	remaining	986cedeffae8:tools/fleet/pbtest.py:2283;c26.e02;c26.e03;c26.e06
+c26.r03	Publish structured progress and refusal fields instead of stdout scraping.	remaining	remaining	986cedeffae8:tools/fleet/pbmergeq.py:878;c26.e04;c26.e05
+c27.r01	Own offers, rows, windowed denials, tiers, movers, plans/cursors, waits and blocked origins as named src census sections.	remaining	remaining	986cedeffae8:tools/fleet/pbstatus.py:958;c27.e01;c27.e02;c27.e07
+c27.r02	Give each section completeness, declared inputs and its own bound through plain and kept-read adapters.	remaining	remaining	986cedeffae8:tools/fleet/pbstatus.py:958;c27.e01;c27.e02
+c27.r03	Make CLI, MCP and Prometheus renderers of the same facts.	remaining	remaining	986cedeffae8:tools/fleet/pbmcp.py:1438;c27.e03;c27.e04;c27.e05;c27.e06;c27.e07
+c28.r01	Move roster ownership into src as a stdlib module.	implemented	implemented	986cedeffae8:src/prismabuild/fleet_roster.py:144;c28.e01;c28.e02
+c28.r02	Find the roster for a generation or checkout and parse it strictly in one place.	remaining	remaining	986cedeffae8:tools/fleet/supervise.py:428;c28.e03;c28.e04;c28.e05;c28.e06;c28.e07
+c28.r03	Use one alias rule for per-box views after classifying current policy differences.	partial	partial	986cedeffae8:src/prismabuild/fleet_roster.py:144;c28.e01;c28.e02;c28.e08;B08d;D07
+c28.r04	Serve per-box and policy fields, migrating all roster parsers after strict validation reaches publication first.	remaining	remaining	986cedeffae8:tools/fleet/supervise.py:428;c28.e03;c28.e05;c28.e06;c28.e07
+c29.r01	Move trusted directory versions and census memos into src as the first movement slice.	implemented	implemented	986cedeffae8:src/prismabuild/kept_reads.py:514;c29.e01
+c29.r02	Move claimed paths, stage-root registration and eviction into the packaged movement facility.	remaining	remaining	986cedeffae8:tools/fleet/stage_release.py:309;c29.e03;c29.e04;c29.e05;c29.e06
+c29.r03	Move other library ownership into src; leave thin scripts with unchanged names and flags.	partial	partial	986cedeffae8:src/prismabuild/fleet_roster.py:53;c29.e02;c29.e03;c29.e05;c29.e07;c23.e09;B01;Q-stage
+c29.r04	Remove package import forks, make tests use production import graphs and remove library rows from shipping lists.	partial	partial	986cedeffae8:src/prismabuild/produced_output.py:6947;c29.e06;c29.e07;c29.e08;c29.e09
+c30.r01	Build a thin composing fleet facade with hosts, one clock, tiers, stage roots, short broker directory and one root override.	remaining	remaining	986cedeffae8:tests/kept_read_clock.py:8;c30.e01;c30.e02;c30.e03;c30.e04;B10;D09
+c30.r02	Expose domain verbs and centralize necessary patches in test adapters while preserving real admission/reclamation.	remaining	remaining	986cedeffae8:tests/fleet_membership_fixture.py:10;c30.e02;c30.e03;c30.e04;c30.e06;B10;D09
+c30.r03	Use production writers for valid records; retain an explicit malformed/corruption construction path.	remaining	remaining	986cedeffae8:tests/admitted_queue_fixture.py:42;c30.e03;c30.e04;c30.e07;B10;D09
+c30.r04	Migrate representative families, then the wider repeated helpers; remove superseded helpers without growing a god fixture.	remaining	remaining	986cedeffae8:tests/kept_read_clock.py:8;c30.e01;c30.e02;c30.e05;B10;D09
+c31.r01	Record each kind's wire ID, location, closed/additive field policy, accepted legacy shapes, reader and writer.	remaining	remaining	986cedeffae8:src/prismabuild/reader_lease.py:85;c31.e01;c31.e02;c31.e03;c31.e04;B11;D10
+c31.r02	Capture read-only examples by kind and retained generation under live-store safeguards.	remaining	remaining	986cedeffae8:src/prismabuild/residency_map.py:300;c31.e03;c31.e05;c31.e06;B11;D10
+c31.r03	Read every corpus record, reproduce writer golden bytes and pin closed field sets.	remaining	remaining	986cedeffae8:src/prismabuild/residency_map.py:53;c31.e02;c31.e03;c31.e05;c31.e06;c31.e07;B11;D10
+c31.r04	Choose the supported retained-reader window, then qualify both reader directions and every named writer variant.	rob_choice	rob_choice	986cedeffae8:src/prismabuild/reader_lease.py:85;c31.e01;c31.e03;B11;D10

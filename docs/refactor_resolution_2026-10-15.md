@@ -5,6 +5,9 @@ choices. It supersedes the corresponding positions in the
 [disagreement brief](refactor_disagreements_2026-10-14.md). Agreement on a design
 does not complete its implementation. The whole 31-card refactor remains open.
 
+The [completion ledger](refactor_completion_2026-10-15.md) preserves all 111 original
+requirements, corrects the historical credit, and names the remaining scope.
+
 The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
 `36cebfbcc189`, based on `6073c9d36555`. Newer source is named below.
