@@ -30,6 +30,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
@@ -38,6 +40,11 @@ import duplication_inventory as inventory  # noqa: E402
 
 def _baseline():
     return json.loads(inventory.BASELINE.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def duplication_snapshot():
+    return inventory.scan()
 
 
 def test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs(tmp_path):
@@ -63,8 +70,8 @@ def test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs(tmp_path):
     assert live["same_name_helpers"] == {"_sha": ["src/prismabuild/a.py", "tools/b.py"]}
 
 
-def test_near_duplicate_pairs_only_shrink():
-    live = {tuple(p) for p in inventory.scan()["near_duplicates"]}
+def test_near_duplicate_pairs_only_shrink(duplication_snapshot):
+    live = {tuple(p) for p in duplication_snapshot["near_duplicates"]}
     base = {tuple(p) for p in _baseline()["near_duplicates"]}
     assert not live - base, (
         f"new near-duplicate functions {sorted(live - base)}: reuse the existing "
@@ -74,9 +81,9 @@ def test_near_duplicate_pairs_only_shrink():
         "tools/duplication_inventory.py --write-baseline")
 
 
-def test_same_name_helpers_only_shrink():
+def test_same_name_helpers_only_shrink(duplication_snapshot):
     base = _baseline()
-    live = inventory.scan()["same_name_helpers"]
+    live = duplication_snapshot["same_name_helpers"]
     grown = inventory.same_name_growth(live, base["same_name_helpers"],
                                        inventory.registered_same_name(base))
     assert not grown, (
@@ -91,11 +98,11 @@ def test_same_name_helpers_only_shrink():
         "tools/duplication_inventory.py --write-baseline")
 
 
-def test_same_name_distinct_records_are_exact_live_paths_with_reasons():
+def test_same_name_distinct_records_are_exact_live_paths_with_reasons(duplication_snapshot):
     """A registered collision names live paths, explains itself, and is not
     already allowed by the shrink-only baseline (#1386)."""
 
-    live = inventory.scan()["same_name_helpers"]
+    live = duplication_snapshot["same_name_helpers"]
     base = _baseline()
     seen: set[tuple[str, str]] = set()
     for row in base.get("same_name_distinct", []):
@@ -143,9 +150,9 @@ def test_must_differ_pairs_are_live_and_give_a_reason():
         assert len(row["reason"].split()) >= 8, f"{pair} needs a real reason"
 
 
-def test_primitive_digest_sites_only_shrink():
+def test_primitive_digest_sites_only_shrink(duplication_snapshot):
     """Raw digest sites outside the owner may only disappear (PB #1328)."""
-    live = set(inventory.scan()["primitive_digest_sites"])
+    live = set(duplication_snapshot["primitive_digest_sites"])
     base = set(_baseline()["primitive_digest_sites"])
     assert not live - base, (
         f"new primitive digest sites outside {sorted(inventory.DIGEST_OWNERS)}: "
@@ -156,15 +163,8 @@ def test_primitive_digest_sites_only_shrink():
         "with tools/duplication_inventory.py --write-baseline")
 
 
-def test_the_digest_site_ratchet_fails_on_a_new_raw_site_and_passes_the_owner(tmp_path):
-    """RED/GREEN for the gate itself: one raw site outside the owner fails.
-
-    A fixture module with a fresh ``hashlib.sha256(json.dumps(...,
-    sort_keys=True))`` site is an offender against an empty baseline (the RED
-    side: this is exactly the new-code pattern the ratchet exists to stop),
-    while the same raw recipe inside ``src/prismabuild/core.py`` is not
-    ratcheted at all because that is where consolidation moves sites to.
-    """
+def test_digest_inventory_excludes_the_owner_and_finds_raw_sites(tmp_path):
+    """A real scan reports raw recipes outside its designated owner."""
     raw = (
         "import hashlib\nimport json\n"
         "def _digest(value):\n"
@@ -176,15 +176,7 @@ def test_the_digest_site_ratchet_fails_on_a_new_raw_site_and_passes_the_owner(tm
     (tmp_path / "src" / "prismabuild" / "core.py").write_text(raw)
     (tmp_path / "tools" / "fresh_site.py").write_text(raw)
     live = set(inventory.scan(tmp_path)["primitive_digest_sites"])
-    # The owner's own raw site is not ratcheted.
-    assert not any("src/prismabuild/core.py" in site for site in live)
-    # Against an empty baseline the fresh raw site is a violation (RED).
-    assert sorted(live - set()) == [
+    assert sorted(live) == [
         "hashlib:tools/fresh_site.py::_digest",
         "sorted-json:tools/fresh_site.py::_digest",
     ]
-    # With the site recorded, the same set arithmetic the shrink test uses
-    # reports no violation (GREEN).
-    baseline = {"hashlib:tools/fresh_site.py::_digest",
-                "sorted-json:tools/fresh_site.py::_digest"}
-    assert not live - baseline and not baseline - live
