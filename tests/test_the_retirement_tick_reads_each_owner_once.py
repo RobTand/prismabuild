@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
+from kept_read_clock import after_paths  # noqa: E402
 from prismabuild import kept_reads, pool, produced_output as po  # noqa: E402
 from prismabuild.record_store import RecordStore  # noqa: E402
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
@@ -149,6 +150,8 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     planned.write_bytes(b"left")
     queue.finish(ended["owner_action_key"], status="failed")
     assert queue.item_path(pool.FAILED, ended["owner_action_key"]).exists()
+    sibling_scope = _scope(queue, sibling)
+    after_paths(monkeypatch, sibling_scope / "commitments.json")
     reads = _Reads(monkeypatch)
 
     events = po.origin_retirement_tick(queue)
@@ -164,7 +167,6 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # filesystem that cannot (a network mount), that parse is not kept
     # (`kept_reads.keepable_version`), so `owned` reads the document once
     # for itself after the scan read it: two, never one per asker.
-    sibling_scope = _scope(queue, sibling)
     expected = 1 if _version_keepable(sibling_scope / "commitments.json") else 2
     assert reads.of("_read_commitments",
                     sibling_scope / "commitments.json") == expected

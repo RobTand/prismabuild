@@ -433,6 +433,10 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
 
     monkeypatch.setattr(stage_move.os, "fstat", observed_fstat)
     monkeypatch.setattr(kept_reads, '_filesystem_type', filesystem)
+    if trust == "unknown":
+        def unreadable_mount_id(_descriptor, _info):
+            raise PermissionError("the fixture mount ID is unavailable")
+        monkeypatch.setattr(kept_reads, "_descriptor_mount_id", unreadable_mount_id)
     monkeypatch.setattr(kept_reads, 'version_fence', lambda: (
         None if trust == "no-clock" else
         repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
