@@ -111,7 +111,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from typing import Any, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 import contextvars
@@ -184,6 +184,9 @@ from . import window_credit
 from . import publication_canary
 from . import local_scratch
 from . import filesystem_floor
+
+if TYPE_CHECKING:
+    from .record_store import KeyStanding
 
 POOL_ITEM_SCHEMA_V1 = "prismaquant.prismabuild.pool_item.v1"
 POOL_CLAIM_INTENT_SCHEMA_V1 = "prismaquant.prismabuild.pool_claim_intent.v1"
@@ -21774,7 +21777,7 @@ class PoolQueue:
         #: movers of one producer pays one ``claimed/`` census per pass
         #: instead of two per mover.  A non-dead hint only skips the check;
         #: a dead hint still pays for the full proof under the key's lock.
-        dead_input_hints: dict[str, tuple[str, dict[str, object] | None]] = {}
+        dead_input_hints: dict[str, KeyStanding] = {}
         interpreter_host = capability_eligibility.LiveInterpreters()
         dependency_host = capability_eligibility.LiveDependencies()
         image_host = capability_eligibility.LiveImages(
