@@ -64,7 +64,8 @@ def _sample(text: str, series: str) -> str | None:
 class Scrapes:
     """One exporter's kept reader, checked against a fresh read every time."""
 
-    def __init__(self, root: Path, now: float) -> None:
+    def __init__(self, root: Path, now: float, monkeypatch) -> None:
+        self.patch = monkeypatch
         self.root = root
         self.now = now
         self.reader = pbmetrics.KeptReads()
@@ -82,21 +83,21 @@ class Scrapes:
         """Scrape once, change, scrape in the change's tick and after it."""
 
         self.check(f"{label} (before)")
-        settle()
+        settle(self.root, self.patch)
         self.check(f"{label} (settled before)")
         change()
         self.check(f"{label} (same tick)")
-        settle()
+        settle(self.root, self.patch)
         return self.check(label)
 
 
 @pytest.fixture
-def queue_and_scrapes(tmp_path):
+def queue_and_scrapes(tmp_path, monkeypatch):
     root = tmp_path / "pb-queue"
     now = time.time()
     queue = build_queue(root, now, SMALL_SHAPE)
-    settle()
-    return queue, Scrapes(root, now)
+    settle(root, monkeypatch)
+    return queue, Scrapes(root, now, monkeypatch)
 
 
 def _land(queue: pool.PoolQueue, *, complete: bool = True) -> None:
@@ -176,7 +177,7 @@ def test_the_cursor_follows_the_lease(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     _land(queue)
-    settle()
+    settle(queue.root, scrapes.patch)
     assert _sample(scrapes.check("landed"), STAGED) == "1"
     lease_path = queue.lease_path(CONSUMER)
     lease = json.loads(lease_path.read_text())
@@ -275,7 +276,7 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
-    histories = scrapes.reader._histories
+    histories = scrapes.reader._histories._slots
     decisions = queue.root / pool.WITHDRAWN / "decisions"
     gone = sorted(decisions.iterdir())[0]
     assert str(gone) in histories
@@ -285,10 +286,10 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     for path in gone.iterdir():
         path.unlink()
     gone.rmdir()
-    settle()
+    settle(queue.root, scrapes.patch)
     scrapes.check("half the receipts and one decision gone")
     assert str(gone) not in histories
-    movers = histories[str(queue.root / pool.MOVERS)][1]
+    movers = histories[str(queue.root / pool.MOVERS)].value
     assert len(movers) == len(receipts) - len(receipts) // 2
     derived = scrapes.reader._derived_entries.get("receipt", {})
     assert len(derived) <= len(movers)
@@ -339,7 +340,7 @@ def test_a_record_that_cannot_be_stat_ed_fails_the_scrape(queue_and_scrapes):
     shaped._require_trusted(queue.root)
     assert _sample(scrapes.check("initial"), TERMINAL_OK) == "1"
     path = _new_ending(queue, scrapes.now)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("stat", path, errno.EIO):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
         fresh = _collect(queue.root, scrapes.now, None)
@@ -363,7 +364,7 @@ def test_a_receipt_that_cannot_be_stat_ed_fails_the_move_window(queue_and_scrape
     receipt = queue.root / pool.MOVERS / f"{_key('late-receipt', 0)}.json"
     _put(receipt, {"schema": pool.POOL_MOVE_SCHEMA_V1, "unix": scrapes.now - 1.0,
                    "tier_id": STAGE_TIER}, scrapes.now - 1.0)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("stat", receipt, errno.EIO):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
     assert _sample(failed, complete) == "0"
@@ -378,7 +379,7 @@ def test_a_directory_that_cannot_be_listed_fails_the_scrape(queue_and_scrapes):
     done = queue.root / pool.DONE
     # A permission change moves the directory's ctime, as a real one would.
     os.chmod(done, os.stat(done).st_mode)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("scandir", done, errno.EACCES):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
         fresh = _collect(queue.root, scrapes.now, None)

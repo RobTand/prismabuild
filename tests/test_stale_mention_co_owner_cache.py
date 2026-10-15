@@ -44,6 +44,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map  # noqa: E402
+from prismabuild import kept_reads
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
@@ -372,12 +373,13 @@ def test_a_retained_owner_with_a_stale_path_is_never_cached(fleet, monkeypatch):
 # The cache holds the live shape and follows the owners the sweep sees
 # --------------------------------------------------------------------------
 
-def _stamps(prefix: str, count: int) -> dict[str, tuple[int, int, int, int]]:
+def _stamps(prefix: str, count: int) -> dict[str, kept_reads.DirectoryEvidence]:
     # A live parent is ``<stage>/models/<model>/<shard>.pbrange``: 242 bytes
     # on average on 2026-09-24.
     stem = f"/stage/prewarm/models/{prefix}/" + "m" * 180
-    return {f"{stem}-{index:06d}-of-000120.safetensors.pbrange": (1, index, 2, 3)
-            for index in range(count)}
+    return {name: kept_reads.DirectoryEvidence(name, (1, index, 2, 3))
+            for index in range(count)
+            for name in [f"{stem}-{index:06d}-of-000120.safetensors.pbrange"]}
 
 
 def test_the_checkpoint_holds_the_live_owner_shape():

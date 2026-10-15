@@ -38,6 +38,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+from kept_read_clock import after_paths
 from prismabuild import kept_reads
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
@@ -473,16 +474,11 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
     return queue
 
 
-def settle() -> None:
-    """Let the coarse clock pass every directory's last change.
-
-    A directory changed inside the current clock tick is never trusted
-    (``kept_reads.trusted_directory_stamp``), and a fixture written a
-    microsecond before the first scrape is exactly that.  A live queue's
-    history directories are almost always many ticks old.
-    """
-
-    time.sleep(0.05)
+def settle(root: Path, monkeypatch) -> None:
+    paths = [root]
+    for directory, children, files in os.walk(root):
+        paths.extend(Path(directory) / name for name in [*children, *files])
+    after_paths(monkeypatch, *paths)
 
 
 def directories_under(root: Path) -> int:
@@ -502,15 +498,16 @@ def live_shaped(tmp_path_factory):
     root = tmp_path_factory.mktemp("kept") / "pb-queue"
     now = time.time()
     build_queue(root, now, LIVE_SHAPE)
-    settle()
-    return root
+    with pytest.MonkeyPatch.context() as patch:
+        settle(root, patch)
+        yield root
 
 
 def _require_trusted(root: Path) -> None:
     # A skip would certify nothing: a queue on a filesystem whose directory
     # stamps are never trusted (NFS) lists every directory every scrape by
     # design, and the test must say so rather than pass vacuously.
-    stamp = kept_reads.trusted_directory_stamp(root / pool.DONE)
+    stamp = kept_reads.filesystem_trust.directory_before(root / pool.DONE)
     assert stamp is not None, (
         f"{root} is on {kept_reads._filesystem_type(os.lstat(root).st_dev)!r}, "
         "whose directory stamps are not trusted; this test needs a local "
@@ -543,7 +540,7 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert probe.namespace_stats, "retention must still check its current namespace"
 
 
-def test_one_new_ending_is_the_only_record_read(live_shaped):
+def test_one_new_ending_is_the_only_record_read(live_shaped, monkeypatch):
     """A changed directory is listed again; only the new record is opened."""
 
     _require_trusted(live_shaped)
@@ -554,7 +551,7 @@ def test_one_new_ending_is_the_only_record_read(live_shaped):
     _replace(path, _ending(key, "executed", "sparky", time.time() - 1.0,
                            profiled=True))
     try:
-        settle()
+        settle(live_shaped, monkeypatch)
         probe = FsProbe()
         with probe.active():
             text = _scrape(cache)
@@ -566,7 +563,7 @@ def test_one_new_ending_is_the_only_record_read(live_shaped):
         assert probe.listings == [str(live_shaped / pool.DONE)]
     finally:
         path.unlink()
-        settle()
+        settle(live_shaped, monkeypatch)
 
 
 GOLDEN = Path(__file__).resolve().parent / "data" / "pbmetrics_kept_reads_main.prom"
@@ -712,7 +709,9 @@ def _exporter_child(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     _use_tools(args.tools)
     cache = pbmetrics.MetricsCache(args.root, 0.0, WINDOW_S, LIMIT)
+    patch = pytest.MonkeyPatch()
     for line in sys.stdin:
+        settle(args.root, patch)
         clock = time.perf_counter()
         text = cache.get()
         print(json.dumps({"request": line.strip(),
@@ -755,7 +754,6 @@ def _memory(root: Path, tools: Path | None) -> dict[str, object]:
             _put(root / pool.DONE / f"{key}.json",
                  _ending(key, "executed", "sparky", now - 7200.0 - index,
                          profiled=False), now - 7200.0 - index)
-        settle()
         readings += [scrape("grown"), scrape("grown-second")]
     finally:
         child.stdin.close()
@@ -788,7 +786,8 @@ def _profile(argv: list[str]) -> int:
     exporter = _use_tools(args.tools)
     started = time.time()
     build_queue(args.root, started, LIVE_SHAPE)
-    settle()
+    clock_patch = pytest.MonkeyPatch()
+    settle(args.root, clock_patch)
     report: dict[str, object] = {"label": args.label, "shape": LIVE_SHAPE,
                                  "pbmetrics_sha256": exporter,
                                  "pbmetrics": pbmetrics.__file__,
@@ -801,7 +800,7 @@ def _profile(argv: list[str]) -> int:
         if scrape.startswith("changed-"):
             serial += 1
             _change(args.root, scrape, serial)
-            settle()
+            settle(args.root, clock_patch)
         probe = FsProbe()
         profile = cProfile.Profile()
         clock = time.perf_counter()
@@ -830,7 +829,7 @@ def _profile(argv: list[str]) -> int:
             if scrape.startswith("changed-"):
                 serial += 1
                 _change(args.root, scrape, serial)
-            settle()
+            settle(args.root, clock_patch)
             clock = time.perf_counter()
             cache.get()
             plain[scrape].append(time.perf_counter() - clock)
@@ -841,6 +840,7 @@ def _profile(argv: list[str]) -> int:
     report["memory"] = _memory(args.root, args.tools)
     (args.out / f"{args.label}.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1))
+    clock_patch.undo()
     return 0
 
 
