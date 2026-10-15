@@ -349,11 +349,18 @@ def test_transfer_tokens_exact_subset(tmp_path: Path) -> None:
     # Claimant-private endpoints refuse.
     with pytest.raises(pool.PoolContractError):
         ledger.transfer_tokens("claiming.x", b, names[:1])
-    # Collision preserves sum (both hold same name -> no overwrite, no count).
-    # Simulate by minting duplicate free token with same name then acquiring
-    # under b (contrived but proves no-overwrite rule).
-    total_before = sum(ledger.capacity().values())
-    assert sum(ledger.capacity().values()) == total_before
+    # Damage: duplicate one acquired token name across two holders. The
+    # contradictory ownership adds a fifth visible copy; neither may be lost.
+    collision_name = names[1]
+    source = ledger.held_dir / a / collision_name
+    destination = ledger.held_dir / b / collision_name
+    destination.write_bytes(source.read_bytes())
+    assert ledger.capacity() == {KIND: 5}
+    assert ledger.transfer_tokens(a, b, [collision_name]) == 0
+    assert ledger.holder_tokens(a) == {KIND: 1}
+    assert ledger.holder_tokens(b) == {KIND: 2}
+    assert ledger.available() == {KIND: 2}
+    assert ledger.capacity() == {KIND: 5}
 
 
 def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker) -> None:
