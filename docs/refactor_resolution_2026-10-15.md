@@ -244,3 +244,40 @@ repair and sticky-loaded-identity processes. Two assertion-preserving caller
 cohorts passed 51 and 29 cases. The remaining production role callers, final
 legacy API deletion and combined qualification are still outside the accumulation
 branch. No deployment is claimed.
+
+## Later capability, holder and placement units
+
+The named-interpreter owner at `3697bf39290d` passed 146 cases. Dependency
+eligibility at `4e2aba826156` passed 553 cases across twelve files and received
+an independent source review without findings. Both are integrated, through
+`92b9ad8e8b67`. Canonical dependency schema and probing owners remain unchanged.
+Advisory file presence still cannot prove live claim-time digest equality.
+
+The controller holder owner at `fe24b9451584` passed 228 cases and independent
+source review. It is integrated through `b5ece98f0181`. The initial qualification
+retains its one failed test assertion, which incorrectly indexed an exhausted
+GPU kind omitted by the free-token map. The correction preserves production
+and the acquisition, refusal, release and retry checks. Full ledger readers,
+shared GPU sample facts and sampler injection remain separate requirements.
+
+Placement clock ownership at `48d7baf845e9` passed 329 cases, following a
+324-case baseline, and independent source review. It is integrated at
+`b28d3e088389`. A queue-lifetime history feeds each pass view; both monotonic
+graces and Unix diagnostic ages retain their read schedule and retirement
+semantics. Three tests stop inspecting or seeding private dictionaries and
+instead observe denial and repeat-claim behavior. The cc58 completion snapshot
+is unchanged; it predates this clock requirement closure.
+
+Image capability composition at `bc8c81c7b395` passed 733 cases across nineteen
+files, following 717 baseline cases, and independent source review. It is
+integrated at `a32b042861bb`. Omitted and explicitly invalid class reports stay
+distinct. Advisory evidence cannot authorize a live claim, and the initial,
+pre-rename and post-rename checks retain their current authority and timing.
+The complete announcement caller migration remains open.
+
+Three publication fixtures now bind real contained producers through the
+existing broker and sealed request writers. Source `ce0354a825e6` retains all
+253 assertion ASTs in the file, leaves other function ASTs unchanged, and passes
+all 36 cases. It is integrated at `289b97371545`. Fifteen fabricated binding
+callers remain at that source pin. These scoped results do not establish a
+final integrated full-suite pass or completion of the original brief.

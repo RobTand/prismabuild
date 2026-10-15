@@ -5899,6 +5899,14 @@ scratch fits require measured capacity for every demanded kind;
 preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
+Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
+The pass view owns both 20-second monotonic grace questions and the separate
+Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
+without restarting grace. Empty adaptive discovery, absent ready generations
+and a successful claim retire history through its owner. CPU-host age never
+becomes an expiry condition. Clock reads retain their original conditional
+positions and the Unix clock resolves the current pool clock on each read.
+
 Both timer rules consult capacity remaining after earlier CPU-host or scratch
 yields in the pass. They do not charge capacity for their own yields.
 This avoids a second timer wait after another rule has already left a peer
