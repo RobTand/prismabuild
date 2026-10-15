@@ -113,6 +113,8 @@ def private_broker(root):
 
 
 def prepare(root, repository):
+    resource_broker._atomic(root / "maintenance.json", {
+        "schema": resource_broker.MAINTENANCE_SCHEMA, "draining": False}, mode=0o644)
     checkout = root / "payload-checkout"
     checkout.mkdir()
     code = checkout / "payload.py"

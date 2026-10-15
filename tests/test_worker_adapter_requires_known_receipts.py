@@ -48,7 +48,6 @@ def test_public_adapter_requires_a_known_pair(tmp_path, loaded, published, verdi
         if RECEIPTS[kind] is not None:
             (tmp_path / name).write_text(RECEIPTS[kind])
     gate = tmp_path / "maintenance.json"
-    gate.write_text(json.dumps({"draining": False}))
     script = tmp_path / "exercise.py"
     script.write_text(f'''
 import sys
