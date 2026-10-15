@@ -40,10 +40,10 @@ import test_a_measurement_admits_its_own_spool_exports as fx  # noqa: E402
 HOUSEKEEPING = [(1.10, .11), (0.70, .11), (1.05, .12), (0.75, .03), (0.90, .11)]
 
 
-def _sample(monkeypatch, busy: float, psi: float) -> None:
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+def _sample(busy: float, psi: float):
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 20, "interval_s": 1e-3,
-        "busy_cpus": busy, "psi_some": psi})
+        "busy_cpus": busy, "psi_some": psi}
 
 
 def _measurement(tmp_path: Path):
@@ -75,8 +75,8 @@ def test_a_measurement_is_admitted_beside_housekeeping(tmp_path, monkeypatch) ->
     queue, key = _measurement(tmp_path)
     claim = None
     for busy, psi in HOUSEKEEPING:
-        _sample(monkeypatch, busy, psi)
-        claim = fx._claim(queue)
+        cpu_sampler = _sample(busy, psi)
+        claim = fx._claim(queue, cpu_sampler=cpu_sampler)
         if claim is not None:
             break
         decision = fx._denial(queue, key)["evidence"]["decision"]
