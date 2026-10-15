@@ -151,8 +151,8 @@ def _seal(
     # seals, which is why the plain row's golden does not move with it.
     queue.announce(
         host="sparky",
-        tags=["sparky", "gb10", pbrun.pb.PROGRESS_TAG,
-              pbrun.pb.PROGRESS_HELPER_TAG],
+        tags=["sparky", "gb10", pbrun.contracts.PROGRESS_TAG,
+              pbrun.contracts.PROGRESS_HELPER_TAG],
         has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         timeout_ceiling_s=7200,
