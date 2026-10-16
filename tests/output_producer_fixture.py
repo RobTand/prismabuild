@@ -115,7 +115,7 @@ class Broker:
         self.scopes.append(scope)
         control = scope.control_record()
         assert control["socket_path"] == str(self.socket)
-        live = pool.read_queue_record(queue.item_path(pool.CLAIMED, claimed["action_key"]))
+        live = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, claimed["action_key"]))
         assert live is not None
         assert all(live["resource_scope"].get(key) == value
                    for key, value in control.items())
@@ -289,7 +289,7 @@ class Outputs:
                              "manifest_sha256": po.output_manifest_sha256(descs),
                              "manifest_bytes": len(payload), "range_start_bytes": 0,
                              "range_end_bytes": len(payload)}, produced_output_batch=ref)
-        row = pool.read_queue_record(q.item_path(pool.READY, mover))
+        row = pool.read_queue_record(q.records.item_path(pool.record_store.READY, mover))
         assert isinstance(row, dict)
         funded = q.fund_output_batch(
             tier_id=tier, owner_key=owner, mover_key=mover, instance=inst,

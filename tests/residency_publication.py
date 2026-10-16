@@ -71,7 +71,7 @@ def vouch_landed(
     }
     if epoch is not None:
         fragment["epoch"] = epoch
-    residency_map.write_fragment(queue.residency_fragment_root(), fragment)
+    residency_map.write_fragment(queue.records.residency_fragment_root(), fragment)
     receipt: dict[str, object] = {
         "consumer_action_key": consumer_action_key,
         "tier_id": tier_id, "stage_root": str(root),

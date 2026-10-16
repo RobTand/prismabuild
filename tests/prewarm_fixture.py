@@ -67,7 +67,7 @@ class Fleet:
         self.queue = AdmittedQueueFixture(
             pool.PoolQueue(root / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
             default_demand={"cpu": 1})
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.cas_root = root / "cas"
         self.cas = pb.PrismaBuildCAS(self.cas_root)
         self.warmed: list[str] = []
@@ -178,7 +178,7 @@ class Fleet:
         """Claim the selected action through real simulated host admission."""
         from unittest import mock
 
-        source = self.queue.item_path(pool.READY, action_key)
+        source = self.queue.records.item_path(pool.record_store.READY, action_key)
         candidate = json.loads(source.read_text())
         simulated_host = host if host is not None else pool.socket.gethostname()
         with mock.patch.object(pool.socket, "gethostname", lambda: simulated_host):
@@ -186,11 +186,11 @@ class Fleet:
                 owner="prewarm-fixture", ready=[candidate],
                 tags=[contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG])
         assert item is not None and item["action_key"] == action_key
-        target = self.queue.item_path(pool.CLAIMED, action_key)
+        target = self.queue.records.item_path(pool.record_store.CLAIMED, action_key)
         if age_s:
             item["claimed_unix"] = float(item["claimed_unix"]) - age_s
             pool._write_json_atomic(target, item)
-            lease_path = self.queue.lease_path(action_key)
+            lease_path = self.queue.records.lease_path(action_key)
             lease = json.loads(lease_path.read_text())
             lease["claimed_unix"] = item["claimed_unix"]
             pool._write_json_atomic(lease_path, lease)
@@ -212,7 +212,7 @@ class Fleet:
         self.queue.write_lease(
             action_key, owner="prewarm-fixture", claim_snapshot=claimed,
             progress_observation=observation)
-        return self.queue.lease_path(action_key)
+        return self.queue.records.lease_path(action_key)
 
     def offer(self, host: str, *, addresses: list[str] | None = None,
               announced_unix: float | None = None) -> Path:
@@ -224,7 +224,7 @@ class Fleet:
         that announced no ``addresses`` leaves behind.
         """
 
-        directory = self.queue.root / pool.WORKERS
+        directory = self.queue.root / pool.record_store.WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         record: dict = {
             "schema": pool.POOL_OFFER_SCHEMA_V1, "host": host, "tags": [host],
