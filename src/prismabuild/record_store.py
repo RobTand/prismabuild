@@ -13,11 +13,15 @@ import errno
 import json
 import math
 import os
+import socket
 import uuid
 from pathlib import Path
 
 from . import digest_primitives, immutable_files
 from typing import Literal
+
+
+MOVE_PRICING_LOG_TAG = b"pricing.v2"
 
 
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
@@ -1208,6 +1212,57 @@ class RecordStore:
     def withdrawal_capture_path(self, key: str) -> Path:
         return self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.withdrawal-source"
 
+    def movement_pricing_records(self) -> tuple[dict[str, dict[str, object]], int | None]:
+        """What the pricing log says about each receipt name, and its size.
+
+        One read of one file.  The last line about a name wins, because a
+        receipt re-filed under the same key replaces the file and appends a
+        new line.  A line whose body does not parse -- a write cut off by a
+        crash, or bytes an operator mangled -- makes its name *unknown*
+        rather than leaving an older line standing, so the reader reads that
+        receipt itself.  A missing log reads as empty; an unreadable one too,
+        with ``None`` as its size so nothing is appended to it.
+        """
+
+        path = self.move_pricing_log_path()
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {}, 0
+        except OSError:
+            return {}, None
+        kept: dict[str, dict[str, object]] = {}
+        lines = raw.split(b"\n")
+        # The last piece has no newline after it: empty when the log ends
+        # cleanly, a line still being written (or cut off) otherwise.
+        partial = lines.pop()
+        for line in lines:
+            name = pricing_line_name(line)
+            if name is None:
+                continue
+            try:
+                record = json.loads(line.split(b"\t", 2)[2])
+            except (IndexError, ValueError):
+                record = None
+            if isinstance(record, dict):
+                kept[name] = record
+            else:
+                kept.pop(name, None)
+        name = pricing_line_name(partial)
+        if name is not None:
+            kept.pop(name, None)
+        return kept, len(raw)
+
+    @staticmethod
+    def event_line(record: Mapping[str, object]) -> str:
+        return json.dumps(dict(record), default=str)
+
+    def append_stall_event(self, key: str, line: str) -> None:
+        directory = self.consumer_events_dir(key)
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(directory / f"{socket.gethostname()}-stall-watch.jsonl", "a") as stream:
+            stream.write(line + "\n")
+
     def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
         _write_json(path, payload)
 
@@ -1324,3 +1379,32 @@ def value_or_raise[T](result: ReadResult[T]) -> T | None:
             raise result.error
         raise PoolContractError(result.reason)
     return None if isinstance(result, Absent) else result.value
+
+
+def pricing_line_name(line: bytes) -> str | None:
+    """The receipt name a log line is about, even when its body is torn."""
+
+    parts = line.split(b"\t", 2)
+    if len(parts) < 2 or parts[0] != MOVE_PRICING_LOG_TAG:
+        return None
+    try:
+        return parts[1].decode()
+    except UnicodeDecodeError:
+        return None
+
+
+def pricing_unknown_line(name: str) -> bytes:
+    """A line that makes ``name`` unknown to the log until a later line.
+
+    Appended before a receipt is re-filed under its own name, so a log that
+    loses the new receipt's line -- a crash between the rename and the
+    append, a failed append -- reads that name from the receipt rather than
+    from its older line.
+    """
+
+    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), b"")) + b"\n"
+
+
+def pricing_line(name: str, record: Mapping[str, object]) -> bytes:
+    body = digest_primitives._canonical_bytes(record)
+    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"

@@ -728,7 +728,6 @@ MOVERS_PRICING_LOCK = "receipts.lock"
 #: The first field of every log line.  A line with any other tag is not
 #: read, so changing :data:`MOVE_PRICING_FIELDS` means changing this tag:
 #: every receipt is then read once more and logged in the new shape.
-MOVE_PRICING_LOG_TAG = b"pricing.v2"
 #: What a pricing read keeps of each receipt.  Every field the three
 #: pricing readers of :meth:`PoolQueue.move_records` consult, and nothing
 #: else: ``storage_tiers.usable_mover_receipts``,
@@ -807,32 +806,8 @@ def move_pricing_projection(record: Mapping[str, object]) -> dict[str, object]:
 
 
 def _move_pricing_line(name: str, record: Mapping[str, object]) -> bytes:
-    body = pb._canonical_bytes(move_pricing_projection(record))
-    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"
+    return record_store.pricing_line(name, move_pricing_projection(record))
 
-
-def _move_pricing_unknown_line(name: str) -> bytes:
-    """A line that makes ``name`` unknown to the log until a later line.
-
-    Appended before a receipt is re-filed under its own name, so a log that
-    loses the new receipt's line -- a crash between the rename and the
-    append, a failed append -- reads that name from the receipt rather than
-    from its older line.
-    """
-
-    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), b"")) + b"\n"
-
-
-def _move_pricing_line_name(line: bytes) -> str | None:
-    """The receipt name a log line is about, even when its body is torn."""
-
-    parts = line.split(b"\t", 2)
-    if len(parts) < 2 or parts[0] != MOVE_PRICING_LOG_TAG:
-        return None
-    try:
-        return parts[1].decode()
-    except UnicodeDecodeError:
-        return None
 
 #: Who holds a stage's ownership lock, as the holder itself says (#1021).  A
 #: lock file must stay empty (``posix_lock``: only a retirement writes one),
@@ -4600,7 +4575,10 @@ class ResourceLedger:
                     # from another holder's idle reservation is that holder's.
                     count = int(allowance.get("cpu", 0))
                     own = set(
-                        self.cpu_ids(immutable_files.match_optional(destination, "cpu-*"), cpu_tiers),
+                        self.cpu_ids(
+                            immutable_files.match_optional(destination, "cpu-*"),
+                            cpu_tiers,
+                        ),
                     )
                     ordered = [cpu for cpu in allocation["preferred"] + allocation["fallback"]
                                if cpu in own]
@@ -8697,47 +8675,6 @@ class PoolQueue:
         return sorted(out)
 
 
-    def _read_move_pricing_log(self) -> tuple[dict[str, dict[str, object]], int | None]:
-        """What the pricing log says about each receipt name, and its size.
-
-        One read of one file.  The last line about a name wins, because a
-        receipt re-filed under the same key replaces the file and appends a
-        new line.  A line whose body does not parse -- a write cut off by a
-        crash, or bytes an operator mangled -- makes its name *unknown*
-        rather than leaving an older line standing, so the reader reads that
-        receipt itself.  A missing log reads as empty; an unreadable one too,
-        with ``None`` as its size so nothing is appended to it.
-        """
-
-        path = self.records.move_pricing_log_path()
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            return {}, 0
-        except OSError:
-            return {}, None
-        kept: dict[str, dict[str, object]] = {}
-        lines = raw.split(b"\n")
-        # The last piece has no newline after it: empty when the log ends
-        # cleanly, a line still being written (or cut off) otherwise.
-        partial = lines.pop()
-        for line in lines:
-            name = _move_pricing_line_name(line)
-            if name is None:
-                continue
-            try:
-                record = json.loads(line.split(b"\t", 2)[2])
-            except (IndexError, ValueError):
-                record = None
-            if isinstance(record, dict):
-                kept[name] = record
-            else:
-                kept.pop(name, None)
-        name = _move_pricing_line_name(partial)
-        if name is not None:
-            kept.pop(name, None)
-        return kept, len(raw)
-
     def _append_move_pricing(self, lines: Sequence[tuple[str, bytes]], *,
                              since: int | None, blocking: bool) -> bool:
         """Append pricing lines under the log's lock; ``False`` if nothing was.
@@ -8763,7 +8700,7 @@ class PoolQueue:
                 if since is not None:
                     start = since if since <= size else 0
                     tail = os.pread(descriptor, size - start, start)
-                    skip = {name for name in map(_move_pricing_line_name,
+                    skip = {name for name in map(record_store.pricing_line_name,
                                                  tail.split(b"\n"))
                             if name is not None}
                 data = b"".join(line for name, line in lines if name not in skip)
@@ -8823,7 +8760,7 @@ class PoolQueue:
             paths = sorted(directory.glob("*.json"), key=lambda path: path.name)
         except OSError:
             return out
-        logged, since = self._read_move_pricing_log()
+        logged, since = self.records.movement_pricing_records()
         missing: list[tuple[str, bytes]] = []
         for path in paths:
             name = path.name
@@ -8913,7 +8850,7 @@ class PoolQueue:
             existing = self.records.move_path(action_key)
             if loggable and os.path.lexists(existing):
                 self._append_move_pricing(
-                    [(existing.name, _move_pricing_unknown_line(existing.name))],
+                    [(existing.name, record_store.pricing_unknown_line(existing.name))],
                     since=None, blocking=True)
         except (OSError, PoolContractError):
             pass
@@ -9850,14 +9787,10 @@ class PoolQueue:
         it.  Best-effort: a write that fails is said on stderr.
         """
 
-        line = json.dumps(dict(record), default=str)
+        line = self.records.event_line(record)
         print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
         try:
-            directory = self.records.consumer_events_dir(action_key)
-            directory.mkdir(parents=True, exist_ok=True)
-            with open(directory / f"{socket.gethostname()}-stall-watch.jsonl",
-                      "a") as stream:
-                stream.write(line + "\n")
+            self.records.append_stall_event(action_key, line)
         except (OSError, PoolContractError) as exc:
             print(f"PrismaBuild: stall-watch event unwritten: {exc!r}",
                   file=sys.stderr, flush=True)
