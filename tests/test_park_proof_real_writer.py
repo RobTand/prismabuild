@@ -18,8 +18,7 @@ import supervise
 import upgrade_client
 from prismabuild import park_proof
 
-from client_proof_bridge_fixture import fixed_source_artifact
-from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
+from test_client_proof_prior_trust import tmp_path
 from test_installed_park_proof_loader import installed_leaf
 from test_prewarm_rollout import load, role
 
@@ -71,9 +70,7 @@ def parked_role(tmp_path):
     install.mkdir(mode=0o755)
     install.chmod(0o755)
     proof = install / "park_proof.py"
-    proof_bytes = fixed_source_artifact(
-        "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
-    assert proof_bytes == (ROOT / "src/prismabuild/park_proof.py").read_bytes()
+    proof_bytes = (ROOT / "src/prismabuild/park_proof.py").read_bytes()
     proof.write_bytes(proof_bytes)
     proof.chmod(0o644)
     info = proof.lstat()
@@ -207,8 +204,7 @@ def test_work_storage_roles_require_actual_park_or_exit_for_both_proofs(
         parked_role, monkeypatch, script, required):
     with parked_role(script) as role:
         pid, start, _ = role.census[0]
-        monkeypatch.setattr(supervise, "_proven_roots", lambda: [role.runtime])
-        role.client.procs = upgrade_client.proc_census
+        role.client.procs = None
         census, error = fleet_membership.live_loop_census()
         assert error is None
         assert ((pid, start) in census) is required

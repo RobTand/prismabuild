@@ -406,22 +406,14 @@ def claimed_census(
 def live_loop_census(
     live: list[tuple[int, str]] | None = None,
 ) -> tuple[list[tuple[int, str]], str | None]:
-    """((pid, starttime) loops, unknown reason). Failure is unknown, not []."""
+    """Selected work/storage processes, or an unknown census reason."""
     if live is not None:
         return list(live), None
     try:
-        import supervise
-
-        pids = list(supervise._live_loops())
-    except (ImportError, OSError) as exc:
-        return [], f"loop census unavailable: {exc}"
-    census: list[tuple[int, str]] = []
-    for pid in pids:
-        identity = park_proof.process_identity(pid, park_proof.process_starttime(pid))
-        if isinstance(identity, park_proof.ProofUnknown):
-            return [], f"loop pid {pid} not observable: {identity.reason}"
-        census.append((identity.pid, identity.starttime))
-    return census, None
+        return park_proof.select_processes(
+            park_proof.proc_census(), park_proof.MEMBER_LOOPS), None
+    except (OSError, ValueError) as exc:
+        return [], f"work/storage census unavailable: {exc}"
 
 
 def terminal_of(

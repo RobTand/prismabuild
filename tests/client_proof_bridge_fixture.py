@@ -234,9 +234,24 @@ try:
         program['trusted'](driver)
         status = json.loads(Path(config['host_proof_status']).read_text())
         def selected_census():
-            names = {'worker_loop.py', 'worker.py', 'prewarm_loop.py'}
-            return [[pid, start] for pid, start, argv in program['proc_census']()
-                    if any(Path(arg).name in names for arg in argv)]
+            names = {'worker_loop.py', 'worker.py', 'prewarm_loop.py',
+                     'tier_loop.py', 'local_tier_loop.py'}
+            selected = []
+            for directory in sorted(Path('/proc').iterdir()):
+                if not directory.name.isdecimal():
+                    continue
+                try:
+                    before = (directory / 'stat').read_text().rpartition(')')[2].split()[19]
+                    argv = (directory / 'cmdline').read_bytes().split(b'\\0')
+                    after = (directory / 'stat').read_text().rpartition(')')[2].split()[19]
+                except FileNotFoundError:
+                    if not directory.exists():
+                        continue
+                    raise
+                assert before == after
+                if any(Path(os.fsdecode(arg)).name in names for arg in argv if arg):
+                    selected.append([int(directory.name), before])
+            return selected
         observations['census_before'] = selected_census()
         result = updater.drain_evidence(status)
         observations['census_after'] = selected_census()

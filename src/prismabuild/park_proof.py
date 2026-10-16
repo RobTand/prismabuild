@@ -3,12 +3,15 @@ import json
 import math
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 _DRAIN_OWNER_LIMIT = 200
 _DRAIN_REASON_LIMIT = 1000
-HOST_QUIESCENT = frozenset({"worker_loop.py", "worker.py", "prewarm_loop.py"})
-MEMBER_LOOPS = frozenset({"worker_loop.py"})
+HOST_QUIESCENT = frozenset({
+    "worker_loop.py", "worker.py", "prewarm_loop.py",
+    "tier_loop.py", "local_tier_loop.py",
+})
+MEMBER_LOOPS = HOST_QUIESCENT
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,65 @@ class ParkAcknowledgements:
     @property
     def complete(self) -> bool:
         return not self.unparked and not self.unknown
+
+
+def proc_census(root='/proc'):
+    """Every live process as (pid, starttime, argv), from one snapshot.
+
+    Taken fresh each time it is asked. A census accumulated across ticks counts
+    markers for processes that have since exited, and a box does shed idle
+    loops while it drains.
+
+    The start tick is nonnegative ticks since boot, and 0 is one of its valid
+    values: PID 1 reports 0 on some kernels. Only a malformed or negative tick
+    is refused.
+
+    Only a process directory proved gone may be omitted after a failed read.
+    Inaccessible or malformed evidence raises: an incomplete census must never
+    become an empty list that certifies a stopped box.
+    """
+    census = []
+    entries = sorted(Path(root).iterdir())
+
+    def starttime(line, pid):
+        # comm may itself contain spaces and parentheses.
+        prefix, separator, rest = line.rpartition(')')
+        fields = rest.split()
+        if (not separator or not prefix.startswith(f'{pid} (')
+                or len(fields) <= 19 or not fields[19].isdigit()
+                or int(fields[19]) < 0):
+            raise ValueError(f'invalid process identity for pid {pid}')
+        return fields[19]
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat_line = (entry / 'stat').read_text()
+            before = starttime(stat_line, entry.name)
+            cmdline = (entry / 'cmdline').read_bytes()
+            after = starttime((entry / 'stat').read_text(), entry.name)
+        except (OSError, ValueError):
+            try:
+                entry.stat()
+            except FileNotFoundError:
+                continue
+            raise
+        if before != after:
+            raise ValueError(f'process identity changed for pid {entry.name}')
+        argv = [part for part in cmdline.decode('utf-8', 'replace').split('\0') if part]
+        census.append((int(entry.name), before, argv))
+    return census
+
+
+def select_processes(census, names):
+    """Select the explicit profile by argv basename, including checkout one-shots.
+
+    Matching a generation prefix would miss an operator's unversioned worker.
+    Conservative basename false positives keep the host waiting for proof.
+    """
+    return [(pid, starttime) for pid, starttime, argv in census
+            if any(PurePosixPath(part).name in names for part in argv)]
 
 
 def drain_identity(gate: object) -> DrainIdentity | ProofUnknown:

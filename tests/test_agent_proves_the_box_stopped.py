@@ -71,7 +71,15 @@ CENSUS = [
 def test_a_one_shot_run_by_hand_is_still_a_process_that_can_claim():
     """It hardcodes the live queue, so how it was invoked does not soften it."""
 
-    assert upgrade.serving(CENSUS, park_proof.HOST_QUIESCENT) == [(101, '900'), (102, '901'), (103, '902')]
+    assert park_proof.select_processes(CENSUS, park_proof.HOST_QUIESCENT) == [(101, '900'), (102, '901'), (103, '902')]
+
+
+def test_both_proof_profiles_cover_the_supervised_work_and_storage_roles():
+    from supervise import LOOP_SCRIPT, ROLE_SCRIPTS
+
+    expected = {LOOP_SCRIPT, "worker.py", *ROLE_SCRIPTS.values()} - {"pbmetrics.py"}
+    assert park_proof.HOST_QUIESCENT == expected
+    assert park_proof.MEMBER_LOOPS == expected
 
 
 def test_the_key_comes_from_the_gate_the_broker_actually_wrote(tmp_path):
@@ -118,7 +126,7 @@ def test_a_box_that_is_not_draining_is_not_asked(tmp_path):
 def test_the_census_reads_this_process(tmp_path):
     """The real reader, against the one process the test can vouch for."""
 
-    census = {pid: (start, argv) for pid, start, argv in upgrade.proc_census()}
+    census = {pid: (start, argv) for pid, start, argv in park_proof.proc_census()}
     start, argv = census[os.getpid()]
     assert start == starttime_of_self()
     assert argv and Path(argv[0]).name
@@ -130,7 +138,7 @@ def test_a_zero_start_tick_is_a_valid_process_identity(tmp_path):
     root, process = private_proc(tmp_path)
     (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + '0 0')
 
-    assert upgrade.proc_census(root) == [
+    assert park_proof.proc_census(root) == [
         (101, '0', ['python3', '/checkout/worker_loop.py'])]
 
 
@@ -148,7 +156,7 @@ def test_a_replacement_after_tick_zero_is_still_a_reused_pid(tmp_path, monkeypat
     monkeypatch.setattr(Path, 'read_bytes', replaced)
 
     with pytest.raises(ValueError, match='identity changed for pid 101'):
-        upgrade.proc_census(root)
+        park_proof.proc_census(root)
 
 
 @pytest.mark.parametrize('tick', ['-5', 'x', '0.0', '900x'])
@@ -157,7 +165,7 @@ def test_a_malformed_or_negative_start_tick_is_refused(tmp_path, tick):
     (process / 'stat').write_text('101 (worker (loop)) S ' + '0 ' * 18 + f'{tick} 0')
 
     with pytest.raises(ValueError, match='invalid process identity for pid 101'):
-        upgrade.proc_census(root)
+        park_proof.proc_census(root)
 
 
 def private_proc(tmp_path):
@@ -180,4 +188,4 @@ def test_process_that_disappears_during_census_is_not_a_live_unknown(tmp_path, m
             raise FileNotFoundError('exited')
         return original(path)
     monkeypatch.setattr(Path, 'read_bytes', exited)
-    assert upgrade.proc_census(root) == []
+    assert park_proof.proc_census(root) == []

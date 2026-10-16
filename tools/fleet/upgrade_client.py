@@ -393,15 +393,18 @@ def load_installed_park_proof(install: Path) -> InstalledParkProof:
     try:
         exec(compile(snapshot.data, str(path), 'exec'), module.__dict__)
         for entrypoint in ('drain_identity', 'process_identity', 'acknowledgements',
-                           'park_marker_filename', 'parked_markers', 'read_gate'):
+                           'park_marker_filename', 'parked_markers', 'read_gate',
+                           'proc_census', 'select_processes'):
             function = getattr(module, entrypoint, None)
             if not callable(function) or getattr(function, '__globals__', None) is not module.__dict__:
                 raise ValueError(f'installed park proof lacks its strict {entrypoint}')
         if (not isinstance(getattr(module, 'ProofUnknown', None), type)
                 or module.ProofUnknown.__module__ != name
-                or not isinstance(getattr(module, 'HOST_QUIESCENT', None), frozenset)
-                or not module.HOST_QUIESCENT
-                or any(not isinstance(role, str) or not role for role in module.HOST_QUIESCENT)):
+                or any(not isinstance(getattr(module, profile, None), frozenset)
+                       or not getattr(module, profile)
+                       or any(not isinstance(role, str) or not role
+                              for role in getattr(module, profile))
+                       for profile in ('HOST_QUIESCENT', 'MEMBER_LOOPS'))):
             raise ValueError('installed park proof lacks its strict domain types/profile')
     except Exception as exc:
         raise ValueError(f'installed park proof is unavailable: {exc}') from exc
@@ -537,65 +540,6 @@ def sanitized(value, safe):
     cannot collapse onto one name.
     """
     return ''.join(c if c in safe else '_' for c in str(value))
-
-
-def proc_census(root='/proc'):
-    """Every live process as (pid, starttime, argv), from one snapshot.
-
-    Taken fresh each time it is asked. A census accumulated across ticks counts
-    markers for processes that have since exited, and a box does shed idle
-    loops while it drains.
-
-    The start tick is nonnegative ticks since boot, and 0 is one of its valid
-    values: PID 1 reports 0 on some kernels. Only a malformed or negative tick
-    is refused.
-
-    Only a process directory proved gone may be omitted after a failed read.
-    Inaccessible or malformed evidence raises: an incomplete census must never
-    become an empty list that certifies a stopped box.
-    """
-    census = []
-    entries = sorted(Path(root).iterdir())
-
-    def starttime(line, pid):
-        # comm may itself contain spaces and parentheses.
-        prefix, separator, rest = line.rpartition(')')
-        fields = rest.split()
-        if (not separator or not prefix.startswith(f'{pid} (')
-                or len(fields) <= 19 or not fields[19].isdigit()
-                or int(fields[19]) < 0):
-            raise ValueError(f'invalid process identity for pid {pid}')
-        return fields[19]
-
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            stat_line = (entry / 'stat').read_text()
-            before = starttime(stat_line, entry.name)
-            cmdline = (entry / 'cmdline').read_bytes()
-            after = starttime((entry / 'stat').read_text(), entry.name)
-        except (OSError, ValueError):
-            try:
-                entry.stat()
-            except FileNotFoundError:
-                continue
-            raise
-        if before != after:
-            raise ValueError(f'process identity changed for pid {entry.name}')
-        argv = [part for part in cmdline.decode('utf-8', 'replace').split('\0') if part]
-        census.append((int(entry.name), before, argv))
-    return census
-
-
-def serving(census, names):
-    """Select the explicit profile by argv basename, including checkout one-shots.
-
-    Matching a generation prefix would miss an operator's unversioned worker.
-    Conservative basename false positives keep the host waiting for proof.
-    """
-    return [(pid, starttime) for pid, starttime, argv in census
-            if any(PurePosixPath(part).name in names for part in argv)]
 
 
 def rollout_root(config):
@@ -959,7 +903,7 @@ def attestation_body(host, client_sha):
 
 class Upgrader:
     def __init__(self, config, *, rpc=request, command=subprocess.run, sleep=time.sleep,
-                 reader=desired, procs=proc_census, poster=None,
+                 reader=desired, procs=None, poster=None,
                  rollout_reader=read_rollout):
         self.config = config
         self.reader = reader
@@ -1123,11 +1067,11 @@ class Upgrader:
         proof = load_installed_park_proof(self.install)
         api = proof.module
         before = api.read_gate(self.gate)
-        census = self.procs()
+        census = self.procs() if self.procs is not None else api.proc_census()
         markers = {path.name for path in api.parked_markers(self.parked_root, before)}
         after = api.read_gate(self.gate)
         acknowledgements = api.acknowledgements(
-            processes=serving(census, api.HOST_QUIESCENT), markers=markers,
+            processes=api.select_processes(census, api.HOST_QUIESCENT), markers=markers,
             gate_before=before, gate_after=after)
         return HostParkObservation(proof, before, census, markers, acknowledgements)
 
@@ -1220,11 +1164,15 @@ class Upgrader:
         if isinstance(drain, api.ProofUnknown):
             return {'rotated': False, 'rotation_errors': [drain.reason]}
         expected_root = Path(self.config['generation_store']) / generation
-        roles = {'worker_loop.py': 'worker', 'worker.py': 'one-shot-worker',
-                 'supervise.py': 'supervisor', 'prewarm_loop.py': 'prewarmer'}
+        role_labels = {
+            'worker_loop.py': 'worker', 'worker.py': 'one-shot-worker',
+            'supervise.py': 'supervisor', 'prewarm_loop.py': 'prewarmer',
+            'tier_loop.py': 'tier', 'local_tier_loop.py': 'localtier',
+        }
+        roles = api.HOST_QUIESCENT | {'supervise.py'}
         observed = []
         errors = list(observation.acknowledgements.unknown)
-        counts = {role: 0 for role in roles.values()}
+        counts = {'worker': 0, 'supervisor': 0}
         for pid, starttime, argv in observation.census:
             named = [(PurePosixPath(part).name, part) for part in argv
                      if PurePosixPath(part).name in roles]
@@ -1239,8 +1187,9 @@ class Upgrader:
                 continue
             basename, part = named[0]
             path = Path(part)
-            role = roles[basename]
-            counts[role] += 1
+            role = role_labels.get(basename, basename)
+            if role in counts:
+                counts[role] += 1
             try:
                 relative = path.relative_to(expected_root)
             except ValueError:
@@ -1250,7 +1199,7 @@ class Upgrader:
                 errors.append(f'pid {pid} {role} has an untrusted generation path')
                 continue
             parked = api.park_marker_filename(process, drain) in observation.markers
-            if role in {'worker', 'one-shot-worker', 'prewarmer'} and pid in observation.acknowledgements.unparked:
+            if basename in api.HOST_QUIESCENT and pid in observation.acknowledgements.unparked:
                 errors.append(f'pid {pid} {role} is not parked on this drain')
             observed.append({'pid': pid, 'starttime': starttime, 'role': role,
                              'path': part, 'parked': parked})

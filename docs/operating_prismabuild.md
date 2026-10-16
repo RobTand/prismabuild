@@ -3352,13 +3352,23 @@ roster both participate; fresh offers resolve their host aliases. An unavailable
 ambiguous or undeclared host prevents arming.
 
 An armed epoch closes local durable admission gates, lets existing actions finish,
-and waits for all worker and prewarm processes to park. Every host must publish
+and waits for worker loops, one-shot workers, prewarm, tier and localtier to park
+or exit. Metrics may continue. Every host must publish
 its epoch-bound `drained` record before `repo` moves. Every host must then prove
-its privileged clients are healthy and its supervisor, workers and prewarmer use
-the chosen immutable generation before the coordinator writes `resume`. Each
+its privileged clients are healthy and its supervisor, workers and any observed
+storage roles use the chosen immutable generation before the coordinator writes `resume`. Each
 host rechecks local proof before release. Inspect `pbstatus`'s `rollout` section,
 local updater status and `rollout/epochs/<epoch>/` for the pending phase and
 missing hosts. A terminal record appears only after every host acknowledges resume.
+
+The deployed `a17477b2b206` updater checks only workers and prewarm and does not
+load the proof leaf. The first adoption of the five-role proof must therefore
+stop tier and localtier separately and retain their process evidence before
+using that old drain check. Keep those roles stopped until the new installed
+proof is active. Its first bridge tick may install the new updater before the
+proof leaf; proof remains unavailable until the next tick supplies the leaf.
+Record both installed identities before relying on the five-role check. This
+source change does not authorize or perform that rollout.
 
 A wait expiry returns 75 and retains the epoch and all unreleased holds. Continue
 that same epoch, without editing or deleting its evidence:

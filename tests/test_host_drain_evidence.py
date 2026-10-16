@@ -43,7 +43,7 @@ def test_the_report_names_what_is_still_admitting(tmp_path):
     gate.write_text(json.dumps({'draining': True, 'changed_unix': 12.5}))
     client = agent(tmp_path, gate, census=CENSUS)
     client.ensure_parked_root()
-    for pid, start in upgrade.serving(CENSUS, park_proof.HOST_QUIESCENT)[1:]:
+    for pid, start in park_proof.select_processes(CENSUS, park_proof.HOST_QUIESCENT)[1:]:
         (client.parked_root / f"{pid}-{start}-12.5").touch()
 
     evidence = client.drain_evidence({'draining': True, 'active_scopes': 0})
@@ -78,7 +78,7 @@ def test_incomplete_census_cannot_certify_a_drain(tmp_path, monkeypatch, failure
     gate = tmp_path / 'maintenance.json'
     gate.write_text(json.dumps({'draining': True, 'changed_unix': 12.5}))
     client = agent(tmp_path, gate)
-    client.procs = lambda: upgrade.proc_census(root)
+    client.procs = lambda: park_proof.proc_census(root)
     client.ensure_parked_root()
     (client.parked_root / "101-900-12.5").touch()
     evidence = client.drain_evidence({'draining': True, 'active_scopes': 0})

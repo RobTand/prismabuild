@@ -4617,12 +4617,23 @@ exponent keys never acknowledge a drain. Process proof requires a positive
 integer PID and ASCII decimal start ticks, including zero. Unknown or changed
 required facts never certify an empty census. Receipt availability is not a
 physical proof input. Unknown receipt authorization remains a separate change.
-The named current profiles are `HOST_QUIESCENT` for `worker_loop.py`,
-`worker.py`, and `prewarm_loop.py`, and `MEMBER_LOOPS` for ownership-proved
-`worker_loop.py` processes. Membership retains its terminal, handoff, reader,
-supervisor and two-round census requirements. Root host acceptance still uses
-the installed updater reader until its separately qualified reader bridge and
-consumer migration; strict package proof does not claim that migration.
+The named profiles `HOST_QUIESCENT` and `MEMBER_LOOPS` share the work/storage
+set Rob selected on 2026-10-16: `worker_loop.py`, `worker.py`,
+`prewarm_loop.py`, `tier_loop.py` and `local_tier_loop.py`. Metrics may continue;
+supervisor and broker enforce the drain. The stdlib owner also supplies the
+native process census and basename selector. Both proof readers include
+operator-run one-shot workers and refuse incomplete process observations.
+Membership retains its terminal, handoff, reader, supervisor and two-round
+census requirements.
+
+Each privileged proof observation captures and loads its root-trusted installed
+`park_proof.py`, including the census and selector entrypoints. Construction,
+ordinary owned-zero-scope repair and recovery do not require that leaf. An older
+installed leaf without those entrypoints cannot establish drain or rotation
+proof; the rollout keeps waiting. Rotation derives its observed work/storage
+roles from the same loaded profile and requires their chosen generation and
+current marker. It still requires one supervisor and at least one worker loop;
+optional storage roles need not exist.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
 Worker, tier, local tier and prewarm admission use typed receipt observations.

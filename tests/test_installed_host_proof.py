@@ -115,6 +115,15 @@ def _post_real_marker(role, closed):
     return marker, [[pid, start]]
 
 
+def _retain_current_proof(publication, kind):
+    leaf, _ = _retain_proof(publication, kind)
+    data = (ROOT / "src/prismabuild/park_proof.py").read_bytes()
+    leaf.write_bytes(data)
+    assert leaf.read_bytes() == data
+    assert _file_facts(leaf) == PRIOR_FILES[kind]
+    return leaf, data
+
+
 @pytest.mark.parametrize("leaf_kind", [
     "missing", "worker-owned", "worker-writable", "legacy-invalid", "trusted",
 ])
@@ -122,7 +131,7 @@ def test_installed_rule_owner_is_required_with_a_retained_real_marker(
         host_publication, parked_role, leaf_kind):
     _, install, _, _, _, _ = host_publication
     kind = leaf_kind if leaf_kind in PRIOR_FILES else "trusted"
-    leaf, strict_bytes = _retain_proof(host_publication, kind)
+    leaf, strict_bytes = _retain_current_proof(host_publication, kind)
     with parked_role() as role:
         authority, closed = _close_real_gate(host_publication)
         marker, selected = _post_real_marker(role, closed)
@@ -186,9 +195,10 @@ def test_fresh_consumer_rejects_unsafe_rule_owner_after_real_failed_transaction_
         observed = _observe(host_publication, authority, selected)
         assert marker.read_bytes() == b""
         assert leaf.read_bytes() == retained and _file_facts(leaf) == PRIOR_FILES[kind]
-        assert observed["result"]["drained"] is (kind == "trusted"), {
-            "invariant": "restoring retained bytes does not establish a trusted physical-proof owner",
+        assert observed["result"]["drained"] is False, {
+            "invariant": "restoring historical bytes does not establish a current physical-proof owner",
             "kind": kind, "facts": _file_facts(leaf), "observed": observed}
+        assert observed["result"]["evidence_errors"]
 
 
 @pytest.mark.parametrize("fault", [
@@ -196,7 +206,7 @@ def test_fresh_consumer_rejects_unsafe_rule_owner_after_real_failed_transaction_
 ])
 def test_empty_selected_real_census_still_requires_known_rule_owner_and_gate(
         host_publication, fault):
-    leaf, retained = _retain_proof(host_publication, "trusted")
+    leaf, retained = _retain_current_proof(host_publication, "trusted")
     authority, closed = _close_real_gate(host_publication)
     gate = authority.maintenance_path
     if fault == "missing-leaf":

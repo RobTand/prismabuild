@@ -11,7 +11,7 @@
       "tests/test_client_proof_current_trust.py": 3,
       "tests/test_installed_park_proof_loader.py": 2,
       "tests/test_host_drain_evidence.py": 11,
-      "tests/test_rollout_participant.py": 26
+      "tests/test_rollout_participant.py": 35
     },
     "cpus": 1,
     "memory_gib": 4,
@@ -37,7 +37,7 @@
       "tests/test_park_proof_identity.py": 40,
       "tests/test_client_proof_member_bridge.py": 6,
       "tests/test_client_proof_bridge_recovery.py": 32,
-      "tests/test_agent_proves_the_box_stopped.py": 12,
+      "tests/test_agent_proves_the_box_stopped.py": 13,
       "tests/test_prewarm_rollout.py": 14
     },
     "cpus": 1,

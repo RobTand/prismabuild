@@ -8,8 +8,8 @@ import sys
 import pytest
 
 import upgrade_client
-from client_proof_bridge_fixture import PREBRIDGE, fixed_source_artifact
-from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
+from client_proof_bridge_fixture import PREBRIDGE, ROOT, fixed_source_artifact
+from test_client_proof_prior_trust import tmp_path
 
 
 LEGACY_SHA256 = "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7"
@@ -20,8 +20,7 @@ def installed_leaf(tmp_path):
     install = tmp_path / "installed"
     install.mkdir(mode=0o755, exist_ok=True)
     path = install / "park_proof.py"
-    strict = fixed_source_artifact(
-        "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
+    strict = (ROOT / "src/prismabuild/park_proof.py").read_bytes()
     legacy = fixed_source_artifact(
         "legacy-proof.py", PREBRIDGE, "src/prismabuild/park_proof.py", LEGACY_SHA256)
     path.write_bytes(strict)
@@ -48,7 +47,7 @@ def test_invoked_entrypoints_come_from_the_captured_fd_after_path_replacement(
     monkeypatch.setattr(upgrade_client, "read_proof_file", replace_after_capture)
     loaded = upgrade_client.load_installed_park_proof(path.parent)
     assert len(captured) == 1 and captured[0].data == strict
-    assert loaded.sha256 == hashlib.sha256(strict).hexdigest() == STRICT_PROOF_SHA256
+    assert loaded.sha256 == hashlib.sha256(strict).hexdigest()
     assert path.read_bytes() == legacy
     api = loaded.module
     # These are real strict entrypoints, whose behavior the legacy bytes lack.
