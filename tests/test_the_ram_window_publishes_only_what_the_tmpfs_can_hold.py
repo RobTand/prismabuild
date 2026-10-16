@@ -99,7 +99,7 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
@@ -136,7 +136,7 @@ def test_the_first_phase_is_promoted_when_its_stage_range_has_landed(
                  if event["event"] == "ram-mover-published"]
     assert [event["phase"] for event in published] == ["phase-0000"]
     # In the plan's read order, and actually queued: the tokens bound it.
-    assert queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
@@ -149,7 +149,7 @@ def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_runahead_is_bounded_by_the_consumers_accepted_progress(
@@ -185,7 +185,7 @@ def test_a_window_with_no_free_tokens_publishes_nothing(tmp_path: Path) -> None:
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_nothing_is_promoted_against_a_root_that_refuses_admission(
@@ -207,7 +207,7 @@ def test_nothing_is_promoted_against_a_root_that_refuses_admission(
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
     deferred = [event for event in events
                 if event["event"] == "ram-mover-publish-deferred-unregistered-root"]
     assert len(deferred) == 1

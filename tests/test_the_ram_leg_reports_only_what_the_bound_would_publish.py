@@ -109,7 +109,7 @@ def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
@@ -206,4 +206,4 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     assert ledger.holder_tokens(_hexkey("ramorphan")) == {}
     assert ledger.holder_tokens(_hexkey("rampromote1")) == {"ram_gib": 8}
     tier_loop.ram_residency_window(queue, tiers=tiers)
-    assert queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()

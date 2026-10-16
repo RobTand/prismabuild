@@ -163,13 +163,13 @@ def _ram_range(queue: pool.PoolQueue, *, promotion: str, consumer: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier_ledger(RAM_TIER).acquire(promotion, {"ram_gib": PHASE_GIB})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": promotion,
         "tier_id": RAM_TIER, "stage_root": str(ram), "manifest_sha256": manifest,
         "epoch": epoch, "entries": entries})
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=promotion, tier_id=RAM_TIER, stage_root=str(ram),
         manifest_sha256=manifest, generation="b" * 32, epoch=epoch,
         entries={key: {**mention,
@@ -192,7 +192,7 @@ class Box:
 
     def __init__(self, tmp_path: Path, *, stage_gib: int, ram_gib: int) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.ram = tmp_path / "ram"
         self.stage.mkdir()
@@ -288,7 +288,7 @@ def assert_ledgers_match_the_roots(box: Box) -> None:
     ledger.
     """
 
-    root = box.queue.residency_fragment_root()
+    root = box.queue.records.residency_fragment_root()
     accounted: dict[str, dict[str, int]] = {TIER: {}, RAM_TIER: {}}
     consumers = sorted(entry.name for entry in root.iterdir()
                        if entry.is_dir()
@@ -338,8 +338,8 @@ def test_the_ram_window_promotes_only_to_its_refill_horizon(
 
     assert _promoted(events) == ["phase-1", "phase-2"], events
     for ordinal in range(ADVANCE, PHASES):
-        assert not box.queue.item_path(
-            pool.READY, _promotion("reader", ordinal)).exists(), ordinal
+        assert not box.queue.records.item_path(
+            pool.record_store.READY, _promotion("reader", ordinal)).exists(), ordinal
     assert [event for event in events
             if event.get("event") == "ram-window-stalled"] == [], events
 
@@ -388,7 +388,7 @@ def test_a_ram_range_past_the_horizon_makes_room_for_another_promotion(
 
     box.cycle()
 
-    assert box.queue.item_path(pool.READY, head).exists()
+    assert box.queue.records.item_path(pool.record_store.READY, head).exists()
     assert not box.held(RAM_TIER, _promotion("reader", 7))
     assert not any(path.exists() for path in ram_files[7])
     for ordinal in range(PHASES - 1):
@@ -416,12 +416,12 @@ def test_an_evicted_promotion_is_published_again_when_its_reader_nears_it(
     box.promoter()
     box.cycle()
     assert not box.held(RAM_TIER, _promotion("reader", 7))
-    assert not box.queue.item_path(
-        pool.READY, _promotion("reader", 7)).exists()
+    assert not box.queue.records.item_path(
+        pool.record_store.READY, _promotion("reader", 7)).exists()
 
     # The worker's next heartbeat, filed into the lease the claim wrote
     # (``write_lease`` refuses a second write from another box's claim).
-    lease_path = box.queue.lease_path(READER)
+    lease_path = box.queue.records.lease_path(READER)
     lease = json.loads(lease_path.read_text())
     lease["progress_observation"] = {
         "source": "action-progress",
@@ -431,10 +431,10 @@ def test_an_evicted_promotion_is_published_again_when_its_reader_nears_it(
 
     box.cycle()
 
-    assert box.queue.item_path(pool.READY, _promotion("reader", 7)).exists()
+    assert box.queue.records.item_path(pool.record_store.READY, _promotion("reader", 7)).exists()
     for ordinal in range(5):
         release = _hexkey(f"readerramrelease{ordinal}")
-        assert box.queue.item_path(pool.READY, release).exists(), ordinal
+        assert box.queue.records.item_path(pool.record_store.READY, release).exists(), ordinal
 
 
 def test_a_stage_range_past_the_horizon_takes_its_ram_copy_first(
@@ -554,7 +554,7 @@ def test_r12s_ram_window_is_unchanged_by_its_ram_horizon(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     built = []
     for ordinal, phase in enumerate(R12_RAM["phases"]):
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])

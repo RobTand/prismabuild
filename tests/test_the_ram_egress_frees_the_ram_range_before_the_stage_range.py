@@ -106,7 +106,7 @@ def _fixture(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path]:
     (ram / "model" / "shard-0.bin").write_bytes(b"\0" * 4096)
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan(queue, stage_root=str(stage))
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
@@ -131,19 +131,19 @@ def _fixture(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path]:
         "range_start_bytes": 0, "range_end_bytes": 2 * GIB,
         "bytes_staged": 2 * GIB, "complete": True, "epoch": EPOCH,
         "seconds": 1.0, "unix": 1000.0})
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, _fragment(
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, _fragment(
         root=str(stage), mover=stage_mover, tier_id=STAGE_TIER))
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, _fragment(
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, _fragment(
         root=str(ram), mover=ram_mover, tier_id=RAM_TIER, epoch=EPOCH))
 
     # The consumer is claimed and has accepted the second phase, so the
     # window's release side owes the first phase both of its egresses.
-    source = queue.item_path(pool.READY, CONSUMER)
+    source = queue.records.item_path(pool.record_store.READY, CONSUMER)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": CONSUMER, "claimed_unix": time.time(),
                  "claimed_by": "ram-egress-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, CONSUMER).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).write_text(json.dumps(item))
     queue.write_lease(CONSUMER, owner="ram-egress-fixture",
                       claim_snapshot=item, progress_observation={
                           "source": "action-progress",
@@ -196,8 +196,8 @@ def test_both_egresses_are_published_and_the_ram_one_first(
         "the ram range is freed before, and with, the stage range"
     # Both rows are queued for the pool to run, and the pinned bytes are
     # still attributed -- an egress row is a request, not a deletion.
-    assert queue.item_path(pool.READY, _hexkey("ramrelease0")).exists()
-    assert queue.item_path(pool.READY, _hexkey("egress0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("ramrelease0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("egress0")).exists()
     assert (ram / "model" / "shard-0.bin").exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(_hexkey("rampromote0")) == {
         "ram_gib": 2}

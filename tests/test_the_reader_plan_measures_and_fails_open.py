@@ -149,7 +149,7 @@ def test_seconds_a_copy_stood_aside_are_not_a_shortfall() -> None:
 
 def _queue(tmp_path: Path, *, fill: int) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tokens = {"stage_gib": 16}
     if fill:
         tokens[storage_tiers.FILL_KIND] = fill
@@ -205,7 +205,7 @@ def test_the_waited_copy_is_admitted_without_fill_and_holds_its_stage(
 
     assert _claim(queue) == waited
     assert _claim(queue) is None
-    claimed = json.loads(queue.item_path(pool.CLAIMED, waited).read_text())
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, waited).read_text())
     assert claimed["tier_fill_waived"]["waived"] == 50
     assert queue.tier_ledger(TIER).holder_tokens(waited) == {"stage_gib": 2}
 
@@ -258,7 +258,7 @@ def test_a_stale_plan_fails_open(tmp_path: Path) -> None:
 def test_a_report_from_before_the_claim_prices_nothing(tmp_path: Path) -> None:
     queue = _queue(tmp_path, fill=0)
     mover = "d" * 64
-    path = queue.mover_landing_path(mover)
+    path = queue.records.mover_landing_path(mover)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pool.MOVER_LANDING_SCHEMA_V1, "mover_action_key": mover,
