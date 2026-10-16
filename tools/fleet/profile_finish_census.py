@@ -123,12 +123,12 @@ def prune_dry_run(live: pool.PoolQueue, funding: Path) -> dict:
         why = None
         if record.get("state") not in ("consumed", "released"):
             why = f"state-{record.get('state')}"
-        elif any(live.item_path(s, mover).exists() for s in (pool.READY, pool.CLAIMED)):
+        elif any(live.records.item_path(s, mover).exists() for s in (pool.record_store.READY, pool.record_store.CLAIMED)):
             why = "mover-queued-or-claimed"
-        elif not any(live.item_path(s, mover).exists()
-                     for s in (pool.DONE, pool.FAILED, pool.WITHDRAWN)):
+        elif not any(live.records.item_path(s, mover).exists()
+                     for s in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)):
             why = "mover-not-terminal"
-        elif live.lease_path(mover).exists():
+        elif live.records.lease_path(mover).exists():
             why = "mover-lease"
         elif live.tier_ledger(tier).holder_tokens(mover):
             why = "mover-holds-tier-tokens"
@@ -153,8 +153,8 @@ def main(argv=None) -> int:
                              "and time the census on a local copy with and without them")
     args = parser.parse_args(argv)
     live_root = Path(args.queue)
-    funding = live_root / pool.TIER_FUNDING
-    tiers = sorted(p.name for p in (live_root / pool.TIER_RESERVATIONS).iterdir()
+    funding = live_root / pool.record_store.TIER_FUNDING
+    tiers = sorted(p.name for p in (live_root / pool.record_store.TIER_RESERVATIONS).iterdir()
                    if p.is_dir() and not p.name.startswith("."))
     guard_writes(live_root)
     os.makedirs(args.scratch, exist_ok=True)
@@ -165,7 +165,7 @@ def main(argv=None) -> int:
     try:
         view = pool.PoolQueue(scratch / "view")
         view.root.mkdir()
-        (view.root / pool.TIER_FUNDING).symlink_to(funding, target_is_directory=True)
+        (view.root / pool.record_store.TIER_FUNDING).symlink_to(funding, target_is_directory=True)
         for tier in tiers:
             view.mint_tier_capacity(tier, {"probe": 4})
         nobody = "0" * 63 + "1"
@@ -186,17 +186,17 @@ def main(argv=None) -> int:
             dry = prune_dry_run(live, funding)
             report["prune_dry_run"] = {k: v for k, v in dry.items() if k != "terminal_names"}
             copy = pool.PoolQueue(scratch / "copy")
-            (copy.root / pool.TIER_FUNDING).mkdir(parents=True)
+            (copy.root / pool.record_store.TIER_FUNDING).mkdir(parents=True)
             for name in os.listdir(funding):
                 if name.endswith(SUFFIX):
-                    shutil.copy2(funding / name, copy.root / pool.TIER_FUNDING / name)
+                    shutil.copy2(funding / name, copy.root / pool.record_store.TIER_FUNDING / name)
             report["scenarios"].append(profiled(
                 "local-copy-all-records", args.repeat,
                 lambda: copy.output_census_for_owner(nobody)))
             aside = copy.root / "aside"
             aside.mkdir()
             for name in dry["terminal_names"]:
-                os.rename(copy.root / pool.TIER_FUNDING / name, aside / name)
+                os.rename(copy.root / pool.record_store.TIER_FUNDING / name, aside / name)
             report["scenarios"].append(profiled(
                 "local-copy-live-records-only", args.repeat,
                 lambda: copy.output_census_for_owner(nobody)))

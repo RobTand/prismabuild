@@ -1691,7 +1691,7 @@ def progress_phase(queue: pool.PoolQueue, action_key: str,
     # token.  Its authority is therefore the matching lease's accepted
     # ProgressWatch observation, which has already checked token, policy,
     # counter monotonicity and regular-file identity at heartbeat cadence.
-    path = queue.lease_path(action_key)
+    path = queue.records.lease_path(action_key)
     try:
         raw = pb.immutable_files.read_stable_file(
             path,
@@ -1789,7 +1789,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
     triggers: list[dict[str, object]] = []
     windows: list[dict[str, object]] = []
     live_keys: set[str] = set()
-    for path in sorted((queue.root / pool.CLAIMED).glob("*.json")):
+    for path in sorted((queue.root / pool.record_store.CLAIMED).glob("*.json")):
         try:
             record = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -1940,7 +1940,7 @@ def served_addresses(queue: pool.PoolQueue, host: str) -> dict[str, object]:
     if not host:
         return {"served_host": "", "served_addresses": (),
                 "served_reason": "claim names no host", "offer_age_s": None}
-    path = queue.root / pool.WORKERS / f"{host}.json"
+    path = queue.root / pool.record_store.WORKERS / f"{host}.json"
     try:
         record = json.loads(path.read_text())
     except (OSError, ValueError):

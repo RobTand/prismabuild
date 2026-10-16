@@ -144,8 +144,8 @@ def _declared_legs(plan: Mapping[str, object]) -> list[dict]:
 def _mover_live(queue, mover_key: str) -> bool:
     """True when one mover row stands ready or claimed now."""
     try:
-        return (queue.item_path(pool.READY, mover_key).exists()
-                or queue.item_path(pool.CLAIMED, mover_key).exists())
+        return (queue.records.item_path(pool.record_store.READY, mover_key).exists()
+                or queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists())
     except OSError:
         return False
 
@@ -162,7 +162,7 @@ def _owned_by_others(queue, mover_keys: Sequence[str]) -> frozenset:
     registry means no sharing, so the set stays empty.
     """
     try:
-        registry = (Path(queue.root) / pool.RESIDENCY_PLANS
+        registry = (Path(queue.root) / pool.record_store.RESIDENCY_PLANS
                     / residency_plan.SHARED)
         if not registry.is_dir():
             return frozenset()
@@ -428,8 +428,8 @@ def _live_mover_row(queue, mover_key: str) -> tuple[dict | None, bool]:
     but will not read. A missing row is (None, False): the window has
     not published this leg yet, and a later pass binds it.
     """
-    for state in (pool.READY, pool.CLAIMED):
-        path = queue.item_path(state, mover_key)
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        path = queue.records.item_path(state, mover_key)
         try:
             present = path.exists()
         except OSError:
@@ -633,7 +633,7 @@ def _shared_fences(queue, movers: Sequence[str]) -> set[str]:
     retains.
     """
     try:
-        registry = (Path(queue.root) / pool.RESIDENCY_PLANS
+        registry = (Path(queue.root) / pool.record_store.RESIDENCY_PLANS
                     / residency_plan.SHARED)
         if not registry.is_dir():
             return set()

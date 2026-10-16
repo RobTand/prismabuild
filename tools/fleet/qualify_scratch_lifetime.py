@@ -71,7 +71,7 @@ def _harness(argv=None):
 
 def _live_claim(queue_root: str, key: str) -> dict:
     queue = pool.PoolQueue(Path(queue_root))
-    record = pool._read_json(queue.item_path(pool.CLAIMED, key))
+    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
     if record is None:
         raise SystemExit("own claim is not in claimed state")
     return record

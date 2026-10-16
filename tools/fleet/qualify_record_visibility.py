@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 def _plain_move_record(pool, queue, key):
     """``PoolQueue.move_record`` as it read before #808: no revalidation."""
 
-    record = pool._read_json(queue.move_path(key))
+    record = pool.record_store.read_queue_record(queue.records.move_path(key))
     if not isinstance(record, dict) or record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
         return None
     return record
@@ -81,15 +81,15 @@ def main() -> int:
 
     _refuse_a_queue_root(
         Path(args.client_root).resolve(),
-        (pool.READY, pool.CLAIMED, pool.DONE, pool.MOVERS))
+        (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.MOVERS))
     results = []
     for index in range(args.runs):
         name = f"queue-{uuid.uuid4().hex[:12]}"
         queue = pool.PoolQueue(Path(args.client_root) / name)
         key = uuid.uuid4().hex * 2
-        receipt = queue.move_path(key)
+        receipt = queue.records.move_path(key)
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        server_path = str(Path(args.server_root) / name / pool.MOVERS / receipt.name)
+        server_path = str(Path(args.server_root) / name / pool.record_store.MOVERS / receipt.name)
         # Written whole and renamed into place, as the pool files a receipt:
         # a poll must never land on half a record.
         writer = (

@@ -147,7 +147,7 @@ def start_scope(q, claim, stack, docker_image=None):
     control.update(started_monotonic=scope.started,
                    boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip())
     claim["resource_scope"] = control
-    put(q.item_path(pool.CLAIMED, key), claim)
+    put(q.records.item_path(pool.record_store.CLAIMED, key), claim)
     q.write_lease(key, owner=claim["claimed_by"], claim_snapshot=claim)
     # Both parent and descendant remain alive until exact-scope termination.
     # The child ignores SIGTERM to exercise whole-scope cleanup, not just its
@@ -196,14 +196,14 @@ time.sleep(600)
 
 def retained_scope(q, first):
     key = first["action_key"]
-    live = json.loads(q.item_path(pool.CLAIMED, key).read_text())
+    live = json.loads(q.records.item_path(pool.record_store.CLAIMED, key).read_text())
     assert pool._same_claim(live, first)
     assert live["resource_scope"] == first["resource_scope"]
     assert q.ledger(first["claimed_host"]).held() == {"cpu": 1}
-    assert q.lease_path(key).is_file()
-    assert not any(q.item_path(state, key).exists()
-                   for state in (pool.READY, pool.DONE, pool.FAILED))
-    assert not q.attempt_path(first, 1).exists()
+    assert q.records.lease_path(key).is_file()
+    assert not any(q.records.item_path(state, key).exists()
+                   for state in (pool.record_store.READY, pool.record_store.DONE, pool.record_store.FAILED))
+    assert not q.records.attempt_path(first, 1).exists()
     return live
 
 
@@ -244,7 +244,7 @@ def recover_real_scope(q, first, scope, process, root, container=None):
     if container:
         assert scope_containers(scope) == [], "production did not remove the original container"
     assert q.ledger().held() == {}
-    attempt = json.loads(q.attempt_path(first, 1).read_text())
+    attempt = json.loads(q.records.attempt_path(first, 1).read_text())
     telemetry = attempt["detail"]["resource_telemetry"]
     assert telemetry["nonce"] == scope.nonce
     released = scope._request("status")
@@ -264,15 +264,15 @@ def late_finish(q, key, first, status):
         # A stale client view can disagree with the peer's committed ledger.
         # Refusal is safe only if the peer proves its state was preserved below.
         return {"disposition": "ownership_refused", "reason": str(exc)}
-    assert path == q.attempt_path(first, 1)
+    assert path == q.records.attempt_path(first, 1)
     return {"disposition": "archived", "path": str(path)}
 
 
 def refused_late_finish(q, key, first, status):
     """Model a stale claim read only in this caller, leaving its waiter live."""
-    read = pool._read_json
+    read = pool.record_store.read_queue_record
     caller = threading.get_ident()
-    claim_path = q.item_path(pool.CLAIMED, key)
+    claim_path = q.records.item_path(pool.record_store.CLAIMED, key)
     injected_reads = 0
 
     def stale_read(path):
@@ -285,7 +285,7 @@ def refused_late_finish(q, key, first, status):
     # The successor lease and ledger stay real. Production must detect that
     # the stale original claim contradicts them and refuse heartbeat and finish.
     # This does not change shared bytes or simulate a kernel/filesystem stall.
-    with patch.object(pool, "_read_json", stale_read):
+    with patch.object(pool.record_store, '_read_json', stale_read):
         try:
             q.write_lease(key, owner=first["claimed_by"], claim_snapshot=first)
         except pool.AmbiguousClaimHolder as exc:
@@ -352,7 +352,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
     terminal = wait(root / "terminal.json")
     waiter.join(timeout=10)
     assert not waiter.is_alive() and outcome == [0] and not errors, (outcome, errors)
-    assert digest(q.item_path(pool.DONE, key)) == terminal["terminal_sha256"]
+    assert digest(q.records.item_path(pool.record_store.DONE, key)) == terminal["terminal_sha256"]
     assert q.ledger(first["claimed_host"]).held() == {}
     assert q.ledger(successor["host"]).held() == {}
     return {**terminal, "key": key, "host": socket.gethostname(), "peer": successor["host"],
@@ -368,9 +368,9 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     assert (first["claimed_host"] == socket.gethostname()) == same_host, "wrong actor topology"
     q = pool.PoolQueue(root / "queue")
     key = first["action_key"]
-    claim = q.item_path(pool.CLAIMED, key)
+    claim = q.records.item_path(pool.record_store.CLAIMED, key)
     before = claim.read_bytes()
-    lease = q.lease_path(key).read_bytes()
+    lease = q.records.lease_path(key).read_bytes()
     # An explicitly fabricated ownership contradiction must retain both ledgers.
     # This isolated ledger is data only; actual resources belong to outer PB.
     injected = q.ledger("qualification-contradiction" if same_host else None)
@@ -381,11 +381,11 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
         assert time.monotonic() < deadline
         time.sleep(0.1)
     assert q.reap_stale(timeout_s=1) == []
-    assert claim.read_bytes() == before and q.lease_path(key).read_bytes() == lease
+    assert claim.read_bytes() == before and q.records.lease_path(key).read_bytes() == lease
     assert injected.held() == q.ledger(first["claimed_host"]).held() == {"cpu": 1}
-    assert not q.item_path(pool.READY, key).exists()
-    assert not q.item_path(pool.DONE, key).exists()
-    assert not q.item_path(pool.FAILED, key).exists()
+    assert not q.records.item_path(pool.record_store.READY, key).exists()
+    assert not q.records.item_path(pool.record_store.DONE, key).exists()
+    assert not q.records.item_path(pool.record_store.FAILED, key).exists()
     # Remove exactly the evidence injected by this actor; preserve the original.
     injected.release(key)
     if real_scope:
@@ -403,20 +403,20 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     else:
         assert q.reap_stale(timeout_s=1) == [key]
     assert q.ledger(first["claimed_host"]).held() == {}
-    ready = q.item_path(pool.READY, key)
+    ready = q.records.item_path(pool.record_store.READY, key)
     # In real-scope mode the other host published these entries. Its marker
     # in the root directory is not a negative-dentry barrier for this one.
     assert wait(ready)["attempts"] == 1
     ready_hash = digest(ready)
-    attempt = q.attempt_path(first, 1)
+    attempt = q.records.attempt_path(first, 1)
     wait(attempt)
     attempt_hash = digest(attempt)
     put(root / "ready.json", {"host": socket.gethostname(),
         "ready_sha256": ready_hash, "attempt_sha256": attempt_hash})
     wait(root / "late-ready.json")
     assert digest(ready) == ready_hash and digest(attempt) == attempt_hash
-    assert not q.item_path(pool.DONE, key).exists()
-    assert not q.item_path(pool.FAILED, key).exists()
+    assert not q.records.item_path(pool.record_store.DONE, key).exists()
+    assert not q.records.item_path(pool.record_store.FAILED, key).exists()
     successor = q.claim(owner=f"peer:{os.getpid()}", capacity={"cpu": 1})
     assert successor is not None and successor["attempts"] == 1
     assert successor["published_unix"] == first["published_unix"]
@@ -424,7 +424,7 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     if real_scope:
         scope, process, scope_info = start_scope(q, successor, stack, docker_image)
     claim_hash = digest(claim)
-    lease_hash = digest(q.lease_path(key))
+    lease_hash = digest(q.records.lease_path(key))
     put(root / "successor.json", {"host": socket.gethostname(),
         "claim_sha256": claim_hash, "lease_sha256": lease_hash})
     late = wait(root / "late-claimed.json")
@@ -432,10 +432,10 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
         assert late["disposition"] == "ownership_refused"
         assert late["injected_claim_reads"] > 0
         assert late["stale_heartbeat_refusal"]
-    assert digest(claim) == claim_hash and digest(q.lease_path(key)) == lease_hash
+    assert digest(claim) == claim_hash and digest(q.records.lease_path(key)) == lease_hash
     assert digest(attempt) == attempt_hash and q.ledger().held() == {"cpu": 1}
-    assert not q.item_path(pool.DONE, key).exists()
-    assert not q.item_path(pool.FAILED, key).exists()
+    assert not q.records.item_path(pool.record_store.DONE, key).exists()
+    assert not q.records.item_path(pool.record_store.FAILED, key).exists()
     if real_scope:
         assert process.poll() is None and len(scope_pids(scope.cgroup_path)) >= 2
         if docker_image:
@@ -444,7 +444,7 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
         "stdout": "successor result"}, claim_snapshot=successor)
     if real_scope:
         deadline = time.monotonic() + 10
-        while ending != q.item_path(pool.DONE, key):
+        while ending != q.records.item_path(pool.record_store.DONE, key):
             assert q.ledger().held() == {"cpu": 1}
             assert time.monotonic() < deadline, "successor cleanup did not complete"
             time.sleep(.1)
