@@ -169,7 +169,7 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tiers = {"preferred": [0], "fallback": [1]}
     staged = _seal(tmp_path, queue)
     cpu_sampler = _idle_two_cpu_host(monkeypatch)
@@ -196,14 +196,14 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     queue.publish(**unbounded)
     assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
-    assert queue.item_path(pool.READY, unbounded["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, unbounded["action_key"]).exists()
 
 
 def test_a_mover_carries_its_own_retry_policy_not_the_consumers(tmp_path):
     """#603's other half: three attempts and ``retry_safe``, on row and body."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["mover_row"]
     assert row["max_attempts"] == 3
@@ -222,7 +222,7 @@ def test_a_mover_prices_itself_from_receipts_once_any_exist(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "seconds": 100.0, "cpu_seconds": 250.0,
@@ -256,7 +256,7 @@ def test_with_no_receipt_the_row_declares_the_width_its_command_runs_at(tmp_path
     """No measurement, so the demand is a declared bound the command states."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, residency_mover_readers=6,
                    residency_mover_mem_gb=3)
     phase = staged["plan"]["phases"][0]
@@ -279,7 +279,7 @@ def test_the_declared_width_and_the_width_the_copy_runs_at_are_one_number(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, residency_mover_readers=5)
     phase = staged["plan"]["phases"][0]
     key = str(phase["mover_row"]["action_key"])
@@ -367,7 +367,7 @@ def test_a_second_submission_reuses_the_frozen_plan_rather_than_repricing(tmp_pa
     from prismabuild import residency_plan as rp
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first = _seal(tmp_path, queue)
     rp.freeze(queue, first["plan"])
 

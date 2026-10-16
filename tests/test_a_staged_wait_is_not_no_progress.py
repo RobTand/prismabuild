@@ -90,7 +90,7 @@ class _ConsumerProcess:
     def __init__(self, queue, item, row, clock, monkeypatch, *, steps: list[_Step],
                  declared: str | None = None, forged: bool = False,
                  signal: Path | None = None, on_declared=None) -> None:
-        self.path = queue.action_progress_path(str(item["action_key"]))
+        self.path = queue.records.action_progress_path(str(item["action_key"]))
         self.queue, self.item, self.row = queue, item, row
         self.clock = clock
         self.steps = iter(steps)
@@ -196,12 +196,12 @@ def _consumer_with_mover(tmp_path: Path, *, mover_seed: str):
 
 def _hand_to_claimed(queue: pool.PoolQueue, row) -> None:
     queue.publish(**dict(row))
-    source = queue.item_path(pool.READY, str(row["action_key"]))
+    source = queue.records.item_path(pool.record_store.READY, str(row["action_key"]))
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": 1.0, "claimed_by": "copy-fixture",
                    "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, str(row["action_key"])).write_text(
+    queue.records.item_path(pool.record_store.CLAIMED, str(row["action_key"])).write_text(
         json.dumps(record))
 
 
@@ -221,7 +221,7 @@ def _execution_fixture(tmp_path: Path, scenario: str, clock, monkeypatch,
         _landing_ahead(queue, item, row, bytes_ahead=100 << 30)
         steps = [_Step(0.5, bytes_ahead=n << 30) for n in (90, 80, 70)]
     elif scenario == "superseded-failed":
-        _finish(queue, row, pool.FAILED)
+        _finish(queue, row, pool.record_store.FAILED)
         residency_plan.mark_superseded(
             queue, str(item["action_key"]), plan=plan,
             filing=residency_plan.read_filed(queue, str(item["action_key"]))[1],
@@ -494,8 +494,8 @@ def _verdict(queue, item, progress_path):
 
 def _finish(queue: pool.PoolQueue, row, state: str) -> str:
     key = str(row["action_key"])
-    queue.item_path(state, key).parent.mkdir(parents=True, exist_ok=True)
-    queue.item_path(state, key).write_text(json.dumps({**dict(row), "status": state}))
+    queue.records.item_path(state, key).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.item_path(state, key).write_text(json.dumps({**dict(row), "status": state}))
     return key
 
 
@@ -506,7 +506,7 @@ def test_a_landed_mover_is_not_waited_on(tmp_path: Path) -> None:
     within commitment."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
-    key = _finish(queue, row, pool.DONE)
+    key = _finish(queue, row, pool.record_store.DONE)
     queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
     assert queue.tier_ledger(TIER).acquire(key, {STAGE_KIND: 21})
 
@@ -523,7 +523,7 @@ def test_an_evicted_range_is_waited_on_like_an_unpublished_one(
     again (``tier_loop.evict_beyond_horizon``) -- while the tier fits it."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=over)
-    key = _finish(queue, row, pool.DONE)
+    key = _finish(queue, row, pool.record_store.DONE)
 
     verdict = _verdict(queue, item, progress_path)
 
@@ -537,7 +537,7 @@ def test_a_withdrawn_mover_is_not_waited_on(tmp_path: Path) -> None:
     ``refuse_withdrawn`` and the refusal supersedes the plan (#708)."""
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
-    key = _finish(queue, row, pool.WITHDRAWN)
+    key = _finish(queue, row, pool.record_store.WITHDRAWN)
 
     verdict = _verdict(queue, item, progress_path)
 
@@ -615,7 +615,7 @@ def _landing_ahead(queue: pool.PoolQueue, item, row, *, bytes_ahead: int,
         "claimed_unix": None, "waiting_for": "", "basis": "queue"}
     if movers_ahead is not None:
         queued["movers_ahead"] = list(movers_ahead)
-    path = residency_map.landing_path(queue.residency_fragment_root(),
+    path = residency_map.landing_path(queue.records.residency_fragment_root(),
                                       str(item["action_key"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
@@ -630,7 +630,7 @@ def _mover_reports(queue: pool.PoolQueue, row, *, units: int,
     """The claimed mover's own landed-bytes report (#1010), as
     ``stage_move._ProgressReporter`` commits it: only when it grew."""
 
-    path = queue.action_progress_path(str(row["action_key"]))
+    path = queue.records.action_progress_path(str(row["action_key"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "m" * 32,
@@ -653,7 +653,7 @@ def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text())
     queue._record_denial_transition(ready, host="dl380g10", reason=reason,
                                     decision_reason=None)
 
@@ -750,7 +750,7 @@ def _mover_lease(queue: pool.PoolQueue, mover: str, *, heartbeat_unix: float,
     Written directly: ``write_lease`` is the claiming worker's, and checks it
     is that worker.  ``_hand_to_claimed`` claims at 1.0."""
 
-    queue.lease_path(mover).write_text(json.dumps({
+    queue.records.lease_path(mover).write_text(json.dumps({
         "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": mover,
         "owner": "copy-fixture", "heartbeat_unix": heartbeat_unix,
         "claimed_unix": 1.0,
@@ -908,7 +908,7 @@ def _withheld(queue: pool.PoolQueue, row, reason: str, *,
     (``updated_unix``) at ``stamp_unix``, or now."""
 
     key = str(row["action_key"])
-    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     queue._record_denial_transition(ready, host="dl380g10", reason=reason,
                                     decision_reason=None)
     passes: dict[str, object] = {
@@ -918,7 +918,7 @@ def _withheld(queue: pool.PoolQueue, row, reason: str, *,
         passes["first_unix"] = first_unix
     if epoch_unix is not None:
         passes["epoch_unix"] = epoch_unix
-    path = queue.passes_path(key)
+    path = queue.records.passes_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(passes))
 
@@ -986,7 +986,7 @@ def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
     now = clock.time()
-    ready = json.loads(queue.item_path(pool.READY, str(row["action_key"])).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text())
     queue._record_denial_transition(ready, host="sparky", reason="never_fits_capacity",
                                     decision_reason=None)
     _withheld(queue, row, "reservation_unavailable_withholding",
@@ -1023,7 +1023,7 @@ def test_a_withhold_past_its_ceiling_is_not_waited_on(
               first_unix=None if first_age_s is None else now - first_age_s,
               stamp_unix=now - pool.WITHHOLD_STAMP_FRESH_S - 1.0)
     if epoch_age_s is None:
-        queue.passes_path(str(row["action_key"])).unlink()
+        queue.records.passes_path(str(row["action_key"])).unlink()
 
     verdict = _judge(queue, item, progress_path, prior=None, window_s=GRACE_S,
                      now=now)
@@ -1071,7 +1071,7 @@ def _claim_pass(queue: pool.PoolQueue, row, ledger: pool.ResourceLedger) -> dict
     withhold, count the denial and record its reason (``PoolQueue.claim``)."""
 
     key = str(row["action_key"])
-    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     observed = queue._observe_drain(key, ledger=ledger, need={"cpu": 2, "mem_gb": 1},
                                       mode="tokens")
     queue._drain_accounting.stage(key, observed.notes)
@@ -1094,12 +1094,12 @@ def _transient_holder_past_the_ceiling(tmp_path: Path, queue: pool.PoolQueue, ro
     from test_a_ready_gpu_action_is_not_starved_by_cpu_shards import _sealed
 
     holder, cas_root, _checkout = _sealed(tmp_path, "measurement", timeout_s=1500)
-    claimed = queue.item_path(pool.CLAIMED, holder)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, holder)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps({"action_key": holder, "cas_root": cas_root,
                                    "claimed_unix": now - 1060.0}))
     key = str(row["action_key"])
-    path = queue.passes_path(key)
+    path = queue.records.passes_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "action_key": key, "passes": pool.STARVATION_FLOOR,
@@ -1200,7 +1200,7 @@ def test_a_consumer_whose_mover_the_pool_stopped_withholding_gets_a_baseline(
     mover = str(row["action_key"])
     now = clock.time()
     _landing_ahead(queue, item, row, bytes_ahead=0, movers_ahead=[])
-    ready = json.loads(queue.item_path(pool.READY, mover).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, mover).read_text())
     queue._record_denial_transition(ready, host="dl380g10",
                                     reason="reservation_unavailable",
                                     decision_reason=None)

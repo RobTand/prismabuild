@@ -40,7 +40,7 @@ DIGEST = "1" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 8})
     return q
 
@@ -114,7 +114,7 @@ def test_a_mover_that_staged_its_range_keeps_its_tier_tokens(queue) -> None:
     # The host's tokens go: the box is free for other work the instant the
     # copy stops.  Only the tier's stay.
     assert queue.ledger("dl380g10").holder_tokens(MOVER) == {}
-    assert (queue.root / pool.DONE / f"{MOVER}.json").exists()
+    assert (queue.root / pool.record_store.DONE / f"{MOVER}.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -177,7 +177,7 @@ def _compose_map(queue, *, consumer: str = CONSUMER) -> Path:
     """The composed map, which admission requires as well as the pin."""
 
     return residency_map.write_map(
-        queue.residency_map_path(consumer),
+        queue.records.residency_map_path(consumer),
         residency_map.compose([{
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": MOVER,
@@ -251,7 +251,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
                         "leads": [MOVER]})
-    real = pool.PoolQueue.residency_map_path
+    real = pool.record_store.RecordStore.residency_map_path
 
     class _StalledPath:
         def __init__(self, path: Path) -> None:
@@ -263,7 +263,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
         def exists(self) -> bool:
             raise OSError(errno.ESTALE, "Stale file handle")
 
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path',
                         lambda self, key: _StalledPath(real(self, key)))
 
     # The claim returns, rather than raising out of the scan...
@@ -278,7 +278,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
 
     # The mount comes back and the same item is admitted, unchanged.
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path', real)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
@@ -289,7 +289,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
 ) -> None:
     """The launcher stats the same file, and must not die on it either."""
 
-    real = pool.PoolQueue.residency_map_path
+    real = pool.record_store.RecordStore.residency_map_path
 
     class _StalledPath:
         def __str__(self) -> str:
@@ -298,7 +298,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
         def exists(self) -> bool:
             raise OSError(errno.EIO, "Input/output error")
 
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path',
                         lambda self, key: _StalledPath())
     item = {"action_key": CONSUMER, "residency": {"leads": [MOVER]}}
 
@@ -306,7 +306,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
     # read a map it cannot open would decide it had been staged and then read
     # the pool anyway, which is the difference the receipt cannot show.
     assert queue.residency_map_environment(item) == {}
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path', real)
 
 
 def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
@@ -394,7 +394,7 @@ def _staged_files(tmp_path: Path, queue: pool.PoolQueue, count: int = 3) -> Path
         path.write_bytes(b"x" * 16)
         entries[residency_map.residency_map_key(f"/mnt/shared/part-{index}", 0)] = {
             "stage_path": str(path), "bytes": 16, "offset": 0, "sha256": DIGEST}
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -419,7 +419,7 @@ def test_an_egress_deletes_the_bytes_and_returns_the_tokens(queue, tmp_path) -> 
     assert not list(stage.rglob("*.bin"))
     # The directories the range left behind go too, but never the stage itself.
     assert not (stage / "sub").exists() and stage.exists()
-    assert residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER) == []
+    assert residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER) == []
 
 
 def test_a_second_egress_of_the_same_range_is_a_no_op(queue, tmp_path) -> None:
@@ -458,7 +458,7 @@ def test_bytes_that_could_not_be_deleted_keep_their_tokens(queue, tmp_path,
     assert receipt["complete"] is False and receipt["errors"]
     assert receipt["tokens_released"] == 0
     assert _held(queue) == {"stage_gib": 2}
-    assert residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER) != []
+    assert residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER) != []
 
 
 def test_a_fragment_that_cannot_be_read_keeps_its_tokens(queue, tmp_path) -> None:
@@ -475,7 +475,7 @@ def test_a_fragment_that_cannot_be_read_keeps_its_tokens(queue, tmp_path) -> Non
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
     # Mutate what the driver reads, not the code that reads it.
-    (queue.root / pool.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text("{not json")
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text("{not json")
 
     receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
@@ -495,8 +495,8 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     outside = tmp_path / "not-the-stage.bin"
     outside.write_bytes(b"keep me")
-    (queue.root / pool.RESIDENCY / CONSUMER).mkdir(parents=True)
-    (queue.root / pool.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text(json.dumps({
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER).mkdir(parents=True)
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text(json.dumps({
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,

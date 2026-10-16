@@ -40,7 +40,7 @@ GIB = storage_tiers.GIB
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -67,7 +67,7 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, path: Path) -> None:
     queue.record_move(MOVER, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                               "stage_root": str(stage), "complete": True,
                               "bytes_staged": 2 * GIB})
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "a" * 64,
@@ -103,7 +103,7 @@ def test_registering_never_takes_a_root_from_another_queue(queue, stage, tmp_pat
     """Two owners is the state this refuses; an operator moves a marker by hand."""
 
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
+    other.records.ensure_layout()
     assert stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage) == "registered"
 
     outcome = stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -164,7 +164,7 @@ def test_an_egress_on_an_unregistered_root_keeps_bytes_and_tokens(queue, stage) 
     assert receipt["entries_deleted"] == 0 and receipt["tokens_released"] == 0
     assert path.exists()
     assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
-    fragment = residency_map.fragment_path(queue.root / pool.RESIDENCY, CONSUMER, MOVER)
+    fragment = residency_map.fragment_path(queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER)
     assert fragment.exists(), "a refused egress keeps the fragment for the owner"
 
 
@@ -186,7 +186,7 @@ def test_a_sweep_of_an_unregistered_root_refuses_once_per_tier(queue, stage) -> 
 
 def test_another_queues_root_is_refused_by_name(queue, stage, tmp_path) -> None:
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
+    other.records.ensure_layout()
     stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
     nobodys = _staged_file(stage, "models/nobodys.bin")
 
@@ -271,7 +271,7 @@ def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None
     """
 
     fleet = pool.PoolQueue(tmp_path / "prismabuild-fleet" / "pb-queue")
-    fleet.ensure_layout()
+    fleet.records.ensure_layout()
     stage_release.register_stage_root(fleet, tier_id=TIER, stage_root=stage)
     shard = _staged_file(stage, "models/GLM-5.3-Flash/model-00001.safetensors")
     partial = _staged_file(stage, "models/GLM-5.3-Flash/.model-00002.safetensors.partial")
@@ -304,7 +304,7 @@ def test_a_present_but_unregistered_root_keeps_tokens_and_refuses_movers(
     """
 
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
+    other.records.ensure_layout()
     stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
 
     announced = tier_loop.cycle(
