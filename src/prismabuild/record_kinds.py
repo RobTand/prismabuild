@@ -25,9 +25,21 @@ class RecordKind:
     self_digest_field: str | None = None
     caller_input: bool = False
     older_input_absence: bool = False
+    encoding: str = "json"
+    older_participant_absence: bool = False
 
 
 KINDS = (
+    RecordKind("shape-table", "prismabuild.shape_gate.table.v1", "gzip member holding manifest shape entries and phases", "additive",
+               "shape_gate:parse_table", ("shape_gate:table_from_manifest",), ("unhashed", "hashed"),
+               ("exact production gzip bytes are pinned; probe mutations are recompressed independently",), encoding="gzip-json", older_participant_absence=True),
+    RecordKind("publication-ending", "prismabuild.publication_superseded.v1", "private queue/publication-endings/<key>/<generation>.json", "closed",
+               "prismabuild.pool:PoolQueue.publication_ending", ("prismabuild.pool:PoolQueue._persist_publication_supersession",),
+               ("initial", "replay"), ("same-generation retries are not supersession; immutable predecessor identity is retained",), stable_paths=True,
+               older_participant_absence=True),
+    RecordKind("mover-landing", "prismabuild.mover_landing.v1", "private queue mover landing report", "additive",
+               "prismabuild.pool:PoolQueue.mover_landing", ("stage_move:_LandingReport.write",), ("partial", "landed", "repeated"),
+               ("record reports supplied copy counters; it is not a staged verdict or progress watchdog proof",)),
     RecordKind("input-test-capabilities", "prismabuild.pbtest_capabilities.v1", "caller pbtest capability configuration", "closed",
                "pbtest_capabilities:load_config", (), ("empty", "tagged"), caller_input=True),
     RecordKind("image-requirements", "prismabuild.container_class_requirements.v1", "immutable class-image policy declaration", "closed",

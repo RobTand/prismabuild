@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import platform
@@ -29,6 +31,17 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def decode_wire(kind, raw):
+    if kind.encoding not in ("json", "gzip-json"):
+        raise ValueError(f"unqualified record encoding: {kind.encoding}")
+    return json.loads(gzip.decompress(raw) if kind.encoding == "gzip-json" else raw)
+
+
+def probe_wire(kind, body):
+    raw = (json.dumps(body, sort_keys=True) + "\n").encode()
+    return gzip.compress(raw, mtime=0) if kind.encoding == "gzip-json" else raw
+
+
 def reached(observed, reference):
     module, qualified = reference.split(":")
     if module.startswith("prismabuild."):
@@ -39,18 +52,39 @@ def reached(observed, reference):
                for call in observed.get("calls", []))
 
 
-def input_reader_absence(root, case, manifest):
+def historical_absence(root, case, manifest):
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
-    if not kind.older_input_absence:
+    if not (kind.older_input_absence or kind.older_participant_absence):
         return None
-    assert kind.caller_input and not kind.writers and kind.wire_id
+    assert kind.wire_id
+    if kind.older_input_absence:
+        assert kind.caller_input and not kind.writers
     paths = []
     for reference in (kind.reader,) + kind.legacy_readers:
         module = reference.split(":")[0]
         paths.extend(["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
                      ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
     if any((root / path).is_file() for path in paths):
-        return None
+        if kind.older_input_absence:
+            return None
+        for reference in (kind.reader,) + kind.writers + kind.legacy_readers + kind.legacy_writers:
+            module, qualified = reference.split(":")
+            candidates = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
+                          ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
+            for candidate in candidates:
+                if not (root / candidate).is_file():
+                    continue
+                nodes = ast.parse((root / candidate).read_bytes()).body
+                found = True
+                for component in qualified.split("."):
+                    node = next((node for node in nodes if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                                 and node.name == component), None)
+                    if node is None:
+                        found = False
+                        break
+                    nodes = node.body
+                if found:
+                    return None
     provenance = json.loads(manifest.read_bytes())
     for name, expected in provenance["files"].items():
         raw = (root / name).read_bytes()
@@ -59,7 +93,9 @@ def input_reader_absence(root, case, manifest):
     return {"case": case, "generation": provenance["generation"],
             "receipt_sha256": provenance["receipt_sha256"], "archive_sha256": provenance["archive_sha256"],
             "absent_reader_modules": sorted(paths), "closure_files_checked": len(provenance["files"]),
-            "reason": "caller input has no reader or writer in this generation; no historical writer bytes exist"}
+            "reason": ("caller input has no reader or writer in this generation; no historical writer bytes exist"
+                       if kind.caller_input else
+                       "wire ID and all declared reader/writer entries absent from the complete immutable generation; no codec credit")}
 
 
 def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None):
@@ -114,7 +150,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                                      "source-reader" if raw is None and kind.fixture_source else request["op"])
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if raw is None and result["returncode"] == 0 and kind.wire_id is not None:
-        actual_wire = json.loads(base64.b64decode(result["result"]["raw"]))
+        actual_wire = decode_wire(kind, base64.b64decode(result["result"]["raw"]))
         result["wire_identity_verified"] = isinstance(actual_wire, dict) and actual_wire.get("schema") == kind.wire_id
         if not result["wire_identity_verified"]:
             result["returncode"] = 3
@@ -235,7 +271,7 @@ def generate(output, selected=None):
                       {"origin": "immutable configuration; no runtime writer"} if kind.fixture_source else {})
             goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode(), **origin})
             for generation, old, manifest in generations:
-                absence = input_reader_absence(old, case, manifest)
+                absence = historical_absence(old, case, manifest)
                 if absence is not None:
                     absences.append(absence)
                     check(invoke(ROOT, case, Path(tmp) / (label + "-current-input-" + generation), raw=raw,
@@ -257,7 +293,7 @@ def generate(output, selected=None):
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
                                    "sha256": sha(prior), "raw": base64.b64encode(prior).decode(), **origin})
             print(case, "both directions accepted" if len(failures) == before else "RED; evidence retained", flush=True)
-    for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical), ("absent-inputs.jsonl", absences)):
+    for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical), ("absent-participants.jsonl", absences)):
         path = output / name
         with path.open("x") as stream:
             for row in rows:
@@ -266,7 +302,7 @@ def generate(output, selected=None):
     path = output / "qualification.json"
     path.write_text(json.dumps({"current_captures": len(goldens), "historical_captures": len(historical),
                                 "configuration_captures": sum("origin" in row for row in goldens),
-                                "historical_input_absences": len(absences),
+                                "historical_participant_absences": len(absences),
                                 "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
                                 "selected_cases": selected,
                                 "source_git": {"snapshot": source[0], "parents": source[1].split(), "tree": source[2]},

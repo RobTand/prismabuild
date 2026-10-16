@@ -163,15 +163,15 @@ def audit(root, observations=None):
                                         (document["generations"] if isinstance(document, dict) else document))
     captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
     for path in (root / "tests/compat").glob("*.jsonl"):
-        if not path.name.startswith(("goldens", "historical", "absent-inputs")):
+        if not path.name.startswith(("goldens", "historical", "absent-inputs", "absent-participants")):
             continue
         for line in path.read_text().splitlines():
             item = json.loads(line)
             if path.name.startswith("goldens"):
                 captured["current"].add(item["case"])
-            elif path.name.startswith("absent-inputs"):
+            elif path.name.startswith(("absent-inputs", "absent-participants")):
                 kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
-                assert kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"]
+                assert kind.get("older_participant_absence") or (kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"])
                 captured["absent_inputs"][item["generation"]].add(item["case"])
             else:
                 captured["historical"][item["generation"]].add(item["case"])
