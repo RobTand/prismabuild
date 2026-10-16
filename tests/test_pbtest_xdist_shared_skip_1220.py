@@ -45,6 +45,9 @@ def test_shared_helper_skips_are_both_reconciled(tmp_path):
                    if re.search(r" in [\d.]+s", ln))
     result = {"ran": True, "shard": 0, "files": files, "summary": summary,
               "output": proc.stdout}
-    pbtest.reconcile_shards([result])
+    observed = {**result, "returncode": 0,
+                "output": result["output"] + "\n" + result["summary"]}
+    result["reconciliation"] = pbtest.pbtest_outcomes.judge_shards(
+        [observed], requested_files=result["files"])["shards"][0]["reconciliation"]
     assert result["reconciliation"]["missing_files"] == [], (
         result["reconciliation"], json.loads(lines[-1][17:]))

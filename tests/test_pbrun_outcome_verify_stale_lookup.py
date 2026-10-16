@@ -130,7 +130,7 @@ def test_a_landed_ending_is_reported_when_the_key_is_stale_until_listed(
     assert rc == 0, lines
     # pbtest reports this shard with its own pytest summary, not as
     # OUTCOME UNOBSERVED.
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
     assert pbtest.unobserved_outcome(lines) is None
 
 
@@ -150,7 +150,7 @@ def test_a_landed_ending_is_reported_after_one_enoent(
     rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
 
 
 def test_a_failed_ending_keeps_its_own_exit_status(
@@ -163,7 +163,7 @@ def test_a_failed_ending_keeps_its_own_exit_status(
     rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 1, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
 
 
 def test_a_name_listed_but_still_stale_is_read_again_inside_the_wait(
@@ -183,7 +183,7 @@ def test_a_name_listed_but_still_stale_is_read_again_inside_the_wait(
     rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
     assert any("not visible here yet" in line for line in lines), lines
 
 
@@ -217,4 +217,4 @@ def test_an_attempt_that_is_really_missing_is_never_a_pass(
     assert rc == pbrun.RECORD_WRITE_FAILED_EXIT, lines
     assert time.monotonic() - started < 20.0
     assert any("FileNotFoundError" in line for line in lines), lines
-    assert pbtest.pytest_summary(lines) == ""
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == ""

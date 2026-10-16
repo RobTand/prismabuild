@@ -114,7 +114,7 @@ def _dispatch(tmp_path: Path, monkeypatch, checkout, extra, *, shards=4,
         if real:
             # The child, not pbrun: the sealed program runs inside this
             # already-admitted test action (the dependency-pins pattern).
-            argv, environment = admitted_child(command)
+            argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
             return original(argv, cwd=checkout, env=environment, **kwargs)
         return _FinishedProcess(command)
 

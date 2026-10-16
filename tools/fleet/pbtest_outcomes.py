@@ -33,6 +33,7 @@ import json
 from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
+import re
 from contextlib import nullcontext
 from pathlib import Path
 import sys
@@ -370,6 +371,341 @@ def reconcile(record: dict, counts: dict[str, int] | None,
 from pbtest_collection import ignored_named_paths
 
 
+_COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
+_COLLECT_ONLY = (r"no tests collected(?: \(\d+ deselected\))?"
+                 r"|\d+/\d+ tests collected \(\d+ deselected\)"
+                 r"|\d+ tests? collected")
+_PARTS = rf"(?:no tests ran|{_COLLECT_ONLY}|{_COUNTED})(?:, {_COUNTED})*"
+_DURATION = r"\d+\.\d+s(?: \([^)]*\))?"
+PYTEST_SUMMARY = re.compile(rf"^(?:=+ )?{_PARTS} in {_DURATION}(?: =+)?$")
+#: Colour is off down a pipe, but ``FORCE_COLOR`` in a shard's environment
+#: would wrap the line in escapes and make it unmatchable.
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def pytest_summary(lines: list[str]) -> str:
+    """The last line that is pytest's terminal summary, or ``""``."""
+
+    for line in reversed(lines):
+        if PYTEST_SUMMARY.match(ANSI.sub("", line).strip()):
+            return line.strip()
+    return ""
+
+
+
+NOT_OUTCOMES = {"warning", "warnings", "deselected"}
+_COLLECTED_COUNT = re.compile(r"^(?:no tests|(\d+)(?:/\d+)? tests?) collected\b")
+
+
+def summary_outcomes(summary: str) -> tuple[dict[str, int] | None, int | None]:
+    """A summary line's outcome counts by category, and its collected count.
+
+    Outcomes are keyed the way the outcome record keys them: pytest prints
+    ``N error``/``N errors`` for the ``error`` category, and every other
+    counted word is the category itself.  A ``--collect-only`` summary
+    counts items, not outcomes, and answers ``(None, N)``.
+    """
+
+    line = ANSI.sub("", summary).strip()
+    line = re.sub(r"^=+ | =+$", "", line)
+    body = line.rsplit(" in ", 1)[0]
+    collected = _COLLECTED_COUNT.match(body)
+    if collected:
+        return None, int(collected.group(1) or 0)
+    counts: dict[str, int] = {}
+    for part in body.split(", "):
+        match = re.fullmatch(r"(\d+) (.+)", part)
+        if match is None or match.group(2) in NOT_OUTCOMES:
+            continue
+        word = "error" if match.group(2) == "errors" else match.group(2)
+        counts[word] = counts.get(word, 0) + int(match.group(1))
+    return counts, None
+
+
+
+def recorded_skips(record: dict | None) -> list[dict] | None:
+    """Every skip a shard's record holds, with its reason; ``None`` without one."""
+
+    if record is None:
+        return None
+    skips = []
+    for row in record.get("reports") or ():
+        entry = dict(zip(REPORT_FIELDS, row))
+        if entry.get("category") == "skipped":
+            skips.append({"nodeid": entry["nodeid"], "when": entry["when"],
+                          "reason": entry.get("reason") or "",
+                          "location": entry.get("location")})
+    return skips
+
+
+
+VERDICT_SCHEMA = "prismabuild.pbtest_shard_verdict.v1"
+PREFLIGHT_SCHEMA = "prismabuild.pbtest_preflight.v1"
+PREFLIGHT_PREFIX = "pbtest-preflight: "
+PROGRESS_SCHEMA = "prismabuild.pbtest_progress.v1"
+CONTROL_ENV = ("PRISMABUILD_PBTEST_RUN_ID", "PRISMABUILD_PBTEST_ENTRYPOINT")
+
+
+def _valid_runtime_refusal(value):
+    return (isinstance(value, dict) and set(value) == {"code", "message"}
+            and value["code"] in ("dependency_pin", "interpreter_absent")
+            and isinstance(value["message"], str) and bool(value["message"]))
+
+
+def preflight_record(exit_code: int, refusal: dict | None) -> str:
+    return PREFLIGHT_PREFIX + json.dumps({"schema": PREFLIGHT_SCHEMA,
+        "status": "refused" if exit_code else "accepted", "exit_code": exit_code,
+        "runtime_refusal": refusal}, separators=(",", ":"))
+
+
+def _preflight(output):
+    for line in output.splitlines():
+        if not line.startswith(PREFLIGHT_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(PREFLIGHT_PREFIX):])
+            code = value["exit_code"]
+            refusal = value["runtime_refusal"]
+            if (value.get("schema") == PREFLIGHT_SCHEMA and type(code) is int
+                    and code >= 0 and value.get("status") == ("refused" if code else "accepted")
+                    and (refusal is None or code > 0 and _valid_runtime_refusal(refusal))):
+                return value, None
+        except (ValueError, KeyError, TypeError):
+            pass
+        return None, "invalid first preflight decision"
+    return None, None
+
+
+def progress_path(report: Path) -> Path:
+    return Path(str(report) + ".progress.json")
+
+
+def read_progress(path: Path, *, run_id: str, launch_entrypoint: str,
+                  generation: str) -> dict | None:
+    try:
+        value = json.loads(Path(path).read_text())
+        if (not isinstance(value, dict) or value.get("schema") != PROGRESS_SCHEMA
+                or value.get("run_id") != run_id or value.get("launch_entrypoint") != launch_entrypoint
+                or value.get("producer_generation") != generation
+                or value.get("state") not in ("running", "finished", "refused")
+                or any(type(value.get(k)) is not int or value[k] < 0
+                       for k in ("sequence", "total_shards", "completed_shards", "producer_pid"))
+                or value["completed_shards"] > value["total_shards"]
+                or not isinstance(value.get("shards"), list)
+                or len(value["shards"]) != value["total_shards"]
+                or value.get("runtime_refusal") is not None and not _valid_runtime_refusal(value["runtime_refusal"])):
+            return None
+        shards = value["shards"]
+        if any(not isinstance(s, dict) or s.get("shard") != i
+               or s.get("status") not in ("pending", "submitted", "completed")
+               or type(s.get("attempts")) is not int or s["attempts"] < 0
+               or s.get("returncode") is not None and type(s["returncode"]) is not int
+               for i, s in enumerate(shards)):
+            return None
+        if sum(s["status"] == "completed" for s in shards) != value["completed_shards"]:
+            return None
+        if value["state"] == "finished" and (value["completed_shards"] != value["total_shards"]
+                or not isinstance(value.get("report_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", value["report_sha256"])):
+            return None
+        if value["state"] == "refused" and (value["completed_shards"]
+                or any(s["status"] != "pending" for s in shards)):
+            return None
+        return value
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _valid_record(record):
+    if not isinstance(record, dict):
+        return False
+    if any(not isinstance(record.get(key, []), list)
+           or any(not isinstance(n, str) or not n for n in record.get(key, []))
+           for key in ("collected", "deselected", "collect_seen")):
+        return False
+    for key, size in (("reports", len(REPORT_FIELDS)), ("uncounted", 3)):
+        rows = record.get(key, [])
+        if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != size
+                or any(not isinstance(v, str) for v in row[:3]) for row in rows):
+            return False
+    return True
+
+
+def _judge_row(row, index):
+    files = row.get("files", []) if isinstance(row, dict) else []
+    if not isinstance(files, list) or any(not isinstance(f, str) or not f for f in files):
+        files = []
+    verdict = {"schema": VERDICT_SCHEMA, "shard": index, "green": False,
+               "failing_nodes": [], "unobserved_files": [], "problems": [],
+               "runtime_refusal": None, "reconciliation": None, "collected": [],
+               "coverage": "unknown", "summary": "", "ran": False, "skipped": None,
+               "completion": {"status": "unknown", "problems": ["no valid test completion record"]}}
+    def problem(code, message, *, unknown=True, nodeids=()):
+        verdict["problems"].append({"code": code, "message": message,
+                                    "files": list(files), "nodeids": list(nodeids)})
+        if unknown:
+            verdict["unobserved_files"].extend(files)
+    if (not isinstance(row, dict) or files != row.get("files") or not files
+            or not isinstance(row.get("output"), str) or type(row.get("returncode")) is not int
+            or type(row.get("timed_out", False)) is not bool):
+        problem("report_invalid", "invalid shard observation")
+        return verdict
+    verdict["shard"] = row.get("shard", index)
+    output = row["output"]
+    summary = pytest_summary(output.splitlines())
+    verdict.update(summary=summary, ran=bool(summary), completion=completion(output))
+    decision, preflight_problem = _preflight(output)
+    if preflight_problem:
+        problem("preflight_invalid", preflight_problem)
+    record = parse(output)
+    if record is None:
+        problem("outcomes_missing", "no outcome record: the shard's tests cannot be matched against its collection")
+        if summary:
+            verdict["reconciliation"] = {"problems": [verdict["problems"][-1]["message"]]}
+        if decision is not None:
+            verdict["runtime_refusal"] = decision["runtime_refusal"]
+    elif not _valid_record(record):
+        problem("outcomes_invalid", "invalid test outcome record")
+        record = None
+    if not summary:
+        problem("summary_missing", "no pytest terminal summary")
+    if record is not None:
+        verdict["collected"] = record.get("collected", [])
+        verdict["skipped"] = recorded_skips(record)
+        reports = [dict(zip(REPORT_FIELDS, r)) for r in record.get("reports", [])]
+        failed = [r["nodeid"] for r in reports if r["category"] in ("failed", "error")]
+        verdict["failing_nodes"].extend(failed)
+        counts, count = summary_outcomes(summary) if summary else (None, None)
+        rec = reconcile(record, counts, count)
+        rootdir = record.get("rootdir_relative", ".")
+        rootdir = rootdir if isinstance(rootdir, str) else ""
+        observed = {source_file(n, rootdir) for n in (
+            *record.get("collected", []), *record.get("deselected", []),
+            *record.get("collect_seen", []), *(r["nodeid"] for r in reports if r["when"] == "collect"))}
+        if "file_selection" in record:
+            selection = record["file_selection"]
+            if (not isinstance(selection, dict) or set(selection) != {"files", "ignored"}
+                    or selection["files"] != files or not isinstance(selection["ignored"], list)
+                    or any(not isinstance(f, str) or f not in files for f in selection["ignored"])
+                    or selection["ignored"] != sorted(set(selection["ignored"]))
+                    or set(selection["ignored"]) & observed or record.get("file_selection_error")):
+                rec["problems"].append("invalid or inconsistent file selection evidence")
+            else:
+                observed.update(selection["ignored"])
+        rec["missing_files"] = sorted(set(files) - observed)
+        if rec["missing_files"]:
+            rec["problems"].append("assigned file(s) had no collection or outcome: " + ", ".join(rec["missing_files"]))
+        verdict["reconciliation"] = rec
+        verdict["failing_nodes"].extend(n + " (never ran)" for n in rec["never_ran"])
+        for message in rec["problems"]:
+            problem("reconciliation", message)
+        verdict["coverage"] = ("collection_only" if record.get("collect_only") else
+                               "executed" if verdict["collected"] else "excluded")
+    complete = verdict["completion"]
+    if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
+        for message in complete["problems"]:
+            if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
+                continue
+            if ((record or {}).get("collect_only") and complete.get("collect_only")
+                    and message in ("selected tests have no completed teardown", "selected tests have no observed outcome")
+                    and not complete["teardown_finished"] and not complete["outcome_nodeids"]):
+                continue
+            if verdict["failing_nodes"] and complete.get("collection_errors") and message in (
+                    "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
+                continue
+            problem("completion", message)
+        if record is not None and "collected" in complete:
+            if sorted(complete["collected"]) != sorted(verdict["collected"]):
+                problem("completion_population", "completion and final selected populations differ")
+            final_nodes = {r[0] for r in (*record.get("reports", []), *record.get("uncounted", [])) if r[1] != "collect"}
+            if final_nodes != set(complete["outcome_nodeids"]):
+                problem("completion_outcomes", "completion and final outcome populations differ")
+    if row.get("timed_out"):
+        problem("client_timeout", "shard client timed out")
+    if row["returncode"]:
+        ordinary_failure = row["returncode"] in (1, 2) and bool(verdict["failing_nodes"])
+        problem("client_exit", f"shard client exited {row['returncode']}", unknown=not ordinary_failure)
+    if verdict["failing_nodes"]:
+        problem("test_failure", "test failures or unexecuted collected tests", unknown=False,
+                nodeids=verdict["failing_nodes"])
+    verdict["unobserved_files"] = sorted(set(verdict["unobserved_files"]))
+    if verdict["unobserved_files"]:
+        verdict["coverage"] = "unknown"
+    verdict["green"] = not verdict["problems"] and not verdict["runtime_refusal"]
+    return verdict
+
+
+def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=None):
+    """Judge raw shard evidence against the caller's independent population."""
+    requested = set(requested_files)
+    shards = []
+    problems = []
+    unknown = set()
+    assignments = {}
+    owners = {}
+    def problem(code, message, files):
+        problems.append({"code": code, "message": message, "files": sorted(files), "nodeids": []})
+        unknown.update(requested & set(files))
+    if not isinstance(rows, list):
+        problem("report_invalid", "report is not a list of shard observations", requested)
+        rows = []
+    for index, row in enumerate(rows):
+        shard = _judge_row(row, index)
+        shards.append(shard)
+        for name in row.get("files", []) if isinstance(row, dict) and isinstance(row.get("files"), list) else []:
+            if isinstance(name, str):
+                assignments.setdefault(name, []).append(index)
+        for node in set(shard["collected"]):
+            owners.setdefault(node, []).append(index)
+    missing = requested - assignments.keys()
+    foreign = assignments.keys() - requested
+    duplicated = {name for name, ids in assignments.items() if len(ids) > 1}
+    if missing:
+        problem("assigned_missing", "requested files have no shard assignment", missing)
+    if foreign:
+        problem("assigned_foreign", "shards assign files outside the request", requested | foreign)
+    if duplicated:
+        problem("assigned_duplicate", "files assigned to multiple shards", duplicated)
+    for node, ids in owners.items():
+        if len(ids) > 1:
+            for index in ids:
+                shard = shards[index]
+                rec = shard["reconciliation"]
+                rec.setdefault("in_other_shards", []).append(node)
+                message = "node ID(s) also collected by another shard"
+                if message not in rec["problems"]:
+                    rec["problems"].append(message)
+                    shard["problems"].append({"code": "cross_shard_collection", "message": message,
+                        "files": list(rows[index]["files"]), "nodeids": [node]})
+                shard["unobserved_files"] = sorted(set(shard["unobserved_files"]) | set(rows[index]["files"]))
+                shard["green"] = False
+                shard["coverage"] = "unknown"
+    if shards and not any(s["collected"] or s["failing_nodes"] for s in shards):
+        problem("population_empty", "no tests collected in the requested population; no passing test coverage", requested)
+        for shard in shards:
+            shard["green"] = False
+    if required_nodes is not None:
+        expected = sorted(required_nodes)
+        selected = sorted(n for s in shards for n in s["collected"])
+        records = [parse(row["output"]) for row in rows
+                   if isinstance(row, dict) and isinstance(row.get("output"), str)]
+        records = [r for r in records if _valid_record(r)]
+        reports = [r for record in records if record for r in record.get("reports", [])]
+        if (selected != expected or any(record.get("collect_only") or record.get("uncounted") for record in records if record)
+                or sorted((r[0], r[1], r[2]) for r in reports) != sorted((n, "call", "passed") for n in expected)):
+            problem("required_population", "not every reference table passed exactly once in the required population", requested)
+    if client_returncode and shards and (client_returncode != 1 or all(s["green"] for s in shards)):
+        problem("unexplained_client_exit", f"pbtest client exited {client_returncode} without an ordinary failed-run ending", requested)
+    if not shards and requested:
+        unknown.update(requested)
+    all_problems = [*problems, *(p for s in shards for p in s["problems"])]
+    return {"shards": shards, "green": bool(shards) and not all_problems,
+            "failing_nodes": sorted({n for s in shards for n in s["failing_nodes"]}),
+            "unobserved_files": sorted((unknown | {f for s in shards for f in s["unobserved_files"]}) & requested),
+            "problems": all_problems,
+            "runtime_refusal": [s["runtime_refusal"] for s in shards if s["runtime_refusal"]]}
+
+
 def main(argv: list[str] | None = None, *, preflight=None,
          resource_source: str | None = None, collection_spec=None,
          collection_source: str | None = None) -> int:
@@ -381,10 +717,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
     ``python -m pytest`` runs.
     """
 
-    if preflight is not None:
-        refused = preflight()
-        if refused:
-            return int(refused)
+    refused, refusal = (0, None) if preflight is None else preflight()
+    print(preflight_record(refused, refusal), flush=True)
+    if refused:
+        return int(refused)
     import pytest
 
     if argv is None:

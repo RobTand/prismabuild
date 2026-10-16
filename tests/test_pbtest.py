@@ -257,7 +257,7 @@ def test_two_shards_have_distinct_tmpdir_children_and_output(
         # The test itself is already admitted. Run exactly the prepared child,
         # rather than recursively submitting its mocked pbrun transport.
         calls.append(command)
-        argv, environment = admitted_child(command)
+        argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
         return actual_popen(argv, cwd=checkout, env=environment, **kwargs)
 
     with monkeypatch.context() as scoped:

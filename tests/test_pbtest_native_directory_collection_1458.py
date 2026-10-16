@@ -80,7 +80,7 @@ def _dispatch(root, monkeypatch, *, workers, shards=1, paths=("tests",)):
         if str(pbtest.PBRUN) not in [str(part) for part in command]:
             return REAL_POPEN(command, **kwargs)
         calls.append(command)
-        argv, environment = admitted_child(command)
+        argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
         return REAL_POPEN(argv, cwd=root, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)

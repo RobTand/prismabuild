@@ -104,7 +104,7 @@ def _real_dispatch(monkeypatch, checkout: Path, extra: list[str],
 
     def execute_admitted_child(command, **kwargs):
         calls.append(command)
-        argv, environment = admitted_child(command)
+        argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
         return actual_popen(argv, cwd=checkout, env=environment, **kwargs)
 
     with monkeypatch.context() as scoped:
@@ -317,13 +317,12 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
         assigned.append(index)
         key, nonce = identities[index]
         environment = {
-            name: value for name, value in os.environ.items()
+            name: value for name, value in kwargs.pop("env", dict(os.environ)).items()
             if not name.startswith("PRISMABUILD_ACTION_")}
         environment["PRISMABUILD_ACTION_KEY"] = key
         environment["PRISMABUILD_ACTION_NONCE"] = nonce
-        argv, shard_env = admitted_child(command)
-        return actual_popen(argv, cwd=checkout,
-                            env={**environment, **shard_env}, **kwargs)
+        argv, shard_env = admitted_child(command, environment=environment)
+        return actual_popen(argv, cwd=checkout, env=shard_env, **kwargs)
 
     def run_once(attempt: str) -> dict[Path, dict]:
         identities.clear()

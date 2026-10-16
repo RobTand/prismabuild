@@ -1910,6 +1910,40 @@ grant no deletion authority; the versioned pool input below supplies the
 opt-in lifetime contract. A naming-only client is not evidence of a deployed
 finalizer.
 
+### Complete shard verdict and invocation progress (C26)
+
+`pbtest_outcomes.judge_shards` owns shard and population judgment. Callers pass
+raw client observations and an independent `requested_files` roster. The owner
+returns failing node IDs, unobserved files, all reconciliation/completion
+problems and qualified runtime refusal. Missing or duplicated assignments,
+missing summaries, unexplained client endings and contradictory present
+completion records leave coverage unknown. A historical absent completion
+record remains readable. Collection-only and positively excluded quanta keep
+their existing rules; an entirely empty requested population cannot be green.
+`pbtest`, `pbmergeq` and the receipt shape gate consume this same judgment.
+The shape gate also supplies its exact required passing-node roster.
+An outer client exit of 1 can report ordinary shard test failures. Other
+nonzero outer exits leave the requested files unknown even when the shard
+records contain test failures; the known failing nodes remain in the verdict.
+
+The sealed recorder emits its first `prismabuild.pbtest_preflight.v1` decision
+before importing pytest. Dependency-pin refusal is typed at that boundary;
+an accepted decision prevents later test output from inventing runtime refusal.
+The coordinator records interpreter-absent refusal directly from eligibility.
+Human output is presentation and cannot control either refusal or progress.
+
+`--json PATH` retains its list report and atomically writes the companion
+`PATH.progress.json` using `prismabuild.pbtest_progress.v1`. Each invocation has
+a UUID, configured launch entrypoint and actual producer generation. Producer
+PID/path are diagnostic, so same-generation wrappers may fork or use runpy.
+Runner binds progress to its pre-launch identity and rejects stale, invalid or
+decreasing snapshots. Client completions advance as they occur, independently
+of final display order. The terminal companion carries counters/client statuses,
+refusal and report digest, without duplicating verdicts or populations. The
+report is published atomically before its terminal companion; failure to write
+requested output makes the client unsuccessful. Coordinator invocation variables
+are stripped before every submission/recovery child, preserving sealed identity.
+
 ### Generated files in a pbrun checkout
 
 A `pbrun` action runs in a fresh checkout of a snapshot commit. That commit is

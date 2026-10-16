@@ -73,8 +73,8 @@ def published_fixture(tmp_path):
     generations = []
     outcomes = (Path(__file__).resolve().parents[1] / "tools/fleet/pbtest_outcomes.py").read_text()
     for generation in ("A", "B"):
-        root = tmp_path / generation
-        root.mkdir()
+        root = tmp_path / generation / "tools"
+        root.mkdir(parents=True)
         (root / "pbtest.py").write_text(
             f"GENERATION = {generation!r}\n"
             "def discover(checkout, paths):\n"
@@ -100,7 +100,7 @@ def test_generation_module_loading_uses_its_owned_path_not_process_import_cache(
         runner.discover(tmp_path)
         assert Path(runner.outcomes.__file__).parent == expected
         assert Path(runner._pbtest.__file__).parent == expected
-        assert runner.outcomes.GENERATION == runner._pbtest.GENERATION == expected.name
+        assert runner.outcomes.GENERATION == runner._pbtest.GENERATION == expected.parent.name
 
 
 def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_phase(tmp_path, monkeypatch):
@@ -122,7 +122,10 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
     launched = []
 
     class Completed:
-        pid, returncode = 4242, 1
+        pid = 4242
+
+        def __init__(self, returncode):
+            self.returncode = returncode
 
         def poll(self):
             return self.returncode
@@ -147,7 +150,7 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
         report.write_text(json.dumps(rows))
         kwargs["stdout"].write(rows[0]["output"] + "\n")
         kwargs["stdout"].flush()
-        return Completed()
+        return Completed(rows[0]["returncode"])
 
     monkeypatch.setattr(mq.subprocess, "Popen", launch)
     batch = queue.run_batch(entries(1, 2, 3))
