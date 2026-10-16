@@ -711,9 +711,6 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: leave the active directory.  A state marker beside the checkpoint proves a
 #: retirement happened, so a later missing or truncated checkpoint refuses
 #: instead of reading as "no retirements".
-MOVERS_RETIRED = "movers-retired"
-MOVERS_RETIREMENT_CHECKPOINT = "checkpoint.json"
-MOVERS_RETIREMENT_STATE = "state.json"
 MOVERS_RETIREMENT_LOCK = "checkpoint.lock"
 MOVERS_ARCHIVE = "movers-archive"
 #: One checkpoint document names its own digest over the canonical body with
