@@ -40,7 +40,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     value = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    value.ensure_layout()
+    value.records.ensure_layout()
     value.publish(
         action_key=KEY,
         cas_root=str(tmp_path / "cas"),
@@ -62,7 +62,7 @@ def withdrawn(queue: pool.PoolQueue) -> pool.PoolQueue:
         status="failed",
         detail={"returncode": 1, "stdout": "", "stderr": "boom\n"},
     )
-    assert requeued == queue.item_path(pool.READY, KEY)
+    assert requeued == queue.records.item_path(pool.record_store.READY, KEY)
     ready = json.loads(requeued.read_text(encoding="utf-8"))
     assert "attempt_history" in ready, "the requeue is what puts the links here"
     assert queue.claim() is not None
@@ -80,7 +80,7 @@ def test_a_withdrawal_after_a_retry_is_readable(
     branch: ``pbrun`` exits 143 and ``pbwait`` renders a row.
     """
 
-    path = withdrawn.item_path(pool.WITHDRAWN, KEY)
+    path = withdrawn.records.item_path(pool.record_store.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
     summary = pbrun.outcome_summary(withdrawn, path, record)
@@ -103,7 +103,7 @@ def test_the_withdrawn_record_keeps_the_attempts_it_inherited(
     branch: the queue's own two readers of a withdrawal are unaffected.
     """
 
-    path = withdrawn.item_path(pool.WITHDRAWN, KEY)
+    path = withdrawn.records.item_path(pool.record_store.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
     assert "attempt_history" not in record

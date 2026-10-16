@@ -66,7 +66,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     into shape afterwards would assert the edit instead of the order.
     """
 
-    claimed_path = q.item_path(pool.CLAIMED, KEY)
+    claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     real = pool._write_json_atomic
 
     def dies_before_naming_itself(path, payload):
@@ -84,7 +84,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     # has moved and everything below is about something else.
     record = json.loads(claimed_path.read_text())
     assert "claimed_host" not in record, "claim named its box after all"
-    assert not q.lease_path(KEY).exists(), "a lease means the rewrite landed"
+    assert not q.records.lease_path(KEY).exists(), "a lease means the rewrite landed"
     assert q.ledger(HELD_BY).held() == DEMAND
     assert q.claim_intent_host(KEY, record) == HELD_BY
 
@@ -117,15 +117,15 @@ def test_withdraw_leaves_a_live_holders_claim_for_its_own_box(queue) -> None:
     result = _withdraw_here(queue)
 
     assert result["released"] == 0
-    assert queue.item_path(pool.CLAIMED, KEY).exists(), (
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists(), (
         "the claim of a box this one cannot signal was concluded from here")
     assert queue.ledger(HELD_BY).held() == DEMAND, (
         "the holder's tokens were dropped by an operator on another box")
-    claim = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    claim = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert "stop_pending" not in claim
     assert result["stop_pending"]["holder_host"] == HELD_BY
     # Durable regardless: the operator's decision is filed before any of this.
-    assert queue.item_path(pool.WITHDRAWN, KEY).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY).exists()
 
 
 def test_the_reaper_then_returns_the_tokens_to_that_same_box(queue) -> None:
@@ -143,7 +143,7 @@ def test_the_reaper_then_returns_the_tokens_to_that_same_box(queue) -> None:
     with mock.patch.object(pool, "_now", lambda: later):
         queue.reap_stale(timeout_s=-1)
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == {}
     assert queue.ledger(HELD_BY).available() == DEMAND
 
@@ -159,12 +159,12 @@ def test_the_ledger_alone_is_enough_to_name_the_holder(queue) -> None:
     """
 
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
 
     result = _withdraw_here(queue)
 
     assert result["host"] == HELD_BY
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == DEMAND
 
 
@@ -178,7 +178,7 @@ def test_with_no_evidence_at_all_no_holder_is_invented(queue) -> None:
     """
 
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
     assert queue.ledger(HELD_BY).release(KEY) == 1
 
     result = _withdraw_here(queue)
@@ -199,12 +199,12 @@ def test_a_ready_item_never_borrows_a_live_claimants_intent(queue) -> None:
 
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
         queue._write_claim_intent(KEY, owner=f"{HELD_BY}:1:abcd1234")
-    ready = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert queue.claim_intent_host(KEY, ready) == HELD_BY, (
         "the marker does not name the claimant; this test proves nothing")
 
     result = _withdraw_here(queue)
 
-    assert result["state"] == pool.READY
+    assert result["state"] == pool.record_store.READY
     assert result["host"] is None, (
         "a ready item borrowed the name of a claimant that holds nothing here")
