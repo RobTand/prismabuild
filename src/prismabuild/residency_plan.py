@@ -850,20 +850,7 @@ def superseded_path(queue, plan: Mapping[str, object]) -> Path:
 
     key = _action_key(plan.get("consumer_action_key"),
                       where="consumer_action_key")
-    return _superseded_path(queue, key, plan_sha256(plan))
-
-
-def _superseded_path(queue, consumer_action_key: str,
-                     plan_sha256: str) -> Path:
-    """One plan *identity*'s retirement marker: a sibling of the live plan.
-
-    Keyed by the plan body's digest as well as the consumer, so a marker
-    cannot cover a later plan of the same consumer -- a stale cancellation
-    must never retire a concurrent replacement.
-    """
-
-    return (queue.records.residency_plan_path(consumer_action_key).parent / SUPERSEDED
-            / f"{consumer_action_key}.{plan_sha256}.superseded.json")
+    return queue.records.residency_supersession_path(key, plan_sha256(plan))
 
 
 def plan_sha256(plan: Mapping[str, object]) -> str:
@@ -975,7 +962,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     key = _action_key(plan.get("consumer_action_key"),
                       where="consumer_action_key")
     digest = plan_sha256(plan)
-    state, marker, error = _read_marker(_superseded_path(queue, key, digest))
+    state, marker, error = _read_marker(queue.records.residency_supersession_path(key, digest))
     if state == "absent":
         return None
     if state == "unreadable" or marker is None:
@@ -1070,7 +1057,7 @@ def mark_superseded(queue, consumer_action_key: str, *,
         digest = plan_sha256(current_plan)
         if plan is not None and plan_sha256(plan) != digest:
             return None
-        path = _superseded_path(queue, key, digest)
+        path = queue.records.residency_supersession_path(key, digest)
         state, existing, _error = _read_marker(path)
         if state == "unreadable":
             return None       # unknown state: an operator resolves it
@@ -1323,7 +1310,7 @@ def _retire_marker(queue, consumer_action_key: str, digest: str,
     rather than deleted.
     """
 
-    path = _superseded_path(queue, consumer_action_key, digest)
+    path = queue.records.residency_supersession_path(consumer_action_key, digest)
     try:
         if not path.is_file():
             return

@@ -2586,7 +2586,8 @@ def _land_summary_locked(
                     archive = path.parent / "unreadable"
                     archive.mkdir(parents=True, exist_ok=True)
                     os.rename(path, archive / (
-                        f"{path.stem}.{time.time_ns()}.{secrets.token_hex(4)}.json"
+                        record_store.RecordStore.lane_unreadable_name(
+                            path, time.time_ns(), secrets.token_hex(4))
                     ))
                 continue
         else:

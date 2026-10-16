@@ -1,4 +1,4 @@
-"""Read-only questions about records filed under a queue key.
+"""Queue names, publication profiles and questions about filed records.
 
 Queue names, JSON intake and named observations live here. Domain callers
 retain scheduling, lifecycle and retention authority. Reads take no lock
@@ -1163,6 +1163,18 @@ class RecordStore:
     def lane_item_address(self, state: str, key: str) -> Path:
         return self.prepare_lane_state(state) / f"{key}.json"
 
+    def released_origin_consumer_path(self, consumer: str, checked_ref: Mapping[str, str]) -> Path:
+        raw = json.dumps(dict(checked_ref), sort_keys=True, separators=(",", ":")).encode()
+        digest = digest_primitives.raw_sha256(raw)
+        return self.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
+
+    def residency_supersession_path(self, consumer: str, digest: str) -> Path:
+        return self.residency_plan_path(consumer).parent / "superseded" / f"{consumer}.{digest}.superseded.json"
+
+    @staticmethod
+    def lane_unreadable_name(path: Path, stamp: int, token: str) -> str:
+        return f"{path.stem}.{stamp}.{token}.json"
+
     def worker_directory(self) -> Path:
         return self.root / WORKERS
 
@@ -1264,6 +1276,7 @@ class RecordStore:
             stream.write(line + "\n")
 
     def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        """Replace a canonical store address or a path held by a domain transition."""
         _write_json(path, payload)
 
 

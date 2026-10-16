@@ -7413,14 +7413,6 @@ def _release_index_body(consumer: str, checked_ref: Mapping[str, str]) -> bytes:
         sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
-def _release_index_path(queue, consumer: str,
-                        checked_ref: Mapping[str, str]) -> Path:
-    digest = hashlib.sha256(json.dumps(
-        dict(checked_ref), sort_keys=True,
-        separators=(",", ":")).encode()).hexdigest()
-    return queue.records.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
-
-
 def _index_release(queue, consumer: str, checked_ref: Mapping[str, str]) -> None:
     """File the queue-wide index entry for one release (#954).
 
@@ -7432,7 +7424,7 @@ def _index_release(queue, consumer: str, checked_ref: Mapping[str, str]) -> None
 
     from prismabuild import pool as pool_mod
 
-    path = _release_index_path(queue, consumer, checked_ref)
+    path = queue.records.released_origin_consumer_path(consumer, checked_ref)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         queue.records.file_released_origin_index_at(
@@ -7486,7 +7478,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
                 f"unknown-retain: release index {name} does not name "
                 f"{consumer[:12]}")
         checked_ref = _checked_origin_ref(body.get("ref"))
-        if _release_index_path(queue, consumer, checked_ref).name != name:
+        if queue.records.released_origin_consumer_path(consumer, checked_ref).name != name:
             raise ProducedOutputError(
                 f"unknown-retain: release index {name} names another batch")
         instance, _template = _origin_ref_scope(queue.root, checked_ref)

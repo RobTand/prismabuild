@@ -142,8 +142,10 @@ def test_an_unreadable_marker_is_named_not_absent(
     queue, _stage, _ = fleet
     world, *_ = _retired(fleet, tmp_path, monkeypatch,
                          stage_move.STAGED_DESTINATION_CONFLICT)
-    path = residency_plan._superseded_path(
-        queue, world.successor, residency_plan.plan_sha256(world.plan))
+    path = queue.records.residency_supersession_path(
+        world.successor,
+        residency_plan.plan_sha256(world.plan),
+    )
     mode = path.stat().st_mode
     path.chmod(0o644)          # the marker is published read-only
     path.write_text("{torn")
