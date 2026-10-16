@@ -50,7 +50,7 @@ NEW_EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 
 def _queue(tmp_path: Path, *, announce_ram: bool = True) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
     ledger = queue.tier_ledger(STAGE_TIER)
     assert ledger.acquire(STAGE_LEAD, {"stage_gib": 2})
@@ -60,7 +60,7 @@ def _queue(tmp_path: Path, *, announce_ram: bool = True) -> pool.PoolQueue:
         "range_start_bytes": 0, "range_end_bytes": RANGE,
         "bytes_staged": RANGE, "complete": True, "seconds": 1.0,
         "unix": 1000.0})
-    queue.item_path(pool.DONE, STAGE_LEAD).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.DONE, STAGE_LEAD).write_text(json.dumps({
         "action_key": STAGE_LEAD, "status": "executed",
         "residency": _block(range_start_bytes=0, range_end_bytes=RANGE,
                             tier_id=STAGE_TIER)}))
@@ -147,12 +147,12 @@ def _map_with_ram(queue: pool.PoolQueue, *, ram_epoch: str) -> Path:
     mapping = residency_map.overlay_ram(
         residency_map.compose([_stage_fragment()]), [_ram_fragment(ram_epoch)],
         ram_tier_id=RAM_TIER, ram_root=RAM_ROOT, ram_epoch=ram_epoch)
-    return residency_map.write_map(queue.residency_map_path(CONSUMER), mapping)
+    return residency_map.write_map(queue.records.residency_map_path(CONSUMER), mapping)
 
 
 def _stage_only_map(queue: pool.PoolQueue) -> Path:
     return residency_map.write_map(
-        queue.residency_map_path(CONSUMER),
+        queue.records.residency_map_path(CONSUMER),
         residency_map.compose([_stage_fragment()]))
 
 
@@ -196,8 +196,8 @@ def test_a_stale_epoch_map_is_refused_at_claim_before_tokens(
     _publish_consumer(queue)
 
     assert queue.claim(owner="w-consumer", capacity={"cpu": 4}) is None
-    assert queue.item_path(pool.READY, CONSUMER).exists()
-    assert not queue.item_path(pool.CLAIMED, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).exists()
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_ram_epoch_stale"
     assert denial["evidence"]["residency"]["state"] == "ram_epoch_stale"
@@ -218,7 +218,7 @@ def test_a_map_naming_a_ram_tier_nobody_announced_is_refused(
     _publish_consumer(queue)
 
     assert queue.claim(owner="w-consumer", capacity={"cpu": 4}) is None
-    assert queue.item_path(pool.READY, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_ram_epoch_stale"
     assert queue.ledger().held() == {}
@@ -234,7 +234,7 @@ def test_a_current_epoch_map_still_claims(tmp_path: Path) -> None:
 
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
-    assert not queue.item_path(pool.READY, CONSUMER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
 
 
 def test_a_stage_only_map_still_claims(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_the_ready_gpu_row_room_reads_the_ram_epoch(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     _map_with_ram(queue, ram_epoch=OLD_EPOCH)
     _publish_consumer(queue)
-    item = pool._read_json(queue.item_path(pool.READY, CONSUMER))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, CONSUMER))
     assert item is not None
 
     def room() -> dict[str, object] | None:

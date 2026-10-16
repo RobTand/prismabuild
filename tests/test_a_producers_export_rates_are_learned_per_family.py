@@ -250,7 +250,7 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
         assert al._tokens(queue, export_key, "cpu") == al._tokens(queue, export_key, "mem_gb") == 0
         funded.append(export["funded"]["cpus"])
     assert sorted(funded) == [[cpu] for cpu in sorted(_allowance(queue, owner)["cpus"])]
-    assert queue.item_path(pool.READY, foreign).exists()
+    assert queue.records.item_path(pool.record_store.READY, foreign).exists()
 
     unfunded = al._export(spool, "g2")
     bystander = al._foreign(spool, cas, "bystander", {"cpu": 1, "mem_gb": 1})
@@ -261,7 +261,7 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     assert denial["evidence"]["withheld_for"] == foreign
     assert denial["evidence"]["dependent_of"] == owner
     assert queue.passes(unfunded) == 0
-    assert queue.item_path(pool.READY, bystander).exists()
+    assert queue.records.item_path(pool.record_store.READY, bystander).exists()
     assert queue.passes(bystander) == 0
 
 

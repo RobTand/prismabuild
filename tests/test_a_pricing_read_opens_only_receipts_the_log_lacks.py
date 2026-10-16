@@ -49,7 +49,7 @@ def _receipt(index: int) -> dict[str, object]:
 def _file_directly(queue: pool.PoolQueue, count: int) -> None:
     """Receipts as a writer from before the pricing log filed them."""
 
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(count):
         (directory / f"{_key(index)}.json").write_text(
@@ -60,7 +60,7 @@ def _count_receipt_opens(monkeypatch: pytest.MonkeyPatch,
                          queue: pool.PoolQueue) -> list[str]:
     """Every read of a file inside ``movers/``, by name."""
 
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     opened: list[str] = []
     real = Path.read_bytes
 
