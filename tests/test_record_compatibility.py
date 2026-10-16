@@ -225,3 +225,48 @@ def test_pythonpath_poison_cannot_supply_a_retained_dependency(generations, tmp_
     assert all("site-packages" not in path for path in observed["sys_path"])
     assert str(poison.parent) not in observed["sys_path"]
     assert all(Path(row["path"]).is_relative_to(old) for row in observed["imports"].values())
+
+
+def test_setup_reader_cannot_stand_in_for_the_old_consumer(generations, tmp_path):
+    driver = tmp_path / "setup_only.py"
+    driver.write_text('''import base64
+def operate(request, store, load):
+    module = load("prismabuild.residency_map")
+    path = store / "landing.json"
+    path.write_bytes(base64.b64decode(request["raw"]))
+    cached = module.read_landing(path)
+    request["_consumer_boundary"]()
+    return cached
+''')
+    for generation, old, manifest in generations:
+        observed = invoke(old, "landing/horizon", tmp_path / generation / "setup-only",
+                          raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest,
+                          adapter_path=driver, evidence=evidence(generation + "/setup-only-control.json"))
+        assert observed["returncode"] == 3 and not observed["catalogued_entry_verified"], observed
+        assert any(call[1] == "read_landing" for call in observed["setup_calls"])
+        assert not any(call[1] == "read_landing" for call in observed["calls"])
+        assert observed["compiled_source_code_verified"]
+        assert observed["selected_adapter_sha256"] == hashlib.sha256(driver.read_bytes()).hexdigest()
+
+
+def test_forged_code_with_an_old_reader_filename_is_refused(generations, tmp_path):
+    driver = tmp_path / "forged_reader.py"
+    driver.write_text('''import types
+def operate(request, store, load):
+    module = load("prismabuild.residency_map")
+    scope = {}
+    exec(compile("def read_landing(path): return {'forged': True}", module.__file__, "exec"), scope)
+    code = scope["read_landing"].__code__.replace(co_firstlineno=module.read_landing.__code__.co_firstlineno)
+    module.read_landing = types.FunctionType(code, module.__dict__)
+    request["_consumer_boundary"]()
+    return module.read_landing(store / "incoming.json")
+''')
+    for generation, old, manifest in generations:
+        observed = invoke(old, "landing/horizon", tmp_path / generation / "forged-reader",
+                          raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest,
+                          adapter_path=driver, evidence=evidence(generation + "/forged-reader-control.json"))
+        assert observed["returncode"] == 2, observed
+        assert "executing code differs from compiled immutable source" in observed["attestation_error"]
+        assert not observed["compiled_source_code_verified"]
+        imported = observed["imports"]["prismabuild.residency_map"]
+        assert imported["sha256"] == json.loads(manifest.read_bytes())["files"][imported["relative"]]

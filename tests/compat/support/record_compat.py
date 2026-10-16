@@ -39,13 +39,14 @@ def reached(observed, reference):
                for call in observed.get("calls", []))
 
 
-def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
+def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None):
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
+    adapter_path = HERE / "compat_adapters.py" if adapter_path is None else adapter_path
     command = [sys.executable, "-I", "-S", str(HERE / "compat_isolate.py"),
-               "--root", str(root), "--adapters", str(HERE / "compat_adapters.py"),
+               "--root", str(root), "--adapters", str(adapter_path),
                "--store", str(store)]
     if manifest:
         command.extend(["--manifest", str(manifest)])
@@ -60,7 +61,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
                      "--ro-bind", str(HERE), str(stable / "driver"),
                      "--bind", str(store), str(stable / "store")]
         command = [sys.executable, "-I", "-S", str(stable / "driver/compat_isolate.py"),
-                   "--root", str(stable / "generation"), "--adapters", str(stable / "driver/compat_adapters.py"),
+                   "--root", str(stable / "generation"), "--adapters", str(
+                       stable / "driver" / adapter_path.name if adapter_path.parent == HERE else adapter_path),
                    "--store", str(stable / "store")]
         if manifest:
             namespace.extend(["--ro-bind", str(manifest), str(stable / "manifest.json")])
@@ -96,6 +98,12 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
         result["returncode"] = 3
         result["entry_error"] = "adapter did not reach its catalogued production entry"
+    if process.returncode in (0, 1) and raw is not None and not result.get("consumer_boundary"):
+        result["returncode"] = 3
+        result["entry_error"] = "reader did not mark the end of fixture setup"
+    if process.returncode in (0, 1) and not result.get("compiled_source_code_verified"):
+        result["returncode"] = 2
+        result["attestation_error"] = "executed production code was not verified against immutable source"
     if raw is None and kind.fixture_source and result["returncode"] == 0:
         captured = result["result"]
         source = Path(captured["source_file"]).relative_to(
@@ -117,6 +125,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
 def accepted(result):
     assert result["returncode"] == 0, result
     assert result.get("isolated") and result.get("no_site") and result.get("imports"), result
+    assert result.get("compiled_source_code_verified") and result.get("stdlib_imports"), result
+    assert result.get("interpreter", {}).get("sha256"), result
     return result["result"]
 
 

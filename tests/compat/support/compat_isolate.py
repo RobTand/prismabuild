@@ -143,6 +143,7 @@ def main():
               "interpreter": {"path": sys.executable, "resolved_path": str(Path("/proc/self/exe").resolve()),
                               "sha256": sha(Path("/proc/self/exe"))},
               "adapters_sha256": {p.name: sha(p) for p in sorted(args.adapters.parent.glob("compat*adapters.py"))},
+              "selected_adapter_sha256": sha(args.adapters),
               "request": request["case"]}
     code = 0
     calls = set()
@@ -201,6 +202,7 @@ def main():
         output["setup_calls"] = sorted(setup_calls)
         output["consumer_boundary"] = consumer_started
         output["executing_code_sha256"] = code_hashes
+        output["compiled_source_code_verified"] = bool(checked_codes) and not code_errors
     try:
         output["imports"], output["stdlib_imports"] = attest(root, stdlib, manifest)
     except Exception as error:
