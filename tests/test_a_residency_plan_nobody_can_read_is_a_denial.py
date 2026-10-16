@@ -81,7 +81,7 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 5})
     return q
 
@@ -132,7 +132,7 @@ def _write_plan_from_a_newer_writer(queue: pool.PoolQueue,
     """
 
     body = {**plan, "demand_source_v2": {"receipt": "r" * 64}}
-    path = queue.residency_plan_path(CONSUMER)
+    path = queue.records.residency_plan_path(CONSUMER)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(body))
 
@@ -168,7 +168,7 @@ def test_the_window_names_the_consumer_whose_plan_it_cannot_read(queue) -> None:
     assert "demand_source_v2" in str(unreadable[0]["error"]), \
         "the event must name what the reader refused, not merely that it did"
     # ...and nothing was published on a plan nobody could read.
-    assert not queue.item_path(pool.READY, _hexkey("mover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
 
 
 def test_the_window_records_a_denial_an_operator_reads(queue) -> None:
@@ -263,7 +263,7 @@ def test_a_missing_map_with_a_readable_plan_is_still_map_not_composed(
 
     # ...and once the loop composes it, the item claims.
     residency_map.write_map(
-        queue.residency_map_path(CONSUMER),
+        queue.records.residency_map_path(CONSUMER),
         residency_map.compose([{
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER,

@@ -53,15 +53,15 @@ TOKEN = "t" * 32
 #: first status, second status, first directory, second directory,
 #: the status word each record carries.
 ORDERS = [
-    ("failed", "executed", pool.FAILED, pool.DONE, "failed", "executed"),
-    ("executed", "failed", pool.DONE, pool.FAILED, "executed", "failed"),
+    ("failed", "executed", pool.record_store.FAILED, pool.record_store.DONE, "failed", "executed"),
+    ("executed", "failed", pool.record_store.DONE, pool.record_store.FAILED, "executed", "failed"),
 ]
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     value = pool.PoolQueue(tmp_path / "queue")
-    value.ensure_layout()
+    value.records.ensure_layout()
     return value
 
 
@@ -116,7 +116,7 @@ def test_the_current_ending_is_the_later_generation(
         tmp_path: Path, first, second, first_state, second_state,
         first_word, second_word) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
     answer = _answer(queue)
@@ -127,7 +127,7 @@ def test_the_current_ending_is_the_later_generation(
     assert answer["generation"] == pytest.approx(
         float(pair["second"]["published_unix"]))
     assert answer["ambiguous"] is False
-    assert sorted(answer["coexisting"]) == sorted([pool.DONE, pool.FAILED])
+    assert sorted(answer["coexisting"]) == sorted([pool.record_store.DONE, pool.record_store.FAILED])
     assert [entry["state"] for entry in answer["history"]] == [first_state]
     assert [entry["generation"] for entry in answer["history"]] == [
         pytest.approx(float(pair["first"]["published_unix"]))]
@@ -152,7 +152,7 @@ def test_pbstatus_endings_name_the_current_generation(
     double-record state instead of leaving two rows with no answer."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
     rows = [row for row in pbstatus.read_endings(queue.root, limit=10)
@@ -181,7 +181,7 @@ def test_mcp_action_reports_the_current_generation(
         tmp_path: Path, first, second, first_state, second_state,
         first_word, second_word) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
     session = pbmcp.Session(queue_root=queue.root, cas_root=tmp_path / "cas",
@@ -209,7 +209,7 @@ def test_pbwait_still_binds_the_generation(
     """``pbwait``'s reader already resolves exactly; it must stay agreeing."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
     landed, generation = pbrun.outcome_poll(
@@ -228,7 +228,7 @@ def _plan_fixture(tmp_path: Path):
     """A consumer's frozen plan naming one mover, and a staged-wait record."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     mover = _hexkey("generation")
     size = 22 * 10 ** 9
     row = {**_row(queue, mover, {STAGE_KIND: 21, "cpu": 2, "mem_gb": 1}),
@@ -268,7 +268,7 @@ def test_the_tier_plan_resolves_the_current_generation(
     first_generation, second_generation = now - 100.0, now - 50.0
 
     def _file(state: str, generation: float, word: str) -> None:
-        path = queue.item_path(state, mover)
+        path = queue.records.item_path(state, mover)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "action_key": mover, "status": word,
@@ -284,7 +284,7 @@ def test_the_tier_plan_resolves_the_current_generation(
     assert verdict is not None
     entry = next(one for one in verdict["movers"]
                  if one["key"] == mover)
-    if second_state == pool.FAILED:
+    if second_state == pool.record_store.FAILED:
         assert entry["state"] == "failed", (
             f"a failed newest generation read as {entry['state']!r}")
     else:
@@ -298,13 +298,13 @@ def test_a_lone_legacy_record_is_still_the_keys_ending(tmp_path: Path) -> None:
     reader on the only account of what happened."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed"}))
 
     answer = _answer(queue)
 
-    assert answer["state"] == pool.FAILED
+    assert answer["state"] == pool.record_store.FAILED
     assert answer["generation"] is None
     assert answer["ambiguous"] is False
 
@@ -315,15 +315,15 @@ def test_an_unorderable_failure_beside_a_success_is_never_success(
     ordered, and an unknown generation is never read as success."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "executed", "published_unix": 5.0}))
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed"}))
 
     answer = _answer(queue)
 
-    assert answer["state"] == pool.FAILED, (
+    assert answer["state"] == pool.record_store.FAILED, (
         "an unorderable failure beside a success answered success")
     assert answer["ambiguous"] is True
 
@@ -334,17 +334,17 @@ def test_an_unreadable_failure_beside_a_success_is_never_success(
     turns a success claim into a confident one."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "executed", "published_unix": 5.0}))
-    queue.item_path(pool.FAILED, KEY).write_text("{not json")
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text("{not json")
 
     answer = _answer(queue)
 
     assert answer["state"] is None, (
         "an unreadable terminal was read around and reported as success")
     assert answer["ambiguous"] is True
-    assert [entry["state"] for entry in answer["unreadable"]] == [pool.FAILED]
+    assert [entry["state"] for entry in answer["unreadable"]] == [pool.record_store.FAILED]
 
 
 def test_a_stale_link_never_claims_over_an_unreadable_slot(
@@ -355,11 +355,11 @@ def test_a_stale_link_never_claims_over_an_unreadable_slot(
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.FAILED, KEY).write_text("{not json")
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text("{not json")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed", "published_unix": 9.0,
-        "supersedes_terminal": {"state": pool.FAILED, "status": "failed",
+        "supersedes_terminal": {"state": pool.record_store.FAILED, "status": "failed",
                                 "published_unix": 4.0}}))
 
     answer = _answer(queue)
@@ -376,17 +376,17 @@ def test_a_link_does_not_outrank_a_newer_readable_generation(
     newer generation; ordering wins over the historical link."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed", "published_unix": 9.0,
-        "supersedes_terminal": {"state": pool.FAILED, "status": "failed",
+        "supersedes_terminal": {"state": pool.record_store.FAILED, "status": "failed",
                                 "published_unix": 5.0}}))
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed", "published_unix": 10.0}))
 
     answer = _answer(queue)
 
-    assert answer["state"] == pool.FAILED
+    assert answer["state"] == pool.record_store.FAILED
     assert answer["generation"] == pytest.approx(10.0)
 
 
@@ -396,32 +396,32 @@ def test_a_carrier_with_no_generation_is_not_answered_by_its_link(
     nothing to order by, so the link it carries cannot make it current."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed",
-        "supersedes_terminal": {"state": pool.FAILED, "status": "failed",
+        "supersedes_terminal": {"state": pool.record_store.FAILED, "status": "failed",
                                 "published_unix": 5.0}}))
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed", "published_unix": 5.0}))
 
     answer = _answer(queue)
 
-    assert answer["state"] != pool.DONE, (
+    assert answer["state"] != pool.record_store.DONE, (
         "a generation-less carrier was answered by its historical link")
     assert answer["ambiguous"] is True
 
 
 @pytest.mark.parametrize("first_state,second_state", [
-    (pool.DONE, pool.FAILED), (pool.FAILED, pool.DONE)])
+    (pool.record_store.DONE, pool.record_store.FAILED), (pool.record_store.FAILED, pool.record_store.DONE)])
 def test_an_unlinked_pair_resolves_by_generation(
         tmp_path: Path, first_state, second_state) -> None:
     """Basic fallback coverage the linked producer pairs masked: with no
     ``supersedes_terminal`` anywhere, the newer generation still answers."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for state, generation in ((first_state, 4.0), (second_state, 9.0)):
-        queue.item_path(state, KEY).write_text(json.dumps(
+        queue.records.item_path(state, KEY).write_text(json.dumps(
             {"action_key": KEY, "status": state, "published_unix": generation}))
 
     answer = _answer(queue)
@@ -437,17 +437,17 @@ def test_a_tie_between_generations_prefers_the_failure(
     """Equal generations cannot order a winner; the failure stands and the
     ambiguity is reported, in either directory-insertion order."""
 
-    for order in ((pool.DONE, pool.FAILED), (pool.FAILED, pool.DONE)):
+    for order in ((pool.record_store.DONE, pool.record_store.FAILED), (pool.record_store.FAILED, pool.record_store.DONE)):
         root = tmp_path / f"queue-{order[0]}"
         queue = pool.PoolQueue(root)
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         for state in order:
-            queue.item_path(state, KEY).write_text(json.dumps(
+            queue.records.item_path(state, KEY).write_text(json.dumps(
                 {"action_key": KEY, "status": state, "published_unix": 7.0}))
 
         answer = queue.current_ending(KEY)
 
-        assert answer["state"] == pool.FAILED
+        assert answer["state"] == pool.record_store.FAILED
         assert answer["ambiguous"] is True
 
 
@@ -458,15 +458,15 @@ def test_a_malformed_generation_never_answers_success(
     never outranks a readable failure."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "executed", "published_unix": malformed}))
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed", "published_unix": 5.0}))
 
     answer = _answer(queue)
 
-    assert answer["state"] == pool.FAILED, (
+    assert answer["state"] == pool.record_store.FAILED, (
         f"a malformed generation ({malformed!r}) was read as authoritative")
     assert answer["ambiguous"] is True
 
@@ -478,22 +478,26 @@ def test_the_resolution_is_pure_over_one_captured_record_set(
     the census and the ordered answer."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "executed", "published_unix": 4.0}))
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps(
         {"action_key": KEY, "status": "failed", "published_unix": 9.0}))
-    queue.item_path(pool.WITHDRAWN, KEY).write_text("{not json")
+    queue.records.item_path(pool.record_store.WITHDRAWN, KEY).write_text("{not json")
 
-    readable, unreadable = queue.read_terminal_candidates(KEY)
-    assert set(readable) == {pool.DONE, pool.FAILED}
-    assert [entry["state"] for entry in unreadable] == [pool.WITHDRAWN]
+    capture = queue.records.terminal_candidates(KEY)
+    readable = {o.address.state: (o.address.path, o.result.value)
+                for o in capture.candidates if isinstance(o.result, pool.record_store.Present)}
+    unreadable = [{"state": o.address.state} for o in capture.candidates
+                  if isinstance(o.result, pool.record_store.Unknown)]
+    assert set(readable) == {pool.record_store.DONE, pool.record_store.FAILED}
+    assert [entry["state"] for entry in unreadable] == [pool.record_store.WITHDRAWN]
 
-    answer = queue.resolve_ending(readable, unreadable)
+    answer = queue.resolve_ending(capture)
 
-    assert answer["state"] == pool.FAILED
-    assert answer["record"] is readable[pool.FAILED][1]
-    assert answer["path"] == readable[pool.FAILED][0]
+    assert answer["state"] == pool.record_store.FAILED
+    assert answer["record"] is readable[pool.record_store.FAILED][1]
+    assert answer["path"] == readable[pool.record_store.FAILED][0]
 
 
 def test_resolve_state_keeps_the_ordered_record_over_the_census(
@@ -502,13 +506,13 @@ def test_resolve_state_keeps_the_ordered_record_over_the_census(
     the tool reports the resolution's record, never a second read's."""
 
     ordered = {"action_key": KEY, "status": "failed", "published_unix": 9.0}
-    census = {pool.FAILED: {"action_key": KEY, "status": "failed",
+    census = {pool.record_store.FAILED: {"action_key": KEY, "status": "failed",
                             "published_unix": 3.0}}
-    view = {"state": pool.FAILED, "record": ordered}
+    view = {"state": pool.record_store.FAILED, "record": ordered}
 
     state, record, _answer = pbmcp._resolve_state(census, view)
 
-    assert state == pool.FAILED
+    assert state == pool.record_store.FAILED
     assert record == ordered, "the census record replaced the ordered one"
 
 
@@ -517,9 +521,9 @@ def test_an_unknown_mcp_answer_never_falls_back_to_directory_order(
     """Review correction 2: an unknown or failed resolution stays unknown;
     it is not re-read as the old directory-order success."""
 
-    census = {pool.DONE: {"action_key": KEY, "status": "executed",
+    census = {pool.record_store.DONE: {"action_key": KEY, "status": "executed",
                           "published_unix": 9.0},
-              pool.FAILED: {"action_key": KEY, "status": "failed",
+              pool.record_store.FAILED: {"action_key": KEY, "status": "failed",
                             "published_unix": 10.0}}
     view = {"state": None, "record": None, "ambiguous": True}
 
@@ -542,8 +546,8 @@ def test_pbstatus_marks_current_only_when_path_and_generation_match(
     match too, and a mismatch is unknown with a reason."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    path = queue.item_path(pool.DONE, KEY)
+    queue.records.ensure_layout()
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     path.write_text(json.dumps({"action_key": KEY, "status": "executed",
                                 "published_unix": 5.0, "finished_unix": 5.0}))
     replaced = []
@@ -578,12 +582,12 @@ def test_public_tools_report_unknown_not_absent_for_an_unreadable_terminal(
     unknown with the unreadable path and reason, not ``found: false``."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+    queue.records.ensure_layout()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed", "published_unix": 5.0,
         "finished_unix": 5.0, "attempts": 1}))
-    queue.item_path(pool.FAILED, KEY).write_text("{not json")
-    failed_path = str(queue.item_path(pool.FAILED, KEY))
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text("{not json")
+    failed_path = str(queue.records.item_path(pool.record_store.FAILED, KEY))
 
     session = _session(queue, tmp_path)
     action = session.call("pb_action", {"key_prefix": KEY[:12]})
@@ -592,7 +596,7 @@ def test_public_tools_report_unknown_not_absent_for_an_unreadable_terminal(
         "known terminal records answered as an absent key")
     unresolved = action["unresolved_terminals"]
     assert [entry["state"] for entry in unresolved["unreadable"]] == [
-        pool.FAILED]
+        pool.record_store.FAILED]
     assert unresolved["unreadable"][0]["path"] == failed_path
     assert unresolved["unreadable"][0]["reason"]
 
@@ -615,10 +619,10 @@ def test_a_failed_terminal_capture_is_unavailable_not_an_absent_key(
     empty census."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     # A decision makes the prefix resolvable without a terminal marker, so
     # the call reaches the failing capture rather than an unresolved prefix.
-    decisions = queue.root / pool.WITHDRAWN / "decisions" / KEY
+    decisions = queue.root / pool.record_store.WITHDRAWN / "decisions" / KEY
     decisions.mkdir(parents=True)
     (decisions / "5.json").write_text(json.dumps(
         {"action_key": KEY, "published_unix": 5.0}))
@@ -629,10 +633,8 @@ def test_a_failed_terminal_capture_is_unavailable_not_an_absent_key(
     # Both the capture and the composed convenience are refused, so the test
     # reproduces the swallowed failure on a candidate that reads terminals
     # through either name.
-    monkeypatch.setattr(pool.PoolQueue, "read_terminal_candidates", refuse,
-                        raising=False)
-    monkeypatch.setattr(pool.PoolQueue, "current_ending", refuse,
-                        raising=False)
+    monkeypatch.setattr(pool.record_store.RecordStore, "terminal_candidates", refuse)
+    monkeypatch.setattr(pool.PoolQueue, "current_ending", refuse)
 
     session = _session(queue, tmp_path)
     body = session.call("pb_action", {"key_prefix": KEY[:12]})
@@ -649,8 +651,8 @@ def test_an_absent_key_is_still_absent_for_public_tools(tmp_path: Path) -> None:
     its prefix resolvable) is still absent, with no unresolved terminals."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    decisions = queue.root / pool.WITHDRAWN / "decisions" / KEY
+    queue.records.ensure_layout()
+    decisions = queue.root / pool.record_store.WITHDRAWN / "decisions" / KEY
     decisions.mkdir(parents=True)
     (decisions / "5.json").write_text(json.dumps(
         {"action_key": KEY, "published_unix": 5.0}))

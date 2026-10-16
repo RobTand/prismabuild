@@ -107,7 +107,7 @@ def _stage_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(TOTAL),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -129,7 +129,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(TOTAL),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -151,7 +151,7 @@ def _promoted(tmp_path: Path):
     """Stage the range, promote it once, and return the fixture."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest, manifest_sha, body = _manifest(tmp_path)
     staged = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, CONSUMER, STAGE_MOVER))
@@ -173,7 +173,7 @@ def _forget(queue: pool.PoolQueue, consumer: str = CONSUMER,
             mover: str = RAM_MOVER) -> None:
     """What a kill before the end-of-range records leaves: no records."""
 
-    residence = queue.root / pool.RESIDENCY
+    residence = queue.root / pool.record_store.RESIDENCY
     residency_map.fragment_path(residence, consumer, mover).unlink()
     reader_lease.material_path(residence, consumer, mover).unlink()
 
@@ -218,7 +218,7 @@ def test_a_restarted_promotion_adopts_without_a_copy_or_a_grace(
     assert phases["content_proof"]["calls"] == N, phases
     # The restart files its records again, dating the adopted inodes.
     material = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, RAM_MOVER)
     assert isinstance(material, dict), material
     dated = {os.path.normpath(str(entry["stage_path"])): dict(entry["file_id"])
              for entry in material["entries"].values()}
@@ -254,7 +254,7 @@ def test_a_digest_less_stage_copy_adopts_at_publication(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest, manifest_sha, body = _manifest(tmp_path, null_digest=True)
     first = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, CONSUMER, STAGE_MOVER))
@@ -367,7 +367,7 @@ def test_a_live_pin_still_refuses(tmp_path: Path, monkeypatch) -> None:
 def test_a_record_dating_other_bytes_still_refuses_at_once(
         tmp_path: Path, monkeypatch) -> None:
     queue, args, _body, paths, epoch, manifest_sha = _promoted(tmp_path)
-    residence = queue.root / pool.RESIDENCY
+    residence = queue.root / pool.record_store.RESIDENCY
     fragment = json.loads(residency_map.fragment_path(
         residence, CONSUMER, RAM_MOVER).read_bytes())
     material = reader_lease.read_material(residence, CONSUMER, RAM_MOVER)

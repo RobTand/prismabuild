@@ -157,14 +157,14 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": manifest,
         "entries": entries})
     if material is not None:
         reader_lease.write_material(
-            queue.residency_fragment_root(), consumer_action_key=consumer,
+            queue.records.residency_fragment_root(), consumer_action_key=consumer,
             mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
             manifest_sha256=manifest, generation="a" * 32,
             entries={key: {**dict(mention),  # type: ignore[dict-item]
@@ -191,12 +191,12 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
     it.  Written the way ``tests/prewarm_fixture.py`` writes it.
     """
 
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": consumer, "claimed_unix": time.time(),
                  "claimed_by": "adoption-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, consumer).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, consumer).write_text(json.dumps(item))
     queue.write_lease(
         consumer, owner="adoption-fixture", claim_snapshot=item,
         progress_observation={
@@ -280,7 +280,7 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
               and record.get("state") in ("reserved", "transferring")
               and queue.move_record(key) is None}
     held = {key: gib for key, gib in held.items() if key not in fenced}
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     accounted: dict[str, int] = {}
     # ``material/`` and ``leases/`` sit beside the consumer directories, not
     # among them (``reader_lease.material_path``, ``reader_lease.leases_root``),
@@ -307,7 +307,7 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": STAGE_GIB})
     return q
 
@@ -398,7 +398,7 @@ def test_a_successor_adopts_the_resident_range_instead_of_copying_it(
     assert ledger.holder_tokens(second_mover) == {"stage_gib": PHASE_GIB}
     assert ledger.holder_tokens(first_mover) == {}
     # No copy was queued, and no byte moved.
-    assert not queue.item_path(pool.READY, second_mover).exists()
+    assert not queue.records.item_path(pool.record_store.READY, second_mover).exists()
     assert all(path.exists() for path in staged_files)
     receipt = queue.move_record(second_mover)
     assert receipt is not None
@@ -423,12 +423,12 @@ def test_the_adopted_range_admits_the_consumer_that_took_it_over(
 
     assert_ledger_matches_the_stage(queue)
     second_mover = _hexkey("secondmover0")
-    assert not queue.item_path(pool.DONE, second_mover).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, second_mover).exists()
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == SECOND
     assert claimed["residency_verdict"]["state"] == "resident"
     # And the map it reads names the files the first consumer's copy verified.
-    composed = residency_map.read_map(queue.residency_map_path(SECOND))
+    composed = residency_map.read_map(queue.records.residency_map_path(SECOND))
     assert composed["leads"] == [second_mover]
     assert set(composed["entries"]) == {
         residency_map.residency_map_key(f"/pool/{MANIFEST[:8]}/phase-0/part-0.bin", 0),
@@ -452,7 +452,7 @@ def test_an_adopted_lead_whose_bytes_went_is_refused_again(queue, stage) -> None
     queue.release_tier_reservations(_hexkey("secondmover0"))
 
     verdict = queue.residency_verdict(
-        pool._read_json(queue.item_path(pool.READY, SECOND)))
+        pool.record_store.require(queue.records.item(pool.record_store.READY, SECOND)))
     assert verdict["state"] == "lead_not_resident"
     assert verdict["pending"] == [
         {"lead": _hexkey("secondmover0"), "status": "absent"}]
@@ -546,7 +546,7 @@ def test_an_orphan_is_evicted_when_a_window_cannot_be_placed_without_it(
     assert free == STAGE_GIB - PHASE_GIB, free
     # Useful progress, not just reclamation: the admitted window publishes
     # its first mover and protects its next.
-    assert queue.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("secondmover0")).exists()
     record = queue.read_funding(_hexkey("secondmover1"), TIER)
     assert record is not None and record["state"] in (
         "reserved", "transferring"), record
@@ -595,7 +595,7 @@ def test_an_unfittable_newcomer_adds_no_admission_pressure(
         "stage_gib": PHASE_GIB}
     assert all(path.exists() for path in live_files)
     # And a window that still cannot be placed publishes nothing.
-    assert not queue.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("secondmover0")).exists()
     assert_ledger_matches_the_stage(queue)
 
 
@@ -610,7 +610,7 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
     """
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 6})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -640,7 +640,7 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
     assert all(path.exists() for path in live_files)
     assert q.tier_ledger(TIER).holder_tokens(_hexkey("stalemover0")) == {}
     assert not any(path.exists() for path in orphan_files)
-    assert q.item_path(pool.READY, _hexkey("secondmover0")).exists()
+    assert q.records.item_path(pool.record_store.READY, _hexkey("secondmover0")).exists()
     record = q.read_funding(_hexkey("secondmover1"), TIER)
     assert record is not None and record["state"] in (
         "reserved", "transferring"), record
@@ -665,7 +665,7 @@ def test_adopted_ahead_range_does_not_hide_missing_lead_admission_pressure(
     """#829: the lead gate includes output plus the next unpublished leg."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 10})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -685,7 +685,7 @@ def test_adopted_ahead_range_does_not_hide_missing_lead_admission_pressure(
     tiers = {TIER: _tier_record(stage, gib=10)}
     before = tier_loop.residency_window(q, tiers=tiers)
     assert any(e.get("reason") == "joint-fit-stall" for e in before)
-    assert not q.item_path(pool.READY, _hexkey("retrymover0")).exists()
+    assert not q.records.item_path(pool.record_store.READY, _hexkey("retrymover0")).exists()
 
     # Held 4 + queued output 4 + head 2 + next missing 2 = 12 > 10.
     # Six free must become eight; the adopted middle range stays protected.
@@ -697,7 +697,7 @@ def test_adopted_ahead_range_does_not_hide_missing_lead_admission_pressure(
     assert q.tier_ledger(TIER).holder_tokens(_hexkey("retrymover1")) == {
         "stage_gib": PHASE_GIB}
     tier_loop.residency_window(q, tiers=tiers)
-    assert q.item_path(pool.READY, _hexkey("retrymover0")).exists()
+    assert q.records.item_path(pool.record_store.READY, _hexkey("retrymover0")).exists()
 
 
 # --------------------------------- (d): the old key can no longer take it back
@@ -809,7 +809,7 @@ def test_a_range_whose_fragment_cannot_be_read_is_not_adopted(
 
     first_mover = _hexkey("firstmover0")
     _stage_range(queue, mover=first_mover, consumer=FIRST, stage=stage)
-    residency_map.fragment_path(queue.residency_fragment_root(), FIRST,
+    residency_map.fragment_path(queue.records.residency_fragment_root(), FIRST,
                                 first_mover).write_text("{not json")
     _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
 
@@ -874,7 +874,7 @@ def test_a_donor_whose_material_names_another_object_is_declined(
 
     # Same files, same keys, same live identities -- another manifest.
     sidecar = reader_lease.material_path(
-        queue.residency_fragment_root(), FIRST, donor)
+        queue.records.residency_fragment_root(), FIRST, donor)
     body = json.loads(sidecar.read_text())
     body["manifest_sha256"] = "b" * 64
     sidecar.write_text(json.dumps(body))
@@ -913,7 +913,7 @@ def test_a_sidecar_entry_that_dates_other_bytes_is_declined(
     _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
 
     sidecar = reader_lease.material_path(
-        queue.residency_fragment_root(), FIRST, donor)
+        queue.records.residency_fragment_root(), FIRST, donor)
     body = json.loads(sidecar.read_text())
     entry = sorted(body["entries"])[0]
     body["entries"][entry][field] = value
@@ -945,7 +945,7 @@ def test_a_kill_between_the_successors_documents_leaves_no_undated_vouch(
     donor = _hexkey("firstmover0")
     successor = _hexkey("secondmover0")
     _stage_range(queue, mover=donor, consumer=FIRST, stage=stage)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
 
     class Killed(BaseException):
         """Nothing in the adoption catches it."""
