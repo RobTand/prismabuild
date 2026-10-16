@@ -89,7 +89,7 @@ def _run(root: Path, *, profile: str | None, nonce: str,
          environment=None, timeout_seconds: float | None = None
          ) -> dict[str, object]:
     checkout = _checkout(root, nonce)
-    action = _action(checkout, nonce=nonce,
+    action = _action(checkout, profile=profile, nonce=nonce,
                      iterations=iterations, helper=helper,
                      environment=environment)
     started = time.perf_counter()

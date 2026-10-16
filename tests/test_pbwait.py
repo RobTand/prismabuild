@@ -147,7 +147,8 @@ def test_prefix_resolution_retained_reader_stops_before_another_scan(
     def retain(pid, section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"section": section, "pid": pid,
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
     monkeypatch.setattr(pbwait, "PREFIX_RESOLUTION_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbwait, "_prefix_candidates", block)

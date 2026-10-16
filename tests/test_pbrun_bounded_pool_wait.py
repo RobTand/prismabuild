@@ -301,8 +301,7 @@ def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
             raise pbrun.action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped; "
                 'retained reader=[{"pid": 1}]')
-        return real(q, key, generation, budget_s=budget_s,
-                    profile=profile)
+        return real(q, key, generation, budget_s=budget_s)
 
     monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
@@ -349,8 +348,7 @@ def test_terminal_reread_with_still_no_ending_says_so(
         if len(calls) == 1:
             raise pbrun.action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped")
-        return real(q, key, generation, budget_s=budget_s,
-                    profile=profile)
+        return real(q, key, generation, budget_s=budget_s)
 
     monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT

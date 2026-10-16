@@ -317,7 +317,8 @@ def test_retained_observation_reader_stops_before_render_or_another_poll(
 
     def retain(pid, section, _started, abandoned):
         record = {"pid": pid, "section": section,
-                  "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)}
+                  "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                  "since_unix": time.time()}
         retained.append(record)
         abandoned.append(record)
 

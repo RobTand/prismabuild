@@ -190,7 +190,8 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     def retain(pid, section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": section,
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
