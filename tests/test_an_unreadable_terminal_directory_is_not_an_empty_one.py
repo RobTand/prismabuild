@@ -95,9 +95,9 @@ def test_a_filed_outcome_is_not_requeued_when_done_cannot_be_listed(
     # A claimant that won the rename and then died: no lease, and old enough
     # that the reaper's grace has passed.
     record["claimed_unix"] = pool._now() - (pool.HEARTBEAT_S * 10)
-    pool._write_json_atomic(claimed_path, record)
+    pool.record_store._write_json(claimed_path, record)
     queue.records.lease_path(KEY).unlink(missing_ok=True)
-    pool._write_json_atomic(
+    pool.record_store._write_json(
         queue.records.item_path(pool.record_store.DONE, KEY),
         {
             "schema": pool.POOL_OUTCOME_SCHEMA_V1,

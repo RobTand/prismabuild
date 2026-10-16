@@ -35,7 +35,7 @@ def test_private_claim_loop_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu.adaptive_snapshot, "publish",
                         lambda *a, **k: counters.__setitem__("snapshot_requests", counters["snapshot_requests"] + 1))
     original_local = adaptive_cpu.write_json
-    original_shared = pool._write_json_atomic
+    original_shared = pool.record_store._write_json
     original_locked = adaptive_cpu.Controller.locked
 
     def local_write(path, value):
@@ -62,7 +62,7 @@ def test_private_claim_loop_profile(tmp_path, monkeypatch):
                 counters["admission_holds"].append(time.perf_counter() - began)
 
     monkeypatch.setattr(adaptive_cpu, "write_json", local_write)
-    monkeypatch.setattr(pool, "_write_json_atomic", shared_write)
+    monkeypatch.setattr(pool.record_store, '_write_json', shared_write)
     monkeypatch.setattr(adaptive_cpu.Controller, "locked", locked)
     for iteration in range(2):
         ready = queue.ready_items()  # snapshot work outside admission timing

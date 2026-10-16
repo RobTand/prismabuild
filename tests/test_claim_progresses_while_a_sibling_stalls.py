@@ -78,7 +78,7 @@ def _pin_sibling(queue):
     path = queue.records.item_path(pool.record_store.READY, KEYS[1])
     item = json.loads(path.read_text())
     item['tags'] = [pool.socket.gethostname()]
-    pool._write_json_atomic(path, item)
+    pool.record_store._write_json(path, item)
 
 
 def _claim(queue, *, cpu_sampler=_idle_sample):
