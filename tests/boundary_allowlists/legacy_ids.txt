@@ -49,7 +49,6 @@ prismaquant.prismabuild.reader_material.v1
 prismaquant.prismabuild.reader_pin.v1
 prismaquant.prismabuild.reader_retiring.v2
 prismaquant.prismabuild.reader_scope_attestation.v1
-prismaquant.prismabuild.residency_descriptor.v1
 prismaquant.prismabuild.residency_landing.v1
 prismaquant.prismabuild.residency_map.v1
 prismaquant.prismabuild.residency_map_fragment.v1

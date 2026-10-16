@@ -2047,12 +2047,12 @@ def _planned_consumers(
 def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tuple:
     """The identity two movers of one range share however they were sealed.
 
-    The four fields ``core.residency_descriptor`` binds.  It is deterministic,
-    which is what lets a consumer bind a mover's result before the mover runs
-    -- and is equally what lets a *later* consumer recognise its own range in a
-    copy somebody else already made.  The mover's action key cannot do this
-    job: it hashes an argv carrying ``--consumer-action-key``, so two consumers
-    of one manifest seal two different keys for the same bytes.
+    Compare ``manifest_sha256``, ``tier_id``, ``range_start_bytes`` and
+    ``range_end_bytes``, the fields ``residency_plan.share_namespace`` hashes.
+    These identify the same bytes on the same tier, so a later consumer can
+    recognise its range in an existing copy. A per-consumer mover's key hashes
+    an argv carrying ``--consumer-action-key``, so two consumers can seal
+    different keys for the same range.
     """
 
     return (str(manifest_sha256), str(tier_id), int(start), int(end))

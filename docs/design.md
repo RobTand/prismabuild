@@ -15142,9 +15142,10 @@ checkout snapshot, the pricing read off receipts, and the log name. So the
 first submitter of a range registers its mover, and every later submitter of
 the same range names that mover
 (`residency_plan.register_shared_range`). The range is identified by the
-four fields `core.residency_descriptor` binds: manifest, tier, start, and
-end. Their digest is the range's *share namespace*
-(`residency_plan.share_namespace`). The records live under
+four fields `manifest_sha256`, `tier_id`, `range_start_bytes` and
+`range_end_bytes`. `tier_loop._descriptor` compares them, and
+`residency_plan.share_namespace` hashes them to form the range's *share
+namespace*. The records live under
 `residency-plans/shared/`:
 
 - `ranges/<namespace>.json` names the mover and holds its sealed row. The

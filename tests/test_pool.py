@@ -355,7 +355,7 @@ def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
     assert queue.item_path(pool.DONE, KEY_A).exists()
 
 
-def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
+def test_worker_argv_uses_canonical_run_local_launch() -> None:
     argv = pool.worker_argv(
         worker_script="/w.py", action_key=KEY_A, cas_root="/cas", checkout_root="/co"
     )

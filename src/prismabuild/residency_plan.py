@@ -3498,9 +3498,9 @@ def share_namespace(manifest_sha256: str, tier_id: str, start: int,
                     end: int) -> str:
     """The namespace one staged range is shared under.
 
-    The digest of the four fields ``core.residency_descriptor`` binds, which
-    are the same four ``tier_loop._descriptor`` matches ranges on: what makes
-    two consumers' ranges the same bytes on the same tier.  A shared mover's
+    Hash ``manifest_sha256``, ``tier_id``, ``range_start_bytes`` and
+    ``range_end_bytes``, the same fields ``tier_loop._descriptor`` compares
+    to identify the same bytes on the same tier. A shared mover's
     fragment and material are filed under this namespace rather than under a
     consumer, because no one consumer's death may retire bytes the others
     still read.  It is a 64-character digest like an action key, and no queue

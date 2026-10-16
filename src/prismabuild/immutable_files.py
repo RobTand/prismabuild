@@ -125,8 +125,9 @@ def publish_immutable(
     """Publish immutable bytes relative to a held no-follow parent FD.
 
     Create missing parent directories, verify the linked inode and parent
-    identity, and return whether this writer won. OS errors propagate to the
-    caller. ``prelink_verify`` runs immediately before the publication link.
+    identity, and return whether this writer won. Directory walk errors follow
+    ``open_directory_nofollow``; other OS errors propagate to the caller.
+    ``prelink_verify`` runs immediately before the publication link.
     """
 
     path = absolute_nofollow_path(path, where="publication path")

@@ -379,12 +379,7 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
 def test_publish_refuses_a_block_whose_manifest_fields_are_not_a_manifest(
     queue: pool.PoolQueue,
 ) -> None:
-    """The one field that makes a byte range mean anything is checked.
-
-    ``core.residency_descriptor`` validates the same two fields for the mover's
-    result; a block that declared them loosely would let two of our own
-    validators disagree about one object.
-    """
+    """Publication checks manifest digest and size before matching lead ranges."""
 
     for bad in (17, {"a": 1}, None, "short", "A" * 64, "g" * 64):
         block = dict(_residency(range_start=0, range_end=GIB), manifest_sha256=bad)

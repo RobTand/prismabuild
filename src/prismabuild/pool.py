@@ -16060,11 +16060,11 @@ class PoolQueue:
 
         Read off the mover's own receipt, which is the only document that says
         what a copy actually achieved, and only when that receipt records a
-        complete, unrefused copy.  The four fields are exactly the ones
-        ``core.residency_descriptor`` binds, so two movers whose answers are
-        equal have made the same bytes of the same manifest resident on the
-        same tier however they were sealed -- which is what lets a later
-        consumer's phase recognise its own range in somebody else's copy.
+        complete, unrefused copy. The four fields are ``manifest_sha256``,
+        ``tier_id``, ``range_start_bytes`` and ``range_end_bytes``. They are
+        hashed by ``residency_plan.share_namespace`` and compared by
+        ``tier_loop._descriptor``, so a later consumer can recognise its own
+        range in somebody else's copy, however the movers were sealed.
         """
 
         receipt = self.move_record(str(mover_action_key))
@@ -17383,14 +17383,9 @@ class PoolQueue:
             raise PoolContractError(f"unknown residency fields: {unknown}")
         if block.get("schema") != RESIDENCY_SCHEMA_V1:
             raise PoolContractError(f"residency schema must be {RESIDENCY_SCHEMA_V1!r}")
-        # The manifest is what turns a byte range into files, and a digest is
-        # what makes two blocks provably about the same list.  ``core``'s
-        # ``residency_descriptor`` validates exactly these two fields for the
-        # mover's result; a block that declared them loosely would let the two
-        # validators disagree about one object.  The pool cannot open the
-        # manifest -- ``publish`` takes a ``cas_root`` and never reads it -- so
-        # what it enforces is the shape, and ``residency_verdict`` enforces the
-        # agreement between a consumer's block and its leads'.
+        # Publication does not read the manifest from CAS, so this checks
+        # only the digest and size shape. residency_verdict checks agreement
+        # between the consumer's manifest and its leads'.
         digest = block.get("manifest_sha256")
         if (not isinstance(digest, str)
                 or len(digest) != 64

@@ -116,37 +116,38 @@ does not rewrite the frozen 93424 audit or claim the other cards complete.
 
 | Thread | Agreed design | Implementation owed or qualified |
 | --- | --- | --- |
-| D01 | Rob authorized C16/B13 retirement on 2026-10-16, lifting the adapters' Phase 3 hold. Preserve `slurm_lane` and the historical Dagster selection over Snakemake. | This candidate removes both modules, all four dedicated test files, the two adapter-only shared validator files, adapter cases in shared tests, optional extras, orphaned worker gate and publication modes. Retained SDK/core/lane/publication/runtime and duplication checks qualify the resulting source; evidence is retained outside the checkout. |
-| D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Retiring `--stage` awaits Rob and a live-writer drain. |
-| D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Hook retirement awaits Rob. The broader core/library extraction is still owed. |
+| D01 | Rob authorized C16/B13 retirement on 2026-10-16, lifting the adapters' Phase 3 hold. Preserve `slurm_lane` and the historical Dagster selection over Snakemake. | The C16/B13 adapter retirement removes both modules, all four dedicated test files, the two adapter-only shared validator files, adapter cases in shared tests, optional extras, orphaned worker gate, publication modes and Dagster-only residency descriptor helpers. Retained SDK/core/lane/publication/runtime and duplication checks qualify the resulting source; evidence is retained outside the checkout. |
+| D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Rob authorized retiring `--stage` on 2026-10-16; B14 still owes the live-writer drain and retirement. |
+| D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Rob authorized hook retirement on 2026-10-16; B15 still owes the controlled two-worker CAS-miss/output-lock proof and removal. The broader core/library extraction is still owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
 | D07 | One placement view charges shared capacity, with separate measured-only and ledger-fallback fit queries. Preserve existing missing-evidence verdicts during extraction. Timer reads then consult existing deductions as a separate fix. Funding falls back to retired records only on ENOENT. Validate aliases per generation while preserving rename unions. | B08a/b are integrated through `25c0e98ae494`, including the requested runtime-tool removal and duplication check. B08c is integrated through `6ff48eb5bd87`, with 99 source-qualified cases. The assembled role/proof/funding check passed 303 cases. B08d generation-local alias validation and candidate-roster byte pinning are integrated at `30ca9a6f6041`, with 191 assembled passes. Historical membership-attestation manifest binding remains a separate follow-up. Final Claude delta review remains open. Timer changes prevent advisory waiting; no overcommit incident was demonstrated. |
-| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Typed receipt authorization and the role caller migration are integrated through `32b79024ec9f`, with qualification and limits recorded below. Strict privileged proof and the retained-reader corpus remain isolated pending actual actor entry, native ARM/NFS and paired-host qualification. Their prior-trust repair is implemented and source-qualified separately. Ordinary installed package/role stdlib import closure is integrated at `566892fc1dc7`, with 4,012 passes and 18 existing capability skips across 164 complete files; strict physical-proof gates remain separate. Named-profile membership awaits Rob. |
+| D08 | Share receipt facts and park-proof spelling in stdlib leaves. Unknown receipts cannot authorize new work. Physical proof needs a concrete current drain and exact process facts, independently of receipt availability. Keep named profiles and resign's additional checks. | Typed receipt authorization and the role caller migration are integrated through `32b79024ec9f`, with qualification and limits recorded below. Strict privileged proof and the retained-reader corpus remain isolated pending actual actor entry, native ARM/NFS and paired-host qualification. Their prior-trust repair is implemented and source-qualified separately. Ordinary installed package/role stdlib import closure is integrated at `566892fc1dc7`, with 4,012 passes and 18 existing capability skips across 164 complete files; strict physical-proof gates remain separate. Rob settled profile membership on 2026-10-16: worker loops, one-shot workers, prewarm, tier and localtier must quiesce; metrics may continue while supervisor and broker enforce drains. B09 still owes profile, process-selector and rotation-role implementation and qualification. |
 | D09 | Use composable fixture rigs with production writers by default. Named negative helpers state the violated invariant and prove real consumer behavior. A schema-valid identity or publication defect is a legitimate negative fixture. | Original pilot migration passed 84 cases, with all 17 original assertions preserved. Ten remaining fake batch-writer sites then migrated to the real writer; all 238 original assertions remain and 41 cases passed. The fake batch writer is deleted at `60933914d4a3`. An action-free collision assertion now performs an actual damaged-ownership transfer; 36 cases passed. The final eighteen fabricated binding setups have since migrated to real ownership and causal funding/finish controls; the complete funding/broker file passed 45 cases and is recorded below. Repository-wide fixture ownership remains owed. There is no blanket raw-write ban. |
-| D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | B11 is owed. Supported generations await Rob. A retained directory is not proof of support. |
+| D10 | Capture complete retained-reader import closures and verify their provenance. Run old readers with `python -I -S` and closure/stdlib-only paths. Check both reader directions and every writer variant. | Rob settled the supported window on 2026-10-16: live worker generations plus the designated rollback target. B11 still owes window implementation and reader/writer qualification. A retained directory is not proof of support. |
 
 The detailed agreement and source citations are in messages
 `20261015T003846Z-codex-to-claude-d01-d10-source-reply-3f753f.md` and
 `20261015T004054Z-claude-to-codex-d02-d05-d07-d09-b04-b12.md`.
 
-## Product choices still pending
+## Settled product decisions and remaining implementation
 
-This record originally posed three questions. The C16/B13 amendment below
-records Rob's retirement decision; the other rows retain their historical text:
+Rob settled all three grouped decisions on 2026-10-16:
 
-1. **Decided 2026-10-16:** retire the old adapters, experimental prewarm
-   `--stage` and initial-miss rendezvous after their required checks. C16/B13
-   is implemented in this candidate; the stage and rendezvous work remains
-   separate, with its drain and controlled two-worker checks still required.
-2. Choose the roles required by host upgrade and member resign. Both agents
-   recommend the work/storage roles, while metrics may continue. The supervisor
-   and broker continue enforcing the boundary.
-3. Choose the supported reader window. Both agents recommend live-offer
-   generations plus an explicitly designated rollback target.
+1. Retire the old adapters, experimental prewarm `--stage` and initial-miss
+   rendezvous after their required checks. The C16/B13 adapter retirement
+   removes the legacy adapters and their orphaned implementation. B14 still
+   owes the stage-writer drain and stage retirement; B15 still owes the
+   controlled two-worker CAS-miss/output-lock proof and hook removal.
+2. Host upgrade and member resign must quiesce worker loops, one-shot workers,
+   prewarm, tier and localtier. Metrics may continue, and supervisor and broker
+   keep enforcing drains. B09 still owes the profile, process-selector and
+   rotation-role implementation and qualification.
+3. Compatibility covers live worker generations plus the designated rollback
+   target. B11 still owes the supported-window implementation and its
+   reader/writer qualification.
 
-No retirement, proof membership or support window is inferred from silence.
 No GitHub PR state or deployed behavior changed during this discussion.
 
 ## Qualified source units
