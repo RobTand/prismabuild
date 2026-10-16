@@ -4033,7 +4033,7 @@ class ResourceLedger:
                 for holder in self._scan_names(self.held_dir, strict=True)
                 if _holder_is_dir(holder)
             )
-        for holder in _scan(self.held_dir):
+        for holder in immutable_files.scan_optional(self.held_dir):
             if not _holder_is_dir(holder):
                 continue
             try:
