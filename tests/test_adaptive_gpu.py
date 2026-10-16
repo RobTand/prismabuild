@@ -143,7 +143,7 @@ def test_pressure_and_unknown_evidence_stop_new_work_without_touching_holders(gp
     elif fault == 'domain_unknown': sample['devices'][0]['memory_domain'] = 'unknown'
     elif fault == 'multi_device': sample['devices'] *= 2
     assert claim() is None
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.ledger().held()['mem_gb'] == 1
 
 
@@ -234,7 +234,7 @@ def test_legacy_multi_slot_demand_reserves_one_physical_device_exclusively(gpu_r
     from prismabuild import adaptive_gpu
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     key=publish(1)
-    path=queue.item_path(pool.READY, key)
+    path=queue.records.item_path(pool.record_store.READY, key)
     item=adaptive_cpu.read_json(path)
     item['resources']['gpu']=3
     adaptive_cpu.write_json(path, item)
@@ -277,7 +277,7 @@ def test_memory_refusal_leaves_gpu_sample_for_smaller_candidate(gpu_rig):
     admitted = claim()
     assert admitted is not None, 'memory-refused candidate spent the GPU sample'
     assert admitted['action_key'] == smaller
-    assert queue.item_path(pool.READY, too_large).exists()
+    assert queue.records.item_path(pool.record_store.READY, too_large).exists()
     assert queue.ledger().held()['mem_gb'] == 2
     assert set(queue.ledger().held_keys()) == {holder, smaller}
 
@@ -307,7 +307,7 @@ def test_fallback_deferral_leaves_gpu_sample_for_preferred_candidate(gpu_rig):
     assert admitted is not None, 'fallback deferral spent the next candidate GPU sample'
     assert admitted['action_key'] == smaller
     assert admitted['cpu_allocation'] == {'preferred': [1], 'fallback': []}
-    assert queue.item_path(pool.READY, deferred).exists()
+    assert queue.records.item_path(pool.record_store.READY, deferred).exists()
     assert set(queue.ledger().held_keys()) == {holder, smaller}
     assert queue.ledger().held()['mem_gb'] == 2
     assert claim() is None  # Successful admission still spends this sample.
@@ -331,7 +331,7 @@ def test_ordinary_abandonment_leaves_gpu_sample_for_next_candidate(gpu_rig, monk
         if key != abandoned:
             return
         reached.append(fault)
-        path = queue.item_path(pool.READY, key)
+        path = queue.records.item_path(pool.record_store.READY, key)
         if fault == 'rename_lost':
             path.unlink()
         elif fault == 'demand_changed':
@@ -357,8 +357,8 @@ def test_ordinary_abandonment_leaves_gpu_sample_for_next_candidate(gpu_rig, monk
     assert set(queue.ledger().held_keys()) == {holder, successor}
     assert queue.ledger().held()['mem_gb'] == 2
     assert queue.ledger().capacity() == capacity
-    assert adaptive_cpu.read_json(queue.item_path(pool.CLAIMED, holder)) == first
-    assert not queue.item_path(pool.CLAIMED, abandoned).exists()
+    assert adaptive_cpu.read_json(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
+    assert not queue.records.item_path(pool.record_store.CLAIMED, abandoned).exists()
 
 
 @pytest.fixture
@@ -378,7 +378,7 @@ def unlaunched_probe(gpu_rig):
         # launched, the existing holder is untouched, only sample credit remains.
         gpu._sample = None
         with cpu.locked():
-            metadata = gpu.decision(adaptive_cpu.read_json(queue.item_path(pool.READY, candidate)),
+            metadata = gpu.decision(adaptive_cpu.read_json(queue.records.item_path(pool.record_store.READY, candidate)),
                                     {'gpu': 1, 'cpu': 1, 'mem_gb': 1})
             assert metadata
             handle = queue.ledger().begin_acquire(candidate, {'gpu': 1, 'mem_gb': 1},
@@ -502,9 +502,9 @@ def test_gpu_sample_write_failure_releases_provisional_reservation(gpu_rig, monk
             claim()
     assert queue.ledger().available() == before
     assert set(queue.ledger().held_keys()) == {holder}
-    assert queue.item_path(pool.READY, candidate).exists()
-    assert not queue.item_path(pool.CLAIMED, candidate).exists()
-    assert adaptive_cpu.read_json(queue.item_path(pool.CLAIMED, holder)) == first
+    assert queue.records.item_path(pool.record_store.READY, candidate).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, candidate).exists()
+    assert adaptive_cpu.read_json(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
     if written:
         assert claim() is None  # Uncertain writes never refund a spent sample.
     else:

@@ -51,11 +51,11 @@ def _fresh_store():
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
-    return queue, stage, queue.root / pool.RESIDENCY
+    return queue, stage, queue.root / pool.record_store.RESIDENCY
 
 
 @pytest.fixture()
