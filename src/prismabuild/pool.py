@@ -620,7 +620,6 @@ _FUNDING_KIND_ROLES = {
     "ram_gib": "ram_mover_row",
 }
 #: Where a tier loop files what it discovered about one tier, for readers.
-TIERS = "tiers"
 #: Per stage tier, what the tier loop's admission commitment saw this cycle
 #: (#930): one record per tier, rewritten each cycle by the loop that owns it.
 TIER_COMMITMENTS = "tier-commitments"
