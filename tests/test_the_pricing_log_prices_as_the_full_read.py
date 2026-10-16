@@ -311,7 +311,7 @@ def test_a_logging_read_never_lands_an_older_line_after_a_newer(queue) -> None:
     _logged, since = queue._read_move_pricing_log()
     key = _key("cold", 1)
     path = queue.root / pool.record_store.MOVERS / f"{key}.json"
-    stale = pool.record_store.read_queue_record(path)
+    stale = pool.record_store.read_document(path)
     newer = {**stale, "peak_rss_bytes": 77 * GIB, "unix": 5_000_000.0}
     queue.record_move(key, newer)
     queue._append_move_pricing(

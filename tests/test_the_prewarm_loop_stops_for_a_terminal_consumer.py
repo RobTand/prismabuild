@@ -114,7 +114,7 @@ def test_a_claimed_window_stops_when_its_consumer_fails(
     # watch correctly reads as still live.  The claim copies the ready item,
     # so the bound goes on before it.
     ready_path = fleet.queue.records.item_path(pool.record_store.READY, key)
-    ready_record = pool.record_store.read_queue_record(ready_path)
+    ready_record = pool.record_store.read_document(ready_path)
     assert ready_record is not None
     ready_record["max_attempts"] = 1
     pool._write_json_atomic(ready_path, ready_record)
@@ -189,7 +189,7 @@ def test_a_same_key_successor_stops_the_old_window(tmp_path: Path) -> None:
     run = _run_cycle(fleet, fleet.args())
     assert gate.entered.wait(timeout=60)
 
-    successor = dict(pool.record_store.require(fleet.queue.records.item(pool.record_store.CLAIMED, key)))
+    successor = dict(pool.record_store.value_or_raise(fleet.queue.records.item(pool.record_store.CLAIMED, key)))
     successor["published_unix"] = float(successor["published_unix"]) + 1000.0
     fleet.queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(successor))
     gate.proceed.set()

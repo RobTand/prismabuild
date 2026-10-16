@@ -199,7 +199,7 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     assert others and all(
         queue.records.item_path(pool.record_store.READY, k).exists() for k in others)
     # ...and the row it published carries the pin the pool reads.
-    published = pool.record_store.require(queue.records.item(pool.record_store.READY, mover))
+    published = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, mover))
     block = published.get("residency")
     assert isinstance(block, dict), "the published mover row carries no residency block"
     assert block["tier_id"] == TIER
@@ -223,7 +223,7 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
     assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
     assert queue.residency_pin_holds(
-        pool.record_store.require(queue.records.item(pool.record_store.DONE, mover)), mover) is True
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover)), mover) is True
 
 
 def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
@@ -370,7 +370,7 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
     assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
     assert queue.residency_pin_holds(
-        pool.record_store.require(queue.records.item(pool.record_store.DONE, mover)), mover) is True
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover)), mover) is True
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is True
 
 

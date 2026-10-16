@@ -76,7 +76,7 @@ def _count_passes_reads(monkeypatch: pytest.MonkeyPatch,
     """Every ``passes/`` sidecar the pool reads from now on, by key."""
 
     reads: list[str] = []
-    real = pool.record_store.read_queue_record
+    real = pool.record_store._read_json
     passes = queue.root / pool.record_store.PASSES
 
     def reading(path, *args, **kwargs):  # type: ignore[no-untyped-def]

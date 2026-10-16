@@ -451,7 +451,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
     assert not [event for event in events
                 if event["event"] == "mover-repriced-to-tier-offer"]
     for ordinal in (0, 1):
-        row = pool.record_store.require(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
+        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
         assert row["resources"][KIND] == 400
         assert row["resources"][STAGE_KIND] == 2
         assert row["resources"]["mem_gb"] == 1
@@ -491,7 +491,7 @@ def test_a_mover_priced_under_the_tier_is_republished_verbatim(tmp_path):
     assert not [event for event in events
                 if event["event"] == "mover-repriced-to-tier-offer"]
     for ordinal in (0, 1):
-        row = pool.record_store.require(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
+        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
         assert row["resources"][KIND] == 100
         assert row["resources"][STAGE_KIND] == 2
 
