@@ -116,9 +116,9 @@ def test_unfunded_denial_distinguishes_withholding_from_past_ceiling(tmp_path):
     assert queue.claim(capacity={"gpu": 4}) is None
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_withholding"
-    sidecar = json.loads(queue.passes_path(KEY_A).read_text())
+    sidecar = json.loads(queue.records.passes_path(KEY_A).read_text())
     sidecar["first_unix"] -= pool.WITHHOLD_CEILING_S + 1
-    queue.passes_path(KEY_A).write_text(json.dumps(sidecar))
+    queue.records.passes_path(KEY_A).write_text(json.dumps(sidecar))
     assert queue.claim(capacity={"gpu": 4})["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_past_ceiling"
@@ -126,9 +126,9 @@ def test_unfunded_denial_distinguishes_withholding_from_past_ceiling(tmp_path):
 
 def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     publish(queue, KEY_A, resources={"cpu": 1})
-    item = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     for host, stamp, generation in (("one", time.time() - 1, item["published_unix"]),
                                     ("two", time.time() - 2, item["published_unix"]),
                                     ("old", time.time() - 3, 0.0),
@@ -215,7 +215,7 @@ def test_a_row_behind_a_whole_box_withhold_says_so(tmp_path):
     assert records[KEY_A]["reason"] == "reservation_unavailable_withholding"
     assert records[KEY_B]["reason"] == "deferred_behind_withheld_row"
     assert records[KEY_B]["evidence"]["withheld_for"] == KEY_A
-    assert not queue.passes_path(KEY_B).exists()      # held back, not refused
+    assert not queue.records.passes_path(KEY_B).exists()      # held back, not refused
 
 
 def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
@@ -233,7 +233,7 @@ def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
     assert admitted is not None and admitted["action_key"] == KEY_A
     assert available.ledger().held() == {"cpu": 1, "mem_gb": 1}
     assert blocked.claim(**args, cpu_sampler=lambda: hot) is None
-    assert blocked.item_path(pool.READY, KEY_A).exists()
+    assert blocked.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert blocked.ledger().held() == {}
     denial = next(value for value in blocked._host_denial_records().values()
                   if value.get("action_key") == KEY_A)
@@ -256,7 +256,7 @@ def test_one_claim_pass_reuses_cpu_observation_after_a_candidate_refusal(tmp_pat
                            cpu_tiers={"preferred": [0, 1], "fallback": []},
                            adaptive_cpu=True, cpu_sampler=sample)
     assert admitted is not None and admitted["action_key"] == KEY_B
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.ledger().held() == {"cpu": 1, "mem_gb": 1}
     assert len(reads) == 1
 

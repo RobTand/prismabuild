@@ -47,7 +47,7 @@ def test_private_claim_loop_profile(tmp_path, monkeypatch):
 
     def shared_write(path, value):
         result = original_shared(path, value)
-        if Path(path).parent == queue.root / pool.PASSES:
+        if Path(path).parent == queue.root / pool.record_store.PASSES:
             counters["pass_writes"] += 1
             counters["pass_bytes"] += Path(path).stat().st_size
         return result

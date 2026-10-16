@@ -75,7 +75,7 @@ def rig(tmp_path, monkeypatch):
 
 def _pin_sibling(queue):
     """Test host-lock independence, not #1526's portable-CPU placement rule."""
-    path = queue.item_path(pool.READY, KEYS[1])
+    path = queue.records.item_path(pool.record_store.READY, KEYS[1])
     item = json.loads(path.read_text())
     item['tags'] = [pool.socket.gethostname()]
     pool._write_json_atomic(path, item)
@@ -160,7 +160,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
     """The fixed topology is not changing headroom; reading it needs no gate."""
     rig.ledger().configure_cpu_tiers(TIERS)
     entered, release = threading.Event(), threading.Event()
-    original = pool._read_json
+    original = pool.record_store.read_queue_record
     outcome = {}
 
     def stalled_read(path, **kwargs):
@@ -177,7 +177,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
             outcome['error'] = exc
 
     stalled = threading.Thread(target=run, daemon=True)
-    monkeypatch.setattr(pool, '_read_json', stalled_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
     stalled.start()
     try:
         assert entered.wait(30), 'claim did not read CPU map'
@@ -195,7 +195,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
 
 def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool._read_json
+    original = pool.record_store.read_queue_record
     reads = []
 
     def checked_read(path, **kwargs):
@@ -204,7 +204,7 @@ def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
             assert _admission_is_free(rig), 'existing CPU map read held host admission'
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pool, '_read_json', checked_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', checked_read)
     assert _claim(rig) is not None
     assert reads, 'claim skipped topology validation'
 
@@ -227,7 +227,7 @@ def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
 
 def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool._read_json
+    original = pool.record_store.read_queue_record
     descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
     entered = []
 
@@ -238,7 +238,7 @@ def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return record
 
-    monkeypatch.setattr(pool, '_read_json', lock_after_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', lock_after_read)
     try:
         assert _bounded(lambda: _claim(rig), 'claim after topology read') is None
     finally:
@@ -348,7 +348,7 @@ def test_a_lost_rename_returns_only_this_claimants_tokens(rig, monkeypatch):
         write_intent(action_key, owner=owner)
         # The record leaves ``ready`` between this claimant's reservation and
         # its rename, which is what losing the race looks like from here.
-        rig.item_path(pool.READY, action_key).unlink()
+        rig.records.item_path(pool.record_store.READY, action_key).unlink()
 
     monkeypatch.setattr(rig, '_write_claim_intent', peer_wins)
 
@@ -380,7 +380,7 @@ def test_an_exception_before_the_rename_returns_the_reservation(rig, monkeypatch
         'a claim that raised between the reservation and the rename kept its '
         'tokens; the caller holds the only handle that can return them')
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert sorted(p.name for p in rig.dir(pool.READY).iterdir()) == sorted(
+    assert sorted(p.name for p in rig.records.dir(pool.record_store.READY).iterdir()) == sorted(
         f'{key}.json' for key in KEYS), 'the items did not stay ready'
 
 
@@ -419,7 +419,7 @@ def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
         'a busy host-local lock after the rename lost a claim that was '
         'already made')
     assert rig.ledger().held_keys() == [claimed['action_key']]
-    assert rig.item_path(pool.CLAIMED, claimed['action_key']).exists()
+    assert rig.records.item_path(pool.record_store.CLAIMED, claimed['action_key']).exists()
 
 
 @pytest.mark.parametrize(('refusal', 'operation'), [
@@ -443,7 +443,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
                     resources={'cpu': 1, 'mem_gb': 1}, priority=10)
         assert claim(rig)['action_key'] == 'c' * 64
     if refusal in ('gpu', 'tokens'):
-        path = rig.item_path(pool.READY, KEYS[0])
+        path = rig.records.item_path(pool.record_store.READY, KEYS[0])
         item = json.loads(path.read_text())
         item['resources'].update({'gpu': 1} if refusal == 'gpu' else {'mem_gb': 4})
         path.write_text(json.dumps(item))
@@ -488,7 +488,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
         stalled.join(30)
     assert not stalled.is_alive() and 'error' not in outcome, outcome
     assert outcome['item'] is None
-    assert rig.item_path(pool.READY, KEYS[0]).exists()
+    assert rig.records.item_path(pool.record_store.READY, KEYS[0]).exists()
     expected = [KEYS[1]] + (['c' * 64] if refusal == 'tokens' else [])
     assert sorted(rig.ledger().held_keys()) == sorted(expected)
 
@@ -524,7 +524,7 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
     assert preemptions == ([] if contended else list(KEYS))
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+    assert all(rig.records.item_path(pool.record_store.READY, key).exists() for key in KEYS)
 
 
 @pytest.mark.parametrize(('gpu', 'read_number'), [(False, 1), (True, 2), (True, 3)])
@@ -534,7 +534,7 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     capacity = dict(CAPACITY, gpu=1) if gpu else CAPACITY
     _pin_sibling(rig)
     if gpu:
-        path = rig.item_path(pool.READY, KEYS[0])
+        path = rig.records.item_path(pool.record_store.READY, KEYS[0])
         item = json.loads(path.read_text())
         item['resources']['gpu'] = 1
         path.write_text(json.dumps(item))
@@ -581,7 +581,7 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     if gpu:
         # No trusted GPU sample: the original candidate still cannot reserve.
         assert outcome['item'] is None
-        assert rig.item_path(pool.READY, KEYS[0]).exists()
+        assert rig.records.item_path(pool.record_store.READY, KEYS[0]).exists()
         assert rig.ledger().held_keys() == [KEYS[1]]
     else:
         assert outcome['item']['action_key'] == KEYS[0]
@@ -622,7 +622,7 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
     assert len(prepared) == 1, 'identity was re-read inside the decision'
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+    assert all(rig.records.item_path(pool.record_store.READY, key).exists() for key in KEYS)
 
 
 def test_empty_poll_cannot_block_a_sibling_on_capacity_refresh(rig, monkeypatch):

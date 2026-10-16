@@ -25,7 +25,7 @@ def ready_denial(tmp_path):
                   checkout_root="/mnt/shared/status-fixture",
                   worker_script=ROOT / "tools/prismabuild_worker.py",
                   resources={"cpu": 1}, tags=["box"])
-    record = json.loads(queue.item_path(pool.READY, key).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     path = queue.ledger("box").base / "adaptive" / pool.CLAIM_DENIALS
     path.parent.mkdir(parents=True, exist_ok=True)
     denial = {"action_key": key, "published_unix": record["published_unix"],
