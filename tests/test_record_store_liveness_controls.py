@@ -147,3 +147,18 @@ def test_unorderable_generation_keeps_real_origin_and_foreign_prewrite(tmp_path,
     assert not holds._entry(queue, instance).get('retiring')
     assert not holds._entry(queue, instance).get('origin_reclaimed')
     assert any(event.get('event') == holds.HELD for event in events)
+
+
+@pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
+def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(tmp_path, monkeypatch, error):
+    queue = _queue(tmp_path)
+    mover = _hexkey('unreadable-funding-census')
+    path = queue.records.funding_path(mover, TIER)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'')
+    seen = _unreadable_stat(monkeypatch, path, error)
+    status, record, reason = queue.read_funding_evidence(mover, TIER)
+    assert seen, 'the actual metadata query was not reached'
+    assert status == 'unknown', 'unavailable metadata certified a present empty funding intent as absent'
+    assert record is None
+    assert 'census unreadable' in reason
