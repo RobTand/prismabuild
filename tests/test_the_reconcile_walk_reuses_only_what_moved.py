@@ -143,7 +143,7 @@ def _clock_root(tmp_path: Path) -> Path:
 
 def _fleet(root: Path) -> tuple[pool.PoolQueue, Path]:
     queue = pool.PoolQueue(root / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = root / "stage"
     stage.mkdir(parents=True)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -167,7 +167,7 @@ def _mark(path: Path, attribute: str = stage_marks.STAGE_SOURCE_XATTR,
 
 
 def _fragment(queue: pool.PoolQueue, paths: list[Path]) -> Path:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(paths[0].parent),
@@ -181,7 +181,7 @@ def _fragment(queue: pool.PoolQueue, paths: list[Path]) -> Path:
         },
     })
     return residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER)
 
 
 @pytest.fixture()

@@ -122,7 +122,7 @@ def _mark(path: Path) -> None:
 
 
 def _fragment(queue: pool.PoolQueue, stage: Path, paths: list[Path]) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -139,7 +139,7 @@ def _fragment(queue: pool.PoolQueue, stage: Path, paths: list[Path]) -> None:
 
 def _fleet(root: Path) -> tuple[pool.PoolQueue, Path]:
     queue = pool.PoolQueue(root / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = root / "stage"
     stage.mkdir(parents=True)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)

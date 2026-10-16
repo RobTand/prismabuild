@@ -278,7 +278,7 @@ def test_a_window_gib_without_a_chunk_derives_the_quarter(tmp_path) -> None:
 def test_the_sealed_plan_freezes_and_leads_with_the_first_chunk(
         tmp_path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     plan = staged["plan"]
     assert isinstance(plan, dict)

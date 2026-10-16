@@ -149,7 +149,7 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     assert _prewrite(queue, ended, template, "b1", [planned], 4)["ok"]
     planned.write_bytes(b"left")
     queue.finish(ended["owner_action_key"], status="failed")
-    assert queue.item_path(pool.FAILED, ended["owner_action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, ended["owner_action_key"]).exists()
     sibling_scope = _scope(queue, sibling)
     after_paths(monkeypatch, sibling_scope / "commitments.json")
     reads = _Reads(monkeypatch)

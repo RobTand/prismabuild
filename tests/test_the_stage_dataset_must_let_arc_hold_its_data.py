@@ -94,7 +94,7 @@ def _cycle(tmp_path: Path, primarycache: str | None, capsys):
     """One tier cycle over a driver that states the setting under test."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def discover(**_kwargs):
         record = {
