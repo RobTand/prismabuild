@@ -129,7 +129,7 @@ MAP_SUFFIX = ".map.json"
 LANDING_SUFFIX = ".landing.json"
 #: ``pool.PoolQueue._transition_locked`` and ``residency_fragment_root``.
 TRANSITION_LOCK_SUBPATH = ("transition-locks",)
-RESIDENCY_SUBPATH = (pool.RESIDENCY,)
+RESIDENCY_SUBPATH = (pool.record_store.RESIDENCY,)
 GC_RECEIPTS_SUBPATH = ("gc-receipts",)
 GC_RECEIPT_SCHEMA = "prismabuild.pb_gc.receipt.v1"
 PRIVATE_STAGING_PREFIX = "ingest."
@@ -1044,7 +1044,7 @@ def _key_live_now(queue_root: Path, key: str) -> bool:
     """Whether ``key`` is live, re-read now by :func:`_live_key`'s rule."""
 
     return any(_live_key(entry.name) == key
-               for state in (pool.READY, pool.CLAIMED)
+               for state in (pool.record_store.READY, pool.record_store.CLAIMED)
                for entry in _entries(queue_root / state))
 
 
@@ -1056,13 +1056,13 @@ def queue_key_states(queue_root: Path) -> tuple[set[str], dict[str, float]]:
     """
 
     live: set[str] = set()
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for entry in _entries(queue_root / state):
             key = _live_key(entry.name)
             if key is not None:
                 live.add(key)
     terminal: dict[str, float] = {}
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         for entry in _entries(queue_root / state):
             key = entry.name[:-5]
             if not (entry.name.endswith(".json") and _is_digest(key)):
@@ -1219,7 +1219,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
     read retains every receipt (unknown coverage never retires).
     """
 
-    root = queue_root / pool.MOVERS
+    root = queue_root / pool.record_store.MOVERS
     section = {"scanned": 0, "remove": [], "keep": []}
     queue = pool.PoolQueue(queue_root)
     try:
@@ -1246,7 +1246,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
                 KIND_MOVEMENT_RECEIPT, path, "not a regular file"))
             continue
         try:
-            record = pool._read_json(path)
+            record = pool.record_store.read_queue_record(path)
         except (OSError, pool.PoolContractError) as exc:
             section["keep"].append(_retain(
                 KIND_MOVEMENT_RECEIPT, path, f"unreadable: {exc}"))
@@ -1313,7 +1313,7 @@ def survey_queue(queue_root: Path, *, now: float | None = None,
     """
 
     queue_root = Path(queue_root)
-    if not (queue_root / pool.READY).is_dir():
+    if not (queue_root / pool.record_store.READY).is_dir():
         raise SweepError(f"not a pool queue: {queue_root}")
     started = time.monotonic()
     now = time.time() if now is None else float(now)

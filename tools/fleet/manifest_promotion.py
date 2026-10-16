@@ -233,11 +233,11 @@ def superseded_consumers(queue: pool.PoolQueue) -> set[str] | None:
     """
 
     first_ready_key = "0" * 64
-    directory = (queue.residency_plan_path(first_ready_key).parent
+    directory = (queue.records.residency_plan_path(first_ready_key).parent
                  / residency_plan.SUPERSEDED)
     try:
         return {marker.name.split(".", 1)[0]
-                for marker in pool._scan(directory)}
+                for marker in pool.immutable_files.scan_optional(directory)}
     except (OSError, ValueError):
         return None
 
@@ -592,7 +592,7 @@ def record_landing(queue: pool.PoolQueue, consumer: Mapping[str, object], *,
     state = str(consumer.get("state") or "")
     if verdict.get("state") == "resident":
         status = "landed"
-    elif state == pool.CLAIMED:
+    elif state == pool.record_store.CLAIMED:
         status = "claimed_before_landing"
     else:
         return None

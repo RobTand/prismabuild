@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         keys.append(str(reply["action_key"]))
     queue = pool.PoolQueue(args.queue)
-    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    rows = [pool.record_store.require(queue.records.item(pool.record_store.READY, key)) for key in keys]
     if any(row is None for row in rows):
         withdraw(keys, "pbgang: a member left READY before its group was filed")
         print("pbgang: a member row is no longer READY; withdrew the gang", file=sys.stderr)

@@ -240,7 +240,7 @@ def _parse_queue_record(path: Path) -> _Parsed:
     try:
         if not statmod.S_ISREG(path.lstat().st_mode):
             raise ValueError("not a regular queue record")
-        record = pool._read_json(path)
+        record = pool.record_store.read_queue_record(path)
         if record is None:
             # A rename may have raced this census. Unknown, rather than a
             # confident empty answer; a later screen can settle it.
@@ -255,10 +255,10 @@ def _parsed_ok(parsed: _Parsed) -> bool:
 
 
 def _parse_json(path: Path) -> _Parsed:
-    """``pool._read_json`` of one record, failure retained."""
+    """``pool.record_store.read_queue_record`` of one record, failure retained."""
 
     try:
-        return _Parsed(pool._read_json(path), None)
+        return _Parsed(pool.record_store.read_queue_record(path), None)
     except (OSError, ValueError) as exc:
         return _Parsed(None, exc)
 
@@ -267,7 +267,7 @@ def _read_or_exception(path: Path) -> dict | None | Exception:
     """``pbstatus._pool_sidecar``: the record, ``None``, or the failure."""
 
     try:
-        return pool._read_json(path)
+        return pool.record_store.read_queue_record(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -588,7 +588,7 @@ class KeptReads:
 
     def json_records(self, directory: Path, *, select=_visible_json,
                      ) -> list[tuple[Path, _Parsed]]:
-        """Every record ``select`` names, read as ``pool._read_json`` reads it."""
+        """Every record ``select`` names, read as ``pool.record_store.read_queue_record`` reads it."""
 
         return self._read(directory, select, _parse_json, _parsed_ok)
 
@@ -694,7 +694,7 @@ def _fresh(reader: KeptReads | None) -> KeptReads:
 
 def _read_claim(queue: pool.PoolQueue, key: str,
                 reader: KeptReads | None = None) -> dict | None:
-    return _fresh(reader).record(queue.dir(pool.CLAIMED), key)
+    return _fresh(reader).record(queue.records.dir(pool.record_store.CLAIMED), key)
 
 
 @dataclass
@@ -878,8 +878,8 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
     """
 
     queue_root = Path(queue_root)
-    decisions = queue_root / pool.WITHDRAWN / "decisions"
-    states = [queue_root / state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    decisions = queue_root / pool.record_store.WITHDRAWN / "decisions"
+    states = [queue_root / state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
 
     def fences():
         taken = reader.fences([*states, decisions])
@@ -920,7 +920,7 @@ def _select_endings(reader: KeptReads, queue_root: Path, states: list[Path],
     for directory in states:
         listed = reader.history(directory)
         entries.extend(listed)
-        if directory.name == pool.WITHDRAWN:
+        if directory.name == pool.record_store.WITHDRAWN:
             for entry in listed:
                 withdrawal_mtimes[entry.name[:-5]] = entry.mtime
     # A cancellation is durable before its visible summary is written. Keep
@@ -956,7 +956,7 @@ def _terminal_metrics(
     # version answers the same question for one ``lstat``, and a directory
     # that exists but cannot be listed still fails the read below.
     accessible = all(reader.available(Path(queue_root) / state)
-                     for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN))
+                     for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN))
     with pbstatus.kept_reads(reader):
         endings = pbstatus.read_endings(queue_root, limit=limit)
     selected = [
@@ -1123,7 +1123,7 @@ def _release_metrics(
     """
 
     reader = _fresh(reader)
-    directory = Path(queue_root) / pool.WITHDRAWN / "superseded"
+    directory = Path(queue_root) / pool.record_store.WITHDRAWN / "superseded"
     selected: list[tuple[float, str]] = []
     readable = True
     try:
@@ -1173,7 +1173,7 @@ def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
     """
 
     records = []
-    for path, parsed in reader.json_records(queue.root / pool.TIERS):
+    for path, parsed in reader.json_records(queue.root / pool.record_store.TIERS):
         if parsed.error is not None:
             raise parsed.error
         record = parsed.record
@@ -1187,7 +1187,7 @@ def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
 
     try:
         return sorted(path.name for path in reader.subdirectories(
-            queue.root / pool.TIER_RESERVATIONS, select=_visible_directory))
+            queue.root / pool.record_store.TIER_RESERVATIONS, select=_visible_directory))
     except OSError:
         return []
 
@@ -1336,7 +1336,7 @@ def _starvation_metrics(
         "prismabuild_mover_queue_depth",
         "Active actions with movement-node shape (a residency range to stage), by queue state.",
     )
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         movers = 0
         try:
             listed = reader.queue_records(Path(queue_root) / state)
@@ -1373,7 +1373,7 @@ _UNKNOWN_TIER = "unknown"
 
 def _tier(value: object) -> str | None:
     text = value if isinstance(value, str) else None
-    # The shape ``PoolQueue._check_tier_id`` enforces: a tier id names one
+    # The shape ``record_store.RecordStore.check_tier_id`` enforces: a tier id names one
     # tier, never a demand kind and never a path.
     if not text or text.startswith(".") or "/" in text or "@" in text:
         return None
@@ -1395,7 +1395,7 @@ def _receipt_projection(entry: _KeptEntry):
     """
 
     try:
-        record = pool._read_json(Path(entry.path))
+        record = pool.record_store.read_queue_record(Path(entry.path))
     except (OSError, ValueError):
         record = None
     if not isinstance(record, dict):
@@ -1454,7 +1454,7 @@ def _plan_tier(reader: KeptReads, entry: _KeptEntry):
         return slot["tier"]
     reader.computed += 1
     try:
-        raw = pool._read_json(Path(entry.path))
+        raw = pool.record_store.read_queue_record(Path(entry.path))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
@@ -1530,7 +1530,7 @@ def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
     state = ("claimed" if key in claimed else "ready" if key in ready else "absent")
     accepted = None
     if state == "claimed":
-        lease = pbstatus._starvation_sidecar(queue.lease_path(key))
+        lease = pbstatus._starvation_sidecar(queue.records.lease_path(key))
         if isinstance(lease, Exception):
             return None
         accepted = pbstatus._starvation_accepted_phase(lease)
@@ -1553,7 +1553,7 @@ def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
     every scrape.
     """
 
-    fragments = reader.fence(queue.residency_fragment_root() / key)
+    fragments = reader.fence(queue.records.residency_fragment_root() / key)
     if fragments is None:
         return None
     taken = [fragments]
@@ -1695,7 +1695,7 @@ def _promotion_metrics(
     claimed: set[str] = set()
     claimed_listed: set[str] = set()
     consumers: list[str] = []
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
             listed = reader.queue_records(Path(queue_root) / state)
         except OSError:
@@ -1703,7 +1703,7 @@ def _promotion_metrics(
             continue
         for path, parsed in listed:
             key = path.name[:-len(".json")]
-            if state == pool.CLAIMED:
+            if state == pool.record_store.CLAIMED:
                 claimed_listed.add(key)
             record = parsed.record
             if not isinstance(record, dict) or record.get("action_key") != key:
@@ -1712,14 +1712,14 @@ def _promotion_metrics(
                 if not isinstance(record, dict):
                     ok = False
                 continue
-            (claimed if state == pool.CLAIMED else ready).add(key)
+            (claimed if state == pool.record_store.CLAIMED else ready).add(key)
             residency = record.get("residency")
             if not isinstance(residency, Mapping):
                 continue
             if "range_start_bytes" in residency:
                 depth[(_tier(residency.get("tier_id")) or _UNKNOWN_TIER,
                        state)] += 1
-            elif state == pool.CLAIMED and residency.get("leads"):
+            elif state == pool.record_store.CLAIMED and residency.get("leads"):
                 consumers.append(key)
     tier_depth = metrics.family(
         "prismabuild_mover_queue_depth_tier",
@@ -1728,7 +1728,7 @@ def _promotion_metrics(
         "single unknown tier reads only when a record names no usable tier.",
     )
     for tier_id in tiers:
-        for state in (pool.READY, pool.CLAIMED):
+        for state in (pool.record_store.READY, pool.record_store.CLAIMED):
             tier_depth.add(depth.get((tier_id, state), 0),
                            tier=tier_id, state=state)
     for (tier_id, state), count in sorted(depth.items()):
@@ -1740,7 +1740,7 @@ def _promotion_metrics(
     # leads, the plan names the tier. A waiter with no readable plan still
     # counts, under the unknown tier, because "waiting and tierless" is the
     # signal, not a reason to drop the row.
-    plan_root = queue.root / pool.RESIDENCY_PLANS
+    plan_root = queue.root / pool.record_store.RESIDENCY_PLANS
     try:
         plan_listing = reader.entries(plan_root, select=_json_name)
         plan_listing_error: OSError | None = None
@@ -1753,7 +1753,7 @@ def _promotion_metrics(
     waiting: dict[str, int] = defaultdict(int)
     quiet_max: dict[str, float] = {}
     for key in consumers:
-        lease = pbstatus._starvation_sidecar(queue.lease_path(key))
+        lease = pbstatus._starvation_sidecar(queue.records.lease_path(key))
         if isinstance(lease, Exception):
             ok = False
             continue
@@ -1767,7 +1767,7 @@ def _promotion_metrics(
         # No plan filed is the ordinary answer for a consumer the coordinator
         # never staged, which still counts as a waiter whose tier is unknown
         # rather than as a read failure.
-        plan_entry = plan_files.get(queue.residency_plan_path(key).name)
+        plan_entry = plan_files.get(queue.records.residency_plan_path(key).name)
         tier_id = _UNKNOWN_TIER
         if plan_entry is not None:
             named = _plan_tier(reader, plan_entry)
@@ -1810,7 +1810,7 @@ def _promotion_metrics(
         ok = False
     try:
         receipts = {entry.name[:-len(".json")]: entry for entry
-                    in reader.history(queue.root / pool.MOVERS, select=_json_name)}
+                    in reader.history(queue.root / pool.record_store.MOVERS, select=_json_name)}
     except OSError:
         receipts = None
     for path, entry in plan_listing:
@@ -2040,7 +2040,7 @@ def _collect(
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False
     # The census lists ``workers/`` already; this only asks that it be there.
-    if not reader.available(root / pool.WORKERS):
+    if not reader.available(root / pool.record_store.WORKERS):
         success = False
 
     queue_summary = census.get("queue", {})

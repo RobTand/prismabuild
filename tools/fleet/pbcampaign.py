@@ -885,19 +885,19 @@ def _pool_slot_occupied(queue, key: str) -> bool:
     them (``already_claimed``).
     """
 
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            queue.item_path(state, key).lstat()
+            queue.records.item_path(state, key).lstat()
         except FileNotFoundError:
             continue
         return True
     try:
-        names = os.listdir(queue.dir(pool.CLAIMED))
+        names = os.listdir(queue.records.dir(pool.record_store.CLAIMED))
     except FileNotFoundError:
         return False
     return any(
         name.startswith(f"{key}.")
-        and name.endswith((pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX))
+        and name.endswith((pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX))
         for name in names
     )
 
@@ -1172,12 +1172,12 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
             queued = pbrun.publish_or_refuse(queue, row)
             generation = pbrun.published_generation(queue, key, queued)
     if queued is None:
-        ready = queue.item_path(pool.READY, key)
+        ready = queue.records.item_path(pool.record_store.READY, key)
         return json.loads(pbrun.detach_line(
             key, transport="pool", status="attached", queue_root=queue.root,
             published_unix=generation,
-            submission=ready if ready.exists() else queue.item_path(
-                pool.CLAIMED, key),
+            submission=ready if ready.exists() else queue.records.item_path(
+                pool.record_store.CLAIMED, key),
         ))
     return json.loads(pbrun.detach_line(
         key, transport="pool", status="submitted", queue_root=queue.root,
