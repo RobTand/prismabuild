@@ -131,7 +131,7 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
         entries[key] = {"stage_path": str(path), "bytes": SIZE,
                         "sha256": OLD_DIGEST, "file_id": _identity(path)}
     stale._write_sidecar(queue, stage, consumer, mover, entries)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -411,7 +411,7 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
     base._publish(queue, live_consumer, max_attempts=1)   # claimed: live
     late_mover = base._key()
     target = destinations[10]
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": live_consumer, "mover_action_key": late_mover,
         "tier_id": base.TIER, "stage_root": str(publisher.stage_root),
@@ -438,7 +438,7 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
     """One refusal re-lists one directory; restored trust retains its names."""
 
     queue, _stage, _cas = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     first, second = root / "first", root / "second"
     first.mkdir()
     second.mkdir()

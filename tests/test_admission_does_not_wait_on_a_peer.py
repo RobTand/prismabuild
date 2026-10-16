@@ -416,9 +416,9 @@ def test_prefetched_replacement_requires_fresh_admission(rig, monkeypatch, repla
     monkeypatch.setattr(rig, 'ready_items', replaced_scan)
     assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert not rig.ledger().held()
-    assert not rig.item_path(pool.CLAIMED, 'a' * 64).exists()
-    assert not rig.lease_path('a' * 64).exists()
-    ready = json.loads(rig.item_path(pool.READY, 'a' * 64).read_text())
+    assert not rig.records.item_path(pool.record_store.CLAIMED, 'a' * 64).exists()
+    assert not rig.records.lease_path('a' * 64).exists()
+    ready = json.loads(rig.records.item_path(pool.record_store.READY, 'a' * 64).read_text())
     for name, value in replacement.items():
         assert ready[name] == value
 
@@ -437,7 +437,7 @@ def test_admission_is_reacquired_after_discovery(rig, monkeypatch):
         assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
             cpu_sampler=_idle_sample) is None
         assert not rig.ledger().held()
-        assert rig.item_path(pool.READY, 'a' * 64).exists()
+        assert rig.records.item_path(pool.record_store.READY, 'a' * 64).exists()
     finally:
         os.close(descriptor)
 
@@ -453,7 +453,7 @@ def test_empty_discovery_is_not_repeated_under_admission(rig, monkeypatch):
     monkeypatch.setattr(rig, 'ready_items', empty_scan)
     assert rig.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert calls == [True]
-    assert rig.item_path(pool.READY, 'a' * 64).exists()
+    assert rig.records.item_path(pool.record_store.READY, 'a' * 64).exists()
     assert not rig.ledger().held()
 
 

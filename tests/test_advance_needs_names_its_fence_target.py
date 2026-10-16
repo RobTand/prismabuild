@@ -184,7 +184,7 @@ def test_protection_holds_the_named_advance_before_it_permits(
     holds nothing."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _whole_plan(phases=2)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",

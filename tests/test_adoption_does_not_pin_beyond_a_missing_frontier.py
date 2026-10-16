@@ -41,7 +41,7 @@ def test_missing_frontier_keeps_future_donors_available_to_pressure(queue, stage
     # frontier/advance grant. The test must reach a real READY frontier.
     for _ in range(3):
         base._cycle(queue, stage, gib=69)
-    assert queue.item_path(base.pool.READY, base._hexkey('newmover1')).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, base._hexkey('newmover1')).exists()
     assert ledger.holder_tokens(base.SECOND) == {'stage_gib': 14}
     assert ledger.holder_tokens(base._hexkey('newmover0')) == {'stage_gib': 14}
 
@@ -90,7 +90,7 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
             '--manifest-sha256', digest, '--manifest', str(manifest_path),
             '--range-start-bytes', str(ordinal * size),
             '--range-end-bytes', str((ordinal + 1) * size),
-            '--residency-root', str(queue.residency_fragment_root()),
+            '--residency-root', str(queue.records.residency_fragment_root()),
             '--readers', '1', '--max-readers', '1', '--unpaced'])
         result = stage_move.move(args)
         assert result['complete'], result
@@ -110,7 +110,7 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
     for _ in range(3):
         base._cycle(queue, stage, gib=69)
     mover = base._hexkey('actualmover1')
-    ready = base.pool._read_json(queue.item_path(base.pool.READY, mover))
+    ready = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, mover))
     claim = queue.claim(ready=[ready], tags=['dl380g10'], owner='frontier-reader-test',
                         capacity={'cpu': 4, 'mem_gb': 4})
     assert claim and claim['action_key'] == mover

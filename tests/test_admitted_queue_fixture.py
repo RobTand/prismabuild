@@ -25,7 +25,7 @@ def test_fixed_simulated_inputs_take_real_tokens_and_release_real_owner(tmp_path
     claimed = queue.claim()
     assert claimed is not None and claimed["action_key"] == KEY
     assert queue.ledger().holder_tokens(KEY) == {"cpu": 1, "mem_gb": 1}
-    assert queue.queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     queue.finish(KEY, status="executed")
     assert not queue.ledger().held_keys()
 
@@ -35,7 +35,7 @@ def test_explicit_invalid_demand_is_not_the_fixture_default(tmp_path, resources)
     queue = fixture(tmp_path)
     publish(queue, resources=resources)
     assert queue.claim() is None
-    row = pool._read_json(queue.item_path(pool.READY, KEY))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
     assert isinstance(row, dict)
     assert row["resources"] == (resources or {})
     assert not queue.ledger().held_keys()
@@ -45,7 +45,7 @@ def test_explicit_missing_capacity_is_not_the_fixture_default(tmp_path):
     queue = fixture(tmp_path)
     publish(queue)
     assert queue.claim(capacity=None) is None
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.ledger().held_keys()
 
 
@@ -54,7 +54,7 @@ def test_withdrawal_remains_the_real_transition(tmp_path):
     publish(queue)
     queue.withdraw(KEY, reason="fixture cancellation control")
     assert queue.claim() is None
-    assert not queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.ledger().held_keys()
 
 
