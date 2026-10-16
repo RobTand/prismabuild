@@ -60,14 +60,14 @@ def test_death_converges_without_losing_original_or_successor_authority(
 
                 monkeypatch.setattr(pool.os, "link", stop_at_collision)
             elif boundary == "dropped_filing":
-                real_filing = queue._file_superseded
+                real_filing = queue.records.file_superseded
 
                 def stop_at_filing(record, **stamps):
                     if stamps["kind"] == "retry-superseded":
                         os._exit(91)
                     return real_filing(record, **stamps)
 
-                monkeypatch.setattr(queue, "_file_superseded", stop_at_filing)
+                monkeypatch.setattr(queue.records, "file_superseded", stop_at_filing)
             else:
                 real_unlink = Path.unlink
 
@@ -84,7 +84,9 @@ def test_death_converges_without_losing_original_or_successor_authority(
         os._exit(98)
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 91
-    tombstones = list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    tombstones = list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert len(tombstones) == 1
     assert json.loads(tombstones[0].read_bytes())["published_unix"] == generation
     attempt = queue.records.attempt_path(original, 1)
@@ -99,7 +101,9 @@ def test_death_converges_without_losing_original_or_successor_authority(
 
     _assert_superseded(queue, generation, successor_generation)
     assert ready.read_bytes() == ready_bytes
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert attempt.read_bytes() == attempt_bytes
     assert not queue.records.attempt_path(original, 2).exists()
     assert queue.ledger().held() == {}
@@ -132,7 +136,9 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
             refused = True
     assert refused, "the immutable publication decision was never attempted"
     retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
-                *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
+                *queue.records.dir(pool.record_store.CLAIMED).glob(
+                    f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+                )]
     assert len(retained) == 1
     assert json.loads(retained[0].read_bytes())["published_unix"] == generation
     attempt = queue.records.attempt_path(original, 1)

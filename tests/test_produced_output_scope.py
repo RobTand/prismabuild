@@ -134,7 +134,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.record_store._write_json(path, live)
     return control
 
 
@@ -232,7 +232,7 @@ def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
     live = pool.record_store.read_document(path)
     assert isinstance(live, dict)
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.record_store._write_json(path, live)
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": control["nonce"],
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
@@ -1212,7 +1212,9 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     queue.publish(action_key=MOVER0, cas_root="/cas", worker_script="/w.py",
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1},
                   max_attempts=1)
-    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, MOVER0)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, MOVER0),
+    ) is not None
     assert po.due_mover_rows(queue, instance, template) == []
     assert [(e["batch_id"], e["event"]) for e in
             po.recover_batches(queue, instance, template)] == [
