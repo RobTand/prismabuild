@@ -268,7 +268,7 @@ def test_host_pressure_on_the_producers_cpus_does_not_refuse_its_export(
     # The row names its producer, as ``submit_group`` published it.
     assert claim["dependent_of"] == spool.owner
 
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
     decision = _denial(spool.queue, foreign)["evidence"]["decision"]
     assert decision["reason"] == "host_pressure" and decision["cpus"] == [1], decision
     assert decision.get("dependent_of") is None
@@ -302,7 +302,7 @@ def test_a_foreign_action_cannot_take_the_exports_room(tmp_path, monkeypatch) ->
     assert claim is not None and claim["action_key"] == export_key, (
         "the foreign action took the export's room" if claim else "nothing was claimed")
     _assert_on_allowance(spool, export_key)
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
 
     second = _export(spool, "g1")
     claim = _claim(spool.queue, spool.host, cpu_sampler=cpu_sampler)
@@ -315,7 +315,7 @@ def test_a_foreign_action_cannot_take_the_exports_room(tmp_path, monkeypatch) ->
     assert _tokens(spool.queue, second, "mem_gb") == 1
     cpus = meta["allocation"]["preferred"] + meta["allocation"]["fallback"]
     assert len(cpus) == 1 and 0 not in cpus, meta["allocation"]
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
 
 
 def test_a_measurements_export_runs_under_pressure_it_makes(tmp_path, monkeypatch) -> None:
@@ -356,7 +356,7 @@ def test_an_export_published_without_the_hint_is_funded_from_its_sealed_owner(
 
     monkeypatch.setattr(spool.queue, "publish", as_older_generation)
     export_key = _export(spool, "g0")
-    row = pool._read_json(spool.queue.item_path(pool.READY, export_key))
+    row = pool.record_store.require(spool.queue.records.item(pool.record_store.READY, export_key))
     assert "dependent_of" not in row
     cpu_sampler = _running(spool, monkeypatch, psi=0.12)
 
@@ -397,7 +397,7 @@ def test_a_withholding_foreign_action_does_not_hold_the_export_out(
         raise AssertionError(f"the export was held out behind the withhold: {denial['reason']}")
     assert claim["action_key"] == export_key
     _assert_on_allowance(spool, export_key)
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
 
     second = _export(spool, "g1")
     bystander = _foreign(spool, cas, "bystander", {"cpu": 1, "mem_gb": 1})
@@ -408,7 +408,7 @@ def test_a_withholding_foreign_action_does_not_hold_the_export_out(
     assert denial["evidence"]["withheld_for"] == foreign
     assert denial["evidence"]["dependent_of"] == spool.owner
     assert spool.queue.passes(second) == 0
-    assert spool.queue.item_path(pool.READY, bystander).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, bystander).exists()
     assert spool.queue.passes(bystander) == 0
 
 
@@ -450,13 +450,13 @@ def test_a_published_producer_that_fits_without_its_allowance_still_claims(
             "landing_s": [float(measured_slots)], "spacing_s": [1.]}}
         base = adaptive_cpu.local_state_base(queue.ledger().base)
         adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)
-        row = pool._read_json(queue.item_path(pool.READY, owner))
+        row = pool.record_store.require(queue.records.item(pool.record_store.READY, owner))
         assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
     cpu_sampler = _sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
                           cpu_tiers=CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
-    assert not queue.item_path(pool.READY, owner).exists()
+    assert not queue.records.item_path(pool.record_store.READY, owner).exists()
     allocation = _meta(queue, owner)["allocation"]
     assert len(set(allocation["preferred"] + allocation["fallback"])) == demand["cpu"]
     assert _tokens(queue, owner, "cpu") == demand["cpu"]

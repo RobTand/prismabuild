@@ -81,7 +81,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, *, stage: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(CHUNK),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
     ])
 
 
@@ -94,7 +94,7 @@ def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
     tests file both, the way ``stage_move.move`` does in production.
     """
 
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     staged = stage / SHARD
     key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
     digest = hashlib.sha256(payload).hexdigest()
@@ -125,7 +125,7 @@ def _epoch(ram: Path) -> str:
 def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, payload = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -145,7 +145,7 @@ def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
     assert staged_copy.read_bytes() == payload
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
-            queue.root / pool.RESIDENCY, CONSUMER, MOVER).read_text()))
+            queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).read_text()))
     assert fragment["tier_id"] == RAM_TIER
     assert fragment["stage_root"] == str(ram)
     assert fragment["epoch"] == epoch
@@ -159,7 +159,7 @@ def test_a_promotion_without_an_epoch_refuses_to_stage(tmp_path: Path) -> None:
     """No epoch, no promotion: a range nobody can place in time is not resident."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, _ = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()                      # no marker: the pre-bootstrap shape
@@ -171,7 +171,7 @@ def test_a_promotion_without_an_epoch_refuses_to_stage(tmp_path: Path) -> None:
     assert receipt["complete"] is False
     assert not (ram / "model").exists()
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
 
 
 def test_a_promotion_refuses_a_source_that_is_not_the_stage(
@@ -179,7 +179,7 @@ def test_a_promotion_refuses_a_source_that_is_not_the_stage(
     """Pool -> ram directly is the one road this refuses (#640's topology)."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, _ = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -196,7 +196,7 @@ def test_a_promotion_refuses_a_source_that_is_not_the_stage(
 def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, payload = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -227,4 +227,4 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
     assert not (ram / SHARD).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

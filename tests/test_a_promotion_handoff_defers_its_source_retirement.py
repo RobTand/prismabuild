@@ -79,7 +79,7 @@ def _manifest(tmp_path: Path) -> tuple[dict, Path]:
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {KIND: 8})
     queue.mint_tier_capacity(RAM_TIER, {RAM_KIND: 4})
     stage = tmp_path / "stage"
@@ -117,7 +117,7 @@ def _move_args(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(size),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -210,7 +210,7 @@ def _promote(queue: pool.PoolQueue, stage: Path, ram: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(size),
         "--action-key", key,
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
     ])
@@ -221,7 +221,7 @@ def _promote(queue: pool.PoolQueue, stage: Path, ram: Path,
 
 
 def _paths(queue: pool.PoolQueue, consumer: str, mover: str) -> dict:
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     return {
         "residency": residency,
         "fragment": residency_map.fragment_path(residency, consumer, mover),
@@ -293,7 +293,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
 
     # The promotion's action concludes: the claim goes, the handoff ends.
     queue.finish(promo, status="executed")
-    assert not (queue.dir(pool.CLAIMED) / f"{promo}.json").exists()
+    assert not (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").exists()
 
     second = stage_release.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
@@ -421,7 +421,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     assert staged.exists() and paths["fragment"].exists()
     assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
 
-    (queue.dir(pool.CLAIMED) / f"{promo}.json").unlink()
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").unlink()
     second = stage_release.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))

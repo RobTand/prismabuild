@@ -130,7 +130,7 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
     # And the export still runs on its producer's host allowance (#998).
     al._assert_on_allowance(spool, export_key)
 
-    assert queue.item_path(pool.READY, foreign).exists()
+    assert queue.records.item_path(pool.record_store.READY, foreign).exists()
     denial = al._denial(queue, foreign)
     assert denial["reason"] == "tier_reservation_unavailable", denial
     assert "family_fill" not in denial["evidence"]["tier_shortage"]
@@ -139,7 +139,7 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
     # record names it and the overcommit it left.
     ledger.release(MOVER)
     queue.finish(export_key, status="executed", claim_snapshot=claim)
-    done = pool._read_json(queue.item_path(pool.DONE, export_key))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, export_key))
     ended = done["tier_fill_borrowed"][fx.TIER]
     assert ended["lenders_released_before_end"] == [MOVER]
     assert ended["overcommit_mb_s"] == OFFER
