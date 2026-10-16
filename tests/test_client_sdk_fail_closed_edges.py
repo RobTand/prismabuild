@@ -106,7 +106,7 @@ def test_a_claim_row_that_completes_mid_read_is_none(tmp_path, monkeypatch):
     claimed = queue.records.item_path(pool.record_store.CLAIMED, "f" * 64)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps({"action_key": "f" * 64}))
-    real_read = pool.record_store.read_queue_record
+    real_read = pool.record_store._read_json
 
     def completes_first(path):
         Path(path).unlink()

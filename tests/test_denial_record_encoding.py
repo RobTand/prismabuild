@@ -142,7 +142,7 @@ def test_latest_encoding_failure_keeps_the_already_written_transition(queue):
 
 def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatch):
     path = queue.records.denial_transitions_path(KEY)
-    original_read, original_write = pool.record_store.read_queue_record, pool._write_json_atomic
+    original_read, original_write = pool.record_store._read_json, pool._write_json_atomic
     reads, writes = [], []
 
     def read(candidate):
@@ -179,7 +179,7 @@ def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypat
          "unix": 2.0, "last_unix": 2.0, "count": 1}]}
     path.write_text(json.dumps(original))
     events = []
-    old_read = pool.record_store.read_queue_record
+    old_read = pool.record_store._read_json
 
     def read(candidate):
         if candidate == path:

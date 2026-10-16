@@ -179,7 +179,7 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     queue.finish(first, status="executed", claim_snapshot=claim)
     third = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert third is not None and third["action_key"] == second
-    ended = pool.record_store.require(queue.records.item(pool.record_store.DONE, first))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, first))
     assert ended["tier_fill_borrowed"][fx.TIER]["borrowed"] == fam.OFFER
 
 
@@ -220,7 +220,7 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     assert ledger.holder_tokens(fam.MOVER).get(fam.FILL) == 50
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    ended = pool.record_store.require(queue.records.item(pool.record_store.DONE, first))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, first))
     entry = ended["tier_fill_borrowed"][fx.TIER]
     assert entry["lenders_released_before_end"] == [fam.MOVER], entry
     assert entry["overcommit_mb_s"] == 10, entry

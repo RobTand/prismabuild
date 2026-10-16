@@ -331,7 +331,7 @@ def test_read_claimed_record_reads_the_claimed_row(tmp_path: Path):
     row = {"action_key": key, "cas_root": "/cas", "residency": {"manifest_sha256": "b" * 64}}
     path.write_text(json.dumps(row), encoding="utf-8")
     assert client.read_claimed_record(queue, key) == row
-    assert client.read_claimed_record(queue, key) == pool.record_store.read_queue_record(path)
+    assert client.read_claimed_record(queue, key) == pool.record_store.read_document(path)
 
 
 def test_read_claimed_record_is_none_when_not_claimed(tmp_path: Path):
