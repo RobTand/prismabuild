@@ -128,13 +128,20 @@ def drained_box(tmp_path, monkeypatch):
                   worker_script=str(tmp_path / "worker.py"),
                   resources=RESOURCES, max_attempts=1)
 
-    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
+    record = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.CLAIMED, OWNER_KEY),
+    )
     record["resource_scope"] = _scope_control(OWNER_KEY, "c" * 32)
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY), record)
+    pool.record_store._write_json(
+        queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY),
+        record,
+    )
 
     queue.withdraw(OWNER_KEY, reason="drained for a U4 window",
                    by="u4-R2-20261001T0334Z", signal_child=False)
-    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
+    record = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.CLAIMED, OWNER_KEY),
+    )
     path = queue.finish(OWNER_KEY, status="withdrawn",
                         detail={"returncode": -15,
                                 "termination_reason": "withdrawn"},
@@ -149,8 +156,11 @@ def drained_box(tmp_path, monkeypatch):
     foreign["claimed_by"] = "foreign-box:1:feedface"
     foreign["claimed_host"] = "foreign-box"
     foreign["resource_scope"] = _scope_control(FOREIGN_KEY, "e" * 32)
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY), foreign)
-    pool._write_json_atomic(queue.records.lease_path(FOREIGN_KEY), {
+    pool.record_store._write_json(
+        queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY),
+        foreign,
+    )
+    pool.record_store._write_json(queue.records.lease_path(FOREIGN_KEY), {
         "schema": pool.POOL_LEASE_SCHEMA_V1,
         "action_key": FOREIGN_KEY,
         "owner": "foreign-box:1:feedface",
@@ -265,7 +275,8 @@ def test_a_drained_box_leaves_a_foreign_hosts_saved_finish_alone(
 
     assert _drain_one_poll(tmp_path, monkeypatch) == 0
 
-    assert queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY).read_bytes() == record_before
+    assert queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY).read_bytes(
+    ) == record_before
     assert queue.records.lease_path(FOREIGN_KEY).read_bytes() == lease_before
     assert not [op for key, op in broker["calls"] if key == FOREIGN_KEY]
 

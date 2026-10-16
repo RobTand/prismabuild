@@ -235,28 +235,28 @@ def test_the_index_entry_precedes_the_record_and_a_rerun_completes_it(
     released_dir = po._released_consumers_dir(queue.root, instance, "b1")
 
     # The entry cannot be filed: nothing is released.
-    real = pool._publish_immutable
+    real = pool.immutable_files.publish_exact
 
-    def no_index(path_, raw, *, where):
+    def no_index(path_, raw, *, where, conflict_error=pool.PoolContractError):
         if Path(path_).parent == queue.records.released_origin_consumers_dir():
             raise pool.PoolContractError("index write refused")
-        return real(path_, raw, where=where)
+        return real(path_, raw, where=where, conflict_error=conflict_error)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_publish_immutable", no_index)
+        patch.setattr(pool.immutable_files, 'publish_exact', no_index)
         assert "origin-consumer-release-conflict" in _refused(
             monkeypatch, *_release_argv(committed, key))
     assert not (released_dir / f"{key}.json").exists(), (
         "a release record was filed that the claim's listing cannot see")
 
     # The record cannot be filed: the entry stands alone, which is no release.
-    def no_record(path_, raw, *, where):
+    def no_record(path_, raw, *, where, conflict_error=pool.PoolContractError):
         if Path(path_).parent == released_dir:
             raise pool.PoolContractError("record write refused")
-        return real(path_, raw, where=where)
+        return real(path_, raw, where=where, conflict_error=conflict_error)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_publish_immutable", no_record)
+        patch.setattr(pool.immutable_files, 'publish_exact', no_record)
         assert "origin-consumer-release-conflict" in _refused(
             monkeypatch, *_release_argv(committed, key))
     assert len(_index_entries(queue, key)) == 1
@@ -327,7 +327,7 @@ def test_a_crash_while_filing_the_refusal_is_recovered_and_filed(
         raise OSError("worker died filing the ending")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_write_json_atomic", crash)
+        patch.setattr(pool.record_store, '_write_json', crash)
         with pytest.raises(OSError, match="worker died"):
             queue.claim(owner="w-consumer", tags=list(TAGS))
     assert not queue.records.item_path(pool.record_store.READY, key).exists()

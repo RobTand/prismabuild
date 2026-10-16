@@ -201,8 +201,8 @@ def test_an_unchanged_reason_writes_nothing(tmp_path, monkeypatch):
     path = queue.records.denial_transitions_path(str(item["action_key"]))
     before = path.stat().st_mtime_ns
     writes = []
-    real = pool._write_json_atomic
-    monkeypatch.setattr(pool, "_write_json_atomic",
+    real = pool.record_store._write_json
+    monkeypatch.setattr(pool.record_store, '_write_json',
                         lambda target, value: (writes.append(Path(target)), real(target, value)))
 
     for _ in range(50):
@@ -256,7 +256,9 @@ def test_a_retired_keys_ring_is_swept_and_a_live_ones_is_kept(tmp_path):
     for item in (live, gone):
         queue.record_denial(item, "host_pressure")
     gone_key = str(gone["action_key"])
-    Path(queue.records.item_path(pool.record_store.READY, gone_key)).rename(queue.records.item_path(pool.record_store.FAILED, gone_key))
+    Path(queue.records.item_path(pool.record_store.READY, gone_key)).rename(
+        queue.records.item_path(pool.record_store.FAILED, gone_key),
+    )
 
     rows = queue.sweep_denial_transitions({str(live["action_key"])})
 
@@ -279,7 +281,10 @@ def test_a_retired_consumers_event_directory_is_swept_and_a_planned_ones_is_kept
         directory = queue.records.consumer_events_dir(key)
         directory.mkdir(parents=True)
         (directory / "sparky.jsonl").write_text('{"event": "window-stalled"}\n')
-    queue.records.item_path(pool.record_store.FAILED, gone).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.item_path(pool.record_store.FAILED, gone).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     queue.records.item_path(pool.record_store.FAILED, gone).write_text("{}")
     queue.records.item_path(pool.record_store.FAILED, planned).write_text("{}")
     queue.records.residency_plan_path(planned).parent.mkdir(parents=True, exist_ok=True)
