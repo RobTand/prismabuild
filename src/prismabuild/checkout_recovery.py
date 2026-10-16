@@ -87,9 +87,12 @@ def _directory(path: Path, where: str) -> dict[str, int]:
 
 
 def _json(path: Path, where: str, *, readonly: bool = False) -> tuple[dict, str]:
-    raw = pb._read_regular_file_nofollow(path, where=where,
-                                        max_bytes=MAX_JSON_BYTES, require_readonly=readonly)
-    value = pb._decode_strict_json(raw, where=where)
+    raw = immutable_files.read_immutable_file if readonly else immutable_files.read_stable_file(
+        path,
+        where=where,
+        max_bytes=MAX_JSON_BYTES,
+    )
+    value = pb.digest_primitives.decode_strict_json(raw, where=where)
     if not isinstance(value, dict):
         _checkout_recovery_refuse(f"{where} must be a JSON object")
     return value, pb.raw_sha256(raw)
@@ -285,13 +288,21 @@ def _tree(root: Path) -> tuple[dict, dict, dict]:
                     finally:
                         os.close(child)
                 elif stat.S_ISREG(info.st_mode):
-                    child, parent = pb._open_regular_nofollow(path, where='checkout member')
+                    child, parent = immutable_files.open_regular_nofollow(
+                        path,
+                        where='checkout member',
+                    )
                     try:
                         if _checkout_recovery_identity(os.fstat(child)) != identity:
                             _checkout_recovery_refuse('file changed before hashing')
                         with os.fdopen(os.dup(child), 'rb') as stream:
                             sha, size = _hash_stream(stream)
-                        pb._assert_regular_identity(child, parent, path, where='checkout member')
+                        immutable_files.assert_regular_identity(
+                            child,
+                            parent,
+                            path,
+                            where='checkout member',
+                        )
                         if _checkout_recovery_identity(os.fstat(child)) != identity or size != info.st_size:
                             _checkout_recovery_refuse('file changed during hashing')
                     finally:
@@ -383,7 +394,7 @@ def _archive(path: Path, bank: Path, bank_uid: int, root: Path,
             if identity['uid'] not in (0, bank_uid) or identity['mode'] & 0o022:
                 _checkout_recovery_refuse('untrusted writable or foreign archive bank directory')
             parents[str(candidate)] = identity
-    fd, parentfd = pb._open_regular_nofollow(path, where='bank archive')
+    fd, parentfd = immutable_files.open_regular_nofollow(path, where='bank archive')
     child = None
     try:
         before = _checkout_recovery_identity(os.fstat(fd))
@@ -456,7 +467,7 @@ def _archive(path: Path, bank: Path, bank_uid: int, root: Path,
             stream.close()
         if child is not None and child.wait(timeout=30) != 0:
             _checkout_recovery_refuse('zstd refused or did not finish the bank archive')
-        pb._assert_regular_identity(fd, parentfd, path, where='bank archive')
+        immutable_files.assert_regular_identity(fd, parentfd, path, where='bank archive')
         if _checkout_recovery_identity(os.fstat(fd)) != before or _checkout_recovery_identity(path.lstat()) != before:
             _checkout_recovery_refuse('bank archive changed during verification')
         return dict(identity=before, parents=parents, manifest_sha256=_manifest_digest(manifest),
@@ -471,7 +482,7 @@ def _archive(path: Path, bank: Path, bank_uid: int, root: Path,
 
 
 def _process_fields(path: Path) -> list[str]:
-    raw = pb._read_regular_file_nofollow(path, where='process stat', max_bytes=65536)
+    raw = immutable_files.read_stable_file(path, where='process stat', max_bytes=65536)
     text = raw.decode('utf-8', errors='strict')
     closing = text.rfind(')')
     prefix = path.parent.name + ' ('
@@ -512,8 +523,11 @@ def _process_maps(pidroot: Path, roots: list[str], inodes: set[tuple[int, int]],
     mapped file even after unlink. Never reopen the readlink pathname or infer
     a device translation. Missing authority to follow a magic link refuses.
     """
-    raw = pb._read_regular_file_nofollow(pidroot / 'maps', where='process maps',
-                                        max_bytes=MAX_JSON_BYTES)
+    raw = immutable_files.read_stable_file(
+        pidroot / 'maps',
+        where='process maps',
+        max_bytes=MAX_JSON_BYTES,
+    )
     if not raw and not kernel_thread:
         _checkout_recovery_refuse(f'process maps empty/incomplete for live PID {pidroot.name}')
     if (raw and kernel_thread) or (raw and not raw.endswith(b'\n')):
@@ -603,7 +617,10 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
         pidroot = proc / name
         pidfd = None
         try:
-            pidfd = immutable_files.open_directory_nofollow(pidroot, where='process lifetime directory')
+            pidfd = immutable_files.open_directory_nofollow(
+                pidroot,
+                where='process lifetime directory',
+            )
             state, started = _process_stat(pidroot / 'stat')
             pidinfo = os.fstat(pidfd)
             lifetimes[name] = (started, pidinfo.st_dev, pidinfo.st_ino)
@@ -611,10 +628,17 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
                 after_state, after_started = _process_stat(pidroot / 'stat')
                 if after_started != started or after_state not in ('Z', 'X', 'x'):
                     _checkout_recovery_refuse('process lifetime changed during census; replan')
-                immutable_files.assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
+                immutable_files.assert_directory_identity(
+                    pidfd,
+                    pidroot,
+                    where='process lifetime directory',
+                )
                 continue
-            raw = pb._read_regular_file_nofollow(pidroot / 'cmdline',
-                    where='process cmdline', max_bytes=MAX_JSON_BYTES)
+            raw = immutable_files.read_stable_file(
+                pidroot / 'cmdline',
+                where='process cmdline',
+                max_bytes=MAX_JSON_BYTES,
+            )
             if any(key in raw for key in keys) or any(root.encode() in raw for root in roots):
                 _checkout_recovery_refuse(f'live PID {name} command references selected checkout/action')
             descriptors = os.listdir(pidroot / 'fd')
@@ -651,7 +675,11 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
             after_state, after_started = _process_stat(pidroot / 'stat')
             if after_started != started or after_state in ('Z', 'X', 'x'):
                 _checkout_recovery_refuse('process lifetime changed during census; replan')
-            immutable_files.assert_directory_identity(pidfd, pidroot, where='process lifetime directory')
+            immutable_files.assert_directory_identity(
+                pidfd,
+                pidroot,
+                where='process lifetime directory',
+            )
         except (FileNotFoundError, ProcessLookupError):
             if pidroot.exists():
                 _checkout_recovery_refuse(f'process census incomplete for live PID {name}')
@@ -677,8 +705,11 @@ def _census(proc: Path, entries: list[dict], identities: list[dict]) -> None:
 def _assert_no_mounts(entries: list[dict]) -> None:
     # A bind mount can share st_dev with its parent: never cross into a bank/CAS.
     path = Path('/proc') / str(os.getpid()) / 'mountinfo'
-    raw = pb._read_regular_file_nofollow(path, where='checkout mount census',
-                                        max_bytes=MAX_JSON_BYTES)
+    raw = immutable_files.read_stable_file(
+        path,
+        where='checkout mount census',
+        max_bytes=MAX_JSON_BYTES,
+    )
     roots = [Path(entry['path']) for entry in entries]
     lines = raw.decode('utf-8', errors='strict').splitlines()
     if not lines:
@@ -702,14 +733,16 @@ def _assert_no_mounts(entries: list[dict]) -> None:
             _checkout_recovery_refuse('selected checkout contains a filesystem/bind mount')
 
 
-
 def _assert_tree_identity(root: Path, tree: dict) -> None:
     for name, expected in tree.items():
         path = root if name == '.' else root / name
         if stat.S_ISDIR(expected['mode']):
             observed = _directory(path, 'checkout directory identity')
         else:
-            parent = immutable_files.open_directory_nofollow(path.parent, where='checkout member parent')
+            parent = immutable_files.open_directory_nofollow(
+                path.parent,
+                where='checkout member parent',
+            )
             try:
                 observed = _checkout_recovery_identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
             finally:
@@ -728,9 +761,9 @@ def _recheck(queue, planned, identities, proc) -> None:
             if _directory(Path(path), 'archive bank directory') != identity:
                 _checkout_recovery_refuse('archive bank directory changed; replan')
         path = Path(entry['archive_path'])
-        fd, parent = pb._open_regular_nofollow(path, where='bank archive identity')
+        fd, parent = immutable_files.open_regular_nofollow(path, where='bank archive identity')
         try:
-            pb._assert_regular_identity(fd, parent, path, where='bank archive identity')
+            immutable_files.assert_regular_identity(fd, parent, path, where='bank archive identity')
             if _checkout_recovery_identity(os.fstat(fd)) != entry['archive']['identity']:
                 _checkout_recovery_refuse('bank archive changed after verification; replan')
         finally:

@@ -26,6 +26,8 @@ carry no hard NFS deadline.
 
 from __future__ import annotations
 
+from . import immutable_files
+
 import math
 import re
 from collections.abc import Mapping
@@ -137,8 +139,9 @@ def _normalize_input_limits(
 
 def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
     try:
-        return pb._read_regular_file_nofollow(
-            path, where=where, require_readonly=require_readonly,
+        return immutable_files.read_immutable_file if require_readonly else immutable_files.read_stable_file(
+            path,
+            where=where,
             max_bytes=max_bytes,
         )
     except FileNotFoundError as exc:
@@ -151,7 +154,7 @@ def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
 
 def _decode_json(raw: bytes, *, where: str) -> object:
     try:
-        return pb._decode_strict_json(raw, where=where)
+        return pb.digest_primitives.decode_strict_json(raw, where=where)
     except pb.PrismaBuildError as exc:
         raise ActionResultError(f"{where} is not strict JSON: {exc}") from exc
 
@@ -282,8 +285,10 @@ def _result_announcement(stdout: bytes) -> Mapping[str, object]:
         if not stripped.startswith("{") or not stripped.endswith("}"):
             continue
         try:
-            value = pb._decode_strict_json(
-                stripped.encode("utf-8"), where="pool attempt stdout line")
+            value = pb.digest_primitives.decode_strict_json(
+                stripped.encode("utf-8"),
+                where="pool attempt stdout line",
+            )
         except pb.PrismaBuildError:
             continue
         if not isinstance(value, dict):

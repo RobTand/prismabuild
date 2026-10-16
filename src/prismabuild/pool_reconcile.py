@@ -5,6 +5,8 @@ output without inventing a successful broker exit or changing queue state.
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 import hashlib
 import math
 from pathlib import Path
@@ -32,9 +34,11 @@ def _number(value: object) -> bool:
 
 
 def _read(path: Path, *, readonly: bool = False) -> tuple[dict, bytes]:
-    raw = pb._read_regular_file_nofollow(
-        path, where="pool reconciliation evidence", require_readonly=readonly)
-    value = pb._decode_strict_json(raw, where="pool reconciliation evidence")
+    raw = immutable_files.read_immutable_file if readonly else immutable_files.read_stable_file(
+        path,
+        where="pool reconciliation evidence",
+    )
+    value = pb.digest_primitives.decode_strict_json(raw, where="pool reconciliation evidence")
     _require(isinstance(value, dict), f"evidence is not an object: {path}")
     return value, raw
 

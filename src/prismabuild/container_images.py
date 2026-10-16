@@ -730,9 +730,12 @@ class ClassImagePolicy:
         candidate = (source / relative).resolve(strict=True)
         if not candidate.is_relative_to(source):
             raise ValueError("class image config must be contained in its generation")
-        from .core import _read_regular_file_nofollow
-        payload = _read_regular_file_nofollow(
-            candidate, where="class image config", max_bytes=MAX_INVENTORY_BYTES)
+        from . import immutable_files
+        payload = immutable_files.read_stable_file(
+            candidate,
+            where="class image config",
+            max_bytes=MAX_INVENTORY_BYTES,
+        )
         declaration = json.loads(payload, object_pairs_hook=_unique_json_object)
         return cls(declaration, klass=klass)
 
