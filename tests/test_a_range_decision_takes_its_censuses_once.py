@@ -537,7 +537,26 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
         if isinstance(path, (str, os.PathLike)) and os.fspath(path) == target:
             scans.append(os.fspath(path))
             if len(scans) == 1:
+                directory = destinations[0].parent
+                previous = directory.stat()
                 partial.write_bytes(b"half a copy")
+                published = directory.stat()
+                version = lambda info: (info.st_mtime_ns, info.st_ctime_ns)
+                if version(published) == version(previous):
+                    # ZFS can publish two namespace changes in one clock tick.
+                    # Keep mtime fixed and wait for a real ctime change.
+                    deadline = time.monotonic() + 1
+                    while (version(directory.stat()) == version(previous)
+                           and time.monotonic() < deadline):
+                        time.sleep(0.001)
+                        os.utime(directory, ns=(published.st_atime_ns,
+                                                published.st_mtime_ns))
+                    changed = directory.stat()
+                    assert version(changed) != version(previous)
+                    assert (changed.st_dev, changed.st_ino, changed.st_mode,
+                            changed.st_nlink, changed.st_size, changed.st_mtime_ns) == (
+                                published.st_dev, published.st_ino, published.st_mode,
+                                published.st_nlink, published.st_size, published.st_mtime_ns)
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", scan)
