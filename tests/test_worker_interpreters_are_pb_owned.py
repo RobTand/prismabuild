@@ -75,7 +75,7 @@ def test_every_gpu_box_names_its_worker_interpreter() -> None:
 def test_a_worker_interpreter_is_never_a_client_gpu_interpreter() -> None:
     document = json.loads((ROOT / "tools" / "fleet" / "fleet_boxes.json").read_text())
     clients = {hook.interpreter_signature(str(path))
-               for path in document[hook.INTERPRETERS_FIELD]}
+               for path in document["gpu_interpreters"]}
     assert clients, "gpu_interpreters is empty; the disjointness cannot be pinned"
 
     inherited = {}

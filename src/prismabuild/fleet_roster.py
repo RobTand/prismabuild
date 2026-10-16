@@ -106,6 +106,10 @@ class Roster:
         flat = root / "tools" / "fleet_boxes.json"
         return (flat, nested) if flat_first else (nested, flat)
 
+    @staticmethod
+    def beside(entrypoint: str | Path) -> Path:
+        return Path(entrypoint).resolve().with_name("fleet_boxes.json")
+
     @classmethod
     def at(cls, root: str | Path, *, flat_first: bool = False) -> Roster:
         for path in cls.paths(root, flat_first=flat_first):
@@ -119,7 +123,7 @@ class Roster:
     def available(cls, *, roots=(), paths=(), modules=(), flat_first: bool = False):
         """Readable boxed captures in deliberate layout/fallback order."""
         candidates = [p for root in roots for p in cls.paths(root, flat_first=flat_first)]
-        for path in (*candidates, *paths, *(Path(m).resolve().with_name("fleet_boxes.json") for m in modules)):
+        for path in (*candidates, *paths, *(cls.beside(m) for m in modules)):
             try:
                 roster = cls.read(path)
                 roster.boxes

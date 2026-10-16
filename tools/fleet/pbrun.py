@@ -100,7 +100,7 @@ from prismabuild.record_store import (  # noqa: E402
     Absent, Moving, Present, QueueRow, RecordStore, Unknown,
 )
 
-FLEET_ROSTER_PATH = Path(__file__).resolve().parent / "fleet_boxes.json"
+FLEET_ROSTER_PATH = fleet_roster.Roster.beside(__file__)
 
 POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
@@ -1776,8 +1776,8 @@ def placement_contract(
         environment=environment, caller_environment=caller_environment)
     if offer_queue is not None:
         try:
-            roster = json.loads(FLEET_ROSTER_PATH.read_text())
-            members = fleet_roster.class_members(roster, "gb10")
+            roster = fleet_roster.Roster.read(FLEET_ROSTER_PATH)
+            members = fleet_roster.class_members(roster.document, "gb10")
         except (OSError, ValueError, TypeError) as exc:
             print(f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
                   file=sys.stderr, flush=True)
