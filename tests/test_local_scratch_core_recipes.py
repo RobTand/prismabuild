@@ -39,7 +39,6 @@ def fleet(tmp_path, monkeypatch):
     return ScratchFleet(tmp_path, monkeypatch)
 
 
-
 class IntegerSubclass(int):
     pass
 
@@ -153,10 +152,14 @@ def _assert_materialized_producer_snapshot(fleet, action, *, expected_source_roo
         pb.verify_code_closure(action["code_closure"], checkout)
         sources = {}
         for name in ls.PRODUCER_FILES:
-            actual = pb._read_regular_file_nofollow(
-                checkout / name, where="materialized producer snapshot control")
-            expected = pb._read_regular_file_nofollow(
-                expected_source_root / name, where="expected producer source control")
+            actual = pb.immutable_files.read_stable_file(
+                checkout / name,
+                where="materialized producer snapshot control",
+            )
+            expected = pb.immutable_files.read_stable_file(
+                expected_source_root / name,
+                where="expected producer source control",
+            )
             assert actual == expected
             assert hashlib.sha256(actual).hexdigest() == hashlib.sha256(expected).hexdigest()
             sources[name] = actual
@@ -212,8 +215,10 @@ def test_harmless_changed_recipe_core_snapshot_executes_but_three_source_qualifi
                                                    expected_source_root=fleet.work)
     materialized_core = sources["src/prismabuild/core.py"]
     assert materialized_core == private_core.read_bytes()
-    installed_core = pb._read_regular_file_nofollow(
-        REPO / "src/prismabuild/core.py", where="installed recipe Core control")
+    installed_core = pb.immutable_files.read_stable_file(
+        REPO / "src/prismabuild/core.py",
+        where="installed recipe Core control",
+    )
     assert materialized_core != installed_core
     assert hashlib.sha256(materialized_core).hexdigest() != hashlib.sha256(installed_core).hexdigest()
     receipt, raw = _successful_profile_execution(fleet, monkeypatch, changed)

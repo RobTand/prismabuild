@@ -63,7 +63,7 @@ def _record_actual_decoder_precondition(case, raw):
     # Invoke the real configured decoder in the admitted test only. Do not
     # change recursion/stack limits, patch a parser or serialize its deep value.
     try:
-        decoded = pb._decode_strict_json(raw, where="retained depth setup")
+        decoded = pb.digest_primitives.decode_strict_json(raw, where="retained depth setup")
     except RecursionError:
         outcome, category, recursion = "RecursionError", "exception-precondition-met", True
     except ValueError as exc:

@@ -278,13 +278,13 @@ def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
     first = json.loads(queue.attempt_path(record, 1).read_text(encoding="utf-8"))
     first_log = queue.root / str(first["logs"]["stdout"]["path"])
     seen: list[Path] = []
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
 
     def spy(path, **kwargs):
         seen.append(Path(path))
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     result = client.read_verified_action_result(
         queue, key, published_unix=float(record["published_unix"]), attempt=2,
         max_result_bytes=64, max_evidence_bytes=1 << 20)
@@ -300,13 +300,13 @@ def test_a_payload_over_its_cap_refuses_before_the_blob_is_opened(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     blob = cas.blob_path(str(receipt["result"]["sha256"]))
     seen: list[Path] = []
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
 
     def spy(path, **kwargs):
         seen.append(Path(path))
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
             queue, str(action["action_key"]),
@@ -336,13 +336,13 @@ def test_only_the_selected_attempt_and_log_are_opened(tmp_path: Path, monkeypatc
     poison = queue.attempt_path(record, 1).parent / "poison.log"
     poison.write_text("not a result\n", encoding="utf-8")
     seen: list[Path] = []
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
 
     def spy(path, **kwargs):
         seen.append(Path(path))
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     client.read_verified_action_result(
         queue, str(action["action_key"]),
         published_unix=float(record["published_unix"]), attempt=1,
@@ -397,13 +397,13 @@ def test_selected_input_tamper_and_over_cap_refuse_without_reading_unchosen(
     key = str(action["action_key"])
     b_blob = cas.blob_path(str(b_entry["sha256"]))
     seen: list[Path] = []
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
 
     def spy(path, **kwargs):
         seen.append(Path(path))
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     result = client.read_verified_action_result(
         queue, key, published_unix=float(record["published_unix"]), attempt=1,
         max_result_bytes=64, max_evidence_bytes=1 << 20,
@@ -455,13 +455,13 @@ def test_an_oversized_execution_receipt_refuses_under_the_evidence_cap(
         handle.truncate(2 << 20)
     receipt_path.chmod(0o444)
     seen: list[tuple[Path, object]] = []
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
 
     def spy(path, **kwargs):
         seen.append((Path(path), kwargs.get("max_bytes")))
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
             queue, str(action["action_key"]),
@@ -477,7 +477,7 @@ def test_an_attempt_changed_during_the_read_refuses(tmp_path: Path, monkeypatch)
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
     key = str(action["action_key"])
     attempt_path = queue.attempt_path(record, 1)
-    original = pb._read_regular_file_nofollow
+    original = pb.immutable_files._read_file
     tampered = []
 
     def spy(path, **kwargs):
@@ -492,7 +492,7 @@ def test_an_attempt_changed_during_the_read_refuses(tmp_path: Path, monkeypatch)
             _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
         return payload
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", spy)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', spy)
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
             queue, key, published_unix=float(record["published_unix"]),
@@ -555,7 +555,7 @@ def _a_nesting_depth_that_refuses() -> bytes | None:
     for depth in (1000, 4000, 16000, 64000, 256000):
         document = b'{"a":' * depth + b"0" + b"}" * depth
         try:
-            pb._decode_strict_json(document, where="control")
+            pb.digest_primitives.decode_strict_json(document, where="control")
         except pb.PrismaBuildError:
             return document
         except RecursionError:

@@ -95,7 +95,7 @@ def test_public_decoder_validates_evidence_without_queue_reads(queue, clock, mon
     def unexpected_read(*args, **kwargs):
         pytest.fail("decoding an observed publication ending performed I/O")
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", unexpected_read)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', unexpected_read)
     assert queue.decode_publication_supersession(decision.path, decision.record) == decision
     changed = {**decision.record, "successor": {**successor, "action_key": "0" * 64}}
     with pytest.raises(pool.PoolContractError):
