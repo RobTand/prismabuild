@@ -82,7 +82,7 @@ def starved_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.socket, "gethostname", lambda: HOST)
     monkeypatch.setattr(pbstatus.time, "time", lambda: NOW)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host=HOST, tags=[HOST], has_gpu=False,
                    capacity={"cpu": 8, "mem_gb": 32},
                    observed_capacity={"cpu": 8, "mem_gb": 32})
@@ -95,13 +95,13 @@ def starved_queue(tmp_path, monkeypatch):
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 4 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    ready_path = queue.item_path(pool.READY, CONSUMER)
+    ready_path = queue.records.item_path(pool.record_store.READY, CONSUMER)
     record = json.loads(ready_path.read_text())
     record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
                    "claimed_by": f"worker-{HOST}"})
-    queue.item_path(pool.CLAIMED, CONSUMER).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).write_text(json.dumps(record))
     ready_path.unlink()
-    queue.lease_path(CONSUMER).write_text(json.dumps({
+    queue.records.lease_path(CONSUMER).write_text(json.dumps({
         "action_key": CONSUMER, "owner": record["claimed_by"], "host": HOST,
         "claimed_unix": record["claimed_unix"],
         "published_unix": record["published_unix"],
@@ -152,7 +152,7 @@ def starved_queue(tmp_path, monkeypatch):
         "mountpoint": str(tmp_path / "ram"),
         "capacity_bytes": 8 * GIB, "sampled_unix": NOW - 5,
         "epoch": EPOCH, "window_gib": 4})
-    published = json.loads(queue.item_path(pool.READY, _hexkey("mover1")).read_text())
+    published = json.loads(queue.records.item_path(pool.record_store.READY, _hexkey("mover1")).read_text())
     denials = {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
             "mover": {"action_key": _hexkey("mover1"),
@@ -162,7 +162,7 @@ def starved_queue(tmp_path, monkeypatch):
                       "denied_unix": NOW - 10},
             "consumer": {"action_key": CONSUMER,
                          "published_unix": json.loads(
-                             queue.item_path(pool.CLAIMED, CONSUMER).read_text()
+                             queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).read_text()
                          )["published_unix"],
                          "host": HOST, "reason": "adaptive_cpu_refused",
                          "evidence": {}, "denied_unix": NOW - 20}}}

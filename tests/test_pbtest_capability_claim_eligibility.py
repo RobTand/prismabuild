@@ -30,7 +30,7 @@ CAPACITY = {"cpu": 4, "mem_gb": 16}
 
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -49,7 +49,7 @@ def _publish(queue, key, **kwargs):
 
 
 def _item_of(queue, key):
-    return json.loads(queue.item_path(pool.READY, key).read_text())
+    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
 
 
 def _denials(queue):
@@ -90,9 +90,9 @@ def test_publish_refuses_malformed_entries_and_a_bare_capability(tmp_path):
                  requires_files=[{"path": "/x", "sha256": "nope"}])
     with pytest.raises(pool.PoolContractError, match=TAG):
         _publish(queue, "d" * 64, tags=[TAG])
-    assert not queue.item_path(pool.READY, "b" * 64).exists()
-    assert not queue.item_path(pool.READY, "c" * 64).exists()
-    assert not queue.item_path(pool.READY, "d" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "b" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "c" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
 
 
 def test_an_item_without_requirements_is_byte_identical_to_before(tmp_path):
@@ -163,7 +163,7 @@ def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_not_present"
     assert denial["evidence"]["paths"] == [entry["path"]]
-    assert queue.item_path(pool.READY, "1" * 64).exists()
+    assert queue.records.item_path(pool.record_store.READY, "1" * 64).exists()
 
 
 def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
@@ -178,7 +178,7 @@ def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
     assert denial["evidence"]["expected"] == entry["sha256"]
     assert denial["evidence"]["observed"] == hashlib.sha256(
         b"drifted").hexdigest()
-    assert queue.item_path(pool.READY, "2" * 64).exists()
+    assert queue.records.item_path(pool.record_store.READY, "2" * 64).exists()
 
 
 def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
@@ -188,7 +188,7 @@ def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
 
     claimed = queue.claim(capacity=dict(CAPACITY), tags=[TAG])
     assert claimed is not None
-    assert not queue.item_path(pool.READY, "3" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "3" * 64).exists()
 
 
 def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
@@ -196,7 +196,7 @@ def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
     _publish(queue, "4" * 64)
     item = _item_of(queue, "4" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
-    queue.item_path(pool.READY, "4" * 64).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.READY, "4" * 64).write_text(json.dumps(item))
 
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
     denial = _denials(queue)[-1]
@@ -209,7 +209,7 @@ def test_a_row_with_malformed_requirements_is_denied_not_run(tmp_path):
     item = _item_of(queue, "5" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
     item["requires_files"] = [{"path": "relative"}]
-    queue.item_path(pool.READY, "5" * 64).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.READY, "5" * 64).write_text(json.dumps(item))
 
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
     denial = _denials(queue)[-1]

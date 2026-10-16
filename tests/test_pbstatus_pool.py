@@ -68,7 +68,7 @@ def live_pool(tmp_path, monkeypatch, controlled_clock):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 32, "gpu": 2},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     publishers = []
     publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
 
@@ -133,7 +133,7 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
     denial_path.parent.mkdir(parents=True, exist_ok=True)
     denial_path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {"fixture": {
         "action_key": key, "published_unix": json.loads(
-            live_pool.item_path(pool.READY, key).read_text())["published_unix"],
+            live_pool.records.item_path(pool.record_store.READY, key).read_text())["published_unix"],
         "host": "cpu-box", "reason": "adaptive_cpu_refused",
         "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
         "denied_unix": controlled_clock.time(),
@@ -148,11 +148,11 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
 
 def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool, controlled_clock):
     controlled_clock.advance(max(pool.OFFER_TIMEOUT_S, pool.LEASE_TIMEOUT_S) + 1)
-    offer = live_pool.root / pool.WORKERS / 'cpu-box.json'
+    offer = live_pool.root / pool.record_store.WORKERS / 'cpu-box.json'
     record = json.loads(offer.read_text())
     record['announced_unix'] = controlled_clock.time()
     offer.write_text(json.dumps(record))
-    lease = live_pool.lease_path('a' * 64)
+    lease = live_pool.records.lease_path('a' * 64)
     record = json.loads(lease.read_text())
     record['heartbeat_unix'] = controlled_clock.time()
     lease.write_text(json.dumps(record))
@@ -179,7 +179,7 @@ def test_pool_freshness_uses_the_completed_census(
         directory = live_pool.ledger(host).base / "adaptive"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
-    original_records, original_read = pbstatus._pool_records, pool._read_json
+    original_records, original_read = pbstatus._pool_records, pool.record_store.read_queue_record
 
     def stalled_records(directory):
         result = original_records(directory)
@@ -191,13 +191,13 @@ def test_pool_freshness_uses_the_completed_census(
         result = original_read(path, **kwargs)
         selected = ((stall_at == "admission" and path.name == "cpu-sample.json")
                     or (stall_at == "lease" and path.suffix == ".lease")
-                    or (stall_at == "passes" and path.parent.name == pool.PASSES))
+                    or (stall_at == "passes" and path.parent.name == pool.record_store.PASSES))
         if selected and controlled_clock.time() == started:
             controlled_clock.advance(1000)
         return result
 
     monkeypatch.setattr(pbstatus, "_pool_records", stalled_records)
-    monkeypatch.setattr(pool, "_read_json", stalled_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
     result = pbstatus.read_pool(live_pool.root)
     assert result["queue"]["sampled_unix"] == started + 1000
     assert result["queue"]["live_workers"] == 0
@@ -222,17 +222,17 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
                       worker_script=ROOT / "tools/prismabuild_worker.py")
     denied = {
         "admission": live_pool.ledger("cpu-box").base / "adaptive" / "cpu-sample.json",
-        "lease": live_pool.lease_path("a" * 64),
-        "passes": live_pool.passes_path(key),
+        "lease": live_pool.records.lease_path("a" * 64),
+        "passes": live_pool.records.passes_path(key),
     }[sidecar]
-    original_read = pool._read_json
+    original_read = pool.record_store.read_queue_record
 
     def unreadable(path, **kwargs):
         if path == denied:
             raise PermissionError("fixture sidecar denied")
         return original_read(path, **kwargs)
 
-    monkeypatch.setattr(pool, "_read_json", unreadable)
+    monkeypatch.setattr(pool.record_store, '_read_json', unreadable)
     result = pbstatus.read_pool(live_pool.root)
     if sidecar == "admission":
         node = next(n for n in result["nodes"] if n["node"] == "cpu-box")
@@ -251,7 +251,7 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
 def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monkeypatch):
     root = tmp_path / 'empty'
     queue = pool.PoolQueue(root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     assert pbstatus.read_pool(root)['queue']['empty'] is True
     missing = tmp_path / 'missing'
     result = pbstatus.read_pool(missing)
@@ -259,7 +259,7 @@ def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monke
     assert not missing.exists()
     original = pbstatus.os.scandir
     def denied(path):
-        if not isinstance(path, int) and Path(path) == queue.dir(pool.CLAIMED):
+        if not isinstance(path, int) and Path(path) == queue.records.dir(pool.record_store.CLAIMED):
             raise PermissionError('permission denied')
         return original(path)
     monkeypatch.setattr(pbstatus.os, 'scandir', denied)
@@ -269,7 +269,7 @@ def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monke
 
 
 def test_malformed_active_records_remain_visible_without_hiding_valid_jobs(live_pool):
-    live_pool.item_path(pool.READY, 'c' * 64).write_text('{')
+    live_pool.records.item_path(pool.record_store.READY, 'c' * 64).write_text('{')
     result = pbstatus.read_pool(live_pool.root)
     assert result['queue']['ready'] is None and result['queue']['empty'] is None
     assert len(result['jobs']) == 3
@@ -338,7 +338,7 @@ def test_pool_text_names_jobs_and_unavailable_state(live_pool, capsys, tmp_path)
 
 
 def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
-    path = live_pool.root / pool.WORKERS / 'cpu-box.json'
+    path = live_pool.root / pool.record_store.WORKERS / 'cpu-box.json'
     record = json.loads(path.read_text())
     record['capacity']['cpu'] = 'unknown'
     path.write_text(json.dumps(record))
@@ -350,7 +350,7 @@ def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
 
 def test_nonregular_queue_entry_is_unreadable_without_opening(live_pool):
     import os
-    os.mkfifo(live_pool.item_path(pool.READY, 'c' * 64))
+    os.mkfifo(live_pool.records.item_path(pool.record_store.READY, 'c' * 64))
     result = pbstatus.read_pool(live_pool.root)
     assert result['queue']['ready'] is None
     assert any('not a regular' in note for note in result['notes'])

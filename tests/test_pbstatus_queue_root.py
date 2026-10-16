@@ -39,7 +39,7 @@ def _no_controller(tmp_path: Path) -> list[str]:
 def _queue(root: Path) -> Path:
     """A queue root with the three ending directories and nothing in them."""
 
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         (root / state).mkdir(parents=True)
     return root
 

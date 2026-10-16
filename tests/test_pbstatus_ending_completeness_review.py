@@ -14,13 +14,13 @@ from prismabuild import pool
 def test_unreadable_endings_do_not_certify_a_complete_census(
         tmp_path, monkeypatch, capsys, fault):
     q = pool.PoolQueue(tmp_path / 'queue')
-    q.ensure_layout()
+    q.records.ensure_layout()
     if fault == 'malformed_record':
-        (q.dir(pool.DONE) / ('a' * 64 + '.json')).write_text('{ truncated')
+        (q.records.dir(pool.record_store.DONE) / ('a' * 64 + '.json')).write_text('{ truncated')
     else:
         scandir = pbstatus.os.scandir
         def refuse_done(path):
-            if not isinstance(path, int) and Path(path) == q.dir(pool.DONE):
+            if not isinstance(path, int) and Path(path) == q.records.dir(pool.record_store.DONE):
                 raise PermissionError('done directory unavailable')
             return scandir(path)
         monkeypatch.setattr(pbstatus.os, 'scandir', refuse_done)
@@ -33,7 +33,7 @@ def test_unreadable_endings_do_not_certify_a_complete_census(
 
 def test_queue_root_note_does_not_hide_a_stat_error(tmp_path, monkeypatch, capsys):
     q = pool.PoolQueue(tmp_path / 'queue')
-    q.ensure_layout()
+    q.records.ensure_layout()
     stat = Path.stat
 
     def refuse_root(path, *args, **kwargs):
