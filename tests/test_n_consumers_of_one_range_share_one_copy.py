@@ -189,7 +189,7 @@ def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
     agree (``_check_claim_lease_identity``).
     """
 
-    path = queue.lease_path(key)
+    path = queue.records.lease_path(key)
     lease = json.loads(path.read_text())
     lease["progress_observation"] = {
         "source": "action-progress",
@@ -205,11 +205,11 @@ def _fail(queue: pool.PoolQueue, key: str) -> None:
     lease left behind reads as a live claim (``residency_plan.live_state``
     lists ``claimed/<key>.lease`` too), so the sweep would defer on it."""
 
-    claimed = queue.item_path(pool.CLAIMED, key)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(claimed.read_text())
     claimed.unlink()
-    queue.lease_path(key).unlink(missing_ok=True)
-    queue.item_path(pool.FAILED, key).write_text(
+    queue.records.lease_path(key).unlink(missing_ok=True)
+    queue.records.item_path(pool.record_store.FAILED, key).write_text(
         json.dumps({**record, "status": "failed"}))
 
 
@@ -372,7 +372,7 @@ def test_one_readers_egress_leaves_the_range_and_the_last_one_deletes(
     queue, stage = _fixture_queue(tmp_path, 20)
     plans, movers = _sharers(queue, stage,
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     _fan_out(queue, stage)
     for key in (FIRST, SECOND):
         assert residency_map.fragment_path(root, key, movers[0]).exists()
@@ -419,7 +419,7 @@ def test_a_dead_sharers_eviction_keeps_the_range_for_the_live_one(
     assert _files(stage, 0).exists()
     assert _held(queue) == PHASE_GIB
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), FIRST, movers[0]).exists()
+        queue.records.residency_fragment_root(), FIRST, movers[0]).exists()
 
 
 def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
@@ -436,15 +436,15 @@ def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
 
     first_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, movers[1]).exists(), first_pass
-    assert not queue.item_path(pool.WITHDRAWN, movers[1]).exists(), first_pass
+    assert queue.records.item_path(pool.record_store.READY, movers[1]).exists(), first_pass
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, movers[1]).exists(), first_pass
 
     _fail(queue, SECOND)
     second_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert not queue.item_path(pool.READY, movers[1]).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, movers[1]).exists(), (
         first_pass, second_pass)
-    assert queue.item_path(pool.WITHDRAWN, movers[1]).exists(), second_pass
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, movers[1]).exists(), second_pass
 
 
 # ------------------------------------------------------ the crash, the stale
@@ -464,16 +464,16 @@ def test_a_mover_crash_with_two_dependents_copies_once_and_both_wait(
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     row = dict(plans[FIRST]["phases"][0]["mover_row"])     # type: ignore[index]
     queue.publish(**row, max_attempts=3, retry_safe=True)
-    ready = queue.item_path(pool.READY, movers[0])
+    ready = queue.records.item_path(pool.record_store.READY, movers[0])
     record = json.loads(ready.read_text())
     ready.unlink()
     record.update({"claimed_unix": 1.0, "claimed_by": "crashed-worker",
                    "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, movers[0]).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, movers[0]).write_text(json.dumps(record))
 
     queue.reap_stale(timeout_s=0.0)
 
-    assert queue.item_path(pool.READY, movers[0]).exists()
+    assert queue.records.item_path(pool.record_store.READY, movers[0]).exists()
     ranged = [item for item in queue.ready_items()
               if isinstance(item, dict)
               and (item.get("residency") or {}).get("range_start_bytes") == 0]
@@ -488,7 +488,7 @@ def test_a_mover_crash_with_two_dependents_copies_once_and_both_wait(
         assert verdict is not None
         assert verdict["exempt"] is True, verdict
         assert verdict["movers"][0]["key"] == movers[0]
-        assert verdict["movers"][0]["state"] == pool.READY
+        assert verdict["movers"][0]["state"] == pool.record_store.READY
 
 
 def test_a_stale_done_shared_mover_holds_nothing_and_is_staged_again(
@@ -501,7 +501,7 @@ def test_a_stale_done_shared_mover_holds_nothing_and_is_staged_again(
     plans, movers = _sharers(queue, stage, land=(),
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     row = dict(plans[FIRST]["phases"][0]["mover_row"])     # type: ignore[index]
-    done = queue.item_path(pool.DONE, movers[0])
+    done = queue.records.item_path(pool.record_store.DONE, movers[0])
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({**row, "status": "done"}))
 
@@ -555,7 +555,7 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
     queue, stage = _fixture_queue(tmp_path, 20)
     _plans, movers = _sharers(queue, stage,
                               reading={FIRST: "phase-0", SECOND: "phase-0"})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     namespace = _namespace(FIRST, MANIFEST, 0, PHASE_GIB * GIB)
     source_path = residency_map.fragment_path(root, namespace, movers[0])
     source = json.loads(source_path.read_text())
@@ -576,7 +576,7 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
                     receipts=tier_loop.ReceiptCache(),
                     discover=lambda **_kwargs: {TIER: _tier_record(stage, gib=20)})
     for key in (FIRST, SECOND):
-        mapped = residency_map.read_map(queue.residency_map_path(key))
+        mapped = residency_map.read_map(queue.records.residency_map_path(key))
         assert any(str(entry.get("stage_path", "")).endswith("phase-0/part-0.bin")
                    for entry in dict(mapped.get("entries") or {}).values()), mapped
 
@@ -607,8 +607,8 @@ def _land_published(queue: pool.PoolQueue, stage: Path,
         key = str(item["action_key"])
         start = int(residency["range_start_bytes"])
         end = int(residency["range_end_bytes"])
-        queue.item_path(pool.READY, key).unlink()
-        queue.item_path(pool.DONE, key).write_text(
+        queue.records.item_path(pool.record_store.READY, key).unlink()
+        queue.records.item_path(pool.record_store.DONE, key).write_text(
             json.dumps({**item, "status": "done"}))
         landings[(start, end)] = landings.get((start, end), 0) + 1
         registered = getattr(residency_plan, "share_namespace_of", None)
@@ -638,7 +638,7 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
     for n, key in enumerate(consumers):
         _claim(queue, key, phase="phase-0", claimed_unix=now - 1000.0 + n,
                reported_unix=now - 10.0)
-        claimed = queue.item_path(pool.CLAIMED, key)
+        claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
         record = json.loads(claimed.read_text())
         record["claimed_host"] = CAMPAIGN_HOSTS[n % len(CAMPAIGN_HOSTS)]
         claimed.write_text(json.dumps(record))

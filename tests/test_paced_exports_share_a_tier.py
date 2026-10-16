@@ -253,7 +253,7 @@ def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
 
     foreign = second_paced_write(spool, 60)
     assert claim(spool) is None         # no measurement, no second writer
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
     denial = al._denial(spool.queue, foreign)
     assert denial["reason"] == "tier_reservation_unavailable", denial
 

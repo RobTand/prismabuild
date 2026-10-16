@@ -121,7 +121,7 @@ def test_submission_survives_a_stale_read_of_the_only_matching_offer(
     err = capsys.readouterr().err
     assert "no recorded worker" not in err
     assert "pbrun: queued" in err
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
 
 
 def test_a_tag_no_worker_offers_still_refuses_at_once(
@@ -133,7 +133,7 @@ def test_a_tag_no_worker_offers_still_refuses_at_once(
     with pytest.raises(SystemExit, match="no recorded worker can run this action") as caught:
         _submit(monkeypatch, work, "nosuchbox")
     assert not isinstance(caught.value, getattr(pbrun, "OfferDiscoveryTimedOut", ()))
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_a_reaped_offer_timeout_is_its_own_refusal(tmp_path, monkeypatch):
@@ -191,7 +191,7 @@ def test_campaign_window_retries_an_offer_discovery_timeout(
     """
 
     work, queue = fleet_paths
-    fifo = queue.root / pool.WORKERS / "wedged.json"
+    fifo = queue.root / pool.record_store.WORKERS / "wedged.json"
     os.mkfifo(fifo, 0o600)
     monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     attempts = []
@@ -219,7 +219,7 @@ def test_campaign_window_retries_an_offer_discovery_timeout(
     err = capsys.readouterr().err
     assert attempts == [0, 0]
     assert "worker-offer discovery timed out" in err
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
     assert code == pbcampaign.pbwait.GAVE_UP_EXIT       # submitted, still waiting
 
 
