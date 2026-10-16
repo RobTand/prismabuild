@@ -67,7 +67,7 @@ def test_children_have_only_their_declared_reads_and_all_graphs_freeze_first(tmp
         expected = [{**entry, 'path': request['task_data_manifest']['mount_prefix'] + '/' + entry['path']}
                     for t in wanted for entry in t['payload']['reads']]
         manifest_ref = child['params'].get('data_manifest')
-        row = pool.record_store.require(fixture['queue'].records.item(pool.record_store.READY, child['action_key']))
+        row = pool.record_store.value_or_raise(fixture['queue'].records.item(pool.record_store.READY, child['action_key']))
         if not expected:
             assert manifest_ref is None and 'residency' not in row
             continue

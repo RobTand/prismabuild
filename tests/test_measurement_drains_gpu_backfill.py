@@ -117,7 +117,7 @@ def fleet(tmp_path, monkeypatch):
                               gpu_sampler=gpu_sampler)
         if result is not None and len(active.ledger(host).held_keys()) == 1:
             key = result["action_key"]
-            record = pool.record_store.require(active.records.item(pool.record_store.CLAIMED, key))
+            record = pool.record_store.value_or_raise(active.records.item(pool.record_store.CLAIMED, key))
             assert isinstance(record, dict)
             if (record.get("needs_gpu")
                     and not adaptive_gpu.action_contract(record, record["resources"])[1]):
@@ -167,7 +167,7 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
         cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
             sampler=lambda: cpu_sample(clock, readings))
         gpu = adaptive_gpu.Controller(queue.ledger(), sampler=lambda: gpu_sample(sample, readings))
-        record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, holder))
+        record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, holder))
         with cpu.locked():
             permission = gpu.decision(record, record["resources"])
     assert permission is not None and permission["probe"] is True, gpu.last_decision
@@ -264,7 +264,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     assert claim(cpu_sampler=cpu_sampler) is None
     assert denial(measurement)["evidence"]["withhold"]["why"] == "foreign_load"
     def foreign_stamp():
-        record = pool.record_store.read_queue_record(queue.records.passes_path(measurement))
+        record = pool.record_store.read_document(queue.records.passes_path(measurement))
         assert isinstance(record, dict)
         episodes = record["measurement_drains"]
         assert isinstance(episodes, dict)
@@ -394,7 +394,7 @@ def test_measurement_deadlines_survive_transient_carry_without_renewal(fleet):
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, measurement))
     records = queue._host_denial_records()
     carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
     assert carried is not None

@@ -65,7 +65,7 @@ def _canonical(body):
 
 
 def _record(path) -> dict[str, Any]:
-    record = pool.record_store.read_queue_record(path)
+    record = pool.record_store.read_document(path)
     assert isinstance(record, dict), f"missing durable queue record: {path}"
     return cast(dict[str, Any], record)
 
@@ -508,7 +508,7 @@ def test_transition_busy_on_faster_host_is_not_an_admission_refusal(fleet):
 
 def test_profile_expiry_during_slow_offer_read_is_rechecked_before_tokens(fleet, monkeypatch):
     fleet.publish(max_age=1.)
-    read_json = pool.record_store.read_queue_record
+    read_json = pool.record_store._read_json
     peer = fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json"
     delayed = []
 

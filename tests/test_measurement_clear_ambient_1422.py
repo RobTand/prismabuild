@@ -37,7 +37,7 @@ def _measurement_decision(fleet, *, busy, attribution="clear", with_holder=False
     })
     measurement = publish("measurement", measurement=True, pinned=True,
                           priority=0, cpu=8)
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     assert adaptive_cpu.action_identity(item)[1] is True
     predicted = queue.ledger().free_cpu_allocation(8, TIERS)

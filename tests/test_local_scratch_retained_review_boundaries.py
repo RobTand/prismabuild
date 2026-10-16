@@ -234,7 +234,7 @@ def test_peer_original_price_expiry_during_real_view_read_ends_yield(fleet, monk
     fleet.publish(max_age=max_age)
     peer_map = fleet.queue.ledger(FAST).base / "cpu-map.json"
     assert peer_map.is_file() and fleet.queue.ledger(FAST).available() == CAPACITY
-    read_json = pool.record_store.read_queue_record
+    read_json = pool.record_store._read_json
     reads = []
 
     def delayed_peer_ledger_observation(path, *args, **kwargs):

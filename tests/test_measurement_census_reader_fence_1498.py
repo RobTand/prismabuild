@@ -69,7 +69,7 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
 
     publish("fence-measurement", measurement=True, priority=-100)
     candidate = publish("fence-candidate", priority=-10)
-    candidate_record = pool.record_store.require(queue.records.item(pool.record_store.READY, candidate))
+    candidate_record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
 
     # Park the admission pass between the discovery read and the under-H
     # refresh, holding the measurement transition key and host admission,
@@ -170,7 +170,7 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         publish("busy-fence-measurement", measurement=True, priority=-100)
         candidate = publish("busy-fence-candidate", priority=-10)
-        candidate_record = pool.record_store.require(queue.records.item(pool.record_store.READY, candidate))
+        candidate_record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
         started = time.monotonic()
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
                              adaptive_cpu=True, has_gpu=True,
