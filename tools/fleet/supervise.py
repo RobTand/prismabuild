@@ -407,49 +407,6 @@ def _claim_holders() -> frozenset[int] | None:
         return None
 
 
-def _roster_entry(host: str) -> tuple[dict, dict] | None:
-    """This box's raw roster entry and the roster file it came from.
-
-    The roster document travels with the entry because a box's declaration
-    can depend on a fleet-wide value beside ``boxes`` -- the local-disk free
-    floor that ``--spool-gb`` is checked against -- and both must come from
-    the same file, never one from the live generation and one from the
-    checkout.  ``None`` is the same "no answer" ``_box_entry`` documents.
-    """
-
-    # A supervisor intentionally outlives a generation.  Prefer the current
-    # live generation; CONFIG is only the checkout/bootstrapping fallback.
-    for path in (_current_root() / "tools" / "fleet_boxes.json", CONFIG):
-        try:
-            document = json.loads(path.read_text())
-            boxes = document["boxes"]
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if not isinstance(boxes, dict):
-            continue
-        try:
-            entry = fleet_roster.entry_for_host(boxes, host)
-        except fleet_roster.RosterPresenceError as exc:
-            raise SystemExit(f"{exc}: {path}") from None
-        if entry is not None:
-            return entry, document
-    return None
-
-
-def _box_entry(host: str) -> dict | None:
-    """This box's raw roster entry, or ``None`` when no file names it.
-
-    ``None`` covers both "no readable roster" (a transient NFS failure or a
-    damaged generation, which must not take the box's loops with it) and "no
-    entry" (which ``_config`` still refuses at startup, where there is no
-    previous shape to keep).  Alias handling matches ``_config``: the roster
-    key and its ``_alias`` name the same machine.
-    """
-
-    found = _roster_entry(host)
-    return None if found is None else found[0]
-
-
 def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
     """This box's declared presence, or ``None`` when it cannot be read.
 
@@ -458,26 +415,34 @@ def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
     because an ambiguous presence is not an active box (#606).
     """
 
-    entry = _box_entry(host)
-    if entry is None:
+    try:
+        box = fleet_roster.Roster.for_host(
+            host, roots=(_current_root(),), paths=(CONFIG,), flat_first=True)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(str(exc)) from None
+    if box is None:
         return None
     try:
-        return fleet_roster.box_status(host, entry)
+        return fleet_roster.box_status(host, box.entry)
     except fleet_roster.RosterPresenceError as exc:
         raise SystemExit(f"cannot establish this box's roster presence: {exc}")
 
 
-def _config(host: str) -> dict:
+def _config(host: str) -> fleet_roster.Box:
     """Read this box's declared shape, from the checkout or the published copy."""
 
-    entry = _box_entry(host)
-    if entry is None:
+    try:
+        box = fleet_roster.Roster.for_host(
+            host, roots=(_current_root(),), paths=(CONFIG,), flat_first=True)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(str(exc)) from None
+    if box is None:
         raise SystemExit(
             f"no fleet_boxes.json entry for {host}; refusing to guess what this "
             f"box offers -- add it to tools/fleet/fleet_boxes.json and publish"
         )
     try:
-        status, detail = fleet_roster.box_status(host, entry)
+        status, detail = fleet_roster.box_status(host, box.entry)
     except fleet_roster.RosterPresenceError as exc:
         raise SystemExit(f"cannot establish this box's roster presence: {exc}")
     if status in fleet_roster.ABSENT:
@@ -486,7 +451,7 @@ def _config(host: str) -> dict:
             f"({detail['reason']}) by {detail['by']}; refusing to offer "
             f"loops or roles -- un-declare the absence and publish to resume"
         )
-    return entry
+    return box
 
 
 def declared_shape(host: str, override_loops: int,
@@ -523,14 +488,12 @@ def declared_shape(host: str, override_loops: int,
         if previous is None:
             raise
         return previous
-    args = [str(a) for a in config.get("args", [])]
+    args = config.loop_args
     if SPOOL_FLAG in args or any(a.startswith(SPOOL_FLAG + "=") for a in args):
         # Only a box that declares a spool budget reads anything more; every
         # other box's arguments are the file's, byte for byte (#910).
-        found = _roster_entry(host)
-        document = found[1] if found is not None else {}
-        args = spool_declaration(host, config, document, args, record=record)
-    return (override_loops or int(config.get("loops", 1)), args)
+        args = spool_declaration(host, config, args, record=record)
+    return (override_loops or config.loops, args)
 
 
 #: The worker loop flag that declares this box's local disk budget, in GiB
@@ -550,7 +513,6 @@ LOCAL_DISK_FIELD = "local_disk"
 #: Fleet-wide, beside ``boxes``: the share of a local filesystem, in whole
 #: percent of its size, that the fleet keeps free.  It is Rob's disk-headroom
 #: rule, stated in the file rather than assumed by the code.
-LOCAL_DISK_FLOOR_FIELD = "local_disk_free_floor_percent"
 GIB = 1 << 30
 #: One settled set of loop arguments per distinct declaration for the life of
 #: this process.  The arguments carry the first measurement and do not follow
@@ -638,7 +600,7 @@ def _held_spool(ledger) -> int:
                if name.rsplit("-", 1)[0] == SPOOL_KIND)
 
 
-def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
+def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
                   statvfs=None) -> tuple:
     """Measure this box's ``--spool-gb`` from its disk: a verdict and a value.
 
@@ -668,16 +630,17 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
     if ceiling == 0:
         return ("offer", 0, "")
     declared = SPOOL_AUTO if ceiling is None else str(ceiling)
-    path = entry.get(LOCAL_DISK_FIELD)
+    path = box.entry.get(LOCAL_DISK_FIELD)
     if not isinstance(path, str) or not path.startswith("/"):
         return ("refuse", f"{host} declares {SPOOL_FLAG} {declared} but no "
                 f"absolute {LOCAL_DISK_FIELD!r} path naming the filesystem it "
                 "is on")
-    floor = document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None
-    if type(floor) is not int or not 0 <= floor < 100:
-        return ("refuse", f"the roster states no {LOCAL_DISK_FLOOR_FIELD!r} as a "
-                f"whole percent from 0 to 99 (found {floor!r}), so there is no "
-                f"floor to measure {SPOOL_FLAG} {declared} against")
+    try:
+        floor = box.disk_floor_percent
+        if floor is None:
+            raise ValueError("roster states no local_disk_free_floor_percent")
+    except ValueError as exc:
+        return ("refuse", f"{exc}, so there is no floor to measure {SPOOL_FLAG} {declared} against")
     try:
         from prismabuild import produced_spool
 
@@ -721,7 +684,7 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
     return ("offer", gib, detail)
 
 
-def spool_declaration(host: str, entry: dict, document: dict,
+def spool_declaration(host: str, box: fleet_roster.Box,
                       args: list[str], *, statvfs=None,
                       record: bool = True) -> list[str]:
     """The loop arguments with ``--spool-gb`` measured, or dropped with a reason.
@@ -749,13 +712,16 @@ def spool_declaration(host: str, entry: dict, document: dict,
     holds none.
     """
 
-    key = (host, tuple(args), entry.get(LOCAL_DISK_FIELD),
-           document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None)
+    try:
+        floor_key = box.disk_floor_percent
+    except ValueError as exc:
+        floor_key = str(exc)
+    key = (host, tuple(args), box.entry.get(LOCAL_DISK_FIELD), floor_key)
     if key in _SPOOL_VERDICTS:
         settled = list(_SPOOL_VERDICTS[key])
         if (record and SPOOL_FLAG in settled
                 and int(settled[settled.index(SPOOL_FLAG) + 1]) > 0):
-            verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+            verdict = _spool_budget(host, box, args, statvfs=statvfs)
             if verdict[0] == "wait" and key not in _SPOOL_LIVE:
                 # Settled before this process owned the box, and a holder has
                 # arrived since: whatever the file holds was not measured here.
@@ -764,7 +730,7 @@ def spool_declaration(host: str, entry: dict, document: dict,
             else:
                 _record_live_spool(host, key, verdict)
         return settled
-    verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+    verdict = _spool_budget(host, box, args, statvfs=statvfs)
     if verdict[0] == "offer":
         # A verdict of "offer" means the declaration parsed.
         declared = args[args.index(SPOOL_FLAG) + 1]
@@ -873,9 +839,10 @@ def declared_roles(host: str) -> list[tuple[str, list[str]]]:
         config = _config(host)
     except (SystemExit, OSError, ValueError):
         return []
-    declared = config.get("roles") or {}
-    if not isinstance(declared, dict):
-        raise SystemExit(f"fleet_boxes.json roles for {host} must be an object")
+    try:
+        declared = config.roles
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     out: list[tuple[str, list[str]]] = []
     for name in sorted(declared):
         if name not in ROLE_SCRIPTS:

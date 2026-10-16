@@ -261,7 +261,7 @@ def _supervisor_config(tmp_path, monkeypatch, boxes, host="boxa"):
 
 def test_supervisor_starts_an_active_box(tmp_path, monkeypatch):
     _supervisor_config(tmp_path, monkeypatch, {"boxa": {"loops": 2, "args": []}})
-    assert supervise._config("boxa") == {"loops": 2, "args": []}
+    assert supervise._config("boxa").entry == {"loops": 2, "args": []}
     assert supervise.box_presence("boxa") == ("active", {})
 
 
