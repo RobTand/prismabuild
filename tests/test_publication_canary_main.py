@@ -51,7 +51,7 @@ def test_real_main_authorization_refusal_precedes_cas_and_ready(tmp_path, monkey
     assert len(seen) == 1
     key = seen[0]
     assert not (tmp_path / "cas" / "requests" / key[:2] / f"{key}.json").exists()
-    assert not q.item_path(pool.READY, key).exists()
+    assert not q.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_real_main_grant_binds_exact_request_and_ready_generation(tmp_path, monkeypatch, capsys):
@@ -61,7 +61,7 @@ def test_real_main_grant_binds_exact_request_and_ready_generation(tmp_path, monk
         key = action["action_key"]
         seen.append(key)
         assert not (tmp_path / "cas" / "requests" / key[:2] / f"{key}.json").exists()
-        assert not q.item_path(pool.READY, key).exists()
+        assert not q.records.item_path(pool.record_store.READY, key).exists()
         slots.mint(q.root, action, run_id="private-main")
     assert pbrun.main(publication_canary_intent=intent, authorize_canary=grant) == 0
     line = json.loads(capsys.readouterr().out)
@@ -69,7 +69,7 @@ def test_real_main_grant_binds_exact_request_and_ready_generation(tmp_path, monk
     key = seen[0]
     request = tmp_path / "cas" / "requests" / key[:2] / f"{key}.json"
     assert json.loads(request.read_text())["action_key"] == key
-    item = json.loads(q.item_path(pool.READY, key).read_text())
+    item = json.loads(q.records.item_path(pool.record_store.READY, key).read_text())
     bound = json.loads(slots.slot_path(q.root, intent).read_text())
     # Preserve pbrun's existing exclusive-GPU 16-GiB floor, even though the
     # ordinary leg's declared demand starts at 8 GiB.
@@ -159,7 +159,7 @@ def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatc
     request = json.loads((tmp_path / "cas/requests" / key[:2] / f"{key}.json").read_text())
     assert request["params"]["container_images"] == [image]
     assert slots.intent(request) == intent
-    ready = json.loads(q.item_path(pool.READY, key).read_text())
+    ready = json.loads(q.records.item_path(pool.record_store.READY, key).read_text())
     assert {slots.CAPABILITY, contracts.CONTAINER_IMAGE_TAG,
             f"runtime-generation:{GENERATION}"} <= set(ready["tags"])
     assert ready["container_images"] == [image]

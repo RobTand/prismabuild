@@ -104,7 +104,7 @@ def _args(queue, stage, cas, mover, consumer, manifest, digest, entries,
         "--manifest", str(manifest), "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(len(entries) * SIZE),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", str(workers), "--max-readers", str(workers),
         "--unpaced"])
 
@@ -118,7 +118,7 @@ def _write_owner(queue, stage, consumer, mover, path, digest, *, key=None):
     """
 
     key = key or residency_map.residency_map_key(str(path), 0)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -126,7 +126,7 @@ def _write_owner(queue, stage, consumer, mover, path, digest, *, key=None):
         "entries": {key: {"stage_path": str(path), "bytes": SIZE,
                           "sha256": digest, "offset": 0}}})
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256="a" * 64, generation="a" * 32,
         entries={key: {"stage_path": str(path), "bytes": SIZE,
@@ -256,7 +256,7 @@ def test_a_wider_group_dispatches_only_its_in_flight_prefix(
     assert staged.exists() and staged.read_bytes() == payloads[names[2]], (
         "the valid in-flight entry must keep its committed bytes")
     composed = residency_map.compose(residency_map.read_fragments(
-        queue.residency_fragment_root(), successor))["entries"]
+        queue.records.residency_fragment_root(), successor))["entries"]
     assert residency_map.residency_map_key(valid["path"], 0) in composed, (
         "the valid in-flight entry must keep its proof")
     assert not any(_destination(stage, mount, entry).exists()
@@ -300,11 +300,11 @@ def test_a_committed_entry_survives_and_later_entries_are_not_consumed(
     assert _identity(adopted) == adopted_identity, "adoption replaced bytes"
     # The committed entry keeps its fragment and its dated sidecar.
     fragments = residency_map.read_fragments(
-        queue.residency_fragment_root(), successor)
+        queue.records.residency_fragment_root(), successor)
     staged = residency_map.compose(fragments)["entries"]
     assert adopted_key in staged, staged
     sidecar = reader_lease.read_material(
-        queue.residency_fragment_root(), successor, mover_key)
+        queue.records.residency_fragment_root(), successor, mover_key)
     assert isinstance(sidecar, dict) and adopted_key in sidecar["entries"]
     assert not _destination(stage, mount, entries[2]).exists(), (
         "the third entry must never be consumed after the refusal")
@@ -380,7 +380,7 @@ def test_a_live_pin_refusal_is_unchanged_and_stops_the_range(
         "the pinned publication must never be replaced by a refusal")
     live, tainted = reader_lease.live_for(
         queue, {os.path.normpath(str(pinned))},
-        residency_root=queue.residency_fragment_root())
+        residency_root=queue.records.residency_fragment_root())
     assert live and not tainted
     assert not _destination(stage, mount, entries[1]).exists()
     assert stop.is_set() is False

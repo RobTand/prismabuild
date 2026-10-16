@@ -20,7 +20,7 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
 ):
     original, ready, successor = _collision(queue, clock)
     ready_bytes = ready.read_bytes()
-    address = queue.publication_ending_path(original)
+    address = queue.records.publication_ending_path(original)
     atomic_publish = immutable_files.publish_immutable
 
     def unavailable(path, raw, *args, **kwargs):
@@ -32,9 +32,9 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
         patch.setattr(immutable_files, "publish_immutable", unavailable)
         with pytest.raises(OSError, match="decision write unavailable"):
             _end_claim(queue, original, "finish_retry", clock)
-    marks = list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
+    marks = list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
     assert len(marks) == 1
-    attempt = queue.attempt_path(original, 1)
+    attempt = queue.records.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
     clock[0] += max(pool.LEASE_TIMEOUT_S, pool.HEARTBEAT_S) + 1
     exists = Path.exists
@@ -50,7 +50,7 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
     ending = queue.publication_ending(KEY, generation=original["published_unix"])
     assert isinstance(ending, pool.PublicationSupersession)
     assert ending.successor_published_unix == successor["published_unix"]
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
     assert attempt.read_bytes() == attempt_bytes
-    assert not queue.attempt_path(original, 2).exists()
+    assert not queue.records.attempt_path(original, 2).exists()

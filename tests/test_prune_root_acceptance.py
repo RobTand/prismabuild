@@ -23,19 +23,19 @@ def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
     result = tier_loop.adopt(
         queue, old_key=mover, new_key=copier, consumer_action_key=successor,
         tier_id=TIER, phase='head', range_start_bytes=0,
-        range_end_bytes=4 * SIZE, residency_root=queue.residency_fragment_root())
+        range_end_bytes=4 * SIZE, residency_root=queue.records.residency_fragment_root())
     assert not result['adopted'], (
         'The complete receipt claims 16 KiB but the two current fragment '
         f'entries cover only 8 KiB: {result}')
     assert queue.tier_ledger(TIER).holder_tokens(mover) == held
     assert not residency_map.fragment_path(
-        queue.residency_fragment_root(), successor, copier).exists()
+        queue.records.residency_fragment_root(), successor, copier).exists()
 
 
 def test_matching_nonram_epochs_are_still_invalid_for_cleanup(fleet):
     queue, stage, _ = fleet
     consumer, mover = stale_owner(fleet)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment_path = residency_map.fragment_path(root, consumer, mover)
     material_path = reader_lease.material_path(root, consumer, mover)
     for path in (fragment_path, material_path):

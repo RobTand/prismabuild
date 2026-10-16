@@ -80,7 +80,7 @@ def _publish(q, action, cas, checkout, **kw):
 @pytest.fixture
 def q(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -88,7 +88,7 @@ def test_an_ordinary_action_cannot_claim_a_slot_by_sealing_its_own_label(q, tmp_
     action, cas, checkout = _seal(tmp_path, "forged")
     with pytest.raises(pool.PoolContractError, match="canary.*(grant|mint|authority)"):
         _publish(q, action, cas, checkout)
-    assert not q.item_path(pool.READY, action["action_key"]).exists()
+    assert not q.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 
 def test_changed_payload_cannot_borrow_a_publisher_grant(q, tmp_path):
@@ -97,7 +97,7 @@ def test_changed_payload_cannot_borrow_a_publisher_grant(q, tmp_path):
     impostor, cas, checkout = _seal(tmp_path, "changed-payload")
     with pytest.raises(pool.PoolContractError, match="canary.*(key|action|bound)"):
         _publish(q, impostor, cas, checkout)
-    assert not q.item_path(pool.READY, impostor["action_key"]).exists()
+    assert not q.records.item_path(pool.record_store.READY, impostor["action_key"]).exists()
 
 
 @pytest.mark.parametrize("ordinary_priority", [-10, 0, 10, 1000000])
@@ -125,13 +125,13 @@ def test_same_action_cannot_spend_the_slot_again_after_terminalization(q, tmp_pa
     grant = _mint_fixture(q, action)
     _publish(q, action, cas, checkout)
     key = action["action_key"]
-    queued = json.loads(q.item_path(pool.READY, key).read_text())
+    queued = json.loads(q.records.item_path(pool.record_store.READY, key).read_text())
     # A private terminal fixture; no process, signal or actual GPU execution.
-    q.item_path(pool.READY, key).rename(q.item_path(pool.DONE, key))
-    terminal = q.item_path(pool.DONE, key).read_bytes()
+    q.records.item_path(pool.record_store.READY, key).rename(q.records.item_path(pool.record_store.DONE, key))
+    terminal = q.records.item_path(pool.record_store.DONE, key).read_bytes()
     with pytest.raises(pool.PoolContractError, match="canary.*(spent|used|published)"):
         _publish(q, action, cas, checkout)
-    assert q.item_path(pool.DONE, key).read_bytes() == terminal
+    assert q.records.item_path(pool.record_store.DONE, key).read_bytes() == terminal
     assert json.loads(grant.read_text())["published_unix"] == queued["published_unix"]
 
 
@@ -142,7 +142,7 @@ def test_second_distinct_canary_for_same_runtime_and_host_is_refused(q, tmp_path
     second, cas, checkout = _seal(tmp_path, "second")
     with pytest.raises(pool.PoolContractError, match="canary.*(key|action|bound|spent)"):
         _publish(q, second, cas, checkout)
-    assert not q.item_path(pool.READY, second["action_key"]).exists()
+    assert not q.records.item_path(pool.record_store.READY, second["action_key"]).exists()
 
 
 def test_canary_waits_for_existing_gpu_holder_then_wins_next_boundary(gpu_box, tmp_path):
@@ -163,14 +163,14 @@ def test_canary_waits_for_existing_gpu_holder_then_wins_next_boundary(gpu_box, t
     tick()
     assert claim() is None
     assert q.withdrawal_decisions(holder) == []
-    assert q.item_path(pool.CLAIMED, holder).exists()
+    assert q.records.item_path(pool.record_store.CLAIMED, holder).exists()
     ordinary = publish("foreground-after-holder", {"cpu": 2, "gpu": 1, "mem_gb": 16},
                        priority=10)
     q.finish(holder, status="executed", detail={})
     tick()
     taken = claim()
     assert taken is not None and taken == key
-    assert q.item_path(pool.READY, ordinary).exists()
+    assert q.records.item_path(pool.record_store.READY, ordinary).exists()
 
 
 @pytest.mark.parametrize("foreign_axis", ["runtime", "host"])
@@ -196,7 +196,7 @@ def test_foreign_capability_only_row_is_denied_without_aborting_scan(gpu_box, tm
     contracts[key] = ("shape", True)
     _mint_fixture(q, action)
     _publish(q, action, cas, checkout)
-    path = q.item_path(pool.READY, key)
+    path = q.records.item_path(pool.record_store.READY, key)
     foreign = json.loads(path.read_text())
     del foreign["publication_canary"]
     path.write_text(json.dumps(foreign))

@@ -20,14 +20,14 @@ def _collision(queue: pool.PoolQueue, clock: list[float]):
     assert original is not None
     clock[0] += 1
     _publish(queue)
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     successor = json.loads(ready.read_bytes())
     return original, ready, successor
 
 
 def _assert_old_authority_retained(queue: pool.PoolQueue, generation: float):
-    retained = [*queue.dir(pool.CLAIMED).glob(f"{KEY}.json"),
-                *queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}")]
+    retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
+                *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
     assert len(retained) == 1
     assert json.loads(retained[0].read_bytes())["published_unix"] == generation
 
@@ -53,8 +53,8 @@ def test_structurally_unusable_successor_demand_cannot_end_old_publication(
     ready.write_bytes(raw)
 
     consumer = pool.PoolQueue(tmp_path / "consumer")
-    consumer.ensure_layout()
-    consumer.item_path(pool.READY, KEY).write_bytes(raw)
+    consumer.records.ensure_layout()
+    consumer.records.item_path(pool.record_store.READY, KEY).write_bytes(raw)
     denials = []
 
     def record_denial(item, reason, *args, **kwargs):
@@ -103,7 +103,7 @@ def test_public_decoder_normalizes_oversized_generation_to_contract_error(
 ):
     original, ready, successor = _collision(queue, clock)
     raw = ready.read_bytes()
-    address = queue.publication_ending_path(original)
+    address = queue.records.publication_ending_path(original)
     record = {"schema": pool.PUBLICATION_SUPERSEDED_SCHEMA_V1,
               "status": "superseded", "action_key": KEY,
               "published_unix": original["published_unix"], "successor": successor}
