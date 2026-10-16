@@ -1089,18 +1089,6 @@ def tested_repository_of(record: object) -> str:
     return TESTED_REPOSITORY_UNKNOWN
 
 
-class StaleAbsenceError(FileNotFoundError):
-    """A linked attempt file its directory lists that this client cannot open yet.
-
-    ``PoolQueue.attempt_outcomes`` raises it only after a listing of every
-    directory on the canonical path showed each name, so the file exists on
-    the server and this client still answers ``ENOENT`` for it from a lookup
-    it cached before the file was created (#1100).  A waiter treats it as a
-    read to repeat later, not as a verdict.  It is a ``FileNotFoundError``,
-    so a caller that does not know it keeps its old handling.
-    """
-
-
 class AmbiguousClaimHolder(PoolContractError):
     """Contradictory committed reservations forbid concluding a claim."""
 
