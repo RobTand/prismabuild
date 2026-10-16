@@ -103,6 +103,7 @@ def operate(request, store, load):
             record = json.loads(path.read_bytes())
             record["produced_output"] = json.loads(base64.b64decode(request["raw"]))
             pool._write_json_atomic(path, record)
+            request["_consumer_boundary"]()
             return po.declared_template(queue, C)
     else:
         po, pool, core, queue, template, instance, descriptor, path = committed(store, load, variant)
@@ -112,6 +113,7 @@ def operate(request, store, load):
             else:
                 path.chmod(0o600)
                 path.write_bytes(base64.b64decode(request["raw"]))
+                request["_consumer_boundary"]()
                 result = po.batch_record(queue, instance, template, batch_id="batch")
                 assert result["record"]["entry_count"] == 1
                 return result
@@ -119,9 +121,11 @@ def operate(request, store, load):
             if write:
                 raw = extract(path.read_bytes(), "entries", array=True)
             else:
+                request["_consumer_boundary"]()
                 return po.validate_descriptor(json.loads(base64.b64decode(request["raw"])), template, instance)
         elif family == "out-batch-ref":
             if not write:
+                request["_consumer_boundary"]()
                 return queue.validate_produced_output_batch(json.loads(base64.b64decode(request["raw"])), {"stage_gib@" + TIER: 1})
             value = queue.build_produced_output_batch_ref(instance=instance, template=template,
                 batch_id="batch", descriptors=[descriptor], tier_id=TIER)
@@ -133,6 +137,7 @@ def operate(request, store, load):
             raw = extract(path.read_bytes(), "produced_output_batch")
         else:
             if not write:
+                request["_consumer_boundary"]()
                 return po._checked_origin_ref(json.loads(base64.b64decode(request["raw"])))
             value = po.origin_batch_ref(instance, batch_id="batch", manifest_digest=po.output_manifest_sha256([descriptor]))
             body = {"schema": core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {"produced_output_batches": [value]},

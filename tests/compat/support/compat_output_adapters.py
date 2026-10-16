@@ -42,6 +42,7 @@ def operate(request, store, load):
     else:
         raise ValueError(f"unknown output adapter: {family}")
     if request["op"] == "read":
+        request["_consumer_boundary"]()
         result = reader(json.loads(base64.b64decode(request["raw"])))
         assert result["template_id"] == "compat", "output envelope lost template binding"
         return result

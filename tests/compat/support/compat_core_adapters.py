@@ -80,6 +80,8 @@ def operate(request, store, load):
                 value = core.validate_awaited_batch(value)
             reader = core.action_awaited_batch
         body["params"][key] = value if write else json.loads(base64.b64decode(request["raw"]))
+        if not write:
+            request["_consumer_boundary"]()
         action = core.seal_action(body)
         if not write:
             return reader(action)
@@ -105,6 +107,7 @@ def operate(request, store, load):
             path = cas.root / "requests" / key[:2] / (key + ".json")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
+            request["_consumer_boundary"]()
             result = cas.read_action_request(key)
             assert result and result["params"]["unicode"] == "caf\u00e9 \u03bb", "request consumer refused the action"
             return result
@@ -119,6 +122,7 @@ def operate(request, store, load):
         else:
             raise ValueError(f"unknown core adapter: {family}")
         if not write:
+            request["_consumer_boundary"]()
             return reader(json.loads(base64.b64decode(request["raw"])))
         entry, _ = cas.ingest_bytes(core._canonical_file_bytes(value), input_id="compat.record")
         path = cas.input_path(entry)

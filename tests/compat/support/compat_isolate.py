@@ -5,12 +5,14 @@ import argparse
 import hashlib
 import importlib
 import json
+import marshal
 import os
 import platform
 from pathlib import Path
 import runpy
 import sys
 import sysconfig
+import types
 from threading import local
 
 
@@ -35,7 +37,7 @@ def attest(root, stdlib, manifest):
         path = Path(entry).resolve()
         if not path.is_relative_to(root) and path not in stdlib:
             raise RuntimeError(f"search path escaped closure and stdlib: {path}")
-    observed = {}
+    observed, standard_imports = {}, {}
     for name, module in sorted(sys.modules.items()):
         filename = getattr(module, "__file__", None)
         if not filename or name == "__main__" or filename.startswith("<"):
@@ -53,9 +55,12 @@ def attest(root, stdlib, manifest):
         elif (not any(path.is_relative_to(base) for base in stdlib)
               or {"site-packages", "dist-packages"}.intersection(path.parts)):
             raise RuntimeError(f"import outside closure and stdlib: {name}: {path}")
+        else:
+            standard_imports[name] = {"path": str(path), "sha256": sha(path),
+                                      "origin": getattr(getattr(module, "__spec__", None), "origin", None)}
     if not observed:
         raise RuntimeError("adapter reached no production imports")
-    return observed
+    return observed, standard_imports
 
 
 def private_writes_only(store):
@@ -135,15 +140,53 @@ def main():
               "pid": os.getpid(),
               "sys_path": list(sys.path), "driver_sha256": sha(Path(__file__)),
               "python": sys.version, "machine": platform.machine(),
+              "interpreter": {"path": sys.executable, "resolved_path": str(Path("/proc/self/exe").resolve()),
+                              "sha256": sha(Path("/proc/self/exe"))},
               "adapters_sha256": {p.name: sha(p) for p in sorted(args.adapters.parent.glob("compat*adapters.py"))},
               "request": request["case"]}
     code = 0
     calls = set()
+    setup_calls = set()
+    consumer_started = False
+    source_codes, checked_codes, code_hashes = {}, set(), {}
+    code_errors = []
+
+    def begin_consumer():
+        nonlocal consumer_started
+        if request["op"] != "read" or consumer_started:
+            raise RuntimeError("consumer boundary must occur once, after fixture setup")
+        setup_calls.update(calls)
+        calls.clear()
+        consumer_started = True
+
+    request["_consumer_boundary"] = begin_consumer
 
     def entered(frame, event, arg):
         if event == "call" and frame.f_code.co_filename.startswith(str(root) + "/"):
-            calls.add((str(Path(frame.f_code.co_filename).relative_to(root)),
-                       frame.f_code.co_name, frame.f_code.co_firstlineno, frame.f_code.co_qualname))
+            actual = frame.f_code
+            filename = actual.co_filename
+            identity = (filename, actual.co_qualname, actual.co_firstlineno, actual)
+            if identity not in checked_codes:
+                if filename not in source_codes:
+                    compiled = compile(Path(filename).read_bytes(), filename, "exec", dont_inherit=True,
+                                       optimize=sys.flags.optimize)
+                    pending, candidates = [compiled], {}
+                    while pending:
+                        code_object = pending.pop()
+                        key = (code_object.co_qualname, code_object.co_firstlineno)
+                        candidates.setdefault(key, []).append(code_object)
+                        pending.extend(value for value in code_object.co_consts if isinstance(value, types.CodeType))
+                    source_codes[filename] = candidates
+                key = (actual.co_qualname, actual.co_firstlineno)
+                if not any(actual == expected and actual.co_filename == expected.co_filename
+                           for expected in source_codes[filename].get(key, ())):
+                    message = f"executing code differs from compiled immutable source: {filename}:{key}"
+                    code_errors.append(message)
+                    raise RuntimeError(message)
+                checked_codes.add(identity)
+                code_hashes.setdefault(str(Path(filename).relative_to(root)), {})[
+                    actual.co_qualname + "@" + str(actual.co_firstlineno)] = hashlib.sha256(marshal.dumps(actual)).hexdigest()
+            calls.add((str(Path(filename).relative_to(root)), actual.co_name, actual.co_firstlineno, actual.co_qualname))
 
     try:
         adapter = runpy.run_path(str(args.adapters))["operate"]
@@ -155,11 +198,17 @@ def main():
     finally:
         sys.setprofile(None)
         output["calls"] = sorted(calls)
+        output["setup_calls"] = sorted(setup_calls)
+        output["consumer_boundary"] = consumer_started
+        output["executing_code_sha256"] = code_hashes
     try:
-        output["imports"] = attest(root, stdlib, manifest)
+        output["imports"], output["stdlib_imports"] = attest(root, stdlib, manifest)
     except Exception as error:
         code = 2
         output["attestation_error"] = str(error)
+    if code_errors:
+        code = 2
+        output["attestation_error"] = code_errors[0]
     output["sys_path"] = list(sys.path)
     print(json.dumps(output, sort_keys=True))
     return code

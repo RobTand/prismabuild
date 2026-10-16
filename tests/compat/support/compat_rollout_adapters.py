@@ -129,10 +129,12 @@ def operate(request, store, load):
         if write:
             raw = module.encode_rollout(snapshot_files(module, store, variant), EPOCH if variant != "none" else None)
         else:
+            request["_consumer_boundary"]()
             result = module.decode_rollout(base64.b64decode(request["raw"]))
             assert (result is None) == (variant == "none")
             return result
     elif family == "upgrade-intent" and not write:
+        request["_consumer_boundary"]()
         return module.validate_intent(json.loads(base64.b64decode(request["raw"])), epoch=EPOCH)
     else:
         publisher = load("publish_runtime")
@@ -165,6 +167,7 @@ def operate(request, store, load):
             path = publisher.MIRROR.parent / "rollout/agents" / module.attestation_name(HOST, client)
             path.parent.mkdir(parents=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = publisher._attested_agents(module)
             assert result == {HOST: {client}}, "actual publisher ignored the attestation"
             return {host: sorted(values) for host, values in result.items()}

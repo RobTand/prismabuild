@@ -88,4 +88,5 @@ def operate(request, store, load):
         dc.write_document(path, value)
         return {"raw": base64.b64encode(path.read_bytes()).decode()}
     value = json.loads(base64.b64decode(request["raw"]))
+    request["_consumer_boundary"]()
     return reader(value)
