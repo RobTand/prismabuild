@@ -4544,7 +4544,7 @@ class ResourceLedger:
                     need -= int(adaptive.get("preferred_borrow", 0))
                 taken = 0
                 tokens = (self.free_cpu_tokens(cpu_tiers, eligible_cpus=(adaptive or {}).get('eligible_cpus'))
-                          if kind == 'cpu' else _glob(self.free_dir, f"{kind}-*"))
+                          if kind == 'cpu' else immutable_files.match_optional(self.free_dir, f"{kind}-*"))
                 for token in tokens:
                     if taken >= need:
                         break
