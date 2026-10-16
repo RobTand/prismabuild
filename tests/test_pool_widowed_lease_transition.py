@@ -13,7 +13,7 @@ def test_lease_sweep_skips_an_active_key_and_recovers_an_independent_key(tmp_pat
     ledger.ensure_capacity({'cpu': 2})
     for key in keys:
         assert ledger.acquire(key, {'cpu': 1})
-        pool._write_json_atomic(queue.records.lease_path(key), {
+        pool.record_store._write_json(queue.records.lease_path(key), {
             'action_key': key, 'host': socket.gethostname(),
             'heartbeat_unix': pool._now() - 10_000,
         })

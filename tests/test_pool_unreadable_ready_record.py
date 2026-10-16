@@ -191,13 +191,13 @@ def test_publication_during_quarantine_is_not_unlinked(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue.records.item_path(pool.record_store.READY, KEY_INVALID).write_bytes(b"not json")
-    real_file = queue._file_superseded
+    real_file = queue.records.file_superseded
 
     def publish_then_file(*args: object, **kwargs: object) -> object:
         _publish(queue, KEY_INVALID)
         return real_file(*args, **kwargs)
 
-    monkeypatch.setattr(queue, "_file_superseded", publish_then_file)
+    monkeypatch.setattr(queue.records, "file_superseded", publish_then_file)
     assert queue.quarantine_orphans() == [KEY_INVALID]
     assert queue.records.item_path(pool.record_store.READY, KEY_INVALID).exists()
     assert queue.claim()["action_key"] == KEY_INVALID
@@ -210,7 +210,7 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
     destination = queue.records.item_path(pool.record_store.FAILED, KEY_INVALID)
     outcome = {"action_key": KEY_INVALID, "status": "worker_failed",
                "published_unix": 1.0}
-    real_write = pool._write_json_atomic
+    real_write = pool.record_store._write_json
     real_publish = immutable_files.publish_immutable
 
     def race_write(path: Path, payload: object) -> object:
@@ -223,7 +223,7 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
             real_write(destination, outcome)
         return real_publish(path, payload)
 
-    monkeypatch.setattr(pool, "_write_json_atomic", race_write)
+    monkeypatch.setattr(pool.record_store, '_write_json', race_write)
     monkeypatch.setattr(immutable_files, "publish_immutable", race_publish)
     assert queue.quarantine_orphans() == [KEY_INVALID]
     assert json.loads(destination.read_text()) == outcome
