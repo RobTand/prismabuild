@@ -13,7 +13,7 @@ from wire_inventory import audit
 def test_closed_field_sets_remain_pinned():
     _, policies = audit(ROOT)
     expected = json.loads((ROOT / "tests/compat/field_sets.json").read_bytes())
-    assert [row for row in policies if "fields" in row] == [row for row in expected if "fields" in row]
+    assert policies == expected
 
 
 def test_inventory_finds_unregistered_imported_embedded_and_data_wires(tmp_path):
