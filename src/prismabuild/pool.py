@@ -882,7 +882,6 @@ TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 #: The claim keeps its scan-time listing only as the placement-bypass hint;
 #: the refusal itself lists the directory fresh under the key's transition
 #: lock (#964), so an entry filed after the scan listed it is still seen.
-RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
