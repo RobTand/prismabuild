@@ -879,7 +879,7 @@ class ShapeGate:
         return dict(got)
 
     def _report(self, phase: str, units: int) -> None:
-        claimed = pool.record_store.require(self.queue.records.item(pool.record_store.CLAIMED, self.consumer))
+        claimed = pool.record_store.value_or_raise(self.queue.records.item(pool.record_store.CLAIMED, self.consumer))
         self.queue.write_lease(
             self.consumer, owner=self.reader_owner,
             claim_snapshot=claimed if isinstance(claimed, dict) else None,
@@ -1311,7 +1311,7 @@ def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
     import pbtest_outcomes
 
     key, terminal = resolve_action_key(queue_root, action_key)
-    done = pool.record_store.read_queue_record(terminal)
+    done = pool.record_store.read_document(terminal)
     detail = done.get("detail") if isinstance(done, dict) else None
     if (not isinstance(done, dict) or done.get("status") != "executed"
             or not isinstance(detail, dict) or detail.get("returncode") != 0):

@@ -565,7 +565,7 @@ class ReceiptCache:
                     liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = self.records.read(
-                    directory, select=_receipt_name, parse=pool.record_store.read_queue_record,
+                    directory, select=_receipt_name, parse=pool.record_store.read_document,
                     readers=RECEIPT_READERS,
                     **({} if checkpoint is None
                        else {"checkpoint": checkpoint}))
@@ -591,7 +591,7 @@ class ReceiptCache:
                 documents = {
                     path.name: record for path, record in self.records.read(
                         retired_dir, select=_retirement_document,
-                        parse=pool.record_store.read_queue_record)}
+                        parse=pool.record_store.read_document)}
                 generation = self.records.generation(retired_dir)
                 checkpoint = documents.get(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT)
                 state = documents.get(pool.record_store.MOVERS_RETIREMENT_STATE)
@@ -947,7 +947,7 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     """
 
     try:
-        marker = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
+        marker = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
     except (OSError, pool.PoolContractError):
         return False      # unreadable: not a decision this cycle acts on
     if not isinstance(marker, Mapping) or marker.get("preempted_by"):
@@ -1008,7 +1008,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             "none", "plan superseded")
     if not current_epoch:
         return "none", "RAM tier has no current epoch"
-    item = pool.record_store.require(queue.records.item(live, consumer))
+    item = pool.record_store.value_or_raise(queue.records.item(live, consumer))
     if not isinstance(item, dict) or item.get("action_key") != consumer:
         return "unknown", "live consumer row unreadable or divergent"
     if blind:
@@ -1067,7 +1067,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             or (record["range_start_bytes"], record["range_end_bytes"]) != (
                 leg["start_bytes"], leg["end_bytes"])):
         return "none", "funding range differs from frozen leg"
-    row = pool.record_store.require(queue.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, mover))
     if not isinstance(row, dict):
         return "unknown", "funded mover publication unavailable"
     if row.get("published_unix") != record["published_unix"]:
@@ -2470,7 +2470,7 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
                                marker_keys: frozenset[str] | None = None) -> None:
     """:func:`_sweep_dead_consumer`'s body, with the consumer's lock held."""
 
-    item = pool.record_store.read_queue_record(path)
+    item = pool.record_store.read_document(path)
     if not isinstance(item, dict):
         return
     live, _why = residency_plan.live_state(queue, key)
@@ -6486,7 +6486,7 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
         plan_digest = residency_plan.plan_sha256(plan)
         start = int(leg["start_bytes"])
         stop = int(leg["end_bytes"])
-        row = pool.record_store.require(queue.records.item(pool.record_store.READY, str(leg["mover_action_key"])))
+        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, str(leg["mover_action_key"])))
         published_unix = float((row or {}).get("published_unix"))  # type: ignore[arg-type]
     except (ValueError, OSError, KeyError, TypeError, pool.PoolContractError):
         return False
@@ -7778,7 +7778,7 @@ def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
     seen = False
     for state in (pool.record_store.DONE, pool.record_store.FAILED):
         try:
-            ended = pool.record_store.require(queue.records.item(state, mover))
+            ended = pool.record_store.value_or_raise(queue.records.item(state, mover))
         except (OSError, pool.PoolContractError):
             return None
         if ended is None:
@@ -7874,7 +7874,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 proof_reason: str | None = None
                 for _state in (pool.record_store.DONE, pool.record_store.FAILED):
                     try:
-                        ended = pool.record_store.require(queue.records.item(_state, mover))
+                        ended = pool.record_store.value_or_raise(queue.records.item(_state, mover))
                     except (OSError, pool.PoolContractError) as exc:
                         # A terminal file that exists but cannot be read
                         # may bind this fence: defer, do not free.
@@ -8143,9 +8143,9 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
 
     try:
         for state in (_pool_mod.record_store.READY, _pool_mod.record_store.CLAIMED):
-            if _pool_mod.record_store.require(queue.records.item(state, mover_name)) is not None:
+            if _pool_mod.record_store.value_or_raise(queue.records.item(state, mover_name)) is not None:
                 return events
-        withdrawn = _pool_mod.record_store.require(queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name))
+        withdrawn = _pool_mod.record_store.value_or_raise(queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name))
         if withdrawn is None:
             return events
     except (OSError, _pool_mod.PoolContractError, ValueError) as exc:
@@ -10574,7 +10574,7 @@ class Liveness:
             if not tier_id.endswith(suffix):
                 continue
             try:
-                record = pool.record_store.read_queue_record(path)
+                record = pool.record_store.read_document(path)
             except (OSError, pool.PoolContractError, ValueError):
                 continue           # an unreadable record is a dead one
             if (not isinstance(record, dict)

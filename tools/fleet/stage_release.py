@@ -494,7 +494,7 @@ def _queue_record_bytes(path: Path) -> bytes | None:
 
 def _queue_record_from_bytes(path: Path, raw: bytes | None,
                              ) -> dict[str, object] | None:
-    """``pool.record_store.read_queue_record``'s answer for bytes already read: same checks."""
+    """``pool.record_store.read_document``'s answer for bytes already read: same checks."""
 
     if not raw:
         return None
@@ -512,7 +512,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
                   ) -> list[tuple[Path, dict[str, object] | None]]:
     """Every entry of one queue state directory with its record, name order.
 
-    ``pool.immutable_files.scan_optional`` then ``pool.record_store.read_queue_record`` per entry, with the same answers
+    ``pool.immutable_files.scan_optional`` then ``pool.record_store.read_document`` per entry, with the same answers
     and the same raises.  Inside a tier-loop cycle
     (:func:`queue_records_from`) the directory is listed only when it changed
     and a record read only when its file did; each caller still gets its own
@@ -521,7 +521,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
 
     reader = _QUEUE_RECORDS.get()
     if reader is None:
-        return [(path, pool.record_store.read_queue_record(path))
+        return [(path, pool.record_store.read_document(path))
                 for path in pool.immutable_files.scan_optional(queue.records.dir(state))]
     return reader.read(queue.records.dir(state), select=lambda _entry: True,
                        parse=_queue_record_bytes,
@@ -1102,7 +1102,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+            item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -1160,7 +1160,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
             (own_paths if own_claim else paths).update(remembered)
             continue
         try:
-            request = pool.record_store.read_queue_record(
+            request = pool.record_store.read_document(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
@@ -1956,7 +1956,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+            item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -1990,7 +1990,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
             paths.update(remembered)
             continue
         try:
-            request = pool.record_store.read_queue_record(
+            request = pool.record_store.read_document(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
@@ -5630,7 +5630,7 @@ def _move_receipt(queue: pool.PoolQueue, action_key: str, *,
     """
 
     try:
-        record = pool.record_store.read_queue_record(queue.records.move_path(action_key))
+        record = pool.record_store.read_document(queue.records.move_path(action_key))
     except (OSError, pool.PoolContractError) as exc:
         return None, f"{action_key[:12]}: receipt unreadable: {exc}"
     if not isinstance(record, Mapping):

@@ -4048,7 +4048,7 @@ def served_for(args) -> dict[str, object]:
         return _served_for_sharers(args, shared)
     try:
         queue = pool.PoolQueue(Path(args.pool_root))
-        claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, str(args.consumer_action_key)))
+        claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, str(args.consumer_action_key)))
     except (OSError, pool.PoolContractError):
         claim = None
     if not isinstance(claim, dict):
@@ -4104,7 +4104,7 @@ def _served_for_sharers(args, consumers: Sequence[str]) -> dict[str, object]:
     reasons: list[str] = []
     for consumer in consumers:
         try:
-            claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, consumer))
+            claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, consumer))
         except (OSError, pool.PoolContractError):
             claim = None
         if not isinstance(claim, dict):
