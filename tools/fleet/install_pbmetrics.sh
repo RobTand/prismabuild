@@ -45,33 +45,29 @@ fi
 # the role would keep refusing on the port (#1042, #1046). The roster
 # is the runtime's own, looked up by hostname or declared `_alias` exactly as
 # the supervisor looks it up; an unreadable roster is refused, not guessed at.
-roster=$runtime/tools/fleet/fleet_boxes.json
 host=$(hostname)
-if ! "$python" - "$roster" "$host" <<'PY'
-import json
+if ! "$python" - "$runtime" "$host" <<'PYROSTER'
 import sys
+from pathlib import Path
 
-roster, host = sys.argv[1:3]
+runtime, host = sys.argv[1:3]
+sys.path.insert(0, str(Path(runtime) / "src"))
+from prismabuild.fleet_roster import Roster, recorder_hostnames
+
 try:
-    boxes = json.loads(open(roster).read())["boxes"]
-    if not isinstance(boxes, dict):
-        raise ValueError("boxes is not an object")
-except (OSError, ValueError, KeyError, TypeError) as exc:
-    sys.exit(f"cannot read the fleet roster {roster} ({exc}); refusing to "
+    roster = Roster.at(runtime)
+    recorder_hostnames(roster.boxes, host)
+    box = roster.canonical_box(host)
+    roles = box.roles if box is not None else {}
+except (OSError, ValueError) as exc:
+    sys.exit(f"cannot read the fleet roster ({exc}); refusing to "
              f"install without knowing whether {host} runs the metrics role")
-entries = [(name, shape) for name, shape in boxes.items()
-           if isinstance(shape, dict)
-           and (name == host or shape.get("_alias") == host)]
-for name, shape in entries:
-    roles = shape.get("roles") or {}
-    if not isinstance(roles, dict):
-        sys.exit(f"{roster} roles for {name} must be an object; not installing")
-    if "metrics" in roles:
-        sys.exit(f"{roster} declares the metrics role on {name} (this host, "
-                 f"{host}): its supervisor runs the exporter on the role's "
-                 f"port, so a prismabuild-metrics.service unit here would "
-                 f"contend for it; not installing (docs/pb_metrics.md)")
-PY
+if "metrics" in roles:
+    sys.exit(f"{roster.path} declares the metrics role on {box.key} (this host, "
+             f"{host}): its supervisor runs the exporter on the role's "
+             f"port, so a prismabuild-metrics.service unit here would "
+             f"contend for it; not installing (docs/pb_metrics.md)")
+PYROSTER
 then
     exit 1
 fi

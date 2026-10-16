@@ -62,8 +62,6 @@ CSV_READ_BLOCK_BYTES = 64 * 1024
 MAX_WINDOW_DAYS = 3
 KIB = 1024
 _ROOT = Path(__file__).resolve().parents[2]
-_FLEET_CONFIG_PATHS = (_ROOT / "tools" / "fleet_boxes.json",
-                       _ROOT / "tools" / "fleet" / "fleet_boxes.json")
 
 #: pqteld column -> the name this module reports it under.  Every output is
 #: named after the column that produced it: ``psi_mem_full_avg10`` stays
@@ -231,14 +229,8 @@ def _recorder_hosts(host: str) -> list[str]:
     declaration; unrelated CSVs in the directory are never identity evidence.
     """
 
-    for path in _FLEET_CONFIG_PATHS:
-        try:
-            config = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        boxes = config.get("boxes") if isinstance(config, dict) else None
-        if isinstance(boxes, dict):
-            return fleet_roster.recorder_hostnames(boxes, host)
+    for roster in fleet_roster.Roster.available(roots=(_ROOT,), flat_first=True):
+        return fleet_roster.recorder_hostnames(roster.boxes, host)
     return fleet_roster.recorder_hostnames({}, host)
 
 

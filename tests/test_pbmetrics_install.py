@@ -15,6 +15,7 @@ from pathlib import Path
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -107,6 +108,10 @@ def install_fixture(tmp_path):
     # installer reads it to refuse on the box that runs the metrics role.
     (runtime / "tools/fleet/fleet_boxes.json").write_text(
         (REPOSITORY / "tools/fleet/fleet_boxes.json").read_text())
+    package = runtime / "src/prismabuild"
+    package.mkdir(parents=True)
+    for member in ("__init__.py", "progress.py", "digest_primitives.py", "fleet_roster.py"):
+        shutil.copyfile(REPOSITORY / "src/prismabuild" / member, package / member)
     queue = tmp_path / "queue"
     queue.mkdir()
     bin_dir = tmp_path / "bin"
