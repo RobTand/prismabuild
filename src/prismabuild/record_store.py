@@ -498,7 +498,13 @@ class RecordStore:
                 stamp = record.get("published_unix")
                 if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
                     return Unknown("generation-missing-or-nonnumeric", path)
-                terminals.append((float(stamp), state, record))
+                try:
+                    generation = float(stamp)
+                except (OverflowError, ValueError) as exc:
+                    return Unknown("generation-unorderable", path, exc)
+                if not math.isfinite(generation):
+                    return Unknown("generation-nonfinite", path)
+                terminals.append((generation, state, record))
         except (OSError, PoolContractError) as exc:
             return Unknown("record-unreadable", path, exc)
         if not terminals:
@@ -1376,10 +1382,12 @@ class RecordStore:
     @staticmethod
     def _presence_at(path: Path, reason: str) -> ReadResult[bool]:
         try:
-            present = path.exists()
+            path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return Absent()
         except OSError as exc:
             return Unknown(reason, path, exc)
-        return Present(True) if present else Absent()
+        return Present(True)
 
     def ready_first_live_row(self, key: str) -> ReadResult[JsonRecord]:
         for state in (READY, CLAIMED):

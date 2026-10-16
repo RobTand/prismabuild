@@ -25310,10 +25310,20 @@ class PoolQueue:
         if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
             raise PoolContractError("action_key must be a 64-character hex digest")
         for state in (READY, CLAIMED):
-            if record_store.value_or_raise(self.records.item_presence(state, key)):
+            try:
+                present = record_store.value_or_raise(self.records.item_presence(state, key))
+            except OSError as exc:
+                raise PoolContractError(
+                    f"refusing to reclaim {key}: its {state} record is unreadable: {exc}") from exc
+            if present:
                 raise PoolContractError(
                     f"refusing to reclaim {key}: action is still {state}")
-        if record_store.value_or_raise(self.records.lease_presence(key)):
+        try:
+            leased = record_store.value_or_raise(self.records.lease_presence(key))
+        except OSError as exc:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: its lease is unreadable: {exc}") from exc
+        if leased:
             raise PoolContractError(
                 f"refusing to reclaim {key}: action still has a lease")
 

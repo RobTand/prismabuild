@@ -1183,7 +1183,15 @@ def drop_prior_ram_epochs(
         for key in held:
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)):
+            try:
+                claimed = pool.record_store.value_or_raise(
+                    queue.records.item_presence(pool.record_store.CLAIMED, key))
+            except (OSError, pool.PoolContractError) as exc:
+                events.append({"event": "ram-credit-cleanup-deferred",
+                               "tier_id": tier_id, "holder": key,
+                               "reason": str(exc)})
+                continue
+            if claimed:
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
                 # judges it then.
@@ -1216,7 +1224,15 @@ def drop_prior_ram_epochs(
                                        "tier_id": tier_id, "holder": key,
                                        "reason": reason})
                     continue
-                if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)):
+                try:
+                    claimed = pool.record_store.value_or_raise(
+                        queue.records.item_presence(pool.record_store.CLAIMED, key))
+                except (OSError, pool.PoolContractError) as exc:
+                    events.append({"event": "ram-credit-cleanup-deferred",
+                                   "tier_id": tier_id, "holder": key,
+                                   "reason": str(exc)})
+                    continue
+                if claimed:
                     continue
                 receipt = queue.move_record(key)
                 epoch = (str(receipt.get("epoch") or "")
@@ -1306,8 +1322,17 @@ def release_incomplete_ram_promotions(
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if (pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key))
-                    or pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key))):
+            try:
+                live = (pool.record_store.value_or_raise(
+                    queue.records.item_presence(pool.record_store.READY, key))
+                    or pool.record_store.value_or_raise(
+                        queue.records.item_presence(pool.record_store.CLAIMED, key)))
+            except (OSError, pool.PoolContractError) as exc:
+                events.append({"event": "ram-mover-incomplete-retained",
+                               "tier_id": tier_id, "mover": key,
+                               "consumer": None, "error": repr(exc)})
+                continue
+            if live:
                 # Queued or running: the window or the copy owns this key, and
                 # a receipt read now would race the mover filing it.
                 continue

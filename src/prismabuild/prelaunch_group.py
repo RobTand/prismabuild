@@ -1385,7 +1385,11 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                 or mover in shared
                 or not _chunk_binds(intent, record, mover)):
             continue
-        if _release_row_state(queue, mover) == "claimed":
+        try:
+            if _release_row_state(queue, mover) == "claimed":
+                continue
+        except (OSError, pool.PoolContractError, ValueError):
+            events.append("prelaunch-unknown-evidence")
             continue
         generation = record.get("generation")
         try:
@@ -1400,7 +1404,12 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             events.append("prelaunch-unknown-evidence")
             continue
         tokens = _record_tokens(record) or []
-        if _release_row_state(queue, mover) == "ready":
+        try:
+            state = _release_row_state(queue, mover)
+        except (OSError, pool.PoolContractError, ValueError):
+            events.append("prelaunch-unknown-evidence")
+            continue
+        if state == "ready":
             try:
                 held = set(pool.held_names_visible(ledger, mover))
             except (OSError, pool.PoolContractError, ValueError):
