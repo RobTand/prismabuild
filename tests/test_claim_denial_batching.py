@@ -41,20 +41,20 @@ def test_one_diagnostic_write_per_pass_not_per_candidate(tmp_path, monkeypatch, 
 
 def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "f" * 64
     assert queue.record_pass(key) == 1
-    path = queue.passes_path(key)
+    path = queue.records.passes_path(key)
     first = json.loads(path.read_text())["first_unix"]
     reads = []
-    original = pool._read_json
+    original = pool.record_store.read_queue_record
 
     def record(candidate):
         if candidate == path:
             reads.append(candidate)
         return original(candidate)
 
-    monkeypatch.setattr(pool, "_read_json", record)
+    monkeypatch.setattr(pool.record_store, '_read_json', record)
     assert queue.record_pass(key) == 2
     assert len(reads) == 1, f"one increment reread the sidecar {len(reads)} times"
     after = json.loads(path.read_text())
@@ -64,7 +64,7 @@ def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
 
 def test_summaries_only_flush_preserves_existing_records(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_denial({"action_key": "a" * 64, "published_unix": 1.0}, "placement_mismatch")
     before = local_records(queue)
     assert before
@@ -78,7 +78,7 @@ def test_summaries_only_flush_preserves_existing_records(tmp_path, monkeypatch):
 
 def test_overflowing_generation_is_dropped_not_raised(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     writes = _writes(monkeypatch)
 
     def scan(*, holds, **kwargs):
@@ -95,7 +95,7 @@ def test_overflowing_generation_is_dropped_not_raised(tmp_path, monkeypatch):
 
 def test_exception_flushes_and_resets_context(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     item = {"action_key": "a" * 64, "published_unix": 1.0}
     writes = _writes(monkeypatch)
 
@@ -115,7 +115,7 @@ def test_exception_flushes_and_resets_context(tmp_path, monkeypatch):
 
 def test_failed_flush_does_not_mask_original_exception(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def broken_write(*args):
         raise OSError("diagnostic disk full")
@@ -134,7 +134,7 @@ def test_failed_flush_does_not_mask_original_exception(tmp_path, monkeypatch):
 
 def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     item = {"action_key": "a" * 64, "published_unix": 1.0}
     writes = _writes(monkeypatch)
 
@@ -142,7 +142,7 @@ def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypat
         with queue._transition_locked(item["action_key"]) as acquired:
             assert acquired
             queue.record_denial(item, "reservation_unavailable")
-            assert queue.denial_transitions_path(item["action_key"]).is_file()
+            assert queue.records.denial_transitions_path(item["action_key"]).is_file()
             assert not writes
 
     monkeypatch.setattr(queue, "_claim_pass", scan)
@@ -153,8 +153,8 @@ def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypat
 def test_other_queue_does_not_join_current_batch(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "one")
     other = pool.PoolQueue(tmp_path / "two")
-    queue.ensure_layout()
-    other.ensure_layout()
+    queue.records.ensure_layout()
+    other.records.ensure_layout()
     item = {"action_key": "a" * 64, "published_unix": 1.0}
 
     def scan(*, holds, **kwargs):
@@ -173,7 +173,7 @@ def test_interleaved_passes_merge_and_preserve_newer_peer_verdict(tmp_path, monk
     import threading
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     clock = threading.local()
     first_buffered, second_flushed = threading.Event(), threading.Event()
     same = {"action_key": "a" * 64, "published_unix": 1.0}
@@ -210,7 +210,7 @@ def test_interleaved_passes_merge_and_preserve_newer_peer_verdict(tmp_path, monk
 
 def test_pending_diagnostics_are_bounded(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def scan(*, holds, **kwargs):
         for index in range(pool.MAX_CLAIM_DENIALS + 20):
@@ -235,6 +235,6 @@ def test_diagnostics_lock_contention_drops_batch_not_claim(tmp_path):
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert queue.claim(capacity={"cpu": 1}) is None
         assert not local_records(queue)
-        assert queue.denial_transitions_path("a" * 64).is_file()
+        assert queue.records.denial_transitions_path("a" * 64).is_file()
     assert queue.claim(capacity={"cpu": 1}) is None
     assert local_records(queue)

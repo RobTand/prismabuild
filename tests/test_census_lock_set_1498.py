@@ -60,7 +60,7 @@ def _loops_holding(queue, keys):
 
 
 def _claim_only(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
-    row = pool._read_json(queue.item_path(pool.READY, key))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
     assert isinstance(row, dict)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", host], ready=[row],
@@ -82,7 +82,7 @@ def test_twelve_loops_and_forty_ready_measurements_still_admit(fleet):
     assert result == candidate, denial(candidate)
     assert queue.ledger().held_keys() == [candidate]
     for key in measurements:
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_a_busy_election_on_this_host_still_fences_lower_priority_work(fleet):
@@ -103,7 +103,7 @@ def test_a_busy_election_on_this_host_still_fences_lower_priority_work(fleet):
             cpu_sampler=lambda: cpu_sample(clock, readings),
             gpu_sampler=lambda: gpu_sample(sample, readings)) == higher, denial(higher)
     assert set(queue.ledger().held_keys()) == {incumbent, higher}
-    assert queue.item_path(pool.READY, lower).exists()
+    assert queue.records.item_path(pool.record_store.READY, lower).exists()
 
 
 def test_a_busy_election_for_another_host_does_not_block_this_one(fleet, monkeypatch):

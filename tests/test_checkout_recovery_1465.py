@@ -190,7 +190,7 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
     unrelated = hashlib.sha256(str(tmp_path).encode()).hexdigest()
     queue.publish(action_key=unrelated, cas_root=protected_root / "active-cas",
@@ -521,7 +521,7 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
              "-qm", "not the sealed commit")
         case.bank()
     else:
-        sibling = case.queue.item_path(pool.DONE, case.key)
+        sibling = case.queue.records.item_path(pool.record_store.DONE, case.key)
         if fault == "tied-endings":
             _json(sibling, json.loads(case.terminal_path.read_text()))
         else:
@@ -529,17 +529,17 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
     _refused(case, case.prepare)
 
 
-@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED, "lease"])
+@pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED, "lease"])
 def test_live_queue_owner_or_lease_refuses_even_beside_complete_terminal(case, state):
     if state == "lease":
-        _json(case.queue.lease_path(case.key), {
+        _json(case.queue.records.lease_path(case.key), {
             "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": case.key,
             "owner": "still-live", "host": pool.socket.gethostname(),
             "heartbeat_unix": pool._now(), "pid": os.getpid(),
             "published_unix": case.claim["published_unix"],
         })
     else:
-        _json(case.queue.item_path(state, case.key), case.claim)
+        _json(case.queue.records.item_path(state, case.key), case.claim)
     _refused(case, case.prepare)
 
 
@@ -791,9 +791,9 @@ def test_apply_revalidates_every_plan_identity_and_lifetime_before_deletion(case
         else:
             _terminal(case, lambda value: value.update(status="changed-after-root-go"))
     elif fault in ("ready", "claimed"):
-        _json(case.queue.item_path(fault, case.key), case.claim)
+        _json(case.queue.records.item_path(fault, case.key), case.claim)
     elif fault == "lease":
-        _json(case.queue.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
+        _json(case.queue.records.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
               "action_key": case.key, "heartbeat_unix": pool._now(), "pid": 101})
     else:
         process = _process(case)

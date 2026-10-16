@@ -34,7 +34,7 @@ TIERS = {"preferred": list(range(20)), "fallback": []}
 
 
 def _chosen(queue, key):
-    record = pool._read_json(queue.passes_path(key))
+    record = pool.record_store.read_queue_record(queue.records.passes_path(key))
     assert isinstance(record, dict)
     chosen = reservation.selection(record)
     assert chosen is not None
@@ -42,7 +42,7 @@ def _chosen(queue, key):
 
 
 def _claim_row(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
-    row = pool._read_json(queue.item_path(pool.READY, key))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
     assert isinstance(row, dict)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", host], ready=[row],
@@ -73,7 +73,7 @@ def test_a_replacement_election_between_candidates_still_fences_lower_priority(
     assert claim() == measurement
     queue.finish(measurement, status="executed")
     tick(11)
-    assert queue.item_path(pool.DONE, measurement).exists()
+    assert queue.records.item_path(pool.record_store.DONE, measurement).exists()
     blocker = publish("replacement-blocker", priority=-10, timeout_s=4200,
                       cpu=2, gpu=1, mem_gb=8)
     tick(11)
@@ -82,9 +82,9 @@ def test_a_replacement_election_between_candidates_still_fences_lower_priority(
     republished = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
     assert republished == measurement
-    successor = pool._read_json(queue.item_path(pool.READY, republished))
+    successor = pool.record_store.require(queue.records.item(pool.record_store.READY, republished))
     assert isinstance(successor, dict)
-    assert queue.attempt_generation(successor) != first["generation"]
+    assert queue.records.attempt_generation(successor) != first["generation"]
     tick(11)
     assert claim() is None
     replacement = _chosen(queue, republished)
@@ -97,7 +97,7 @@ def test_a_replacement_election_between_candidates_still_fences_lower_priority(
         reused = pass_census.reused()
     assert reused["elections"][measurement] == replacement, reused["elections"][measurement]
     lower = publish("fenced-by-replacement", timeout_s=5)
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     assert isinstance(row, dict)
     blocked = reservation.blocking_selection(
         reused, row, host="sparklina", funded_by=None)
@@ -113,7 +113,7 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     assert claim() == holder
     keys = [publish(f"slow-refresh-{index}", priority=-10, timeout_s=600,
                     cpu=2, gpu=0, mem_gb=16) for index in range(3)]
-    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    rows = [pool.record_store.require(queue.records.item(pool.record_store.READY, key)) for key in keys]
     fifo = tmpfs_state / "refresh.fifo"
     reached = tmpfs_state / "refresh-entered"
     os.mkfifo(fifo)
@@ -163,7 +163,7 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     controller = adaptive_cpu.Controller(queue.ledger("sparklina"), TIERS)
     with controller.locked():
         assert queue.ledger("sparklina").held_keys() == [holder]
-    assert all(queue.item_path(pool.READY, key).exists() for key in keys)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in keys)
 
 
 def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
@@ -189,8 +189,8 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     finish(first, "sparklina")
     finish(second, "sparky")
-    assert queue.item_path(pool.DONE, first).exists()
-    assert queue.item_path(pool.DONE, second).exists()
+    assert queue.records.item_path(pool.record_store.DONE, first).exists()
+    assert queue.records.item_path(pool.record_store.DONE, second).exists()
     assert _gang.teardown(queue, group) is None
     assert len(_gang.elections(queue, group, 2)) == 2
 
@@ -202,7 +202,7 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
                     cpu=1, gpu=0, mem_gb=16, tags=["sparklina"])
     follower = publish("completed-gang-follower", priority=-10, timeout_s=600,
                        cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
-    rows = [pool._read_json(queue.item_path(pool.READY, key))
+    rows = [pool.record_store.require(queue.records.item(pool.record_store.READY, key))
             for key in (probe, follower)]
     refreshes = []
     real_refresh = reservation.CensusReader.refresh_elections
@@ -216,7 +216,7 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
     result = gclaim("sparklina", ready=rows, advance=None)
     assert len(refreshes) == 1, "the follower must reach election refresh"
     assert refreshes[0]["gang_elections"] == {}
-    assert queue.item_path(pool.READY, probe).exists()
+    assert queue.records.item_path(pool.record_store.READY, probe).exists()
     assert result is not None, denial(follower, "sparklina")
     assert result == follower
     assert set(queue.ledger("sparklina").held_keys()) == {holder, follower}
@@ -241,7 +241,7 @@ def test_retirement_and_a_sibling_claim_do_not_clear_a_reused_election(fleet):
         assert queue.ledger().held_keys() == [measurement]
     queue.finish(measurement, status="executed")
     lower = publish("retired-election-follower", priority=-10, gpu=0, mem_gb=1)
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     stack = saved.acquire()
     assert stack is not None
     with stack:

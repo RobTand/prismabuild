@@ -49,7 +49,7 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.05)
     keys = [publish(f"census-candidate-{index}", priority=-10)
             for index in range(CANDIDATES)]
-    records = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    records = [pool.record_store.require(queue.records.item(pool.record_store.READY, key)) for key in keys]
 
     attempts: list[int] = []
     real_held = reservation.CensusReader.held
@@ -92,7 +92,7 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.05)
     key = publish("census-next-pass", priority=-10)
-    record = pool._read_json(queue.item_path(pool.READY, key))
+    record = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
 
     other = reservation.CensusReader(queue, queue.ledger())
     descriptor = os.open(other.directory / (other.name + ".guard"),
@@ -123,7 +123,7 @@ def test_a_publication_that_vanishes_during_the_scan_is_rescanned(
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     keep = publish("census-kept", measurement=True, priority=-100)
     gone = publish("census-vanishing", measurement=True, priority=-100)
-    gone_path = queue.item_path(pool.READY, gone)
+    gone_path = queue.records.item_path(pool.record_store.READY, gone)
 
     real_read = reservation._read
 
@@ -156,7 +156,7 @@ def test_a_publication_that_keeps_vanishing_still_refuses_after_bounded_rescans(
     attempts = tmp_path / "attempts"
 
     real_read = reservation._read
-    ready = str(queue.root / pool.READY)
+    ready = str(queue.root / pool.record_store.READY)
 
     def always_missing(path, *args, **kwargs):
         # Only the queue's publications vanish; the reader's own ownership
