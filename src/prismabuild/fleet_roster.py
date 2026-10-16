@@ -156,6 +156,27 @@ class Roster:
             raise ValueError(f"{field} must be a whole percent from 0 to 99 (found {value!r})")
         return value
 
+    def canonical_box(self, host: str) -> Box | None:
+        entry = entry_for_host(self.boxes, host)
+        if entry is None:
+            return None
+        key = next(key for key, value in self.boxes.items() if value is entry)
+        return Box(key, entry, self)
+
+    @classmethod
+    def for_host(cls, host: str, *, roots=(), paths=(), flat_first: bool = False) -> Box | None:
+        for roster in cls.available(roots=roots, paths=paths, flat_first=flat_first):
+            box = roster.canonical_box(host)
+            if box is not None:
+                return box
+        return None
+
+    def declarations(self) -> list[tuple[str, frozenset[str], dict]]:
+        if not self.boxes:
+            raise ValueError("no boxes declared")
+        return [(key, names, self.boxes[key])
+                for key, names in generation_aliases(self.boxes).items()]
+
     def validate_publication(self) -> None:
         """Reject newly published bytes before strict generation readers use them."""
         self.d38_enforce
@@ -168,7 +189,48 @@ class Roster:
                 if not isinstance(entry, dict):
                     raise ValueError(f"invalid roster box {key!r}")
                 box_status(key, entry)
-                self.disk_floor_percent(entry)
+                box = Box(key, entry, self)
+                box.disk_floor_percent
+                box.loop_args
+                box.loops
+                box.roles
+
+
+@dataclass(frozen=True)
+class Box:
+    """A canonical declaration and the exact capture supplying its defaults."""
+
+    key: str
+    entry: dict
+    roster: Roster
+
+    @property
+    def loop_args(self) -> list[str]:
+        args = self.entry.get("args") or []
+        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+            raise ValueError(f"roster box {self.key!r} args must be an array of strings")
+        return list(args)
+
+    @property
+    def loops(self) -> int:
+        value = self.entry.get("loops", 1)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"roster box {self.key!r} loops must be a nonnegative integer")
+        return value
+
+    @property
+    def roles(self) -> dict[str, list[str]]:
+        roles = self.entry.get("roles") or {}
+        if not isinstance(roles, dict):
+            raise ValueError(f"fleet_boxes.json roles for {self.key} must be an object")
+        if any(not isinstance(args, list) or any(not isinstance(a, str) for a in args)
+               for args in roles.values()):
+            raise ValueError(f"roster box {self.key!r} role argv must be arrays of strings")
+        return {name: list(args) for name, args in roles.items()}
+
+    @property
+    def disk_floor_percent(self) -> int | None:
+        return self.roster.disk_floor_percent(self.entry)
 
 
 def box_status(key: str, entry: object) -> tuple[str, dict[str, object]]:
