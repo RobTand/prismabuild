@@ -28,8 +28,17 @@ def immutable(path, value):
 
 def capture(out):
     out.mkdir(parents=True, mode=0o700, exist_ok=False)
+    entry = Path("/mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py")
+    source = entry.resolve(strict=True)
+    root = next(parent for parent in source.parents if (parent / "RUNTIME_VERSION.json").is_file())
+    receipt_raw = (root / "RUNTIME_VERSION.json").read_bytes()
+    receipt = json.loads(receipt_raw)
+    relative = str(source.relative_to(root))
+    source_sha = sha(source.read_bytes())
+    if receipt["files"].get(relative) != source_sha:
+        raise ValueError("published status producer is not bound by its runtime receipt")
     started = time.time()
-    result = subprocess.run([sys.executable, "/mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py",
+    result = subprocess.run([sys.executable, str(source),
                              "--json", "--transport", "pool", "--recent", "0", "--timeout-s", "30"],
                             capture_output=True, timeout=45)
     path = out / "status.json"
@@ -42,7 +51,14 @@ def capture(out):
                 "captured_at": datetime.fromtimestamp(started, timezone.utc).isoformat(),
                 "status_file": path.name, "status_sha256": sha(result.stdout),
                 "status_exit": result.returncode, "complete": status.get("complete") is True,
-                "capture_tool": "/mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py"}
+                "capture_tool": str(entry),
+                "producer": {"source": str(source), "sha256": source_sha,
+                             "runtime_receipt_sha256": sha(receipt_raw),
+                             "commit": receipt["commit"], "generation": receipt["generation"]}}
+    if (entry.resolve(strict=True) != source or sha(source.read_bytes()) != source_sha
+            or (root / "RUNTIME_VERSION.json").read_bytes() != receipt_raw):
+        envelope["complete"] = False
+        envelope["producer_changed_during_capture"] = True
     immutable(out / "capture.json", envelope)
     print(json.dumps(envelope, sort_keys=True))
     if result.returncode or not envelope["complete"]:

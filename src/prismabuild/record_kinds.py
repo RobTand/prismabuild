@@ -25,6 +25,10 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("state-stage-root", "prismabuild.stage-root.v1", "stage root/.prismabuild-stage-root.json", "additive",
+               "stage_release:stage_root_refusal", ("stage_release:register_stage_root",), ("first", "repeated"), stable_paths=True),
+    RecordKind("state-merge-failure", "pbmergeq.known_failure.v1", "private merge queue baselines/known-failure-<identity>.json", "additive",
+               "pbmergeq:Store.known_failure", ("pbmergeq:Store.remember_known_failure",), ("plain", "details")),
     RecordKind("floor-binding", "prismabuild.filesystem_floor.binding.v1", "filesystem-floor/fs/<digest>/binding.json", "additive",
                "prismabuild.filesystem_floor:member_bindings", ("prismabuild.filesystem_floor:register",), ("registered", "grown"),
                ("schema is diagnostic; active status, member identity and sample govern admission",), negative_field="status", stable_paths=True),
