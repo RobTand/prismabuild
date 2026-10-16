@@ -2703,19 +2703,6 @@ def _holder_token_paths(
         return [], exc
 
 
-def _glob_visible(directory: Path, pattern: str):
-    """Error-visible name match for authoritative censuses.
-
-    Same names as :func:`_glob` on a readable tree (``Path.glob`` uses
-    ``fnmatch`` for the leaf), but unreadable directories raise
-    instead of reading empty: a hidden live holder must abort a
-    reissue, never excuse one.  See :func:`_scan_visible`.
-    """
-
-    return sorted(path for path in _scan_visible(directory)
-                  if fnmatch.fnmatchcase(path.name, pattern))
-
-
 def held_names_visible(ledger, key: str) -> set[str]:
     """One holder's capacity-token names, error-visible.
 
