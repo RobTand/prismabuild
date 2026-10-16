@@ -23,9 +23,22 @@ class RecordKind:
     negative_value: object = "invalid"
     fixture_source: tuple[str, ...] = ()
     self_digest_field: str | None = None
+    caller_input: bool = False
+    older_input_absence: bool = False
 
 
 KINDS = (
+    RecordKind("input-d38-plan", "fleet.d38.plan.v1", "preflight CAS input d38-plan", "additive",
+               "d38_gate:load_plan", (), ("target",),
+               ("caller supplies this input; fixture exercises the actual CAS digest gate, not GPU authorization",),
+               caller_input=True, older_input_absence=True),
+    RecordKind("input-d38-preflight", "fleet.d38.preflight.v1", "caller preflight artifact", "closed",
+               "d38_gate:_parse_receipt", (), ("pass", "fail", "expires"),
+               ("caller supplies this artifact; parsing alone confers no publication authorization",),
+               ("d38_gate:_RECEIPT_KEYS",), caller_input=True, older_input_absence=True),
+    RecordKind("input-scratch-io", "prismabuild.local_scratch_io.v1", "sealed environment scratch IO declaration", "closed",
+               "prismabuild.local_scratch:io_intent", (), ("write", "read", "both"),
+               ("caller declaration is not measured throughput",), caller_input=True),
     RecordKind("out-consumer", "prismabuild.produced_output_origin_consumer.v1", "private output instance/consumers/<batch>/<key>.json", "additive",
                "prismabuild.produced_output:_declared_consumers", ("prismabuild.produced_output:declare_origin_consumer",),
                ("first", "repeated"), ("retain batches write no declaration; exact ref remains closed",), stable_paths=True),

@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from record_compat import accepted, invoke, retained, write
+from record_compat import accepted, input_reader_absence, invoke, retained, write
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.digest_primitives import canonical_sha256
 
@@ -26,6 +26,7 @@ def records(pattern):
 GOLDENS = {row["case"]: row for row in records("goldens*.jsonl")}
 HISTORY = {(row["generation"], row["case"]): row
            for row in records("historical*.jsonl")}
+ABSENT_INPUTS = {(row["generation"], row["case"]): row for row in records("absent-inputs*.jsonl")}
 EVIDENCE = Path(os.environ["COMPAT_EVIDENCE_DIR"]) if os.environ.get("COMPAT_EVIDENCE_DIR") else None
 
 
@@ -37,6 +38,15 @@ def decoded(row):
     raw = base64.b64decode(row["raw"])
     assert hashlib.sha256(raw).hexdigest() == row["sha256"]
     return raw
+
+
+def has_historical_participant(case, generation, root, manifest):
+    absence = input_reader_absence(root, case, manifest)
+    if absence is None:
+        assert (generation, case) not in ABSENT_INPUTS
+        return True
+    assert absence == ABSENT_INPUTS[generation, case]
+    return False
 
 
 @pytest.fixture(scope="module")
@@ -53,6 +63,9 @@ def test_supported_consumers_read_exact_production_writes_or_immutable_source_in
     kind = next(kind for kind in KINDS if kind.name == case.split("/")[0])
     reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
     for generation, old, manifest in generations:
+        if not has_historical_participant(case, generation, old, manifest):
+            accepted(invoke(ROOT, case, tmp_path / generation / "current-input", raw=current))
+            continue
         historical = HISTORY[generation, case]
         assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
         prior = write(old, case, tmp_path / generation / "old-writer", manifest=manifest,
@@ -76,7 +89,10 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
                                                        if key != kind.self_digest_field})
     raw = (json.dumps(body, sort_keys=True) + "\n").encode()
     for generation, old, manifest in generations:
-        for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
+        readers = [(ROOT, None, "new")]
+        if has_historical_participant(case, generation, old, manifest):
+            readers.append((old, manifest, "old"))
+        for root, attestation, suffix in readers:
             observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-unknown-" + suffix + ".json"))
             if kind.field_policy == "closed":
@@ -95,7 +111,10 @@ def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations,
         body[kind.negative_field] = kind.negative_value
     raw = json.dumps(body).encode()
     for generation, old, manifest in generations:
-        for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
+        readers = [(ROOT, None, "new")]
+        if has_historical_participant(case, generation, old, manifest):
+            readers.append((old, manifest, "old"))
+        for root, attestation, suffix in readers:
             observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
@@ -270,3 +289,18 @@ def operate(request, store, load):
         assert not observed["compiled_source_code_verified"]
         imported = observed["imports"]["prismabuild.residency_map"]
         assert imported["sha256"] == json.loads(manifest.read_bytes())["files"][imported["relative"]]
+
+
+def test_a_missing_adapter_cannot_hide_an_existing_wire_kind(generations, tmp_path):
+    _, old, manifest = generations[0]
+    altered = tmp_path / "closure-with-unmapped-owner"
+    shutil.copytree(old, altered)
+    source = altered / "src/prismabuild/residency_map.py"
+    source.chmod(0o644)
+    source.write_bytes(source.read_bytes() + b'\nUNMAPPED_INPUT = "fleet.d38.plan.v1"\n')
+    receipt = json.loads(manifest.read_bytes())
+    receipt["files"]["src/prismabuild/residency_map.py"] = hashlib.sha256(source.read_bytes()).hexdigest()
+    synthetic = tmp_path / "test-mutant-manifest.json"
+    synthetic.write_text(json.dumps(receipt))
+    with pytest.raises(AssertionError, match="missing adapter module does not prove"):
+        input_reader_absence(altered, "input-d38-plan/target", synthetic)

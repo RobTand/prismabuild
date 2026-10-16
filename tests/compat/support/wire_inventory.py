@@ -161,14 +161,18 @@ def audit(root, observations=None):
             document = json.loads(path.read_bytes())
             required_generations.update(row["generation"] for row in
                                         (document["generations"] if isinstance(document, dict) else document))
-    captured = {"current": set(), "historical": defaultdict(set)}
+    captured = {"current": set(), "historical": defaultdict(set), "absent_inputs": defaultdict(set)}
     for path in (root / "tests/compat").glob("*.jsonl"):
-        if not path.name.startswith(("goldens", "historical")):
+        if not path.name.startswith(("goldens", "historical", "absent-inputs")):
             continue
         for line in path.read_text().splitlines():
             item = json.loads(line)
             if path.name.startswith("goldens"):
                 captured["current"].add(item["case"])
+            elif path.name.startswith("absent-inputs"):
+                kind = next(row for row in known.values() if row["name"] == item["case"].split("/")[0])
+                assert kind.get("caller_input") and kind.get("older_input_absence") and not kind["writers"]
+                captured["absent_inputs"][item["generation"]].add(item["case"])
             else:
                 captured["historical"][item["generation"]].add(item["case"])
     wire_ids = {row["name"]: wire for wire, row in known.items()}
@@ -383,9 +387,13 @@ def audit(root, observations=None):
             value["missing_current_captures"] = sorted(scenarios - captured["current"])
             value["historical_capture_counts"] = {generation: len(scenarios & found)
                                                    for generation, found in captured["historical"].items()}
-            value["missing_historical_captures"] = {generation: sorted(scenarios - captured["historical"][generation])
+            value["historical_input_absence_counts"] = {generation: len(scenarios & found)
+                                                        for generation, found in captured["absent_inputs"].items()}
+            value["missing_historical_captures"] = {generation: sorted(scenarios - captured["historical"][generation]
+                                                                        - captured["absent_inputs"][generation])
                                                      for generation in sorted(required_generations)
-                                                     if scenarios - captured["historical"][generation]}
+                                                     if scenarios - captured["historical"][generation]
+                                                        - captured["absent_inputs"][generation]}
             disposition = ("adapter_requires_capture" if value["missing_current_captures"] or value["missing_historical_captures"]
                            else "catalogued_adapter")
         elif wire in reviewed:

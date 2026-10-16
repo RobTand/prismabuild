@@ -39,6 +39,29 @@ def reached(observed, reference):
                for call in observed.get("calls", []))
 
 
+def input_reader_absence(root, case, manifest):
+    kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
+    if not kind.older_input_absence:
+        return None
+    assert kind.caller_input and not kind.writers and kind.wire_id
+    paths = []
+    for reference in (kind.reader,) + kind.legacy_readers:
+        module = reference.split(":")[0]
+        paths.extend(["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
+                     ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
+    if any((root / path).is_file() for path in paths):
+        return None
+    provenance = json.loads(manifest.read_bytes())
+    for name, expected in provenance["files"].items():
+        raw = (root / name).read_bytes()
+        assert sha(raw) == expected, "absence claim requires every immutable closure member"
+        assert kind.wire_id.encode() not in raw, "missing adapter module does not prove this wire kind absent"
+    return {"case": case, "generation": provenance["generation"],
+            "receipt_sha256": provenance["receipt_sha256"], "archive_sha256": provenance["archive_sha256"],
+            "absent_reader_modules": sorted(paths), "closure_files_checked": len(provenance["files"]),
+            "reason": "caller input has no reader or writer in this generation; no historical writer bytes exist"}
+
+
 def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None):
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
     request = {"case": case, "op": "write" if raw is None else "read"}
@@ -78,7 +101,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
         result["returncode"] = 2
         result["attestation_error"] = "private namespace did not preserve PB CPU affinity"
-    if raw is None and not kind.fixture_source:
+    if raw is None and not (kind.fixture_source or kind.caller_input):
         writer = dict(kind.variant_writers).get(case.split("/", 1)[1])
         if writer is None:
             if len(kind.writers) != 1:
@@ -87,7 +110,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         references = (writer,) + kind.legacy_writers
     else:
         references = (kind.reader,) + kind.legacy_readers
-    result["catalogued_operation"] = "source-reader" if raw is None and kind.fixture_source else request["op"]
+    result["catalogued_operation"] = ("input-reader" if raw is None and kind.caller_input else
+                                     "source-reader" if raw is None and kind.fixture_source else request["op"])
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if raw is None and result["returncode"] == 0 and kind.wire_id is not None:
         actual_wire = json.loads(base64.b64decode(result["result"]["raw"]))
@@ -180,7 +204,7 @@ def retained(directory=CAPTURE, *, history_control=False):
 
 def generate(output, selected=None):
     output.mkdir(parents=True, exist_ok=False)
-    historical, goldens, failures = [], [], []
+    historical, goldens, failures, absences = [], [], [], []
     started = datetime.now(timezone.utc).isoformat()
     selected = list(cases() if selected is None else selected)
     source = subprocess.check_output(["git", "-C", str(ROOT), "show", "-s", "--format=%H%n%P%n%T"],
@@ -199,7 +223,7 @@ def generate(output, selected=None):
     with retained() as generations, tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
         for case in selected:
             kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
-            phase = "source" if kind.fixture_source else "writer"
+            phase = "input" if kind.caller_input else "source" if kind.fixture_source else "writer"
             label = case.replace("/", "-")
             before = len(failures)
             result = invoke(ROOT, case, Path(tmp) / (label + "-new"),
@@ -207,9 +231,17 @@ def generate(output, selected=None):
             if not check(result, case, "candidate", phase):
                 continue
             raw = base64.b64decode(result["result"]["raw"])
-            origin = {"origin": "immutable configuration; no runtime writer"} if kind.fixture_source else {}
+            origin = ({"origin": "deterministic caller input; no runtime writer"} if kind.caller_input else
+                      {"origin": "immutable configuration; no runtime writer"} if kind.fixture_source else {})
             goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode(), **origin})
             for generation, old, manifest in generations:
+                absence = input_reader_absence(old, case, manifest)
+                if absence is not None:
+                    absences.append(absence)
+                    check(invoke(ROOT, case, Path(tmp) / (label + "-current-input-" + generation), raw=raw,
+                                 evidence=output / "attestations" / generation / (label + "-current-input.json")),
+                          case, generation, "current-input-reader; historical participant absent")
+                    continue
                 prefix = output / "attestations" / generation
                 stores = Path(tmp) / generation
                 result = invoke(old, case, stores / (label + "-old"), manifest=manifest,
@@ -225,7 +257,7 @@ def generate(output, selected=None):
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
                                    "sha256": sha(prior), "raw": base64.b64encode(prior).decode(), **origin})
             print(case, "both directions accepted" if len(failures) == before else "RED; evidence retained", flush=True)
-    for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical)):
+    for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical), ("absent-inputs.jsonl", absences)):
         path = output / name
         with path.open("x") as stream:
             for row in rows:
@@ -234,6 +266,7 @@ def generate(output, selected=None):
     path = output / "qualification.json"
     path.write_text(json.dumps({"current_captures": len(goldens), "historical_captures": len(historical),
                                 "configuration_captures": sum("origin" in row for row in goldens),
+                                "historical_input_absences": len(absences),
                                 "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
                                 "selected_cases": selected,
                                 "source_git": {"snapshot": source[0], "parents": source[1].split(), "tree": source[2]},
