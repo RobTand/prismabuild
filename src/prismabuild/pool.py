@@ -12772,7 +12772,8 @@ class PoolQueue:
             return ("unknown", None, f"funding record unparsable: {exc}")
         if raw is None:
             try:
-                present = path.exists()
+                present = bool(record_store.value_or_raise(
+                    self.records.funding_presence(mover_action_key, tier_id)))
             except OSError as exc:
                 return ("unknown", None,
                         f"funding record census unreadable: {exc!r}")
