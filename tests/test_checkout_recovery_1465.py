@@ -308,7 +308,7 @@ def _planned(case: RecoveryCase, **kwargs: object) -> dict[str, object]:
     assert plan["schema"] == PLAN_SCHEMA, json.dumps(plan, sort_keys=True)
     assert plan["complete"] is True and plan["status"] == "planned", plan
     assert case.cleanup_calls == []
-    assert case.preserved() == before
+    assert case.preserved() == before, _snapshot_delta(before, case.preserved())
     return plan
 
 
