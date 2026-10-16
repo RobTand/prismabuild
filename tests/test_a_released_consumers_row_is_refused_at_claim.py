@@ -136,7 +136,7 @@ def _released_while_paused(tmp_path: Path, monkeypatch, capsys, *options: str,
 
 
 def _failed(queue, key: str) -> dict:
-    record = pool.record_store.require(queue.records.item(pool.record_store.FAILED, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, key))
     assert record is not None, "the row was not filed as failed"
     return record
 

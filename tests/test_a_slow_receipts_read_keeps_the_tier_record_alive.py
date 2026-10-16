@@ -143,7 +143,7 @@ class _Loop:
             # The parallel read's checkpoints are tested on a real clock in
             # ``test_a_fresh_tier_loop_announces_before_its_cold_read``.
             monkeypatch.setattr(tier_loop, "RECEIPT_READERS", 1)
-            real_parse = pool.record_store.read_queue_record
+            real_parse = pool.record_store._read_json
 
             def parse(path, *args, **kwargs):
                 if self.reading and Path(path).name.startswith(SLOW_PREFIX):

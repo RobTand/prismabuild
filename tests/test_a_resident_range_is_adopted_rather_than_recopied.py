@@ -452,7 +452,7 @@ def test_an_adopted_lead_whose_bytes_went_is_refused_again(queue, stage) -> None
     queue.release_tier_reservations(_hexkey("secondmover0"))
 
     verdict = queue.residency_verdict(
-        pool.record_store.require(queue.records.item(pool.record_store.READY, SECOND)))
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, SECOND)))
     assert verdict["state"] == "lead_not_resident"
     assert verdict["pending"] == [
         {"lead": _hexkey("secondmover0"), "status": "absent"}]

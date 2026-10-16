@@ -139,7 +139,7 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
     # record names it and the overcommit it left.
     ledger.release(MOVER)
     queue.finish(export_key, status="executed", claim_snapshot=claim)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, export_key))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, export_key))
     ended = done["tier_fill_borrowed"][fx.TIER]
     assert ended["lenders_released_before_end"] == [MOVER]
     assert ended["overcommit_mb_s"] == OFFER

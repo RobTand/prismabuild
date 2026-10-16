@@ -343,7 +343,7 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     assert _record(queue, first).exists()
 
     claim = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(claim)
+    live = pool.record_store.read_document(claim)
     assert live is not None
     control = dict(live["resource_scope"])
     live["resource_scope"] = {**control, "nonce": ""}
