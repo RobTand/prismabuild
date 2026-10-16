@@ -32,8 +32,7 @@ def reached(observed, reference):
         paths = {"src/" + module.replace(".", "/") + ".py"}
     else:
         paths = {"tools/" + module + ".py", "tools/fleet/" + module + ".py"}
-    normalize = lambda name: ".".join(part.lstrip("_") for part in name.split("."))
-    return any(call[0] in paths and normalize(call[3]) == normalize(qualified)
+    return any(call[0] in paths and call[3] == qualified
                for call in observed.get("calls", []))
 
 
@@ -54,7 +53,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
         result = {"stdout": process.stdout, "stderr": process.stderr}
     result["returncode"] = process.returncode
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
-    references = kind.writers + kind.legacy_writers if raw is None else (kind.reader,)
+    references = kind.writers + kind.legacy_writers if raw is None else (kind.reader,) + kind.legacy_readers
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
         result["returncode"] = 3

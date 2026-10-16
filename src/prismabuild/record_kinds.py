@@ -17,6 +17,7 @@ class RecordKind:
     closed_sets: tuple[str, ...] = ()
     negative_field: str = "schema"
     legacy_writers: tuple[str, ...] = ()
+    legacy_readers: tuple[str, ...] = ()
 
 
 KINDS = (
@@ -79,13 +80,15 @@ KINDS = (
                "prismabuild.decomposition:validate_frozen_common", ("prismabuild.decomposition:freeze_common",), ("snapshot",)),
     RecordKind("dc-plan", "prismabuild.decomposition_plan.v1", "cas/decompositions/<xx>/<parent>/plan.json", "closed",
                "prismabuild.decomposition:_validate_plan", ("prismabuild.decomposition:write_document",), ("partitioned",),
-               ("retained reader is named validate_plan",)),
+               ("retained reader is named validate_plan",), legacy_readers=("prismabuild.decomposition:validate_plan",)),
     RecordKind("dc-publication", "prismabuild.decomposition_publication.v1", "cas/decompositions/<xx>/<parent>/publication.json", "closed",
                "prismabuild.decomposition:_validate_publication_index", ("prismabuild.decomposition:publish_children",), ("children",),
-               ("retained reader is named validate_publication_index",), legacy_writers=("pbcampaign:publish_index",)),
+               ("retained reader is named validate_publication_index",), legacy_writers=("pbcampaign:publish_index",),
+               legacy_readers=("prismabuild.decomposition:validate_publication_index",)),
     RecordKind("dc-child-result", "prismabuild.child_result_manifest.v1", "child declared result manifest", "closed",
                "prismabuild.decomposition:_validate_child_result_manifest", ("prismabuild.decomposition:write_document",), ("cover",),
-               ("retained reader is named validate_child_result_manifest",)),
+               ("retained reader is named validate_child_result_manifest",),
+               legacy_readers=("prismabuild.decomposition:validate_child_result_manifest",)),
     RecordKind("dc-task-data", "prismabuild.task_data_manifest.v1", "logical request task_data_manifest", "closed",
                "prismabuild.decomposition:validate_task_data_policy", ("prismabuild.decomposition:write_document",), ("plain", "reader")),
     RecordKind("q-funding", "prismabuild.tier_funding.v1", "tier-funding/<mover>.<tier>.funding.json", "closed",
@@ -127,6 +130,17 @@ KINDS = (
                "prismabuild.produced_output:validate_instance", ("prismabuild.produced_output:declare_instance",), ("bound",)),
     RecordKind("out-declaration", "prismabuild.produced_output_declaration.v1", "action.params.produced_output_template", "closed",
                "prismabuild.core:validate_produced_output_declaration", ("prismabuild.produced_output:build_declaration",), ("sealed",)),
+    RecordKind("resident-set", "prismabuild.resident_set.v1", "resident-sets/<id>/body.json", "additive",
+               "prismabuild.resident_sets:ResidentSets.read", ("prismabuild.resident_sets:ResidentSets.publish",), ("until", "campaign")),
+    RecordKind("resident-copy", "prismabuild.resident_copy.v1", "resident-sets/<id>/copies/<host>.json", "additive",
+               "prismabuild.resident_sets:ResidentSets.read_copy", ("prismabuild.resident_sets:ResidentSets.write_copy",),
+               ("absent", "copying", "resident", "evicting")),
+    RecordKind("resident-movements", "prismabuild.resident_movements.v1", "resident-sets/<id>/movements/<host>.json", "additive",
+               "prismabuild.resident_sets:ResidentSets.read_movements", ("prismabuild.resident_sets:ResidentSets.update_movements",),
+               ("copy", "evict", "adopt")),
+    RecordKind("tier-epoch", "prismabuild.ram_epoch.v1", "RAM mount .prismabuild-epoch.json", "additive",
+               "prismabuild.storage_tiers:read_ram_epoch", ("prismabuild.storage_tiers:ensure_ram_epoch",), ("bootstrap",),
+               ("reader accepts absent unix and host",)),
 )
 
 

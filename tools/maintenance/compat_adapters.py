@@ -89,6 +89,9 @@ def operate(request, store, load):
         filename = "compat_edge_adapters.py" if family.startswith("edge-") else "compat_output_adapters.py"
         adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]
         return adapter(request, store, load)
+    if family.startswith(("resident-", "tier-")):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_resident_adapters.py")))["operate"]
+        return adapter(request, store, load)
     path = store / "record.json"
     if not write:
         path.write_bytes(base64.b64decode(request["raw"]))
