@@ -400,12 +400,6 @@ class TerminalCapture:
     candidates: tuple[RecordObservation, ...]
 
 
-@dataclass(frozen=True)
-class GenerationIdentity:
-    action_key: str
-    published_unix: float
-
-
 class RecordStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
