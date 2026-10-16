@@ -4607,8 +4607,9 @@ def _read_producer_request(cas_root, producer: str):
             raw = handle.read(8 * 1024 * 1024 + 1)
         if len(raw) > 8 * 1024 * 1024:
             raise ProducedOutputError("producer request oversize")
-        request = core_mod.validate_action(core_mod._decode_strict_json(
-            raw, where="producer action request"))
+        request = core_mod.validate_action(
+            core_mod.digest_primitives.decode_strict_json(raw, where="producer action request"),
+        )
         if str(request.get("action_key")) != producer:
             raise ProducedOutputError("producer request key mismatch")
     except FileNotFoundError:

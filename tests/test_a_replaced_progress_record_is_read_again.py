@@ -42,7 +42,7 @@ def _watch(path: Path) -> "pool.ProgressWatch":
 def _replace_after_open(monkeypatch, path: Path, raw: bytes, times: int = 1):
     """Replace ``path`` right after the reader opens it, ``times`` times."""
 
-    original = pb._open_regular_nofollow
+    original = pb.immutable_files.open_regular_nofollow
     left = [times]
 
     def opened_then_replaced(candidate, *, where):
@@ -52,7 +52,7 @@ def _replace_after_open(monkeypatch, path: Path, raw: bytes, times: int = 1):
             _replace(path, raw)
         return held
 
-    monkeypatch.setattr(pb, "_open_regular_nofollow", opened_then_replaced)
+    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened_then_replaced)
     return left
 
 
@@ -87,8 +87,7 @@ def test_the_reread_is_bounded_and_then_still_refused(tmp_path, monkeypatch):
     _replace_after_open(monkeypatch, path, _record(2), times=1000)
 
     with pytest.raises(pb.CASTamperError):
-        pb._read_regular_file_nofollow(
-            path, where="action progress report", replaced_leaf=True)
+        pb.immutable_files.read_replaced_record(path, where="action progress report")
 
 
 def test_strict_readers_keep_the_identity_check(tmp_path, monkeypatch):
@@ -97,14 +96,14 @@ def test_strict_readers_keep_the_identity_check(tmp_path, monkeypatch):
     _replace_after_open(monkeypatch, path, b"two")
 
     with pytest.raises(pb.CASTamperError):
-        pb._read_regular_file_nofollow(path, where="CAS object")
+        pb.immutable_files.read_stable_file(path, where="CAS object")
 
 
 def test_a_replaced_leaf_that_is_not_a_regular_file_is_still_tamper(
         tmp_path, monkeypatch):
     path = tmp_path / "action.progress"
     _replace(path, _record(1))
-    original = pb._open_regular_nofollow
+    original = pb.immutable_files.open_regular_nofollow
 
     def opened_then_symlinked(candidate, *, where):
         held = original(candidate, where=where)
@@ -113,10 +112,9 @@ def test_a_replaced_leaf_that_is_not_a_regular_file_is_still_tamper(
         os.replace(link, path)
         return held
 
-    monkeypatch.setattr(pb, "_open_regular_nofollow", opened_then_symlinked)
+    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened_then_symlinked)
     with pytest.raises(pb.CASTamperError):
-        pb._read_regular_file_nofollow(
-            path, where="action progress report", replaced_leaf=True)
+        pb.immutable_files.read_replaced_record(path, where="action progress report")
 
 
 WRITER = r'''
@@ -213,7 +211,7 @@ def test_a_replace_seen_before_the_name_moves_is_read_not_tamper(
     path = tmp_path / "action.progress"
     _replace(path, _record(1))
     state = _replace_before_the_name_moves(
-        monkeypatch, path, times=pb._STABLE_FILE_READ_ATTEMPTS)
+        monkeypatch, path, times=pb.immutable_files._STABLE_FILE_READ_ATTEMPTS)
     watch = _watch(path)
 
     advanced = watch.sample(now=1)
@@ -247,8 +245,7 @@ def test_a_replaced_leaf_rewritten_in_place_is_still_tamper(
 
     monkeypatch.setattr(pb.os, "read", read_then_rewrite)
     with pytest.raises(pb.CASTamperError, match="changed substantively"):
-        pb._read_regular_file_nofollow(
-            path, where="action progress report", replaced_leaf=True)
+        pb.immutable_files.read_replaced_record(path, where="action progress report")
     assert state["replaced"] == 1
     assert len(rewritten) == 1
 
@@ -273,7 +270,7 @@ def test_a_record_replaced_under_every_reread_is_not_a_rejection(
 def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
     """Publish the incoming inode after its first fstat, before its read."""
     incoming = path.parent / ".incoming.progress"
-    original_open, original_read = pb._open_regular_nofollow, os.read
+    original_open, original_read = (pb.immutable_files.open_regular_nofollow, os.read)
     pending = set()
 
     def opened(candidate, *, where):
@@ -290,7 +287,7 @@ def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
             os.replace(incoming, path)
         return original_read(descriptor, count)
 
-    monkeypatch.setattr(pb, "_open_regular_nofollow", opened)
+    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened)
     monkeypatch.setattr(pb.os, "read", read)
 
 
@@ -319,5 +316,5 @@ def test_incoming_rename_metadata_churn_stays_tamper_for_strict_readers(
     _replace(path, b"old")
     _publish_incoming_inode_during_read(monkeypatch, path, b"new")
     with pytest.raises(pb.CASTamperError) as error:
-        pb._read_regular_file_nofollow(path, where="CAS object")
+        pb.immutable_files.read_stable_file(path, where="CAS object")
     assert not isinstance(error.value, pb.ReplacedRecordError)

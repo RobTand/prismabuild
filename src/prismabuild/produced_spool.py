@@ -193,9 +193,17 @@ def _parent(path, *, create=False):
     descriptor = immutable_files.open_directory_nofollow(
         path.parent, where="produced spool parent", create=create, mode=0o700)
     try:
-        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
         yield descriptor
-        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
     finally:
         os.close(descriptor)
 
@@ -217,7 +225,7 @@ def _read(path, *, expected_sha256=None):
                         recorded=reader_lease.portable_identity(before), observed=after)
         if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise SpoolError("sealed spool record changed")
-        body = core._decode_strict_json(raw, where="spool record")
+        body = core.digest_primitives.decode_strict_json(raw, where="spool record")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -252,7 +260,11 @@ def _lock(path):
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise SpoolError("spool lock is not regular")
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            immutable_files.assert_directory_identity(directory, path.parent, where="locked spool parent")
+            immutable_files.assert_directory_identity(
+                directory,
+                path.parent,
+                where="locked spool parent",
+            )
             yield
         finally:
             os.close(descriptor)

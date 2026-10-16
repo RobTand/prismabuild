@@ -58,6 +58,8 @@ capability.
 
 from __future__ import annotations
 
+from . import immutable_files
+
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -2053,7 +2055,6 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
             "expected": expected}
 
 
-
 def resolve_window_covers(queue, *, consumer_action_key: str,
                           tier_id: str, epoch: str,
                           keys: list[str] | None = None,
@@ -2565,9 +2566,11 @@ def _announced_epoch(queue, tier_id: str) -> str | None:
         try:
             # The bound the other replaced-leaf readers pass for small JSON
             # records; a live announcement is under 2 KiB.
-            raw = pb._read_regular_file_nofollow(
-                record_path, where="tier announcement",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                record_path,
+                where="tier announcement",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
             if not isinstance(record, Mapping):
                 raise ValueError("the announcement is not a JSON object")

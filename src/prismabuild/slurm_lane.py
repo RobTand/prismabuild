@@ -851,9 +851,7 @@ def _publish_record(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if immutable_files.publish_immutable(path, raw):
         return
-    observed = pb._read_regular_file_nofollow(
-        path, where="SLURM lane submission record", require_readonly=True
-    )
+    observed = immutable_files.read_immutable_file(path, where="SLURM lane submission record")
     if observed != raw:
         raise SlurmLaneError(
             f"a different submission is already recorded at {path}"
