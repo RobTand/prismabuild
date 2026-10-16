@@ -5885,6 +5885,13 @@ class _HostRefusal:
 
 
 @dataclass(frozen=True)
+class _TakenClaimTiers:
+    host: _HostAccepted
+    borrowed: Mapping[str, object] | None
+    fill_waived: Mapping[str, object] | None
+
+
+@dataclass(frozen=True)
 class _RefusalAccounting:
     order: candidate_policy.ScanOrder
     preempted: bool
@@ -21900,6 +21907,91 @@ class PoolQueue:
             return _RefusalAccounting(scan, preempted)
         return _RefusalAccounting(scan, preempted)
 
+    def _take_claim_tiers(
+        self, host: _HostAccepted, *, ledger, cpu_tiers, placement, reads,
+    ) -> _TakenClaimTiers | _ClaimHandled:
+        qualified = host.candidate
+        item, key = qualified.item, qualified.key
+        sealed_demand, tier_demand = host.demand.sealed, host.demand.tiers
+        demand, reservation = host.demand.host, qualified.reservation
+        adaptive = host.adaptive
+        dependent_owner = (host.request.dependent_owner if host.request is not None
+                           else qualified.dependent_owner)
+        tier_borrowed = tier_fill_waived = None
+        allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
+                      if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
+        fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
+                              if allocation is not None and allocation["fallback"]
+                              and not (adaptive or {}).get("funded_by") else None)
+        if fallback_deferral is not None:
+            reservation.abandon(_ClaimExit.HOST_REFUSAL)
+            self.record_denial(item, "deferred_for_preferred_cpu", {
+                "demand": demand,
+                "cpu_allocation": allocation,
+                "remote_offer": fallback_deferral,
+            })
+            return _ClaimHandled.REFUSED
+        if tier_demand:
+            # The tier's reader plan first (#1091): a copy a
+            # claimed consumer is blocked on goes first and alone,
+            # and no more copies read the pool than its measured
+            # knee.  No ``record_pass``, as for a tier shortage.
+            plan_verdict = self.reader_plan_verdict(
+                item, tier_demand, pass_cache=reads.reader_plans)
+            if plan_verdict is not None and plan_verdict.get("deny"):
+                if ledger is not None and reservation.host_handle is not None:
+                    reservation.abandon(_ClaimExit.HOST_REFUSAL)
+                self.record_denial(item, str(plan_verdict["deny"]), {
+                    "demand": sealed_demand, "tier_demand": tier_demand,
+                    "reader_plan": plan_verdict,
+                })
+                return _ClaimHandled.REFUSED
+            acquire_demand = tier_demand
+            if plan_verdict is not None and plan_verdict.get("admit"):
+                acquire_demand = plan_verdict["tier_demand"]  # type: ignore[assignment]
+                if plan_verdict.get("fill_waived"):
+                    tier_fill_waived = {
+                        "tier_id": plan_verdict["tier_id"],
+                        "kind": storage_tiers.FILL_KIND,
+                        "waived": int(plan_verdict["fill_waived"]),  # type: ignore[call-overload]
+                        "declared_wait": plan_verdict["declared_wait"],
+                        "waived_unix": _now()}
+            # After host admission, so a box that cannot seat the
+            # work never touches the shared tier ledgers, and
+            # before the rename, so a claim is never won on tier
+            # capacity it does not hold.  No ``record_pass``: the
+            # tier is cluster-scoped, and withholding this box for
+            # a shortage every box shares would idle it for nothing
+            # (Rob, #583: the box does other work meanwhile).
+            shortage = self._begin_tier_acquire(
+                key, acquire_demand, reservation.tier_handles, reservation.tier_funded,
+                cas_root=item.get("cas_root"))
+            if shortage is not None:
+                reservation.reset_tier_take()
+                fill_owner = (dependent_owner if isinstance(dependent_owner, str)
+                              else cpu_admission.dependent_owner(item)
+                              if item.get("dependent_of") is not None else None)
+                if (shortage.get("reason") == "tier_reservation_unavailable"
+                        and isinstance(fill_owner, str) and not reservation.tier_funded):
+                    # A producer's paced export at the fill ceiling
+                    # its own family holds (#999).
+                    tier_borrowed = self._borrow_family_fill(
+                        key, fill_owner, tier_demand, reservation.tier_handles)
+                    if tier_borrowed is not None:
+                        shortage = None
+                    else:
+                        shortage = dict(shortage, dependent_of=fill_owner,
+                                        family_fill="not_enough_family_fill")
+            if shortage is not None:
+                if ledger is not None and reservation.host_handle is not None:
+                    reservation.abandon(_ClaimExit.HOST_REFUSAL)
+                self.record_denial(item, str(shortage["reason"]), {
+                    "demand": sealed_demand, "tier_demand": tier_demand,
+                    "tier_shortage": shortage,
+                })
+                return _ClaimHandled.REFUSED
+        return _TakenClaimTiers(host, tier_borrowed, tier_fill_waived)
+
     def _claim_pass(
         self,
         *,
@@ -22245,6 +22337,7 @@ class PoolQueue:
                 scratch_intent = qualified.scratch_intent
                 dependent_owner = qualified.dependent_owner
                 reservation = qualified.reservation
+                host_claim = _HostAccepted(qualified, qualified.demand)
                 allowance = None
                 gang = gang_record = gang_entry = None
                 tier_borrowed: dict[str, object] | None = None
@@ -22316,78 +22409,12 @@ class PoolQueue:
                         gang_backfill = host_claim.arbitration.backfill
                         backfill_binding = host_claim.arbitration.backfill_binding
                         _gang = host_claim.arbitration.gang_api
-                    allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
-                                  if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
-                    fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
-                                          if allocation is not None and allocation["fallback"]
-                                          and not (adaptive or {}).get("funded_by") else None)
-                    if fallback_deferral is not None:
-                        reservation.abandon(_ClaimExit.HOST_REFUSAL)
-                        self.record_denial(item, "deferred_for_preferred_cpu", {
-                            "demand": demand,
-                            "cpu_allocation": allocation,
-                            "remote_offer": fallback_deferral,
-                        })
+                    tiers = self._take_claim_tiers(
+                        host_claim, ledger=ledger, cpu_tiers=cpu_tiers,
+                        placement=placement, reads=reads)
+                    if tiers is _ClaimHandled.REFUSED:
                         continue
-                    if tier_demand:
-                        # The tier's reader plan first (#1091): a copy a
-                        # claimed consumer is blocked on goes first and alone,
-                        # and no more copies read the pool than its measured
-                        # knee.  No ``record_pass``, as for a tier shortage.
-                        plan_verdict = self.reader_plan_verdict(
-                            item, tier_demand, pass_cache=reads.reader_plans)
-                        if plan_verdict is not None and plan_verdict.get("deny"):
-                            if ledger is not None and reservation.host_handle is not None:
-                                reservation.abandon(_ClaimExit.HOST_REFUSAL)
-                            self.record_denial(item, str(plan_verdict["deny"]), {
-                                "demand": sealed_demand, "tier_demand": tier_demand,
-                                "reader_plan": plan_verdict,
-                            })
-                            continue
-                        acquire_demand = tier_demand
-                        if plan_verdict is not None and plan_verdict.get("admit"):
-                            acquire_demand = plan_verdict["tier_demand"]  # type: ignore[assignment]
-                            if plan_verdict.get("fill_waived"):
-                                tier_fill_waived = {
-                                    "tier_id": plan_verdict["tier_id"],
-                                    "kind": storage_tiers.FILL_KIND,
-                                    "waived": int(plan_verdict["fill_waived"]),  # type: ignore[call-overload]
-                                    "declared_wait": plan_verdict["declared_wait"],
-                                    "waived_unix": _now()}
-                        # After host admission, so a box that cannot seat the
-                        # work never touches the shared tier ledgers, and
-                        # before the rename, so a claim is never won on tier
-                        # capacity it does not hold.  No ``record_pass``: the
-                        # tier is cluster-scoped, and withholding this box for
-                        # a shortage every box shares would idle it for nothing
-                        # (Rob, #583: the box does other work meanwhile).
-                        shortage = self._begin_tier_acquire(
-                            key, acquire_demand, reservation.tier_handles, reservation.tier_funded,
-                            cas_root=item.get("cas_root"))
-                        if shortage is not None:
-                            reservation.reset_tier_take()
-                            fill_owner = (dependent_owner if isinstance(dependent_owner, str)
-                                          else cpu_admission.dependent_owner(item)
-                                          if item.get("dependent_of") is not None else None)
-                            if (shortage.get("reason") == "tier_reservation_unavailable"
-                                    and isinstance(fill_owner, str) and not reservation.tier_funded):
-                                # A producer's paced export at the fill ceiling
-                                # its own family holds (#999).
-                                tier_borrowed = self._borrow_family_fill(
-                                    key, fill_owner, tier_demand, reservation.tier_handles)
-                                if tier_borrowed is not None:
-                                    shortage = None
-                                else:
-                                    shortage = dict(shortage, dependent_of=fill_owner,
-                                                    family_fill="not_enough_family_fill")
-                        if shortage is not None:
-                            if ledger is not None and reservation.host_handle is not None:
-                                reservation.abandon(_ClaimExit.HOST_REFUSAL)
-                            self.record_denial(item, str(shortage["reason"]), {
-                                "demand": sealed_demand, "tier_demand": tier_demand,
-                                "tier_shortage": shortage,
-                            })
-                            continue
+                    tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
                     # Intent precedes the claim, so a crash in between leaves evidence.
                     # Resign fence, re-checked under this key's transition
                     # exclusion. This narrows the poll-check to rename race
