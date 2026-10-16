@@ -12,7 +12,7 @@ import pbrun
 
 
 @pytest.mark.parametrize('late_status', ['failed', 'executed'])
-@pytest.mark.parametrize('successor_state', [pool.READY, pool.CLAIMED])
+@pytest.mark.parametrize('successor_state', [pool.record_store.READY, pool.record_store.CLAIMED])
 def test_released_claim_cannot_supply_the_successors_outcome(
     tmp_path, monkeypatch, late_status, successor_state,
 ):
@@ -25,18 +25,18 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert first is not None
     # The supported missing-lease recovery shape, as in the #222 regression.
     # This models a lost/stalled publication, not a real NFS outage.
-    queue.lease_path(key).unlink()
+    queue.records.lease_path(key).unlink()
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with monkeypatch.context() as patch:
         patch.setattr(pool, '_now', lambda: later)
         assert queue.reap_stale() == [key]
-    if successor_state == pool.CLAIMED:
+    if successor_state == pool.record_store.CLAIMED:
         successor = queue.claim(owner='successor', capacity={'cpu': 1})
         assert successor is not None
-        paths = (queue.item_path(pool.CLAIMED, key), queue.lease_path(key))
+        paths = (queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key))
     else:
-        successor = json.loads(queue.item_path(pool.READY, key).read_text())
-        paths = (queue.item_path(pool.READY, key),)
+        successor = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
+        paths = (queue.records.item_path(pool.record_store.READY, key),)
     assert successor['attempts'] == 0 and successor['unstarted_releases'] == 1
     saved = {p: p.read_bytes() for p in paths}
 
@@ -51,17 +51,17 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert report['claimed_by'] == 'original'
     assert report['detail']['stdout'] == 'original outcome'
     assert all(p.read_bytes() == data for p, data in saved.items())
-    assert not queue.attempt_path(first, 1).exists()
-    assert not queue.item_path(pool.DONE, key).exists()
-    assert not queue.item_path(pool.FAILED, key).exists()
-    assert queue.ledger().held() == ({'cpu': 1} if successor_state == pool.CLAIMED else {})
-    if successor_state == pool.READY:
+    assert not queue.records.attempt_path(first, 1).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
+    assert queue.ledger().held() == ({'cpu': 1} if successor_state == pool.record_store.CLAIMED else {})
+    if successor_state == pool.record_store.READY:
         successor = queue.claim(owner='successor', capacity={'cpu': 1})
         assert successor is not None
 
     ending = queue.finish(key, status='executed', detail={'returncode': 0,
                           'stdout': 'successor output'}, claim_snapshot=successor)
-    assert ending == queue.item_path(pool.DONE, key)
+    assert ending == queue.records.item_path(pool.record_store.DONE, key)
     record = json.loads(ending.read_text())
     history = queue.attempt_outcomes(record)
     assert len(history) == 1
@@ -77,7 +77,7 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
     queue, first, calls = scoped
     key = first['action_key']
     queue._start_resource_scope(first)
-    queue.lease_path(key).unlink()
+    queue.records.lease_path(key).unlink()
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with monkeypatch.context() as patch:
         patch.setattr(pool, '_now', lambda: later)
@@ -86,7 +86,7 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
     assert successor is not None
     queue._start_resource_scope(successor)
     saved = {p: p.read_bytes() for p in (
-        queue.item_path(pool.CLAIMED, key), queue.lease_path(key))}
+        queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key))}
     request = resource_scope.ResourceScope._request
     observed = []
 
@@ -98,9 +98,9 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
 
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', refuse_old_stop)
     pending = queue.finish(key, status='failed', detail={'returncode': 1}, claim_snapshot=first)
-    assert pending.name.endswith(pool.LATE_FINISH_SUFFIX)
+    assert pending.name.endswith(pool.record_store.LATE_FINISH_SUFFIX)
     assert json.loads(pending.read_text())['container_cleanup_pending']['complete'] is False
-    assert not queue.attempt_path(first, 1).exists()
+    assert not queue.records.attempt_path(first, 1).exists()
     assert all(p.read_bytes() == data for p, data in saved.items())
     assert queue.ledger().held() == successor['resources']
     assert all(nonce == first['resource_scope']['nonce'] for nonce, _ in observed)
@@ -108,7 +108,7 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', request)
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not pending.exists()
-    assert not queue.attempt_path(first, 1).exists()
+    assert not queue.records.attempt_path(first, 1).exists()
     assert all(p.read_bytes() == data for p, data in saved.items())
     assert queue.ledger().held() == successor['resources']
     ending = queue.finish(key, status='executed', detail={'returncode': 0},

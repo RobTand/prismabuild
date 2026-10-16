@@ -74,23 +74,23 @@ def test_a_claim_whose_lease_never_arrived_is_released(
     assert queue.claim(owner="sparklina:43944:a4bcd411",
                        capacity={"cpu": 1}) is not None
     # The claimant blocked between the rename and ``write_lease``.
-    queue.lease_path(KEY).unlink()
+    queue.records.lease_path(KEY).unlink()
 
     assert _reap_later(queue) == [KEY]
 
-    assert not queue.item_path(pool.FAILED, KEY).exists(), (
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY).exists(), (
         "an action that never started was filed as a failed attempt"
     )
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     assert ready.exists(), "the work was neither run nor returned to the queue"
     item = json.loads(ready.read_text())
     assert item.get("attempts", 0) == 0, "an attempt was charged for no execution"
     assert item["schema"] == pool.POOL_ITEM_SCHEMA_V1
     # Nothing was published under an attempt number nothing ran.
-    assert list((queue.root / pool.ATTEMPTS).rglob("*.json")) == []
+    assert list((queue.root / pool.record_store.ATTEMPTS).rglob("*.json")) == []
     # The claim, its lease and its tokens are all gone from the reaper's side.
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     assert queue.ledger().held() == {}
 
 
@@ -101,16 +101,16 @@ def test_the_release_is_recorded_where_an_investigator_looks(
 
     _publish(queue, max_attempts=1, retry_safe=True)
     assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
-    queue.lease_path(KEY).unlink()
+    queue.records.lease_path(KEY).unlink()
 
     _reap_later(queue)
 
-    filed = list(queue.superseded_dir().glob(f"{KEY}.*.unstarted-claim.json"))
+    filed = list(queue.records.superseded_dir().glob(f"{KEY}.*.unstarted-claim.json"))
     assert len(filed) == 1, "a claim was released with nothing recorded about it"
     record = json.loads(filed[0].read_text())
     assert record["claimed_by"] == "sparklina:1:a"
     assert record["status"] == "released"
-    item = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert item["unstarted_releases"] == 1
 
 
@@ -125,7 +125,7 @@ def test_a_lease_that_expired_is_still_a_charged_attempt(
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]
 
-    item = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert item["attempts"] == 1
     assert item["status"] == "lease_lost"
     assert "unstarted_releases" not in item
@@ -150,17 +150,17 @@ def test_a_finisher_that_died_holding_the_claim_keeps_its_outcome(
     # The finisher's own attempt, published before it entombed the claim.
     queue.archive_attempt(
         {**claimed, "finished_unix": pool._now(), "finished_host": "sparklina"},
-        attempt=1, status="executed", disposition=pool.DONE,
+        attempt=1, status="executed", disposition=pool.record_store.DONE,
         detail={"returncode": 0, "stdout": "ran", "stderr": ""},
     )
-    queue.lease_path(KEY).unlink()
+    queue.records.lease_path(KEY).unlink()
 
     assert _reap_later(queue) == [KEY]
 
-    assert not queue.item_path(pool.READY, KEY).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists(), (
         "an action that already ran was requeued as never started"
     )
-    done = queue.item_path(pool.DONE, KEY)
+    done = queue.records.item_path(pool.record_store.DONE, KEY)
     assert done.exists()
     filed = json.loads(done.read_text())
     assert filed["status"] == "executed", "the finisher's outcome was dropped"
@@ -175,14 +175,14 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
     _publish(queue, max_attempts=3, retry_safe=True)
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
-    original = queue.item_path(pool.CLAIMED, KEY).read_bytes()
+    original = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
     queue.withdraw(KEY, signal_child=False)
-    assert queue.item_path(pool.CLAIMED, KEY).read_bytes() == original
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes() == original
 
     # A later publication may retire the summary while the cancelled holder
     # is still stopping. Its immutable generation decision remains authoritative.
     queue._supersede_withdrawal(KEY)
-    queue.lease_path(KEY).unlink(missing_ok=True)
+    queue.records.lease_path(KEY).unlink(missing_ok=True)
     blind = pool.PoolQueue(queue.root)
     assert blind.withdrawn_keys() == frozenset()
 
@@ -190,10 +190,10 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
     with mock.patch.object(pool, "_now", lambda: later):
         blind.reap_stale(timeout_s=pool.LEASE_TIMEOUT_S)
 
-    assert not queue.item_path(pool.READY, KEY).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists(), (
         "an action the operator cancelled was released back into the queue"
     )
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger().held() == {}
     assert queue.withdrawal_covers(claimed)["status"] == "withdrawn"
 
@@ -213,16 +213,16 @@ def test_a_claim_lost_before_its_record_was_rewritten_is_released(
 
     _publish(queue, max_attempts=1, retry_safe=True)
     assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
-    path = queue.item_path(pool.CLAIMED, KEY)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(path.read_text())
     for field in ("claimed_by", "claimed_unix", "claimed_host"):
         record.pop(field, None)
     pool._write_json_atomic(path, record)
-    queue.lease_path(KEY).unlink()
+    queue.records.lease_path(KEY).unlink()
 
     assert _reap_later(queue) == [KEY]
 
-    assert not queue.item_path(pool.FAILED, KEY).exists()
-    item = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY).exists()
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert item.get("attempts", 0) == 0
     assert item["unstarted_releases"] == 1
