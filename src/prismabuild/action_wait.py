@@ -299,12 +299,14 @@ def read_observation(section: str, read, *, budget_s: float):
     # Every refusal below names the retained reader, so ``pbstatus`` need not:
     # its own line is not throttled, and a waiting client meets a retained
     # reader once per turn of its wait (#1048).
-    result = _reader.bounded(
-        section, read, deadline=_reader.Deadline(budget_s), abandoned=abandoned,
-        announce_retained=False)
-    history = _CLIENT_READERS.get()
-    if history is not None:
-        history.record_abandoned(abandoned)
+    try:
+        result = _reader.bounded(
+            section, read, deadline=_reader.Deadline(budget_s), abandoned=abandoned,
+            announce_retained=False)
+    finally:
+        history = _CLIENT_READERS.get()
+        if history is not None:
+            history.record_abandoned(abandoned)
     try:
         readers = [RetainedReader.from_record(child) for child in abandoned]
     except OutcomeReadUnavailable as exc:

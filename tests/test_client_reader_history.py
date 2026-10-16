@@ -81,6 +81,23 @@ def test_invalid_identity_still_blocks_client_recovery(monkeypatch):
         assert history.snapshot() == action_wait.ReaderHistory(1, (), False)
 
 
+@pytest.mark.parametrize('interruption', [
+    pytest.param(KeyboardInterrupt(), id='keyboard-interrupt'),
+    pytest.param(SystemExit(143), id='sigterm-unwind'),
+])
+def test_abandonment_is_recorded_when_the_bounded_reader_unwinds(monkeypatch, interruption):
+    def bounded(*_args, abandoned, **_kwargs):
+        abandoned.append(_reader())
+        raise interruption
+
+    monkeypatch.setattr(action_wait._reader, 'bounded', bounded)
+    with action_wait.client_readers() as history:
+        with pytest.raises(type(interruption)):
+            action_wait.read_observation('fixture', lambda: None, budget_s=1)
+        assert history.snapshot().abandoned_count == 1
+        assert history.snapshot().identities[0].pid == 123
+
+
 def test_identity_limit_keeps_the_full_abandoned_count(monkeypatch):
     with action_wait.client_readers() as history:
         for pid in range(1, 13):
