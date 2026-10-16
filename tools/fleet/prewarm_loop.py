@@ -1693,10 +1693,12 @@ def progress_phase(queue: pool.PoolQueue, action_key: str,
     # counter monotonicity and regular-file identity at heartbeat cadence.
     path = queue.lease_path(action_key)
     try:
-        raw = pb._read_regular_file_nofollow(
-            path, where="prewarm progress lease",
-            max_bytes=progress_v1.MAX_ACTION_PROGRESS_BYTES)
-        record = pb._decode_strict_json(raw, where="prewarm progress lease")
+        raw = pb.immutable_files.read_stable_file(
+            path,
+            where="prewarm progress lease",
+            max_bytes=progress_v1.MAX_ACTION_PROGRESS_BYTES,
+        )
+        record = pb.digest_primitives.decode_strict_json(raw, where="prewarm progress lease")
     except (OSError, pb.ActionContractError, pb.CASTamperError,
             pb.CASUnavailableError, RecursionError):
         return None

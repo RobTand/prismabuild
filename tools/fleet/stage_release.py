@@ -2818,7 +2818,7 @@ def _read_material_nofollow(root: Path, consumer_action_key: str,
     path = reader_lease.material_path(
         root, consumer_action_key, mover_action_key)
     try:
-        raw = pb._read_regular_file_nofollow(path, where="prune material")
+        raw = pb.immutable_files.read_stable_file(path, where="prune material")
     except FileNotFoundError:
         return None
     except (OSError, ValueError, pb.PrismaBuildError) as exc:
@@ -3036,9 +3036,9 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
 
         nonlocal retained_reason
         try:
-            current = residency_map.validate_fragment(json.loads(
-                pb._read_regular_file_nofollow(
-                    fragment_path, where="stale-mention fragment")))
+            current = residency_map.validate_fragment(
+                json.loads(pb.immutable_files.read_stable_file(fragment_path, where="stale-mention fragment")),
+            )
         except (OSError, ValueError, pb.PrismaBuildError) as exc:
             errors.append(f"ownership uncertain: {exc}")
             return receipt(retained=len(observed.get("entries") or {}))
@@ -3544,8 +3544,9 @@ def _metadata_absent(path: Path) -> bool:
 
 def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     """Read a regular, identity-bound queue outcome; filenames are not proof."""
-    record = json.loads(pb._read_regular_file_nofollow(
-        queue.item_path(state, key), where="dead-owner outcome"))
+    record = json.loads(
+        pb.immutable_files.read_stable_file(queue.item_path(state, key), where="dead-owner outcome"),
+    )
     if (not isinstance(record, dict)
             or record.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1
             or record.get("action_key") != key):
@@ -3599,8 +3600,9 @@ def _partial_done_receipt_matches(queue, consumer: str, mover: str,
     its incomplete movement declaration to the fragment about to be retired.
     A complete or unknown copy is outside this narrow recovery contract.
     """
-    record = json.loads(pb._read_regular_file_nofollow(
-        queue.move_path(mover), where="partial DONE move receipt"))
+    record = json.loads(
+        pb.immutable_files.read_stable_file(queue.move_path(mover), where="partial DONE move receipt"),
+    )
     if not isinstance(record, dict):
         raise pool.PoolContractError("partial DONE receipt is not an object")
     if record.get("complete") is not False:
@@ -4121,10 +4123,9 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                             continue
                         if not done and not _metadata_absent(queue.move_path(mover)):
                             continue
-                        current = residency_map.validate_fragment(json.loads(
-                            pb._read_regular_file_nofollow(
-                                residency_map.fragment_path(root, consumer, mover),
-                                where="dead-owner fragment")))
+                        current = residency_map.validate_fragment(
+                            json.loads(pb.immutable_files.read_stable_file(residency_map.fragment_path(root, consumer, mover), where="dead-owner fragment")),
+                        )
                         if current != observed:
                             continue  # adoption/republication won discovery
                         if done and not _partial_done_receipt_matches(
@@ -5701,10 +5702,10 @@ def _validated_sealed_request(
     path = (Path(cas_root) / "requests" / action_key[:2]
             / f"{action_key}.json")
     try:
-        raw = pb._read_regular_file_nofollow(
-            path, where="orphan recovery action request")
-        action = pb.validate_action(pb._decode_strict_json(
-            raw, where="orphan recovery action request"))
+        raw = pb.immutable_files.read_stable_file(path, where="orphan recovery action request")
+        action = pb.validate_action(
+            pb.digest_primitives.decode_strict_json(raw, where="orphan recovery action request"),
+        )
     except FileNotFoundError:
         return None, f"{action_key[:12]}: not sealed in the CAS"
     except (OSError, ValueError, pb.PrismaBuildError) as exc:

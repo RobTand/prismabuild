@@ -427,10 +427,10 @@ def verify_entry(
                     "pack_sha256": cached["pack_sha256"],
                     "idx_sha256": cached["idx_sha256"]}
         memo.pop(str(entry), None)
-        manifest = core._decode_strict_json(
-            core._read_regular_file_nofollow(
-                entry / "manifest.json", where="entry publication manifest"),
-            where="entry publication manifest")
+        manifest = core.digest_primitives.decode_strict_json(
+            core.immutable_files.read_stable_file(entry / "manifest.json", where="entry publication manifest"),
+            where="entry publication manifest",
+        )
         if not isinstance(manifest, dict):
             raise E1Error("entry publication manifest is not an object")
         created = manifest.get("created_unix")

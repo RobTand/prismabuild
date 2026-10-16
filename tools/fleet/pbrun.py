@@ -1793,7 +1793,6 @@ def placement_contract(
     return ([hostname] if requirements else []), requirements, command, bound_caller
 
 
-
 def is_box_local(cwd: Path) -> bool:
     """Does this path exist on exactly one box?
 
@@ -5508,18 +5507,22 @@ def verify_retained_wrapper(prefix: str, *, where: str) -> Path:
             or generation.parent != SH / "runtime-generations"
             or generation.name.startswith(".")):
         raise ValueError(f"{where}: wrapper is not in a retained fleet generation")
-    raw_version = pb._read_regular_file_nofollow(
-        generation / "RUNTIME_VERSION.json", where=where,
-        require_readonly=True, max_bytes=1024 * 1024)
-    version = pb._decode_strict_json(raw_version, where=where)
+    raw_version = pb.immutable_files.read_immutable_file(
+        generation / "RUNTIME_VERSION.json",
+        where=where,
+        max_bytes=1024 * 1024,
+    )
+    version = pb.digest_primitives.decode_strict_json(raw_version, where=where)
     if (not isinstance(version, dict)
             or version.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
             or version.get("generation") != generation.name
             or not isinstance(version.get("files"), dict)):
         raise ValueError(f"{where}: invalid retained generation receipt")
-    shim = pb._read_regular_file_nofollow(
-        wrapper / "docker", where=where, require_readonly=True,
-        max_bytes=16 * 1024 * 1024)
+    shim = pb.immutable_files.read_immutable_file(
+        wrapper / "docker",
+        where=where,
+        max_bytes=16 * 1024 * 1024,
+    )
     if hashlib.sha256(shim).hexdigest() != version["files"].get("tools/docker"):
         raise ValueError(f"{where}: retained Docker wrapper differs from its receipt")
     return wrapper
