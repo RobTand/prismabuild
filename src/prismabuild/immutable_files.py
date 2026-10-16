@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import errno
+import fnmatch
 import os
 from pathlib import Path
 import stat
@@ -685,3 +686,59 @@ def unlink_nofollow(path: Path, *, where: str) -> None:
         )
     finally:
         os.close(directory_fd)
+
+
+def scan_optional(directory: Path):
+    """List a directory that another process may be deleting underneath us.
+
+    Every ledger scan walks entries a concurrent worker is free to remove --
+    ``release`` is documented safe to call twice, so two of them will have one
+    ``rmdir`` the directory the other is mid-iteration over.  At one worker per
+    box that never happens; at sixty it happens within minutes, and the worker
+    dies with ``FileNotFoundError`` on ``iterdir`` rather than losing a lease
+    gracefully.  A directory that vanished held nothing this caller can still
+    act on, so the honest answer is an empty listing, not an exception.
+    """
+
+    try:
+        return sorted(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+def match_optional(directory: Path, pattern: str):
+    """``Path.glob`` with the same disappearing-directory contract as `scan_optional`."""
+
+    try:
+        return sorted(directory.glob(pattern))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+def scan_required(directory: Path):
+    """List a directory LOUDLY: every error propagates to the caller.
+
+    The counterpart to :func:`scan_optional` for authoritative censuses (mint
+    grow, dead-name reclaim): a holder this listing cannot read makes
+    the census unknown, and the caller must refuse the decision --
+    retain rather than mint -- instead of narrowing the view.  Reads
+    (``capacity``, ``available``) keep the tolerant :func:`scan_optional`, and a
+    holder they cannot read is counted as HELD, never as free (#936):
+    ``capacity`` becomes a lower bound, and the shrink
+    (``retire_free_capacity``) counts the holder as holding every minted
+    name that is neither free nor dead, because an under-counted held
+    total would retire too few.  Neither reads an unreadable holder's
+    tokens as free.
+    """
+
+    return sorted(directory.iterdir())
+
+def match_required(directory: Path, pattern: str):
+    """Error-visible name match for authoritative censuses.
+
+    Same names as :func:`match_optional` on a readable tree (``Path.glob`` uses
+    ``fnmatch`` for the leaf), but unreadable directories raise
+    instead of reading empty: a hidden live holder must abort a
+    reissue, never excuse one.  See :func:`scan_required`.
+    """
+
+    return sorted(path for path in scan_required(directory)
+                  if fnmatch.fnmatchcase(path.name, pattern))

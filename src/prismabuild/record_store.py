@@ -511,3 +511,543 @@ class RecordStore:
             return Unknown("latest-generation-tied")
         _stamp, state, record = terminals[-1]
         return Present(QueueRow(state, record))
+
+    def dir(self, state: str) -> Path:
+        if state not in _STATES:
+            raise PoolContractError(f"unknown queue state: {state!r}")
+        return self.root / state
+
+    def item_path(self, state: str, action_key: str) -> Path:
+        return self.dir(state) / f"{action_key}.json"
+
+    def lease_path(self, action_key: str) -> Path:
+        return self.dir(CLAIMED) / f"{action_key}.lease"
+
+    def action_status_path(self, action_key: str) -> Path:
+        """Where the launcher may leave facts its exit status cannot carry.
+
+        The launcher exits 1 for every failed action, so ``detail.returncode``
+        on this lane is the *launcher's* status and the action's own was simply
+        unavailable here -- ``core`` has written it to this file since the
+        status contract was added, and nothing on this lane set the variable
+        that names the file.  A killed run's partial profile comes back the
+        same way, because the launcher is being killed and cannot print it.
+
+        Beside the lease, with a suffix that is neither ``.json`` nor
+        ``.lease``: every reader of ``claimed/`` addresses those two names, so
+        a third is invisible to all of them.  It is unlinked as it is read.
+        """
+
+        return self.dir(CLAIMED) / f"{action_key}.status"
+
+    def action_progress_path(self, action_key: str) -> Path:
+        """Where an action reports advancement while it is still running.
+
+        A file of its own, beside the lease and the status sidecar and equally
+        invisible to every reader of ``claimed/``, because it is the one thing
+        here written repeatedly *during* execution by a process this loop does
+        not own.  Merging it into the status sidecar would put a ticking writer
+        into an unlocked read-merge-write shared with the launcher's own ending
+        facts, and would ask a heartbeat to read a file whose reader unlinks it.
+
+        The read costs one open of a small file in a directory this loop
+        already writes to every heartbeat, at the heartbeat's own cadence.
+        """
+
+        return self.dir(CLAIMED) / f"{action_key}.progress"
+
+    def attempt_generation(self, record: Mapping[str, object]) -> str:
+        """Stable directory name for one submission of a content-addressed key."""
+
+        key = str(record.get("action_key") or "")
+        published = record.get("published_unix")
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise PoolContractError("attempt history requires a full action key")
+        if type(published) not in (int, float):
+            raise PoolContractError("attempt history requires published_unix")
+        try:
+            generation = float(published)
+        except OverflowError as exc:
+            raise PoolContractError("attempt history requires finite published_unix") from exc
+        if not math.isfinite(generation):
+            raise PoolContractError("attempt history requires published_unix")
+        return digest_primitives.canonical_sha256(
+            {"action_key": key, "published_unix": generation}
+        )
+
+    def publication_ending_path(self, record: Mapping[str, object]) -> Path:
+        """The immutable ending address for an exact publication identity."""
+        generation = self.attempt_generation(record)
+        return self.root / "publication-endings" / str(record["action_key"]) / f"{generation}.json"
+
+    def attempt_path(self, record: Mapping[str, object], attempt: int) -> Path:
+        """Immutable outcome path for one numbered attempt of one generation."""
+
+        if type(attempt) is not int or attempt < 1:
+            raise PoolContractError("attempt number must be a positive integer")
+        key = str(record.get("action_key") or "")
+        return (
+            self.root
+            / ATTEMPTS
+            / key
+            / self.attempt_generation(record)
+            / f"{attempt:08d}.json"
+        )
+
+    def attempt_log_path(
+        self,
+        record: Mapping[str, object],
+        attempt: int,
+        stream: str,
+        sha256: str,
+    ) -> Path:
+        """Immutable stdout/stderr path beside an attempt outcome."""
+
+        if stream not in {"stdout", "stderr"}:
+            raise PoolContractError(f"unknown attempt log stream: {stream!r}")
+        if (
+            not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in sha256)
+        ):
+            raise PoolContractError("attempt log requires a full SHA-256 digest")
+        outcome = self.attempt_path(record, attempt)
+        return outcome.parent / f"{attempt:08d}.{stream}.{sha256}.log"
+
+    def ensure_layout(self) -> None:
+        """Create the queue directories, once per process.
+
+        Fifteen ``mkdir`` calls: one per directory in ``_STATES`` plus one
+        per auxiliary root.  On a starved NFS mount each costs RPCs (a ``MKDIR``
+        plus a stat on ``FileExistsError``), so running this on every claim
+        poll billed every worker a directory walk per poll for directories
+        nothing ever deletes (#595).  The first call in this process creates
+        them; later calls are a flag check.  A directory an operator deletes
+        by hand returns on the next loop restart, which is the same window
+        any other queue repair already needs.
+        """
+
+        if self._layout_ensured:
+            return
+        for state in _STATES:
+            self.dir(state).mkdir(parents=True, exist_ok=True)
+        (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
+        (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
+        (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
+        (self.root / MOVERS).mkdir(parents=True, exist_ok=True)
+        (self.root / RESIDENCY).mkdir(parents=True, exist_ok=True)
+        (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
+        (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
+        (self.root / TIERS).mkdir(parents=True, exist_ok=True)
+        # Created here so the claim's listing never meets a directory that did
+        # not exist yet, which NFS may keep answering as absent (#954).
+        self.released_origin_consumers_dir().mkdir(parents=True, exist_ok=True)
+        self._layout_ensured = True
+
+    def passes_path(self, action_key: str) -> Path:
+        return self.root / PASSES / f"{action_key}.json"
+
+    def prewarm_path(self, action_key: str) -> Path:
+        return self.root / PREWARM / f"{action_key}.json"
+
+    def move_path(self, action_key: str) -> Path:
+        return self.root / MOVERS / f"{action_key}.json"
+
+    def mover_retirement_checkpoint_path(self) -> Path:
+        """The atomically replaced compact checkpoint of retired projections."""
+
+        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_CHECKPOINT
+
+    def mover_retirement_state_path(self) -> Path:
+        """The persistent marker proving at least one retirement committed."""
+
+        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_STATE
+
+    def mover_archive_dir(self) -> Path:
+        """Where retired receipts' full bodies live, named by content digest."""
+
+        return self.root / MOVERS_ARCHIVE
+
+    def move_pricing_log_path(self) -> Path:
+        """The pricing log :meth:`move_records` reads (#1044)."""
+
+        return self.root / MOVERS_PRICING / MOVERS_PRICING_LOG
+
+    def export_path(self, export_key: str) -> Path:
+        """The file one finished export's pacing record keeps (#1319).
+
+        ``exports/<export_key>.json``: one small immutable file per
+        export.  The key is the export action key (a 64-hex seal, so it
+        needs no escaping); a record without one is corrupt and refused
+        loudly here, never filed.
+        """
+
+        key = str(export_key)
+        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+            raise PoolContractError(
+                "export receipt names no 64-hex export key; "
+                "record_export files one file per export")
+        return self.root / EXPORTS / f"{key}.json"
+
+    def residency_fragment_root(self) -> Path:
+        """Where movement nodes file their fragments, one directory per consumer."""
+
+        return self.root / RESIDENCY
+
+    def residency_map_path(self, consumer_action_key: str) -> Path:
+        """The composed map an action reads its staged inputs through.
+
+        One definition, because two parties depend on this name being the same
+        string: the ``tiers`` loop is its single writer, and this launcher puts
+        it in the action's environment.  A second spelling would be a consumer
+        reading a map nobody writes, which fails by falling back to the pool --
+        that is, silently, at full cost.
+        """
+
+        return residency_map_address(
+            self.residency_fragment_root(),
+            residency_action_key(consumer_action_key))
+
+    def residency_plan_path(self, consumer_action_key: str) -> Path:
+        """The frozen window plan: every mover this consumer will ever have."""
+
+        return (self.root / RESIDENCY_PLANS
+                / f"{residency_action_key(consumer_action_key)}.json")
+
+    def denial_transitions_path(self, action_key: str) -> Path:
+        """The key's reason ring: ``denial-transitions/<key>.json``."""
+
+        return self.root / DENIAL_TRANSITIONS / f"{residency_action_key(action_key)}.json"
+
+    def consumer_events_dir(self, action_key: str) -> Path:
+        """``residency-events/<consumer>/``: one ``<host>.jsonl`` per tier loop."""
+
+        return self.root / RESIDENCY_EVENTS / residency_action_key(action_key)
+
+    def host_events_dir(self) -> Path:
+        """``residency-events/_host/``: one ``<host>.jsonl`` per tier loop (#1006)."""
+
+        return self.root / RESIDENCY_EVENTS / RESIDENCY_EVENTS_HOST_DIR
+
+    def mover_landing_path(self, mover: str) -> Path:
+        """Where ``mover`` files its own landing report (#1090)."""
+
+        return self.consumer_events_dir(mover) / MOVER_LANDING_REPORT
+
+    @staticmethod
+    def check_tier_id(tier_id: str) -> str:
+        if (not isinstance(tier_id, str) or not tier_id or tier_id.startswith(".")
+                or "/" in tier_id or TIER_DEMAND_SEPARATOR in tier_id):
+            raise PoolContractError(f"invalid tier id {tier_id!r}")
+        return tier_id
+
+    def stage_ownership_holder_path(self, stage_root) -> Path:
+        """Where the holder of one stage root's ownership lock names itself."""
+
+        return (self.root / STAGE_OWNERSHIP_HOLDERS
+                / f"{stage_ownership_name(stage_root)}.json")
+
+    def funding_path(self, mover_action_key: str, tier_id: str) -> Path:
+        """One mover's funding record on one tier (newest generation wins)."""
+
+        return (self.root / TIER_FUNDING
+                / f"{mover_action_key}.{tier_id}.funding.json")
+
+    def funding_output_path(self, mover_action_key: str, tier_id: str) -> Path:
+        """One output mover's funding record on one tier."""
+
+        return (self.root / TIER_FUNDING
+                / f"{mover_action_key}.{tier_id}.output-funding.json")
+
+    def funding_output_retired_path(self, mover_action_key: str,
+                                    tier_id: str) -> Path:
+        """Where :meth:`retire_terminal_output_funding` moves that record."""
+
+        return (self.root / TIER_FUNDING / TIER_FUNDING_RETIRED
+                / f"{mover_action_key}.{tier_id}.output-funding.json")
+
+    def tier_record_path(self, tier_id: str) -> Path:
+        return self.root / TIERS / f"{self.check_tier_id(tier_id)}.json"
+
+    def tier_commitment_path(self, tier_id: str) -> Path:
+        return self.root / TIER_COMMITMENTS / f"{self.check_tier_id(tier_id)}.json"
+
+    def attempt_bytes(self, path: Path, *, where: str) -> bytes:
+        """Read one linked immutable attempt file, past a stale "absent" (#1100).
+
+        A landed ending links its attempt records, so a miss here is either a
+        record that is really gone or a name this NFS client cached as absent.
+        The second is the ordinary case for a waiter on another box: its poll
+        walks ``attempts/<key>/<generation>`` before the ending lands
+        (``archived_generation_outcomes``), the worker's box then creates it,
+        and the client keeps answering ``ENOENT`` from the lookup it cached.
+        On sparky that outlived a fresh open of the parent for 25 s to more
+        than 180 s, so the close-to-open revalidation ``_read_json_fresh``
+        relies on (#808) is not enough here.
+
+        A miss is revalidated by listing each directory on the canonical
+        path, the rule ``pbrun.terminal_record`` follows for ``done/``, and
+        the file is read again only when every name is listed.  Only a miss
+        pays for the listings, and ``attempts/`` holds one name per action
+        key, about as many as the ``done/`` a waiter already lists on every
+        poll.  A name that no listing shows raises the original
+        ``FileNotFoundError``: a missing record is never read around.  A name
+        that is listed but still cannot be opened raises
+        ``StaleAbsenceError``, which a waiter repeats inside its own patience.
+        """
+
+        try:
+            return immutable_files.read_immutable_file(path, where=where)
+        except FileNotFoundError:
+            if not self._attempt_path_listed(path):
+                raise
+        try:
+            return immutable_files.read_immutable_file(path, where=where)
+        except FileNotFoundError as exc:
+            raise StaleAbsenceError(
+                errno.ENOENT,
+                f"{where} is listed by its directory but is not visible here "
+                f"yet (a lookup this client cached before it was created, "
+                f"#1100)",
+                str(path),
+            ) from exc
+
+    def _attempt_path_listed(self, path: Path) -> bool:
+        """Whether each directory from ``attempts/`` down lists the next name.
+
+        Listing a directory is also what refreshes this client's view of its
+        names.  A directory whose own name its parent just listed, and that
+        still cannot be opened for its listing, is the same stale lookup one
+        level down, so it counts as listed.  Any other failure to list
+        answers ``False``, and the caller keeps its original miss.
+        """
+
+        base = self.root / ATTEMPTS
+        try:
+            parts = path.relative_to(base).parts
+        except ValueError:
+            return False
+        directory = base
+        for depth, name in enumerate(parts):
+            try:
+                names = os.listdir(directory)
+            except FileNotFoundError:
+                if depth == 0:
+                    return False
+                return True
+            except OSError:
+                return False
+            if name not in names:
+                return False
+            directory = directory / name
+        return True
+
+    def archived_attempt_identity(
+        self,
+        path: Path,
+        value: Mapping[str, object],
+        *,
+        action_key: str,
+        generation: object,
+    ) -> int:
+        """The attempt number this immutable outcome canonically addresses.
+
+        ``archive_attempt`` publishes one file per numbered attempt under
+        ``(action_key, published_unix)``.  A reader that reconstructs an
+        ending from that evidence must not be redirected to another action,
+        another generation or another attempt number by the file's own
+        claims, so the file's identity is checked against the directory it
+        was found in and against the canonical path its number derives.  The
+        number must also lie within the budget the attempt itself records: an
+        attempt above its own ``max_attempts`` is inconsistent identity, not
+        an ending, whatever its status says.  A legacy ``retry_safe`` of
+        ``None`` remains valid; only the handoff context requires it.
+        """
+
+        if (
+            type(generation) not in (int, float)
+            or isinstance(generation, bool)
+            or not math.isfinite(float(generation))
+        ):
+            raise PoolContractError("archived attempt names no generation")
+        attempt = value.get("attempt")
+        published = value.get("published_unix")
+        limit = value.get("max_attempts")
+        retry_safe = value.get("retry_safe")
+        if (
+            value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
+            or value.get("action_key") != action_key
+            or type(published) not in (int, float)
+            or isinstance(published, bool)
+            or not math.isfinite(float(published))
+            or float(published) != float(generation)
+            or type(attempt) is not int
+            or attempt < 1
+            or type(limit) is not int
+            or limit < 1
+            or attempt > limit
+            or (retry_safe is not None and type(retry_safe) is not bool)
+            or path != self.attempt_path(
+                {"action_key": action_key, "published_unix": float(generation)},
+                attempt,
+            )
+        ):
+            raise PoolContractError(
+                f"archived attempt does not own its path and generation: {path}"
+            )
+        return attempt
+
+    def late_finish_path(self, record: Mapping[str, object]) -> Path:
+        identity = digest_primitives.canonical_sha256({field: record.get(field) for field in _CLAIM_IDENTITY})
+        return self.dir(CLAIMED) / f"{record['action_key']}.{identity}{LATE_FINISH_SUFFIX}"
+
+    def released_origin_consumers_dir(self) -> Path:
+        """Where the index of released origin-batch consumers lives (#954)."""
+
+        return self.root / RELEASED_ORIGIN_CONSUMERS
+
+    def superseded_dir(self) -> Path:
+        """Where records go once a generation decision makes them non-live.
+
+        A subdirectory rather than a timestamped sibling, because every reader
+        of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
+        lists it, ``find_key`` globs it, ``item_path`` builds the name,
+        ``pbrun``'s wait loop lists it and client status screens count ``*.json``
+        in it.  A sibling named ``<key>.<unix>.json`` would look to all five
+        like an action whose key is nonsense; a subdirectory is invisible to
+        every one of them.  It keeps both retired withdrawals and ready/claimed
+        copies dropped because a terminal record already owns their generation,
+        so no queue record disappears without evidence.
+        """
+
+        return self.dir(WITHDRAWN) / "superseded"
+
+    def withdrawal_decision_path(self, record: Mapping[str, object]) -> Path | None:
+        """The durable cancellation address for records with known generation."""
+        try:
+            generation = self.attempt_generation(record)
+        except PoolContractError:
+            return None  # legacy marker without a publication identity
+        return self.dir(WITHDRAWN) / "decisions" / str(record["action_key"]) / f"{generation}.json"
+
+    def withdrawal_decision(self, path: Path) -> dict[str, object]:
+        try:
+            raw = immutable_files.read_immutable_file(path, where="withdrawal decision")
+            decision = json.loads(raw)
+            if (not isinstance(decision, dict) or decision.get("status") != "withdrawn"
+                    or self.withdrawal_decision_path(decision) != path):
+                raise ValueError("decision identity disagrees with its address")
+        except Exception as exc:
+            raise PoolContractError(f"invalid withdrawal decision: {path}: {exc}") from exc
+        return decision
+
+
+    def item(self, state: str, key: str) -> ReadResult[JsonRecord]:
+        return self._plain(state, key)
+
+    def claimed_for_action(self, key: str) -> ReadResult[JsonRecord]:
+        path = self.item_path(CLAIMED, key)
+        try:
+            try:
+                present = path.exists()
+            except OSError:
+                present = True
+            if not present:
+                return Absent()
+            record = _read_json(path)
+            if record is None:
+                try:
+                    if not path.exists():
+                        return Absent()
+                except OSError:
+                    pass
+                raise PoolContractError(
+                    f"claimed record is empty (torn write or broken mount?): {path}")
+            return Present(record)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+
+    def terminal_candidates(self, key: str, *, max_bytes: int | None = None) -> TerminalCapture:
+        return self._terminal_capture(key, max_bytes=max_bytes, confirmed=False)
+
+    def confirmed_terminals(self, key: str, *, max_bytes: int | None = None) -> TerminalCapture:
+        return self._terminal_capture(key, max_bytes=max_bytes, confirmed=True)
+
+    def _terminal_capture(self, key: str, *, max_bytes: int | None, confirmed: bool) -> TerminalCapture:
+        candidates = []
+        for state in (DONE, FAILED, WITHDRAWN):
+            path = self.item_path(state, str(key))
+            try:
+                record = (read_confirmed_document(path, max_bytes=max_bytes) if confirmed
+                          else read_bounded_document(path, max_bytes=max_bytes))
+            except (OSError, digest_primitives.PrismaBuildError) as exc:
+                result = Unknown("record-unreadable", path, exc)
+            else:
+                result = Absent() if record is None else Present(record)
+            candidates.append(RecordObservation(QueueAddress(path, state, str(key)), result))
+        return TerminalCapture(tuple(candidates))
+
+
+
+    def item_for_publish(self, state: str, key: str) -> ReadResult[JsonRecord]:
+        path = self.item_path(state, key)
+        try:
+            value = _read_json_fresh(path)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if value is None else Present(value)
+
+    def confirmed_item(self, state: str, key: str, *, max_bytes: int | None = None) -> ReadResult[JsonRecord]:
+        path = self.item_path(state, key)
+        try:
+            value = read_confirmed_document(path, max_bytes=max_bytes)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if value is None else Present(value)
+
+    def movement_for_poll(self, key: str) -> ReadResult[JsonRecord]:
+        path = self.move_path(key)
+        try:
+            value = _read_json_fresh(path)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if value is None else Present(value)
+
+    def confirmed_movement(self, key: str) -> ReadResult[JsonRecord]:
+        path = self.move_path(key)
+        try:
+            value = read_confirmed_document(path)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if value is None else Present(value)
+
+    def mover_retirement_checkpoint(self) -> tuple[bool, dict[str, object] | None]:
+        return _read_optional_document(self.mover_retirement_checkpoint_path())
+
+    def mover_retirement_state(self) -> tuple[bool, dict[str, object] | None]:
+        return _read_optional_document(self.mover_retirement_state_path())
+
+
+
+    def listed_record(self, path: Path) -> ReadResult[JsonRecord]:
+        """Read an already-enumerated row with the existing ESTALE absence rule."""
+        try:
+            value = _read_json(path, tolerate_stale=True)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if value is None else Present(value)
+
+
+
+def read_queue_record(path: Path) -> dict[str, object] | None:
+    """Read a permissive JSON object; missing/empty is absent and errors escape."""
+    return _read_json(path)
+
+
+def require[T](result: ReadResult[T]) -> T | None:
+    """Adapt an observation to an existing value-or-error public contract."""
+    if isinstance(result, Unknown):
+        if result.error is not None:
+            raise result.error
+        raise PoolContractError(result.reason)
+    return None if isinstance(result, Absent) else result.value
