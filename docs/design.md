@@ -17813,7 +17813,8 @@ configuration and continues to refuse the lock wrappers.
 
 Supervisor and membership prefer an explicit canonical entry, then require one
 alias match. Recorder evidence instead rejects overlapping name groups and
-invalid recorder aliases. These are distinct named questions. Generation
+invalid recorder aliases. The installer checks every matching declaration for a conflicting metrics role.
+These are distinct named questions. Generation
 membership uses `generation_aliases`, refusing distinct declarations that claim
 the same name within one generation. Each historical generation is checked
 separately before the publisher joins old and new rename groups. Historical

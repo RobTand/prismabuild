@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -227,3 +229,48 @@ def test_fresh_attestation_uses_manifest_capture_despite_later_checkout_rename(f
         "--shape-gate-waiver", "private captured history control"])
     assert publish_runtime.main() == 0
     assert b"unattested" in path.read_bytes()
+
+
+@pytest.mark.parametrize("flat", [False, True], ids=["checkout-nested", "installed-flat"])
+def test_maintenance_census_reads_the_captured_roster_in_either_layout(tmp_path, monkeypatch, flat):
+    spec = importlib.util.spec_from_file_location("c28_census", ROOT / "tools/maintenance/census_prewarm_stage.py")
+    census = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(census)
+    runtime = tmp_path / "runtime"
+    path = write(runtime, {"boxes": {"key": {"_alias": "alias", "roles": {
+        "storage": ["--stage-pool-prefix", "private-pool"]}}}}, flat=flat)
+    raw = path.read_bytes()
+    (runtime / "RUNTIME_VERSION.json").write_text('{"commit":"private-pin"}')
+    original_resolve, original_iterdir = Path.resolve, Path.iterdir
+    original_read_text, original_is_file = Path.read_text, Path.is_file
+    monkeypatch.setattr(Path, "resolve", lambda p, *a, **kw: runtime if str(p) ==
+        "/mnt/shared/prismabuild-fleet/repo" else original_resolve(p, *a, **kw))
+    monkeypatch.setattr(Path, "iterdir", lambda p: iter(()) if str(p) == "/proc" else original_iterdir(p))
+    monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw: "" if str(p) in
+        ("/proc/self/mountinfo", "/proc/filesystems") else original_read_text(p, *a, **kw))
+    monkeypatch.setattr(Path, "is_file", lambda p: False if str(p) in
+        ("/sbin/zfs", "/usr/sbin/zfs") else original_is_file(p))
+    monkeypatch.setattr(census.shutil, "which", lambda name: None)
+    monkeypatch.setattr(census.socket, "gethostname", lambda: "key")
+    result = census.collect_prewarm_stage_census(SimpleNamespace(
+        host="key", source_base="private", root=[], queue_root=str(tmp_path / "queue")))
+    assert result["roster"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert result["roster"]["bytes"] == len(raw)
+    assert result["roster_hosts"] == [{"key": "key", "alias": "alias", "status": None,
+        "storage_argv": ["--stage-pool-prefix", "private-pool"]}]
+    assert result["host_aliases"] == ["alias", "key"]
+    assert {"prefix": "private-pool", "source": "roster:key"} in result["stage_pool_prefixes"]
+    assert result["zfs"]["missing_tool"] is True
+    assert result["empty_drain_observed"] is True
+    assert not result["errors"]
+
+
+def test_rollback_attestation_rejects_tampered_exact_roster_bytes(fleet):
+    from test_the_coordinator_proves_the_fleet_before_a_barrier import _generation
+    generation = _generation(fleet, SHA)
+    path = generation / MEMBER
+    path.write_bytes(path.read_bytes() + b"\n")
+    for host in ("sparky", "sparklina"):
+        post(fleet, host, SHA)
+    with pytest.raises(SystemExit, match="roster bytes.*manifest"):
+        publish_runtime._activate_existing(generation.name, dry_run=True, rollout="barrier")

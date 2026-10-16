@@ -189,6 +189,11 @@ class Roster:
         key = next(key for key, value in self.boxes.items() if value is entry)
         return Box(key, entry, self)
 
+    def matching_boxes(self, host: str) -> list[Box]:
+        """All declarations an installer must check for a conflicting role."""
+        return [Box(key, entry, self) for key, entry in self.boxes.items()
+                if isinstance(entry, dict) and (key == host or entry.get("_alias") == host)]
+
     @classmethod
     def for_host(cls, host: str, *, roots=(), paths=(), modules=(), flat_first: bool = False) -> Box | None:
         for roster in cls.available(roots=roots, paths=paths, modules=modules, flat_first=flat_first):

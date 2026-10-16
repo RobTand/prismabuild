@@ -52,17 +52,17 @@ from pathlib import Path
 
 runtime, host = sys.argv[1:3]
 sys.path.insert(0, str(Path(runtime) / "src"))
-from prismabuild.fleet_roster import Roster, recorder_hostnames
+from prismabuild.fleet_roster import Roster
 
 try:
     roster = Roster.at(runtime)
-    recorder_hostnames(roster.boxes, host)
-    box = roster.canonical_box(host)
-    roles = box.roles if box is not None else {}
+    matches = [(box, box.roles) for box in roster.matching_boxes(host)]
 except (OSError, ValueError) as exc:
     sys.exit(f"cannot read the fleet roster ({exc}); refusing to "
              f"install without knowing whether {host} runs the metrics role")
-if "metrics" in roles:
+for box, roles in matches:
+    if "metrics" not in roles:
+        continue
     sys.exit(f"{roster.path} declares the metrics role on {box.key} (this host, "
              f"{host}): its supervisor runs the exporter on the role's "
              f"port, so a prismabuild-metrics.service unit here would "
