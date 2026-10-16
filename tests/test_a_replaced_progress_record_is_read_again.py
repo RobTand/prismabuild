@@ -52,7 +52,7 @@ def _replace_after_open(monkeypatch, path: Path, raw: bytes, times: int = 1):
             _replace(path, raw)
         return held
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened_then_replaced)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", opened_then_replaced)
     return left
 
 
@@ -112,7 +112,7 @@ def test_a_replaced_leaf_that_is_not_a_regular_file_is_still_tamper(
         os.replace(link, path)
         return held
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened_then_symlinked)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", opened_then_symlinked)
     with pytest.raises(pb.CASTamperError):
         pb.immutable_files.read_replaced_record(path, where="action progress report")
 
@@ -287,7 +287,7 @@ def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
             os.replace(incoming, path)
         return original_read(descriptor, count)
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', opened)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", opened)
     monkeypatch.setattr(pb.os, "read", read)
 
 

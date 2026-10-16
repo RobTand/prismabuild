@@ -3042,7 +3042,10 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         try:
             current = residency_map.validate_fragment(
                 json.loads(
-                    pb.immutable_files.read_stable_file(fragment_path, where="stale-mention fragment"),
+                    pb.immutable_files.read_stable_file(
+                        fragment_path,
+                        where="stale-mention fragment",
+                    ),
                 ),
             )
         except (OSError, ValueError, pb.PrismaBuildError) as exc:
@@ -4137,7 +4140,10 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                             continue
                         current = residency_map.validate_fragment(
                             json.loads(
-                                pb.immutable_files.read_stable_file(residency_map.fragment_path(root, consumer, mover), where="dead-owner fragment"),
+                                pb.immutable_files.read_stable_file(
+                                    residency_map.fragment_path(root, consumer, mover),
+                                    where="dead-owner fragment",
+                                ),
                             ),
                         )
                         if current != observed:

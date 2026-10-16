@@ -1464,7 +1464,10 @@ class ProfileInputs:
         from . import core
         return tuple(
             (core.raw_sha256(
-                immutable_files.read_stable_file(self.source_root / name, where="installed scratch producer source"),
+                immutable_files.read_stable_file(
+                    self.source_root / name,
+                    where="installed scratch producer source",
+                ),
             ) for name in PRODUCER_FILES),
         )
 
@@ -1603,7 +1606,10 @@ class ProfileInputs:
                     raise LocalScratchError("scratch producer owner/marker not derived from sealed intent")
                 actual = tuple(
                     (core.raw_sha256(
-                        immutable_files.read_stable_file(checkout / name, where="scratch producer source"),
+                        immutable_files.read_stable_file(
+                            checkout / name,
+                            where="scratch producer source",
+                        ),
                     ) for name in PRODUCER_FILES),
                 )
                 if actual != expected:

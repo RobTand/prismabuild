@@ -459,7 +459,7 @@ def test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows(
     monkeypatch: pytest.MonkeyPatch,
 ):
     cgroup = b"2:cpu:/slurm/job_4242/step_batch\n3:memory:/slurm/job_4242/step_batch\n"
-    monkeypatch.setattr(pb.immutable_files, 'read_regular_leaf', lambda *args, **kwargs: cgroup)
+    monkeypatch.setattr(pb.immutable_files, "read_regular_leaf", lambda *args, **kwargs: cgroup)
     assert (
         pb._verify_slurm_process_membership("4242")
         == "/slurm/job_4242/step_batch"
@@ -730,7 +730,7 @@ def test_portable_work_in_a_job_never_asks_the_controller(monkeypatch):
 
 def test_the_job_id_is_the_cgroup_s_and_the_environment_must_agree(monkeypatch):
     cgroup = b"0::/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0\n"
-    monkeypatch.setattr(pb.immutable_files, 'read_regular_leaf', lambda *args, **kwargs: cgroup)
+    monkeypatch.setattr(pb.immutable_files, "read_regular_leaf", lambda *args, **kwargs: cgroup)
     assert pb._slurm_job_from_cgroup() == (
         "4242", "/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0"
     )
@@ -1101,7 +1101,7 @@ def test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd(
                 extra_link.unlink()
         return chunk
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "read", read_then_change_link_metadata)
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
@@ -1143,7 +1143,7 @@ def test_stable_receipt_read_replays_publication_link_cleanup(
             publication_link.unlink()
         return chunk
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "read", read_then_unlink)
 
     assert pb.immutable_files.read_immutable_file(receipt, where="test receipt") == receipt_bytes
@@ -1179,7 +1179,7 @@ def test_stable_file_identity_refuses_perpetual_one_link_ctime_churn(
             mutation_count += 1
         return chunk
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "read", read_then_churn_link)
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
@@ -1234,7 +1234,7 @@ def test_stable_file_identity_refuses_substantive_mutation_without_retry(
                 )
         return chunk
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "read", read_then_mutate)
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
@@ -1289,7 +1289,7 @@ def test_stable_file_identity_refuses_owner_mutation_without_retry(
             st_ctime_ns=observed.st_ctime_ns,
         )  # type: ignore[return-value]
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "fstat", fstat_with_changed_owner)
 
     with pytest.raises(pb.CASTamperError, match="changed substantively"):
@@ -1325,7 +1325,7 @@ def test_stable_file_identity_refuses_wrong_address_before_metadata_retry(
             transient_link.unlink()
         return chunk
 
-    monkeypatch.setattr(pb.immutable_files, 'open_regular_nofollow', tracked_open)
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
     monkeypatch.setattr(pb.os, "read", read_then_churn_link)
 
     with pytest.raises(pb.CASTamperError, match="expected address"):
@@ -1409,7 +1409,7 @@ def test_blob_publication_skips_only_winning_inode_rehash(
         consumed.append(path)
         return original_identity(path, **kwargs)
 
-    monkeypatch.setattr(pb.immutable_files, 'file_identity_nofollow', track_identity)
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
     entry, won = cas.ingest_input(source, input_id="dataset")
     assert won is True
     assert consumed == []
@@ -2781,7 +2781,7 @@ def test_fresh_result_publish_reuses_verified_winning_inode(
         consumed.append(path)
         return original_identity(path, **kwargs)
 
-    monkeypatch.setattr(pb.immutable_files, 'file_identity_nofollow', track_identity)
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
     receipt, won = cas.publish_result(
         action, output, attestation=attestation
     )
@@ -2817,7 +2817,7 @@ def test_stochastic_receipt_loser_hashes_different_canonical_blob(
         consumed.append(path)
         return original_identity(path, **kwargs)
 
-    monkeypatch.setattr(pb.immutable_files, 'file_identity_nofollow', track_identity)
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
     observed, won = cas.publish_result(
         action, second, attestation=attestation
     )
