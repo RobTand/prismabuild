@@ -51,13 +51,14 @@ def catalogue(root):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "RecordKind":
             value = {field: ast.literal_eval(arg) for field, arg in zip(fields, node.args)}
             value.update({kw.arg: ast.literal_eval(kw.value) for kw in node.keywords})
-            if value["wire_id"] is None:
+            if value["wire_id"] is None and value.get("fixture_source"):
                 source = next(root / path for path in value["fixture_source"] if (root / path).is_file())
                 value["wire_id"] = json.loads(source.read_bytes())["schema"]
                 value["wire_identity_owner"] = str(source.relative_to(root))
-            if value["wire_id"] in result or any(row["name"] == value["name"] for row in result.values()):
+            key = value["wire_id"] or "unversioned:" + value["name"]
+            if key in result or any(row["name"] == value["name"] for row in result.values()):
                 raise ValueError("record kinds must not alias an existing name or wire ID")
-            result[value["wire_id"]] = value
+            result[key] = value
     return result
 
 
@@ -299,7 +300,8 @@ def audit(root, observations=None):
             disposition = "control_report"
         else:
             disposition = "active_requires_adapter"
-        result.append({"wire_id": wire, "disposition": disposition, **value})
+        result.append({"wire_id": known[wire]["wire_id"] if wire in known else wire,
+                       "disposition": disposition, **value})
     for category in observations.values():
         for row in category:
             row["scope"] = "production" if production(row["path"]) else "test_or_corpus_control"
@@ -319,8 +321,10 @@ def main():
     (args.out / "inventory.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
     (args.out / "field_sets.json").write_text(json.dumps(policies, sort_keys=True) + "\n")
     (args.out / "source-audit.json").write_text(json.dumps(observations, sort_keys=True) + "\n")
-    summary = {"wire_ids": len(rows), "dispositions": dict(Counter(r["disposition"] for r in rows)),
-               "production_wire_ids": sum(r["disposition"] != "test_or_history_reference" for r in rows),
+    summary = {"wire_ids": sum(r["wire_id"] is not None for r in rows),
+               "unversioned_catalogued_records": sum(r["wire_id"] is None for r in rows),
+               "dispositions": dict(Counter(r["disposition"] for r in rows)),
+               "production_wire_ids": sum(r["wire_id"] is not None and r["disposition"] != "test_or_history_reference" for r in rows),
                "resolved_field_sets": sum("fields" in r for r in policies),
                "unresolved_field_expressions": sum("unresolved" in r for r in policies),
                "field_policy_modules": len({r["path"] for r in policies if "fields" in r}),

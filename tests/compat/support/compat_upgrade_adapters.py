@@ -75,6 +75,7 @@ def operate(request, store, load):
         agent = module.Upgrader({"install_dir": str(store / "install"), "state_dir": str(store / "state")})
         snapshot = {"intent": declared, "intent_sha256": module.intent_sha256(declared)}
         if write:
+            agent.state.mkdir(parents=True)
             agent._persist_rollout(snapshot, released=variant == "released")
             raw = agent.rollout_state.read_bytes()
         else:
