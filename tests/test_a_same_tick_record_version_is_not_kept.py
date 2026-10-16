@@ -125,10 +125,20 @@ def test_directory_records_keeps_a_record_older_than_the_fence(
 
     clock["now"] = os.stat(record).st_ctime_ns + TICK_NS
     reader.read(directory, select=lambda _entry: True, parse=_parse)
-    # The directory's own stamp holds as well; move it so the entries are
-    # stat-ed and compared, which is the path under test.
+    # The modeled clock has advanced beyond the real filesystem clock.
+    # Establish a new directory generation for the file-version comparison.
+    initial = os.stat(directory)
     (directory / "other.json").write_bytes(b"{}")
     os.utime(directory)
+    changed = os.stat(directory)
+    if ((changed.st_mtime_ns, changed.st_ctime_ns)
+            == (initial.st_mtime_ns, initial.st_ctime_ns)):
+        os.utime(directory, ns=(changed.st_atime_ns, changed.st_mtime_ns + 1))
+        changed = os.stat(directory)
+    assert (changed.st_mtime_ns, changed.st_ctime_ns) != (
+        initial.st_mtime_ns, initial.st_ctime_ns)
+    assert (changed.st_dev, changed.st_ino, changed.st_mode) == (
+        initial.st_dev, initial.st_ino, initial.st_mode)
     parsed = reader.parsed
     clock["now"] = time.clock_gettime_ns(COARSE) + TICK_NS * 10**6
     reader.read(directory, select=lambda _entry: True, parse=_parse)
