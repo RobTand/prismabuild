@@ -112,7 +112,7 @@ def _publish_sealed(queue, tmp_path, clock, name, *, script, resources, residenc
 
 
 def _row(queue, key):
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
 
 
 def _roles(queue, key):
@@ -513,7 +513,7 @@ def test_a_gangs_priority_for_the_precedence_is_the_gang_records(gang_fleet):
     """The one priority that the gang has: the loop-top release reads it, not a member row's."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "which-priority")
-    row = pool._read_json(queue.item_path(pool.READY, second))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, second))
     assert queue._gang_reservation_priority(row, authority=True) is None, "a young gang reserves nothing"
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     assert queue._gang_reservation_priority(row, authority=True) == -10
@@ -740,7 +740,7 @@ def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] != "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is not None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_member(
@@ -772,7 +772,7 @@ def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_membe
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_the_reservation_wins_over_an_older_measurement_withhold_so_the_gang_can_elect(gang_fleet, tmp_path):
@@ -790,7 +790,7 @@ def test_the_reservation_wins_over_an_older_measurement_withhold_so_the_gang_can
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] != "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is not None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_waiting_measurement_keeps_its_place_as_on_main(
@@ -808,7 +808,7 @@ def test_without_the_copy_a_waiting_measurement_keeps_its_place_as_on_main(
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged_gang(gang_fleet, tmp_path):
@@ -841,7 +841,7 @@ def test_a_measurement_single_of_the_gangs_priority_does_not_elect_on_a_reserved
     assert gclaim("sparky") is None
     census = reservation.CensusReader(queue, queue.ledger("sparky")).capture()
     assert measurement not in census["elections"], "a host must not be reserved and withheld"
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_measurement_single_of_the_gangs_priority_elects_as_on_main(
@@ -875,7 +875,7 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
             if claimed is not None:
                 started.add(claimed)
     assert started == {first, second}, (started, denial(second, "sparky"), denial(other, "sparky"))
-    assert queue.item_path(pool.READY, other).exists()
+    assert queue.records.item_path(pool.record_store.READY, other).exists()
 
 
 def test_a_running_member_reserves_nothing_more_than_its_ledger_hold(gang_fleet, tmp_path):
@@ -927,7 +927,7 @@ def test_a_retained_mover_queued_before_the_copy_runs_while_the_copy_is_fresh(
         gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"))
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == []
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     _unseal(retained.parent)
     _approve(retained, monkeypatch)
@@ -958,7 +958,7 @@ def test_a_mutated_retained_tool_and_import_without_a_new_receipt_stays_ordinary
                         mem_gb=8, tags=["sparky"])
     assert gclaim("sparky") == incumbent
     assert gclaim("sparky") is None
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     assert queue.ledger("sparky").held_keys() == [incumbent]
     finish(incumbent, "sparky")
     assert gclaim("sparky") == mover, denial(mover, "sparky")
@@ -1023,7 +1023,7 @@ def test_a_legacy_prerequisite_outlasts_copy_maturity_and_then_starts_the_gang(
     approve(retained, monkeypatch)
     clock[0] += 901
     assert gclaim("sparky") is None
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     finish(incumbent, "sparky")
     _run_the_mover_and_start_the_gang(
         gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
@@ -1092,7 +1092,7 @@ def test_equal_priority_gangs_keep_their_rank_after_the_reservation_bound(gang_f
             if claimed is not None:
                 started.add(claimed)
     assert started == set(first)
-    assert all(queue.item_path(pool.READY, key).exists() for key in second)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in second)
 
 
 def test_the_reservation_returns_only_after_the_legacy_row_ends(
@@ -1131,4 +1131,4 @@ def test_a_legacy_row_on_another_host_does_not_suspend_this_hosts_reservation(
     evidence = denial(ordinary, "sparky")
     assert evidence["reason"] == "deferred_for_gang_reservation"
     assert evidence["evidence"]["gang_election"]["reservation"]["mem_gb"] == 29
-    assert queue.item_path(pool.READY, legacy).exists()
+    assert queue.records.item_path(pool.record_store.READY, legacy).exists()

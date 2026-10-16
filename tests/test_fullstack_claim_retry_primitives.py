@@ -42,7 +42,7 @@ def _claim(queue: pool.PoolQueue, **extra):
 def test_qualification_tags_conjoined_both_directions(tmp_path: Path) -> None:
     """An unqualified claimant gets nothing; a qualified one claims."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _box(queue)
     _publish(queue, "a" * 64, tags=["gb10"])
     assert _claim(queue, tags=["x86"]) is None
@@ -54,7 +54,7 @@ def test_qualification_tags_conjoined_both_directions(tmp_path: Path) -> None:
 def test_qualification_container_image_unknown_vs_present(tmp_path: Path) -> None:
     """Unknown image inventory never counts as a capable box."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _box(queue)
     queue.announce(host="worker-a", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))
@@ -82,7 +82,7 @@ def test_qualification_container_image_unknown_vs_present(tmp_path: Path) -> Non
 def test_unsafe_retry_is_an_explicit_contradiction(tmp_path: Path) -> None:
     """retry_safe=False with max_attempts>1 refuses at publish: no silent loss."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     with pytest.raises(pool.PoolContractError):
         _publish(queue, "c" * 64, retry_safe=False, max_attempts=2)
 
@@ -90,21 +90,21 @@ def test_unsafe_retry_is_an_explicit_contradiction(tmp_path: Path) -> None:
 def test_unsafe_work_ends_terminal_never_requeued(tmp_path: Path) -> None:
     """A failed unsafe action is terminal; nothing retries it implicitly."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _box(queue)
     _publish(queue, "d" * 64, tags=["x86"], retry_safe=False, max_attempts=1)
     claimed = _claim(queue, tags=["x86"])
     assert claimed is not None
     queue.finish("d" * 64, status="failed", detail={"returncode": 1},
                  claim_snapshot=claimed)
-    assert not queue.item_path(pool.READY, "d" * 64).exists()
-    assert queue.item_path(pool.FAILED, "d" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, "d" * 64).exists()
 
 
 def test_spent_acquisition_handle_cannot_return_committed_tokens(tmp_path: Path) -> None:
     """A spent handle cannot release the tokens committed to its owner."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger("worker-a")
     ledger.ensure_capacity({"cpu": 1, "mem_gb": 1})
     demand = {"cpu": 1, "mem_gb": 1}
@@ -123,7 +123,7 @@ def test_spent_acquisition_handle_cannot_return_committed_tokens(tmp_path: Path)
 def test_unknown_acquisition_and_double_release_preserve_capacity(tmp_path: Path) -> None:
     """Unknown acquisitions return nothing; an owner's release counts once."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger("worker-a")
     ledger.ensure_capacity(dict(CAPACITY))
     assert ledger.abandon_acquire("claiming.nobody") == 0
@@ -137,7 +137,7 @@ def test_unknown_acquisition_and_double_release_preserve_capacity(tmp_path: Path
 def test_mixed_capability_matrix_without_hosts(tmp_path: Path) -> None:
     """Capability classes gate independently of any host pair."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _box(queue)
     queue.announce(host="cpu-only", tags=["x86"], has_gpu=False,
                    capacity=dict(CAPACITY), cpu_tiers=dict(TIERS))

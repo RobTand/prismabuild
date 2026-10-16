@@ -46,7 +46,7 @@ def _cas(tmp_path: Path) -> pb.PrismaBuildCAS:
 
 
 def _ready(queue_root: Path) -> list[str]:
-    directory = queue_root / pool.READY
+    directory = queue_root / pool.record_store.READY
     if not directory.is_dir():
         return []
     return sorted(path.stem for path in directory.glob("*.json"))
@@ -175,7 +175,7 @@ def test_the_pool_transport_publishes_and_never_sbatches(
     assert submission.describe() == "queued"
     key = str(action["action_key"])
     assert _ready(queue_root) == [key]
-    item = json.loads((queue_root / pool.READY / f"{key}.json").read_text())
+    item = json.loads((queue_root / pool.record_store.READY / f"{key}.json").read_text())
     assert item["checkout_root"] == str(checkout)
     assert item["resources"] == {"gpu": 1, "mem_gb": 16}
     assert _submissions(fleet) == []
@@ -220,7 +220,7 @@ def test_a_submission_retires_a_live_withdrawal_on_the_lane_too(
     request = cas.publish_action_request(action)
     key = str(action["action_key"])
     queue_root = tmp_path / "pb-queue"
-    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker = queue_root / pool.record_store.WITHDRAWN / f"{key}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": key, "status": "withdrawn", "published_unix": 5.0,
@@ -234,7 +234,7 @@ def test_a_submission_retires_a_live_withdrawal_on_the_lane_too(
     )
 
     assert not marker.exists()
-    kept = sorted((queue_root / pool.WITHDRAWN / "superseded").glob("*.json"))
+    kept = sorted((queue_root / pool.record_store.WITHDRAWN / "superseded").glob("*.json"))
     assert len(kept) == 1
     assert json.loads(kept[0].read_text())["withdrawn_by"] == "rob@sparky"
 
@@ -251,7 +251,7 @@ def test_a_refused_submission_retires_no_withdrawal_on_the_lane_either(
     request = cas.publish_action_request(action)
     key = str(action["action_key"])
     queue_root = tmp_path / "pb-queue"
-    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker = queue_root / pool.record_store.WITHDRAWN / f"{key}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": key, "status": "withdrawn", "published_unix": 5.0,
@@ -266,7 +266,7 @@ def test_a_refused_submission_retires_no_withdrawal_on_the_lane_either(
         )
 
     assert marker.exists()
-    assert not list((queue_root / pool.WITHDRAWN / "superseded").glob("*.json"))
+    assert not list((queue_root / pool.record_store.WITHDRAWN / "superseded").glob("*.json"))
 
 
 def test_the_job_entry_is_a_sibling_of_this_module(tmp_path: Path) -> None:
@@ -648,13 +648,13 @@ def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
     fleet_submit.submit(action, cas=cas, request_path=request, transport="pool",
                         checkout_root=tmp_path, queue_root=queue_root, resources={"cpu": 1})
     queue = pool.PoolQueue(queue_root)
-    ready = queue.item_path(pool.READY, action["action_key"])
+    ready = queue.records.item_path(pool.record_store.READY, action["action_key"])
     before = ready.read_bytes()
     item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.item_path(pool.CLAIMED, action["action_key"]).exists()
+        assert not queue.records.item_path(pool.record_store.CLAIMED, action["action_key"]).exists()
         from prismabuild import adaptive_cpu
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS).get("records", {})
@@ -665,5 +665,5 @@ def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
     else:
         assert item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.item_path(pool.CLAIMED, action["action_key"]).exists()
+        assert queue.records.item_path(pool.record_store.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)

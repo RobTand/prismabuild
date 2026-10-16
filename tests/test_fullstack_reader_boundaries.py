@@ -64,7 +64,7 @@ def test_mismatched_ram_copy_refuses_overlay(tmp_path: Path) -> None:
     """A ram copy disagreeing with the stage vouched bytes refuses overlay."""
     queue, manifest, _ = _staged_once(tmp_path)
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(fragments)
     base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
     bad = _ram_fragment_for(mapping, base, tmp_path / "ram", "epoch-1",
@@ -79,7 +79,7 @@ def test_matching_ram_copy_lays_ram_path(tmp_path: Path) -> None:
     """A ram copy agreeing with the stage vouched bytes lays ram_path."""
     queue, manifest, _ = _staged_once(tmp_path)
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(fragments)
     key = next(iter(mapping["entries"]))
     base = [f for f in fragments if f["tier_id"] == STAGE_TIER][0]
@@ -96,7 +96,7 @@ def test_unstaged_entry_lookup_is_visible_not_silent(tmp_path: Path) -> None:
     """lookup() of an unstaged entry returns None: the fallback point is explicit."""
     queue, manifest, _ = _staged_once(tmp_path)
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(fragments)
     assert residency_map.lookup(mapping, "/pool/model/never-staged.bin", 0) is None
 
@@ -135,7 +135,7 @@ def test_prior_epoch_ram_range_demands_revalidation(tmp_path: Path) -> None:
     assert second is not None
     assert str(second["epoch"]) != epoch
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     mapping = residency_map.compose(
         [f for f in fragments if f["tier_id"] == STAGE_TIER])
     ram_frags = [f for f in fragments if f["tier_id"] == RAM_TIER]

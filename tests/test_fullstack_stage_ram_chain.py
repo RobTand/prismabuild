@@ -77,7 +77,7 @@ def _pool_fixture(tmp_path: Path) -> tuple[Path, dict[str, object], str]:
 
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "host": "dl380g10", "tier": "stage",
@@ -105,7 +105,7 @@ def _move_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -124,7 +124,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
     ])
 
 
@@ -176,7 +176,7 @@ def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:
     assert split_file.is_file(), "split range stages its own .pbrange object"
     staged_split = split_file.read_bytes()
     assert staged_split == files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]
-    fragments = residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)
+    fragments = residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)
     assert len(fragments) >= 2
 
 
@@ -187,7 +187,7 @@ def test_ram_promotion_lands_under_epoch_with_map_lookup(tmp_path: Path) -> None
     ram_copy = tmp_path / "ram" / _staged(WHOLE, 0, whole_len)
     assert ram_copy.read_bytes() == files["/pool/model/shard-0.bin"]
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     stage_frags = [f for f in fragments if f["tier_id"] == STAGE_TIER]
     ram_frags = [f for f in fragments if f["tier_id"] == RAM_TIER]
     mapping = residency_map.compose(stage_frags)

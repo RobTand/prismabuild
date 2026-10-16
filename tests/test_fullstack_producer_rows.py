@@ -110,7 +110,7 @@ def test_manifest_phases_tile_the_read_order(tmp_path: Path) -> None:
 def test_plan_freeze_is_first_writer_and_validates(tmp_path: Path) -> None:
     """Real freeze/validate: second filing verifies, conflicting body refuses."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest = _manifest(tmp_path / "pool")
     sha = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     plan = _plan(queue, sha, int(manifest["total_bytes"]))
