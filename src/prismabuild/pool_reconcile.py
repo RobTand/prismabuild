@@ -34,7 +34,9 @@ def _number(value: object) -> bool:
 
 
 def _read(path: Path, *, readonly: bool = False) -> tuple[dict, bytes]:
-    raw = immutable_files.read_immutable_file if readonly else immutable_files.read_stable_file(
+    reader = (immutable_files.read_immutable_file if readonly
+              else immutable_files.read_stable_file)
+    raw = reader(
         path,
         where="pool reconciliation evidence",
     )

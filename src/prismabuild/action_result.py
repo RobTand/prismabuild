@@ -139,7 +139,9 @@ def _normalize_input_limits(
 
 def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
     try:
-        return immutable_files.read_immutable_file if require_readonly else immutable_files.read_stable_file(
+        reader = (immutable_files.read_immutable_file if require_readonly
+                  else immutable_files.read_stable_file)
+        return reader(
             path,
             where=where,
             max_bytes=max_bytes,

@@ -87,7 +87,9 @@ def _directory(path: Path, where: str) -> dict[str, int]:
 
 
 def _json(path: Path, where: str, *, readonly: bool = False) -> tuple[dict, str]:
-    raw = immutable_files.read_immutable_file if readonly else immutable_files.read_stable_file(
+    reader = (immutable_files.read_immutable_file if readonly
+              else immutable_files.read_stable_file)
+    raw = reader(
         path,
         where=where,
         max_bytes=MAX_JSON_BYTES,
