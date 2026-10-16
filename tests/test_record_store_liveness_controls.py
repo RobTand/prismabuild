@@ -151,7 +151,7 @@ def test_unorderable_generation_keeps_real_origin_and_foreign_prewrite(tmp_path,
 
 @pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
 def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(tmp_path, monkeypatch, error):
-    queue = _queue(tmp_path)
+    queue = _queue(tmp_path, stage_gib=8)
     mover = _hexkey('unreadable-funding-census')
     path = queue.records.funding_path(mover, TIER)
     path.parent.mkdir(parents=True, exist_ok=True)
