@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import ast
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
+
+from .digest_primitives import canonical_sha256, raw_sha256
 
 
 class WindowError(ValueError):
@@ -34,7 +35,7 @@ def client_protocol(root):
     return {"optional": sorted(optional), "present": present,
             "optional_protocol": values.get("CLIENT_UPGRADE_PROTOCOL"),
             "proof_protocol": values.get("CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL"),
-            "updater_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            "updater_sha256": raw_sha256(path.read_bytes())}
 
 
 def require_reachable(candidate, rollback):
@@ -75,7 +76,7 @@ def require_predeploy(window, status, *, captured_unix=None, max_age_s=300, now=
 
 def content_digest(files):
     """Identity of the complete receipt file map, after checking each actual byte."""
-    return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return canonical_sha256(files)
 
 
 def require_generation(directory, designation):
@@ -86,7 +87,7 @@ def require_generation(directory, designation):
     value = json.loads(raw)
     if (directory.name != designation["generation"] or value["generation"] != designation["generation"]
             or value["commit"] != designation["commit"]
-            or hashlib.sha256(raw).hexdigest() != designation["receipt_sha256"]
+            or raw_sha256(raw) != designation["receipt_sha256"]
             or content_digest(value["files"]) != designation["content_sha256"]):
         raise WindowError("rollback directory, commit or receipt digest changed")
     for relative, expected in value["files"].items():
@@ -94,6 +95,6 @@ def require_generation(directory, designation):
         if (path.is_absolute() or ".." in path.parts
                 or any((directory / parent).is_symlink() for parent in (path, *path.parents))):
             raise WindowError("unsafe rollback source path")
-        if hashlib.sha256((directory / path).read_bytes()).hexdigest() != expected:
+        if raw_sha256((directory / path).read_bytes()) != expected:
             raise WindowError(f"rollback source content changed: {relative}")
     return value
