@@ -76,15 +76,17 @@ import time
 from typing import NamedTuple
 import uuid
 
+from .record_kinds import wire_id
+
 #: Worker announce tag for this behavior; advertised only once qualified.
 READER_LEASE_TAG = "reader-lease-v1"
 #: What one window's pin looks like on disk.
 LEASE_SCHEMA_V1 = "prismaquant.prismabuild.reader_pin.v1"
 #: What an egress files when it defers to live refs: closed to new acquires
 #: for the named material generation only.
-RETIRING_SCHEMA_V1 = "prismaquant.prismabuild.reader_retiring.v2"
+RETIRING_SCHEMA_V1 = wire_id("retiring")
 #: What a mover files at publish beside its fragment: publish-time identity.
-MATERIAL_SCHEMA_V1 = "prismaquant.prismabuild.reader_material.v1"
+MATERIAL_SCHEMA_V1 = wire_id("material")
 #: Beside the fragments, under ``<pool-root>/residency``: one writer per file.
 LEASES_SUBDIR = "leases"
 #: Publish-time sidecars live here, never among the fragments (the

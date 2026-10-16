@@ -104,3 +104,7 @@ KINDS = (
 
 def cases():
     return tuple(f"{kind.name}/{variant}" for kind in KINDS for variant in kind.variants)
+
+
+def wire_id(name):
+    return next(kind.wire_id for kind in KINDS if kind.name == name)
