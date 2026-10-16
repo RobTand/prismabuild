@@ -85,7 +85,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         record = json.loads(path.read_text())
         record["max_attempts"] = 1
         record["withdrawn_unix"] = pool._now()
-        pool._write_json_atomic(path, record)
+        pool.record_store._write_json(path, record)
     intent_path = q.records.item_path(pool.record_store.INTENT, KEY)
     if forget_claimed_host:
         # The shape of a claim lost between the rename and the record rewrite:
@@ -93,7 +93,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         record = json.loads(path.read_text())
         record.pop("claimed_host", None)
         record.pop("claimed_by", None)
-        pool._write_json_atomic(path, record)
+        pool.record_store._write_json(path, record)
     if forget_intent:
         intent_path.unlink(missing_ok=True)
         # The reservation too, or this is not an unknown holder any more: the

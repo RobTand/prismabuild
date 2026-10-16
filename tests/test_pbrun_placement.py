@@ -2258,7 +2258,6 @@ def test_explicit_placement_precedes_class_default(class_submission, flags, expe
     assert action["params"]["placement"]["required_tags"] == expected
 
 
-
 @pytest.mark.parametrize("source,present", [("argv", True), ("argv", False),
                                              ("environment", True), ("environment", False)])
 def test_class_default_includes_direct_dependency_evidence(class_submission, capsys, source, present):
@@ -2344,7 +2343,10 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     # Only the isolated fixture's runtime address is bound here. The real
     # source worker executes; no bridge publication, stub or live queue edit.
     row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-    pool_module._write_json_atomic(queue.records.item_path(pool_module.record_store.READY, row["action_key"]), row)
+    pool_module.record_store._write_json(
+        queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
+        row,
+    )
     item = queue.claim(tags=["gb10", "local-dependency-v1"], has_gpu=False,
                        capacity={"cpu": 1, "mem_gb": 4})
     assert item is not None
@@ -2743,7 +2745,8 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
@@ -2752,7 +2755,8 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists()
+        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        )
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
 
@@ -2806,7 +2810,6 @@ def direct_portable_input(input_submission):
     child.mkdir()
     (child / "marker").write_text("snapshot directory\n")
     return input_submission
-
 
 
 @pytest.mark.parametrize("source", ["argv", "environment"])
@@ -2899,7 +2902,8 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
@@ -2908,7 +2912,8 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists()
+        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        )
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
 
@@ -2989,7 +2994,10 @@ def relocated_input_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module._write_json_atomic(queue.records.item_path(pool_module.record_store.READY, row["action_key"]), row)
+        pool_module.record_store._write_json(
+            queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
+            row,
+        )
         return row
     return submit, queue, work, alias, declared
 
@@ -3008,7 +3016,8 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     if case == "missing":
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, row["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.record_store.CLAIMED, row["action_key"]).exists(
+        )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(entry.get("reason") == "local_dependency_not_present"
@@ -3142,7 +3151,10 @@ def raw_copy_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module._write_json_atomic(queue.records.item_path(pool_module.record_store.READY, row["action_key"]), row)
+        pool_module.record_store._write_json(
+            queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
+            row,
+        )
         return row
     return submit, queue, work, raw, content
 

@@ -104,7 +104,10 @@ def test_a_row_without_a_set_keeps_the_prior_order(tmp_path, monkeypatch, set_va
     item = json.loads(queue.records.item_path(pool.record_store.READY, "b" * 64).read_text())
     if set_value is not None:
         item["resident_set"] = set_value
-        pool._write_json_atomic(queue.records.item_path(pool.record_store.READY, "b" * 64), item)
+        pool.record_store._write_json(
+            queue.records.item_path(pool.record_store.READY, "b" * 64),
+            item,
+        )
 
     def unexpected_read(*args):
         pytest.fail("a plain row read resident metadata")
@@ -388,7 +391,9 @@ def resident_gang(fleet, tmp_path, monkeypatch):
                           resources={"cpu": 2, "gpu": 1, "mem_gb": 100},
                           needs_gpu=True, tags=tags or ["gb10"], priority=0, gang=gang,
                           max_attempts=1, resident_set=set_id if resident_set else None)
-            rows.append(pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)))
+            rows.append(
+                pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)),
+            )
         _gang.publish_group(queue, group, rows)
         return group, [row["action_key"] for row in rows]
 
@@ -460,7 +465,9 @@ def test_resident_hold_ignores_a_future_publish_stamp(tmp_path, published):
 def test_gang_deadline_is_publication_based_and_expires_exactly(resident_gang, monkeypatch):
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("resident-deadline")
-    published = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, first))["published_unix"]
+    published = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, first),
+    )["published_unix"]
     assert pool.RESIDENT_COPY_PREFER_S == 30.0
     deadline = published + pool.RESIDENT_COPY_PREFER_S
     for now in (published + 1, published + 10, deadline - 0.001, deadline - 0.001):
@@ -507,7 +514,7 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
                 path = queue.records.item_path(pool.record_store.READY, key)
                 row = pool.record_store.read_document(path)
                 row["resident_set"] = damaged_id
-                pool._write_json_atomic(path, row)
+                pool.record_store._write_json(path, row)
     assert gclaim("sparklina", advance=0) is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"

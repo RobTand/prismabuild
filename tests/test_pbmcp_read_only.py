@@ -222,7 +222,7 @@ def test_every_tool_answers_with_every_write_replaced_by_a_refusal(
     def refuse(*args, **kwargs):
         raise _Refused("pbmcp reached a store writer")
 
-    monkeypatch.setattr(pbmcp.pool, "_write_json_atomic", refuse)
+    monkeypatch.setattr(pbmcp.pool.record_store, '_write_json', refuse)
     monkeypatch.setattr(immutable_files, "publish_immutable", refuse)
 
     session = pbmcp.Session(queue_root=fleet.queue_root,

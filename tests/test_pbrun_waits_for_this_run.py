@@ -121,7 +121,7 @@ def test_this_runs_withdrawal_beats_an_old_unstamped_success(
         expected = _file(queue, pool.record_store.WITHDRAWN, current)
     else:
         expected = queue.records.withdrawal_decision_path(current)
-        queue._persist_withdrawal_decision(current)
+        queue.records.file_withdrawal_decision(current)
 
     path, ending = pbrun.landed_outcome(
         queue, KEY, wait_s=0.05, generation=200.0)
