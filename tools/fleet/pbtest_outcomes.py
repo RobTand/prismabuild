@@ -446,7 +446,7 @@ PROGRESS_SCHEMA = "prismabuild.pbtest_progress.v1"
 CONTROL_ENV = ("PRISMABUILD_PBTEST_RUN_ID", "PRISMABUILD_PBTEST_ENTRYPOINT")
 
 
-def _refusal(value):
+def _valid_runtime_refusal(value):
     return (isinstance(value, dict) and set(value) == {"code", "message"}
             and value["code"] in ("dependency_pin", "interpreter_absent")
             and isinstance(value["message"], str) and bool(value["message"]))
@@ -468,7 +468,7 @@ def _preflight(output):
             refusal = value["runtime_refusal"]
             if (value.get("schema") == PREFLIGHT_SCHEMA and type(code) is int
                     and code >= 0 and value.get("status") == ("refused" if code else "accepted")
-                    and (refusal is None or code > 0 and _refusal(refusal))):
+                    and (refusal is None or code > 0 and _valid_runtime_refusal(refusal))):
                 return value, None
         except (ValueError, KeyError, TypeError):
             pass
@@ -493,7 +493,7 @@ def read_progress(path: Path, *, run_id: str, launch_entrypoint: str,
                 or value["completed_shards"] > value["total_shards"]
                 or not isinstance(value.get("shards"), list)
                 or len(value["shards"]) != value["total_shards"]
-                or value.get("runtime_refusal") is not None and not _refusal(value["runtime_refusal"])):
+                or value.get("runtime_refusal") is not None and not _valid_runtime_refusal(value["runtime_refusal"])):
             return None
         shards = value["shards"]
         if any(not isinstance(s, dict) or s.get("shard") != i
