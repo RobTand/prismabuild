@@ -25,6 +25,7 @@ def operate(request, store, load):
                 assert path.read_bytes() == before
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = cpu.read_box_origin(directory, digest)
             assert result and result["pid"] == 2, "origin consumer refused the actual namespace PID"
             return result
@@ -55,6 +56,7 @@ def operate(request, store, load):
             path.write_bytes(base64.b64decode(request["raw"]))
             descriptor = ci._open_private_directory(cache.root)
             assert descriptor is not None
+            request["_consumer_boundary"]()
             try:
                 result = cache._snapshot(descriptor, now=100.0)
             finally:

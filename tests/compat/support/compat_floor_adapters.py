@@ -48,6 +48,7 @@ def operate(request, store, load):
             assert ledger.acquire(holder, {"filesystem_gib": amount})
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = ff.reap_operations(queue.root, now=200.0)
             assert result == [holder] and not path.exists(), "real reaper retained the expired owner"
             assert ledger.held().get("filesystem_gib", 0) == 0
@@ -62,6 +63,7 @@ def operate(request, store, load):
                 gate.granted()
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = ff._granted(directory)
             assert result == amount * ff.GIB, "grant consumer lost its byte charge"
             return result
@@ -79,6 +81,7 @@ def operate(request, store, load):
             raw = path.read_bytes()
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             if family == "floor-member":
                 result = ff.register(queue.root, root, members=[member], now=100.0)
                 assert result["binding"]["key"] == KEY

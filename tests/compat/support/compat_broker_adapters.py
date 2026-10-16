@@ -70,6 +70,7 @@ def operate(request, store, load):
             raw = nested(captured[0], ("evidence",))
         else:
             value = json.loads(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             try:
                 result = broker._settlement_evidence(value)
             except ValueError:
@@ -102,6 +103,7 @@ def operate(request, store, load):
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
             path.chmod(0o600)
+            request["_consumer_boundary"]()
             if family == "broker-evidence":
                 return current._maintenance_evidence()
             result = current._maintenance_value(path)

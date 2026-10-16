@@ -31,6 +31,7 @@ def operate(request, store, load):
             lease._write_pin(path, value)
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             value = lease._read_pin(path)
             assert isinstance(value, dict), f"pin consumer refused: {value!r}"
             assert len(value["refs"]) == (2 if variant == "inherited" else 1)
@@ -53,6 +54,7 @@ def operate(request, store, load):
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             value = lease.read_scope_attestation(queue, C, N)
             assert isinstance(value, dict), f"scope-attestation consumer refused: {value!r}"
             proven, reason = lease.attestation_proves_empty(queue, C, N, S)

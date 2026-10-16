@@ -38,6 +38,7 @@ def operate(request, store, load):
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             value = reader(M, "stage:compat")
             assert value and value["state"] == variant, "funding reader refused binding"
             return value
@@ -57,6 +58,7 @@ def operate(request, store, load):
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             if family == "q-denials":
                 value = queue.latest_denials({M})
                 assert value.get(M) and value[M][0]["reason"] == "tokens", "latest diagnostic lost the denial"

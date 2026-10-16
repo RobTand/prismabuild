@@ -40,6 +40,7 @@ def operate(request, store, load):
             # The action fixture determines the key independently of incoming bytes.
             body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"]
             key = core.seal_action(body(core, store))["action_key"]
+            request["_consumer_boundary"]()
             assert queue._ready_record_usable(record, key), "actual queue usability consumer refused the publication"
             return record
     elif family == "q-offer":
@@ -128,6 +129,7 @@ def operate(request, store, load):
     if path.exists():
         path.chmod(0o644)
     path.write_bytes(base64.b64decode(request["raw"]))
+    request["_consumer_boundary"]()
     if family == "q-offer":
         item = {"tags": ["cpu"], "resources": {"cpu": 1, "mem_gb": 1}}
         if variant == "capabilities":
