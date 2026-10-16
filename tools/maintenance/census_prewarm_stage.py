@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +11,11 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild import digest_primitives
 
 
 TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
@@ -35,7 +38,7 @@ def file_identity(path: Path) -> dict:
     data = path.read_bytes()
     stat = path.stat()
     return {"path": str(path), "resolved": str(path.resolve()),
-            "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+            "sha256": digest_primitives.raw_sha256(data), "bytes": len(data),
             "device": stat.st_dev, "inode": stat.st_ino,
             "mtime_ns": stat.st_mtime_ns}
 
@@ -109,7 +112,7 @@ def mount_rows() -> list[dict]:
     return rows
 
 
-def census(args) -> dict:
+def collect_prewarm_stage_census(args) -> dict:
     errors: list[str] = []
     result = {"schema": "prismabuild.prewarm_stage_drain.v1", "started": stamp(),
               "host": socket.gethostname(), "expected_host": args.host,
@@ -269,8 +272,8 @@ def main() -> int:
     parser.add_argument("--queue-root", default="/mnt/shared/prismabuild-fleet/pb-queue")
     parser.add_argument("--root", action="append", default=["/stage", "/stage/prewarm"])
     args = parser.parse_args()
-    result = census(args)
-    print(json.dumps(result, sort_keys=True))
+    result = collect_prewarm_stage_census(args)
+    print(json.dumps(result))
     return 0 if result["empty_drain_observed"] else 1
 
 

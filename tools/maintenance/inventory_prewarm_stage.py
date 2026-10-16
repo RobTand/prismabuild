@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 
 
-def inventory(root: Path) -> dict:
+def prewarm_stage_inventory(root: Path) -> dict:
     owners = ("tools/fleet/prewarm_loop.py", "src/prismabuild/stage_marks.py")
     definitions = {}
     for name in owners:
@@ -48,4 +48,4 @@ def inventory(root: Path) -> dict:
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parents[2]
-    print(json.dumps(inventory(root), indent=2, sort_keys=True))
+    print(json.dumps(prewarm_stage_inventory(root), indent=2))
