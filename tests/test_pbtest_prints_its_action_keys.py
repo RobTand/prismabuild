@@ -60,7 +60,7 @@ def test_pbrun_names_the_full_key_it_queued(
 
     assert _submit(monkeypatch, work, "dl380g10") == 75   # queued; nothing claims it
 
-    (record,) = list(queue.dir(pool.READY).glob("*.json"))
+    (record,) = list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     key = record.stem
     err = capsys.readouterr().err
     assert f"pbrun: queued {key} tags=" in err, err

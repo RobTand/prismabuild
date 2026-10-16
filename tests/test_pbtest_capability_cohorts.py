@@ -71,7 +71,7 @@ def _config(checkout: Path, tmp_path: Path, *, sha: str | None = None,
 def _stub_queue(tmp_path: Path, monkeypatch, *, answers=(), absent=(),
                 capability=True):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tags = [TAG, "x86"] if capability else ["cpu"]
     queue.announce(
         host="fenced-box",

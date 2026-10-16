@@ -59,7 +59,7 @@ def _announce(**ceilings: tuple[list[str], float | None]) -> Path:
 
     root = pbrun.SH / "pb-queue"
     queue = pool.PoolQueue(root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for host, (tags, ceiling) in ceilings.items():
         queue.announce(host=host, tags=tags, has_gpu=False,
                        capacity={"cpu": 8, "mem_gb": 16},

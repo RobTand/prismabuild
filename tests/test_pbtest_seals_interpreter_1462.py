@@ -71,7 +71,7 @@ def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     requests = list((root / 'cas/requests').rglob('*.json'))
     assert len(requests) == 1
     action = json.loads(requests[0].read_text())
-    item = json.loads(queue.item_path(pool.READY, action['action_key']).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, action['action_key']).read_text())
     return action, item, queue
 
 
@@ -190,7 +190,7 @@ def test_published_request_keeps_the_existing_three_state_path_verdict(
 def test_legacy_worker_cannot_claim_the_generated_naming_row(tmp_path, monkeypatch):
     _, row, queue = _sealed(tmp_path, monkeypatch)
     assert queue.claim(capacity={'cpu': 8, 'mem_gb': 16}, tags=['x86']) is None
-    assert queue.item_path(pool.READY, row['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.READY, row['action_key']).exists()
 
 
 def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, monkeypatch):
@@ -206,7 +206,7 @@ def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, mon
     denial = _denials(queue)[-1]
     assert denial['reason'] == 'interpreter_not_present'
     assert denial['evidence']['interpreter'] == str(interpreter)
-    assert queue.item_path(pool.READY, row['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.READY, row['action_key']).exists()
 
 
 @pytest.mark.parametrize('python', ['python3', 'relative/bin/python', '/bin/sh'])
