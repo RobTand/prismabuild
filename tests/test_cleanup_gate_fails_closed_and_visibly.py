@@ -78,7 +78,7 @@ def _fails_cleanup(monkeypatch, exc):
 
 
 def _claimed_record(queue, key):
-    return json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    return json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
 
 
 # --------------------------------------------------------------------------
@@ -109,7 +109,7 @@ def test_the_claim_and_its_tokens_survive_an_unprovable_cleanup(scoped, monkeypa
 
     queue.finish(key, status="done", detail={"status": "done", "returncode": 0})
 
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.ledger().held() != {}
 
 
@@ -254,7 +254,7 @@ def test_a_claim_pinned_before_the_stamp_existed_reports_no_age(scoped, monkeypa
     # it must be counted -- but its age is unknown, and emitting 0 would say
     # "just started" about a cleanup that may have been stuck for hours.
     queue, key = _pinned_status(scoped, monkeypatch)
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(path.read_text())
     del record["container_cleanup_first_failed_unix"]
     path.write_text(json.dumps(record))

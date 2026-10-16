@@ -21,7 +21,7 @@ def test_uncertain_error_after_spending_probe_returns_tokens_but_keeps_sample_sp
     assert first is not None
     candidate = publish(2)
     before = queue.ledger().available()
-    ready_bytes = queue.item_path(pool.READY, candidate).read_bytes()
+    ready_bytes = queue.records.item_path(pool.record_store.READY, candidate).read_bytes()
     tick()
     original = queue._write_claim_intent
     observed = []
@@ -45,9 +45,9 @@ def test_uncertain_error_after_spending_probe_returns_tokens_but_keeps_sample_sp
     assert len(observed) == 1
     assert queue.ledger().available() == before
     assert set(queue.ledger().held_keys()) == {holder}
-    assert queue.item_path(pool.READY, candidate).read_bytes() == ready_bytes
-    assert not queue.item_path(pool.CLAIMED, candidate).exists()
-    assert pool.read_queue_record(queue.item_path(pool.CLAIMED, holder)) == first
+    assert queue.records.item_path(pool.record_store.READY, candidate).read_bytes() == ready_bytes
+    assert not queue.records.item_path(pool.record_store.CLAIMED, candidate).exists()
+    assert pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
     assert claim() is None, "an uncertain claim refunded a spent GPU sample"
     tick()
     resumed = claim()
@@ -95,16 +95,16 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     try:
         assert parent.poll(10), "claimant never reached the real persistence boundary"
         assert parent.recv() == "persisted"
-        persisted = pool.read_queue_record(queue.item_path(pool.CLAIMED, mover))
+        persisted = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, mover))
         assert persisted["attempts"] == 0
         assert persisted["published_unix"] == row["published_unix"]
         assert persisted["tier_funding"][TIER]["generation"] == generation
-        assert queue.lease_path(mover).exists() is lease_written
+        assert queue.records.lease_path(mover).exists() is lease_written
         assert queue.read_funding(mover, TIER)["state"] == "transferring"
         assert stage.holder_tokens(mover) == {"stage_gib": 2}
         assert ram.holder_tokens(mover) == {"ram_gib": 2}
         assert queue.ledger().holder_tokens(mover) == {"cpu": 1, "mem_gb": 1}
-        assert not queue.attempt_path(persisted, 1).exists()
+        assert not queue.records.attempt_path(persisted, 1).exists()
         parent.send("exit")
         process.join(10)
         assert process.exitcode == 73
@@ -117,12 +117,12 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     later = float(persisted["claimed_unix"]) + pool.LEASE_TIMEOUT_S * 2
     monkeypatch.setattr(pool, "_now", lambda: later)
     assert queue.reap_stale(timeout_s=1) == [mover]
-    restored = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    restored = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert restored["published_unix"] == row["published_unix"]
     assert restored["attempts"] == int(lease_written)
     assert "claimed_by" not in restored and "tier_funding" not in restored
-    assert not queue.item_path(pool.CLAIMED, mover).exists()
-    assert not queue.lease_path(mover).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
+    assert not queue.records.lease_path(mover).exists()
     assert stage.holder_tokens(mover) == {}
     assert ram.holder_tokens(mover) == {}
     assert stage.available()["stage_gib"] == 4
@@ -130,4 +130,4 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     assert queue.ledger().holder_tokens(mover) == {}
     assert queue.read_funding(mover, TIER)["state"] == "transferring"
     assert queue.funded_cover(TIER, restored, "stage_gib", 2) == (0, None)
-    assert queue.attempt_path(persisted, 1).exists() is lease_written
+    assert queue.records.attempt_path(persisted, 1).exists() is lease_written

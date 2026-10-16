@@ -26,9 +26,9 @@ def test_unmanaged_claim_never_moves_an_executable_row(tmp_path, monkeypatch, re
         original(item, reason, evidence)
     monkeypatch.setattr(queue, "record_denial", denial)
     assert queue.claim() is None, "unmanaged executable claim bypassed admission"
-    assert queue.item_path(pool.READY, KEY).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.item_path(pool.INTENT, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.INTENT, KEY).exists()
     assert refused[-1][0] == "admission_capacity_required"
     assert not queue.ledger().held_keys()
 
@@ -41,7 +41,7 @@ def test_capacity_does_not_invent_positive_declared_demand(tmp_path, monkeypatch
     monkeypatch.setattr(queue, "record_denial", lambda item, reason, evidence=None: refused.append(reason))
     assert queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
     assert refused[-1] == "admission_demand_required"
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.ledger().held_keys()
 
 
@@ -53,7 +53,7 @@ def test_missing_capacity_stops_serve_before_execute(tmp_path, monkeypatch):
     monkeypatch.setattr(queue, "execute", execute)
     monkeypatch.setattr(queue, "_sweep_due", lambda: False)
     assert queue.serve_once() is None
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 def test_explicit_controlled_admission_retains_normal_claim(tmp_path):
@@ -79,7 +79,7 @@ def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monke
     monkeypatch.setattr(queue, "record_denial", lambda item, reason, evidence=None: refused.append(reason))
     assert queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
     assert refused[-1] == "admission_demand_required"
-    assert queue.item_path(pool.READY, KEY).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not queue.ledger().held_keys()
     assert not queue.tier_ledger(tier).held_keys()

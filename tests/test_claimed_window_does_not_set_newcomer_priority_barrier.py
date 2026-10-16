@@ -20,7 +20,7 @@ def advanced_consumer(queue, *, key, rank):
     # or queued; accepted progress is beyond it. No live fleet data is touched.
     progress._claim_with_progress(queue, key, phase='phase-1')
     head = plan['phases'][0]['mover_row']['action_key']
-    assert not queue.item_path(base.pool.READY, head).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, head).exists()
     assert not queue.tier_ledger(base.TIER).holder_tokens(head)
     return plan
 
@@ -43,15 +43,15 @@ def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tm
     events = priority.cycle(queue, tmp_path)
     assert any(e.get('consumer') == high and e.get('reason') == 'joint-fit-stall'
                for e in events), events
-    assert queue.item_path(base.pool.READY, low).exists(), (
+    assert queue.records.item_path(base.pool.record_store.READY, low).exists(), (
         'CLAIMED rolling window with retired original lead established a new-admission barrier', events)
-    row = base.pool._read_json(queue.item_path(base.pool.READY, low))
+    row = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, low))
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='small-qualifier',
                           capacity={'cpu': 4, 'mem_gb': 4})
     assert claimed and claimed['action_key'] == low
     assert queue.tier_ledger(base.TIER).holder_tokens(low) == {'stage_gib': 3}
     # Existing larger-window credit gate was not bypassed to make this pass.
-    assert all(not queue.item_path(base.pool.READY, phase['mover_row']['action_key']).exists()
+    assert all(not queue.records.item_path(base.pool.record_store.READY, phase['mover_row']['action_key']).exists()
                for phase in plan['phases'])
 
 
@@ -71,7 +71,7 @@ def test_a_lead_waits_for_the_footprint_of_a_window_a_static_holder_starves(tmp_
     low_key = '1' * 64
     low = priority.publish_consumer(queue, low_key, gib=3, priority=-10)
     events = priority.cycle(queue, tmp_path)
-    assert not queue.item_path(base.pool.READY, low).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, low).exists()
     reasons = {e.get('reason') for e in events
                if e.get('event') == 'window-gated' and e.get('consumer') == low_key}
     assert reasons == {'joint-commitment-stall'}, events

@@ -62,9 +62,9 @@ def _uncontained_claim_with_a_container(queue: pool.PoolQueue) -> dict:
     marker = queue.container_marker(OWNER)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("")
-    record = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     record["container_owner"] = OWNER
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, KEY), record)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
     return record
 
 
@@ -107,11 +107,11 @@ def test_the_result_the_claim_and_the_tokens_all_survive_it(queue, monkeypatch):
 
     queue.finish(KEY, status="executed", detail=detail, claim_snapshot=record)
 
-    pending = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    pending = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert pending["finish_pending"]["status"] == "executed"
     assert pending["finish_pending"]["detail"] == detail
     assert queue.ledger().held() == {"cpu": 1}
-    assert not queue.item_path(pool.DONE, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
     # Visible, not merely retained: a claim that can never be cleaned up has to
     # be countable, or fail-closed just trades a lost action for a silent one.
     assert pending["container_cleanup_attempts"] == 1
@@ -202,7 +202,7 @@ def test_the_reapers_own_retry_is_counted_on_this_path_too(queue, monkeypatch):
 
     assert queue.reap_stale(timeout_s=-1) == []
 
-    pending = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    pending = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert pending["container_cleanup_attempts"] == 1
     assert queue.ledger().held() == {"cpu": 1}
-    assert not queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
