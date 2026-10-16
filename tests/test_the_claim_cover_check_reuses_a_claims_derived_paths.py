@@ -97,7 +97,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     claimed_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "action_key": key,
@@ -110,7 +110,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
 def _publisher(queue: pool.PoolQueue, stage: Path, cas: Path,
               mover: str) -> "stage_move._StagedPublisher":
     return stage_move._StagedPublisher(
-        queue=queue, stage_root=stage, residency_root=queue.root / pool.RESIDENCY,
+        queue=queue, stage_root=stage, residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
         tier_id=TIER, cas_root=str(cas))
 
@@ -205,7 +205,7 @@ def test_a_claim_that_ends_between_checks_is_seen_at_once(fleet) -> None:
     before, detail = publisher._live_claim_cover(norm)
     assert before is True, detail
 
-    (queue.dir(pool.CLAIMED) / f"{other_mover}.json").unlink()
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{other_mover}.json").unlink()
 
     after, detail = publisher._live_claim_cover(norm)
     assert after is False, (

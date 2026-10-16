@@ -24,13 +24,13 @@ from prismabuild import pool  # noqa: E402
 KEY_A = "a" * 64
 
 LAYOUT_NAMES = (
-    pool.WORKERS, pool.ATTEMPTS, pool.PREWARM, pool.MOVERS, pool.RESIDENCY,
-    pool.RESIDENCY_PLANS, pool.TIER_RESERVATIONS, pool.TIERS,
+    pool.record_store.WORKERS, pool.record_store.ATTEMPTS, pool.record_store.PREWARM, pool.record_store.MOVERS, pool.record_store.RESIDENCY,
+    pool.record_store.RESIDENCY_PLANS, pool.record_store.TIER_RESERVATIONS, pool.record_store.TIERS,
 )
 
 
 def _layout_dirs(q: pool.PoolQueue) -> set[Path]:
-    return ({q.dir(state) for state in pool._STATES}
+    return ({q.records.dir(state) for state in pool._STATES}
             | {q.root / name for name in LAYOUT_NAMES})
 
 
@@ -76,12 +76,12 @@ def test_a_fresh_queue_re_ensures_after_a_hand_deletion(tmp_path: Path) -> None:
     """The once-per-process flag does not outlive the process."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     assert q._layout_ensured is True
-    q.dir(pool.READY).rmdir()
-    assert not q.dir(pool.READY).exists()
+    q.records.dir(pool.record_store.READY).rmdir()
+    assert not q.records.dir(pool.record_store.READY).exists()
 
     restarted = pool.PoolQueue(tmp_path / "pb-queue")
     assert restarted._layout_ensured is False
-    restarted.ensure_layout()
-    assert q.dir(pool.READY).is_dir()
+    restarted.records.ensure_layout()
+    assert q.records.dir(pool.record_store.READY).is_dir()

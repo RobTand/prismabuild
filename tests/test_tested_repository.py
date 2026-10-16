@@ -33,7 +33,7 @@ UNKNOWN = "unknown"
 
 
 def _row(queue: pool.PoolQueue, key: str) -> dict:
-    return json.loads(queue.item_path(pool.READY, key).read_text(
+    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text(
         encoding="utf-8"))
 
 
@@ -42,7 +42,7 @@ def _admitted(tmp_path: Path) -> AdmittedQueueFixture:
         pool.PoolQueue(tmp_path / "pb-queue"),
         capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -167,10 +167,10 @@ def test_attempt_and_end_carry_the_repository(tmp_path):
     assert pool.tested_repository_of(claimed) == "atlas"
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, key))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, key))
     assert done["tested_repository"] == "atlas"
-    attempt = pool._read_json(queue.attempt_path(done, 1))
-    assert attempt["schema"] == pool.POOL_ATTEMPT_SCHEMA_V1
+    attempt = pool.record_store.read_queue_record(queue.records.attempt_path(done, 1))
+    assert attempt["schema"] == pool.record_store.POOL_ATTEMPT_SCHEMA_V1
     assert attempt["tested_repository"] == "atlas"
 
 
@@ -181,15 +181,15 @@ def test_a_row_without_the_field_reads_unknown_on_attempt_and_end(
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   worker_script="/worker.py", checkout_root="/co")
     assert pool.tested_repository_of(
-        json.loads(queue.item_path(pool.READY, key).read_text(
+        json.loads(queue.records.item_path(pool.record_store.READY, key).read_text(
             encoding="utf-8"))) == UNKNOWN
     claimed = queue.claim()
     assert claimed is not None
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, key))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, key))
     assert "tested_repository" not in done
-    attempt = pool._read_json(queue.attempt_path(done, 1))
+    attempt = pool.record_store.read_queue_record(queue.records.attempt_path(done, 1))
     assert attempt["tested_repository"] == UNKNOWN
 
 
@@ -239,11 +239,11 @@ def test_repository_visible_in_status_reads(tmp_path):
     assert queue.claim() is not None
     live = pbstatus.read_pool(queue.root)
     assert live["jobs"][0]["tested_repository"] == "atlas"
-    claimed = json.loads(queue.item_path(pool.CLAIMED, key).read_text(
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text(
         encoding="utf-8"))
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    entries = [entry for entry in os.scandir(queue.dir(pool.DONE))
+    entries = [entry for entry in os.scandir(queue.records.dir(pool.record_store.DONE))
                if entry.name == f"{key}.json"]
     assert len(entries) == 1
     assert pbstatus.ending_row(entries[0], queue.root)[

@@ -76,15 +76,15 @@ def _count_passes_reads(monkeypatch: pytest.MonkeyPatch,
     """Every ``passes/`` sidecar the pool reads from now on, by key."""
 
     reads: list[str] = []
-    real = pool._read_json
-    passes = queue.root / pool.PASSES
+    real = pool.record_store.read_queue_record
+    passes = queue.root / pool.record_store.PASSES
 
     def reading(path, *args, **kwargs):  # type: ignore[no-untyped-def]
         if Path(path).parent == passes:
             reads.append(Path(path).stem)
         return real(path, *args, **kwargs)
 
-    monkeypatch.setattr(pool, "_read_json", reading)
+    monkeypatch.setattr(pool.record_store, '_read_json', reading)
     return reads
 
 
@@ -102,7 +102,7 @@ def test_a_pass_over_40_foreign_items_lists_claimed_once(
         default_demand={"cpu": 1, "mem_gb": 1})
     for index in range(READY_ITEMS):
         _publish(queue, index, ["elsewhere"])
-    listings = _count_listings(monkeypatch, queue.dir(pool.CLAIMED))
+    listings = _count_listings(monkeypatch, queue.records.dir(pool.record_store.CLAIMED))
     assert queue.claim(tags=["here"], owner="worker") is None
     # Placement is judged before a row's transition lock (#1085), and the
     # listing is taken under the first lock the pass takes: a pass over rows
@@ -138,8 +138,8 @@ def test_aging_still_orders_the_items_this_box_can_place(
         default_demand={"cpu": 1, "mem_gb": 1})
     older = _publish(queue, 0, ["here"])
     aged = _publish(queue, 1, ["here"])
-    queue.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)
-    queue.passes_path(aged).write_text(json.dumps(
+    queue.records.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.passes_path(aged).write_text(json.dumps(
         {"action_key": aged, "passes": 5}) + "\n")
     claimed = queue.claim(tags=["here"], owner="worker")
     assert claimed is not None and claimed["action_key"] == aged
@@ -156,7 +156,7 @@ def test_a_pass_that_claims_lists_claimed_once_more_for_its_claim(
     for index in range(READY_ITEMS - 1):
         _publish(queue, index, ["elsewhere"])
     mine = _publish(queue, READY_ITEMS - 1, ["here"])
-    listings = _count_listings(monkeypatch, queue.dir(pool.CLAIMED))
+    listings = _count_listings(monkeypatch, queue.records.dir(pool.record_store.CLAIMED))
     claimed = queue.claim(tags=["here"], owner="worker")
     assert claimed is not None and claimed["action_key"] == mine
     assert len(listings) == 2, listings
@@ -178,8 +178,8 @@ def test_a_claim_record_filed_after_the_listing_is_never_renamed_over(
         default_demand={"cpu": 1, "mem_gb": 1})
     _publish(queue, 0, ["elsewhere"])       # the first lock: the listing
     late = _publish(queue, 1, ["here"])     # reached after the listing
-    claimed_dir = queue.dir(pool.CLAIMED)
-    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
+    residue = json.loads(queue.records.item_path(pool.record_store.READY, late).read_text())
     residue.update(claimed_by="another-box", claimed_host="another-box",
                    claimed_unix=1.0)
     real_listdir = os.listdir
@@ -194,7 +194,7 @@ def test_a_claim_record_filed_after_the_listing_is_never_renamed_over(
     monkeypatch.setattr(os, "listdir", listdir)
     assert queue.claim(tags=["here"], owner="worker") is None
     assert json.loads((claimed_dir / f"{late}.json").read_text()) == residue
-    assert queue.item_path(pool.READY, late).exists()
+    assert queue.records.item_path(pool.record_store.READY, late).exists()
     assert _denials(queue).get(late) == "already_claimed"
 
 
@@ -233,11 +233,11 @@ def test_a_finish_mark_filed_after_the_listing_refuses_the_key(
         default_demand={"cpu": 1, "mem_gb": 1})
     _publish(queue, 0, ["elsewhere"])       # the first lock: the listing
     late = _publish(queue, 1, ["here"])     # reached after the listing
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     name = (f"{late}.1790000000000000.another-box.4242.0123abcd"
-            f"{pool.TOMBSTONE_SUFFIX}" if mark == "tombstone" else
-            f"{late}.{'e' * 64}{pool.LATE_FINISH_SUFFIX}")
-    residue = json.loads(queue.item_path(pool.READY, late).read_text())
+            f"{pool.record_store.TOMBSTONE_SUFFIX}" if mark == "tombstone" else
+            f"{late}.{'e' * 64}{pool.record_store.LATE_FINISH_SUFFIX}")
+    residue = json.loads(queue.records.item_path(pool.record_store.READY, late).read_text())
     residue.update(claimed_by="another-box", claimed_host="another-box",
                    claimed_unix=1.0)
     _file_after_the_pass_listing(monkeypatch, claimed_dir, name,
@@ -245,7 +245,7 @@ def test_a_finish_mark_filed_after_the_listing_refuses_the_key(
     assert queue.claim(tags=["here"], owner="worker") is None
     assert (claimed_dir / name).exists()
     assert not (claimed_dir / f"{late}.json").exists()
-    assert queue.item_path(pool.READY, late).exists()
+    assert queue.records.item_path(pool.record_store.READY, late).exists()
     assert _denials(queue).get(late) == "already_claimed"
 
 
@@ -265,8 +265,8 @@ def test_a_snapshot_read_under_another_placement_still_ages(
         default_demand={"cpu": 1, "mem_gb": 1})
     older = _publish(queue, 0, ["here"])
     aged = _publish(queue, 1, ["here"])
-    queue.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)
-    queue.passes_path(aged).write_text(json.dumps(
+    queue.records.passes_path(aged).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.passes_path(aged).write_text(json.dumps(
         {"action_key": aged, "passes": 5}) + "\n")
     with pool.ready_placement(("elsewhere",), False):
         snapshot = queue.ready_items()
@@ -277,7 +277,7 @@ def test_a_snapshot_read_under_another_placement_still_ages(
 
 def test_scan_reads_take_the_prior_verdict_on_first_use_and_keep_it_after_a_rename(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     reads = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=False)
     item = {"action_key": "a" * 64, "published_unix": 1000.0}
     queue.record_denial(item, "reservation_unavailable_withholding", {"withhold": {
@@ -287,7 +287,7 @@ def test_scan_reads_take_the_prior_verdict_on_first_use_and_keep_it_after_a_rena
     assert prior[identity]["reason"] == "reservation_unavailable_withholding"
     assert not reads.claimed_hint(item["action_key"])
     queue.record_denial(item, "transition_busy")
-    queue.item_path(pool.CLAIMED, item["action_key"]).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).write_text(json.dumps(item))
     assert not reads.claimed_hint(item["action_key"])
     reads.renamed_into_claimed()
     assert reads.claimed_hint(item["action_key"])

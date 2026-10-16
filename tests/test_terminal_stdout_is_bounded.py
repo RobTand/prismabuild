@@ -32,7 +32,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    made.ensure_layout()
+    made.records.ensure_layout()
     return made
 
 
@@ -50,7 +50,7 @@ def test_a_huge_stdout_stays_readable_in_the_ending(queue):
     assert not mine.get("unreadable"), mine.get("unreadable")
 
     record = json.loads(
-        queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8"))
     detail = record["detail"]
     assert len(detail["stdout"].encode("utf-8")) <= pool.TERMINAL_STREAM_TAIL_BYTES
     assert detail["stdout"].endswith("FINAL-MARKER\n")
