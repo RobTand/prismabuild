@@ -66,11 +66,11 @@ def test_private_write_only_owner_claims_and_holds_real_host_tokens(tmp_path, mo
     key = "b" * 64
     instance = cycle._bind_owner(queue, template, key)
     assert instance["owner_action_key"] == key
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
     queue.finish(key, status="executed")
     assert queue.ledger().held_keys() == [key]
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
 
 _BOX_STATE_ENV = "PRISMABUILD_BOX_STATE_ROOT"

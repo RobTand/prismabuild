@@ -167,7 +167,7 @@ def _funded_next(queue, stage, movers_below: int = 3) -> int:
     _live(queue, plan, reader)
     _cycle(queue, stage, gib=CAPACITY)                   # admit: fence s1
     first = residency_plan.leads_for(plan)[0]
-    queue.item_path(pool.READY, first).unlink()          # its copy lands...
+    queue.records.item_path(pool.record_store.READY, first).unlink()          # its copy lands...
     _stage_range(queue, mover=first, consumer=reader, stage=stage, ordinal=8,
                  manifest="d" * 64)
     _claim_with_progress(queue, reader, phase="s0")      # ...and is being read

@@ -38,7 +38,7 @@ def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monk
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--priority", "1") == 0
     assert _one_json_line(capsys.readouterr())["action_key"] == direct["action_key"]
     # Attaching does not silently replace the existing generation's reason.
-    record = json.loads(queue.item_path(pool.READY, direct["action_key"]).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.READY, direct["action_key"]).read_text())
     assert record["priority_reason"] == REASON
 
 
@@ -54,7 +54,7 @@ def test_reason_survives_claim_and_is_visible_in_status(tmp_path):
     assert ready["jobs"][0]["priority_reason"] == REASON
     assert REASON in "\n".join(pbstatus.pool_job_lines(ready["jobs"], ready["queue"]))
     assert queue.claim(owner="worker:1") is not None
-    claimed = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert claimed["priority_reason"] == REASON
     observed = pbstatus.read_pool(queue.root)
     assert observed["jobs"][0]["priority_reason"] == REASON
@@ -92,7 +92,7 @@ def test_campaign_rejects_invalid_reason_before_publishing_any_row(tmp_path, mon
     ]))
     with pytest.raises(pbcampaign.ManifestError, match="priority_reason"):
         pbcampaign.load_manifest(str(manifest))
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_reason_is_refused_clearly_by_an_older_queue_runtime():

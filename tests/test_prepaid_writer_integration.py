@@ -108,7 +108,7 @@ def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {KIND: gib})
     return q
 
@@ -128,8 +128,8 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = q.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -296,7 +296,7 @@ def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str,
     (the bash wrapper running stage_move). No direct run_local_action
     shortcut: this is the runtime callability under test.
     """
-    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict), "mover row must be claimed to execute"
     outcome = q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, outcome
@@ -382,7 +382,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     retired = po.retire_batch(q, inst, template, "b1",
                               stage_root=str(stage_root),
                               residency_root=po.output_fragment_root(
-                                  q.root / pool.RESIDENCY))
+                                  q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, json.dumps(retired, default=str)
     # The egress returned the fence: usable capacity is back.
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
@@ -420,7 +420,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
         retired = po.retire_batch(
             q, inst, template, batch_id, stage_root=str(stage_root),
             residency_root=po.output_fragment_root(
-                q.root / pool.RESIDENCY))
+                q.root / pool.record_store.RESIDENCY))
         assert retired.get("ok") is True, json.dumps(retired, default=str)
         results.append(res)
 
@@ -474,7 +474,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     assert po.retire_batch(q, inst, template, "b3",
                            stage_root=str(stage_root),
                            residency_root=po.output_fragment_root(
-                               q.root / pool.RESIDENCY))["ok"] is True
+                               q.root / pool.record_store.RESIDENCY))["ok"] is True
 
     # Cleanup returns usable capacity: dispose origin, reclaim, finish.
     (Path(template["output_prefix"]) / "p3x.bin").unlink()
@@ -713,7 +713,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
         # The null digest survives every transition as JSON null.
-        rec = pool._read_json(
+        rec = pool.record_store.read_queue_record(
             Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
             / po.instance_namespace(inst) / f"{batch_id}.json")
         assert rec["entries"][0]["sha256"] is None
@@ -745,7 +745,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         retired = po.retire_batch(q, inst, template, batch_id,
                                   stage_root=str(stage_root),
                                   residency_root=po.output_fragment_root(
-                                      q.root / pool.RESIDENCY))
+                                      q.root / pool.record_store.RESIDENCY))
         assert retired.get("ok") is True, json.dumps(retired, default=str)
         results.append(res)
 
@@ -823,7 +823,7 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
     assert po.retire_batch(q, inst, template, "b1",
                            stage_root=str(tmp_path / "stage"),
                            residency_root=po.output_fragment_root(
-                               q.root / pool.RESIDENCY))["ok"] is True
+                               q.root / pool.record_store.RESIDENCY))["ok"] is True
 
     # Above the ceiling still refuses: an actual exceeding the admitted
     # bound can never reconcile into that prewrite.
@@ -977,7 +977,7 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
         cas_root=cas_root, producer_action_key=owner,
         command_extra=["--unpaced"])
     assert res.get("ok") is True, res
-    row = pool._read_json(q.item_path(pool.READY, str(res["mover_key"])))
+    row = pool.record_store.require(q.records.item(pool.record_store.READY, str(res["mover_key"])))
     assert isinstance(row, dict)
     assert row.get("priority") == -10
     assert row.get("retry_safe") is True
@@ -1005,7 +1005,7 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     free_after_each: list[int] = []
     for n in range(4):
@@ -1091,7 +1091,7 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1122,7 +1122,7 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     # The row is terminal FAILED -- and cannot be claimed.
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
-    assert not q.item_path(pool.READY, mover).exists()
+    assert not q.records.item_path(pool.record_store.READY, mover).exists()
     assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
     # The row is failed but can never be funded back into a claim, so
     # recovery must name the terminal route instead of telling the caller
@@ -1252,7 +1252,7 @@ def test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1406,7 +1406,7 @@ def test_a_ready_mover_with_an_unreadable_funding_record_stays_unknown(
     assert res.get("ok") is True, res
     mover = str(res["mover_key"])
     # The row stays READY; only the filed intent becomes unreadable.
-    q.funding_output_path(mover, TIER).write_text("{not json")
+    q.records.funding_output_path(mover, TIER).write_text("{not json")
     assert q.output_funding_file_state(mover, TIER)[1] == "corrupt"
     assert q.read_output_funding(mover, TIER) is None
 
@@ -1508,7 +1508,7 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1531,7 +1531,7 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
     assert fragment.is_file(), sorted(Path(residency).rglob("*.json"))
 
     # The window: published, not yet recorded.
-    q.move_path(mover).unlink()
+    q.records.move_path(mover).unlink()
     assert q.move_record(mover) is None
     q.finish(mover, status="failed")
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
@@ -1588,7 +1588,7 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1707,7 +1707,7 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = po.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1732,7 +1732,7 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     (Path(residency) / namespace / f"{mover}.json").unlink()
     for sidecar in Path(residency).rglob(f"{mover}.json"):
         sidecar.unlink()
-    q.move_path(mover).unlink()
+    q.records.move_path(mover).unlink()
     assert q.move_record(mover) is None
     assert list(Path(residency).rglob(f"{mover}.json")) == []
 
@@ -1810,12 +1810,12 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
 
     # The finisher dies: the claim is gone, the lease is stale, and no
     # terminal record was ever filed.
-    q.item_path(pool.CLAIMED, mover).unlink()
-    lease = pool._read_json(q.lease_path(mover)) or {}
+    q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
+    lease = pool.record_store.read_queue_record(q.records.lease_path(mover)) or {}
     lease["heartbeat_unix"] = pool._now() - 10_000
-    pool._write_json_atomic(q.lease_path(mover), lease)
-    assert pool._read_json(q.item_path(pool.DONE, mover)) is None
-    assert pool._read_json(q.item_path(pool.FAILED, mover)) is None
+    pool._write_json_atomic(q.records.lease_path(mover), lease)
+    assert pool.record_store.require(q.records.item(pool.record_store.DONE, mover)) is None
+    assert pool.record_store.require(q.records.item(pool.record_store.FAILED, mover)) is None
 
     assert q.sweep_widowed_leases(timeout_s=60) == [mover]
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
@@ -1887,9 +1887,9 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     # this malformed receipt: the two judgements are independent.
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
-    record = pool._read_json(q.item_path(pool.FAILED, mover))
+    record = pool.record_store.require(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(record, dict), record
-    assert q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    assert q.adopted_attempt_summary(record)["disposition"] == pool.record_store.FAILED
     assert int(record.get("attempts", 0)) < int(record.get("max_attempts", 3))
     assert record["residency"]["tier_id"] == TIER, record["residency"]
     assert q.output_partial_pin_holds(record, mover) is True
@@ -1979,7 +1979,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert _tier_census(ledger) == occupied
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
-    assert not q.item_path(pool.READY, mover).exists()
+    assert not q.records.item_path(pool.record_store.READY, mover).exists()
     funding = q.read_output_funding(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
@@ -1987,7 +1987,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     # real terminal through the one production requeue shaper, so the claim
     # path the drop sites live on is still driven against the occupied
     # state those sites would have to be safe for.
-    terminal = pool._read_json(q.item_path(pool.FAILED, mover))
+    terminal = pool.record_store.require(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(terminal, dict), terminal
     legacy = dict(terminal)
     pool._write_json_atomic(
