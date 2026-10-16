@@ -6563,6 +6563,19 @@ launch fence or a runtime deployment. Evidence and the failed initial census
 are retained under
 `/home/rob/tmp/prismabuild-resume-20261016/retire-prewarm-stage/`.
 
+The admitted dl380g10 final-object census on 2026-10-16 14:38:37Z through
+14:38:42Z found zero names matching `\.pbstage@\d+\+\d+$`, zero bytes and
+zero source or mover xattr observations in `/stage` and `/stage/prewarm`.
+Both roots were readable, with no scan errors, writers or temporaries.
+The census also discovers pool prefixes from roster storage arguments, so a
+configured but stopped writer's custom prefix participates in discovery.
+Any prewarm-stage finals stay in place. No retained role releases them;
+deletion is separate destructive operator work outside B14. This observation
+does not authorize removal. Action
+`f67ec90d7f5c12a508c11d68c7d0bb039688241831619c26b5bbcefe8dbfcb28`
+and its source, per-root identities, times and xattr distributions are retained
+under `/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/retire-prewarm-stage-r2/`.
+
 Both reclamation roles now apply their ordinary ownership and source-proof
 rules to names formerly reserved for prewarm temporaries. Established
 `stage_move`, `stage_release`, `stage_reclaim`, tier discovery, residency and
