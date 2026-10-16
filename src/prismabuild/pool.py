@@ -235,7 +235,6 @@ PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismabuild.publication_superseded.v1"
 #: #372 Tier 0: metadata about a run, never part of the action it was a run of,
 #: so a receipt that carries it and one from before it are the same action.
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
-POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 #: Inline cap on an action stream inside a mutable queue record (#1203).  The
 #: immutable attempt log keeps the full stream and the record names it, so a
