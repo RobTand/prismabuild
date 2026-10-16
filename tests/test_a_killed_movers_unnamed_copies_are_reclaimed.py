@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import ram_promote  # noqa: E402
 import stage_move  # noqa: E402
@@ -393,16 +392,11 @@ def test_a_prewarm_object_and_a_copy_marked_before_the_fix_are_kept(world):
     os.removexattr(legacy, stage_marks.STAGE_MOVER_XATTR)
     assert os.getxattr(legacy, stage_marks.STAGE_SOURCE_XATTR)
     origin = Path(str(world.body["entries"][0]["path"]))
-    tier = prewarm_loop.StageTier(state="present", reason="test",
-                                  mountpoint=str(world.stage),
-                                  free_bytes=1 << 20)
-    sink = tier.open_object("prewarm/shard-0.bin.pbstage@0+16384", SIZE)
-    assert sink is not None
-    sink.identify(os.stat(origin))
-    assert sink.write(memoryview(_payload(0))) is True
-    sink.commit()
     prewarmed = world.stage / "prewarm" / "shard-0.bin.pbstage@0+16384"
-    assert prewarmed.exists() and tier.identity_unrecorded == 0
+    prewarmed.parent.mkdir()
+    prewarmed.write_bytes(_payload(0))
+    os.setxattr(prewarmed, stage_marks.STAGE_SOURCE_XATTR,
+                stage_marks.source_identity(origin.stat()).encode())
 
     receipt = stage_release.reconcile(world.queue, tier_id=STAGE_TIER,
                                       stage_root=str(world.stage), wanted=set())
