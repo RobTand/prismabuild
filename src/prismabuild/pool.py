@@ -840,7 +840,6 @@ def _move_pricing_line_name(line: bytes) -> str | None:
 #: so the record lives in a directory of its own, named like the lock.  A
 #: holder files it once the lock is granted and removes it before letting
 #: go; a worker reads it only when a non-blocking try finds the lock held.
-STAGE_OWNERSHIP_HOLDERS = "stage-ownership-holders"
 STAGE_OWNERSHIP_HOLDER_SCHEMA_V1 = "prismabuild.stage_ownership_holder.v1"
 #: A holder record is a few fields; anything larger is not one.
 MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
