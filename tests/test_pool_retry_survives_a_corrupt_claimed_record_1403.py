@@ -37,7 +37,10 @@ def _with_bad_row(scoped, monkeypatch, payload):
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
     bad_path = queue.records.item_path(pool.record_store.CLAIMED, BAD_KEY)
     bad_path.write_bytes(payload)
-    assert bad_path.name < queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).name
+    assert bad_path.name < queue.records.item_path(
+        pool.record_store.CLAIMED,
+        item["action_key"],
+    ).name
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
     return queue, item, bad_path
 
@@ -75,7 +78,10 @@ def test_an_unreadable_claimed_row_does_not_stop_the_own_retry(
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
     bad_path = queue.records.item_path(pool.record_store.CLAIMED, BAD_KEY)
     bad_path.write_bytes(b"{}")
-    assert bad_path.name < queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).name
+    assert bad_path.name < queue.records.item_path(
+        pool.record_store.CLAIMED,
+        item["action_key"],
+    ).name
     before = bad_path.read_bytes()
 
     real_read_bytes = Path.read_bytes
@@ -125,13 +131,15 @@ def test_a_row_whose_identity_disagrees_with_its_name_is_left_alone(
 
     queue, item, release = _pending_owner(scoped, monkeypatch)
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
-    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_text())
+    live = json.loads(
+        queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_text(),
+    )
     queued_key = "d" * 64
     assert queued_key != item["action_key"]
     record = ({**live, **mutation} if mutation is not None else {
         name: value for name, value in live.items() if name != "action_key"})
     path = queue.records.item_path(pool.record_store.CLAIMED, queued_key)
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
     before = path.read_bytes()
 
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)

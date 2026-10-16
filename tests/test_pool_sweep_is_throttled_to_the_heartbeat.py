@@ -180,13 +180,15 @@ def test_an_expired_lease_is_still_requeued_within_one_heartbeat(
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                   checkout_root=str(tmp_path), worker_script="worker.py",
                   tags=["another-box"], resources={"cpu": 1, "mem_gb": 1})
-    claimed = queue.records.item_path(pool.record_store.READY, key).rename(queue.records.item_path(pool.record_store.CLAIMED, key))
+    claimed = queue.records.item_path(pool.record_store.READY, key).rename(
+        queue.records.item_path(pool.record_store.CLAIMED, key),
+    )
     record = json.loads(claimed.read_text())
     record["claimed_unix"] = clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)
     record["claimed_by"] = "gone:1:deadbeef"
     record["claimed_host"] = "gone"
     claimed.write_text(json.dumps(record))
-    pool._write_json_atomic(queue.records.lease_path(key), {
+    pool.record_store._write_json(queue.records.lease_path(key), {
         "action_key": key, "owner": "gone:1:deadbeef",
         "heartbeat_unix": clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S),
     })

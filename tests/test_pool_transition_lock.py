@@ -20,7 +20,10 @@ def test_successor_waits_for_holder_cleanup(tmp_path):
     publish(queue, KEY)
     lease = queue.records.lease_path(KEY).read_bytes()
     assert queue.claim(owner="second", capacity={"cpu": 2}) is None
-    assert pool._same_claim(pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)), first)
+    assert pool._same_claim(
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)),
+        first,
+    )
     assert queue.records.lease_path(KEY).read_bytes() == lease
     tombstone, taken = queue._entomb_claim(KEY, expect=first)
     assert taken and tombstone is not None
@@ -51,7 +54,10 @@ def test_scope_start_keeps_creation_with_its_claim(scoped, monkeypatch):
     def create(scope):
         with ThreadPoolExecutor(max_workers=1) as executor:
             assert executor.submit(queue.reap_stale, timeout_s=-1).result(timeout=5) == []
-        assert pool._same_claim(pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, item["action_key"])), item)
+        assert pool._same_claim(
+            pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, item["action_key"])),
+            item,
+        )
         return original(scope)
     monkeypatch.setattr(resource_scope.ResourceScope, "create", create)
     queue._start_resource_scope(item=item)
@@ -108,7 +114,7 @@ def test_heartbeat_retains_each_conflicting_lease_identity(tmp_path, field, valu
     first = queue.claim(owner="worker", capacity={"cpu": 1})
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     lease[field] = value
-    pool._write_json_atomic(queue.records.lease_path(KEY), lease)
+    pool.record_store._write_json(queue.records.lease_path(KEY), lease)
     before = queue.records.lease_path(KEY).read_bytes()
     claim = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
     with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
@@ -125,7 +131,7 @@ def test_heartbeat_upgrades_compatible_legacy_lease_and_refreshes_observation(tm
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     for field in ("claimed_unix", "published_unix"):
         lease.pop(field)
-    pool._write_json_atomic(queue.records.lease_path(KEY), lease)
+    pool.record_store._write_json(queue.records.lease_path(KEY), lease)
     for pid in (123, 456):
         observation = {"last_progress_unix": float(pid)}
         queue.write_lease(KEY, owner="worker", child_pid=pid,

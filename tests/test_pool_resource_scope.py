@@ -72,7 +72,9 @@ def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):
     class Process:
         pid = 999999999
         def __init__(self, argv, **kw):
-            persisted = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
+            persisted = json.loads(
+                queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text(),
+            )
             assert persisted['resource_scope']['token'] == 'b'*64
             assert persisted['resource_scope']['memory_max_bytes'] == 2 * 1024**3
             assert '--token' in argv
@@ -129,7 +131,9 @@ def test_reaper_stops_scope_before_requeue_and_strips_ownership(scoped, monkeypa
     queue.execute(item, containment=True)
     assert queue.reap_stale(timeout_s=-1) == [item['action_key']]
     assert 'stop' in calls and 'release' in calls
-    ready = json.loads(queue.records.item_path(pool.record_store.READY, item['action_key']).read_text())
+    ready = json.loads(
+        queue.records.item_path(pool.record_store.READY, item['action_key']).read_text(),
+    )
     assert 'resource_scope' not in ready
     assert 'resource_scope_cleanup' not in ready
     assert queue.ledger().held() == {}
@@ -293,7 +297,7 @@ def test_broker_wrapper_encloses_taskset_affinity(scoped, monkeypatch):
     queue, item, calls = scoped
     cpu = min(os.sched_getaffinity(0))
     tiers = {'preferred': [cpu], 'fallback': []}
-    pool._write_json_atomic(queue.ledger().base / 'cpu-map.json', tiers)
+    pool.record_store._write_json(queue.ledger().base / 'cpu-map.json', tiers)
     item['cpu_allocation'] = queue.ledger().cpu_allocation(item['action_key'], tiers)
     seen = []
     original = resource_scope.ResourceScope.wrap_argv
@@ -350,7 +354,9 @@ def test_reaper_preserves_original_resource_failure_in_attempt_history(scoped, m
         return answer
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', status)
     assert queue.reap_stale(timeout_s=-1) == [item['action_key']]
-    ready = json.loads(queue.records.item_path(pool.record_store.READY, item['action_key']).read_text())
+    ready = json.loads(
+        queue.records.item_path(pool.record_store.READY, item['action_key']).read_text(),
+    )
     assert ready['detail']['termination_reason'] == 'gpu_budget_exceeded'
     assert ready['detail']['termination_evidence'] == {'source': 'broker-resource-monitor'}
 
@@ -395,7 +401,9 @@ def test_a_raising_learning_hook_does_not_escape_the_token_return_gate(scoped, m
     outcome = queue.execute(item, containment=True)
     monkeypatch.setattr(pool.cpu_admission, 'record_completion',
                         _raising_hook(RuntimeError('unsafe PrismaBuild admission lock file')))
-    record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
+    record = json.loads(
+        queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text(),
+    )
 
     cleanup = queue.cleanup_action_containers(record)
 
@@ -438,7 +446,9 @@ def test_an_unexpected_failure_in_the_hook_is_recorded_the_same_way(scoped, monk
     queue.execute(item, containment=True)
     monkeypatch.setattr(pool.cpu_admission, 'record_completion',
                         _raising_hook(ZeroDivisionError('division by zero')))
-    record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
+    record = json.loads(
+        queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text(),
+    )
 
     cleanup = queue.cleanup_action_containers(record)
 
@@ -451,7 +461,7 @@ def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, 
     queue, item, calls = scoped
     key = item['action_key']
     item['max_attempts'] = 1
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     _process(monkeypatch, queue, item, calls)
     outcome = queue.execute(item, containment=True)
     path = queue.finish(key, status=status, detail=outcome, claim_snapshot=item)

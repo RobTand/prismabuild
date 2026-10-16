@@ -41,7 +41,9 @@ def test_cancelled_tombstone_recovers_capacity_after_lease_removal(
     assert queue.sweep_finish_tombstones(grace_s=-1) == [KEY]
     assert queue.ledger().held() == {}
     assert queue.ledger().available() == {"cpu": 1}
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     if successor:
         assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == pending
         assert queue.claim(owner="successor", capacity={"cpu": 1}) is not None
@@ -81,10 +83,15 @@ def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     publish(queue, tmp_path)
     successor = queue.claim(owner="successor", capacity={"cpu": 1})
     # An old runtime's delayed tombstone appears beside the new live owner.
-    tombstone = queue.records.dir(pool.record_store.CLAIMED) / f"{KEY}.1.old{pool.record_store.TOMBSTONE_SUFFIX}"
-    pool._write_json_atomic(tombstone, saved)
+    tombstone = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{KEY}.1.old{pool.record_store.TOMBSTONE_SUFFIX}"
+    pool.record_store._write_json(tombstone, saved)
     lease = queue.records.lease_path(KEY).read_bytes()
     queue.sweep_finish_tombstones(grace_s=-1)
-    assert pool._same_claim(pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)), successor)
+    assert pool._same_claim(
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)),
+        successor,
+    )
     assert queue.records.lease_path(KEY).read_bytes() == lease
     assert queue.ledger().held() == {"cpu": 1}
