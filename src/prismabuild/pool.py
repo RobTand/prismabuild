@@ -696,7 +696,6 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: Where a movement node files what it staged.  A sidecar for the same reason
 #: ``prewarm`` is one, and read by ``tier_loop`` for the fill measurement: a
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
-MOVERS = "movers"
 
 #: The retired movement-receipt store (#992 item 2), beside ``movers/``.
 #: ``pb_gc --queue-root`` moves a terminal consumer's receipt here instead of
