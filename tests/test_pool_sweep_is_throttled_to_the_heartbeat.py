@@ -76,7 +76,7 @@ def clock(monkeypatch: pytest.MonkeyPatch):
 
 def _queue(tmp_path: Path, name: str) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / name)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -180,17 +180,17 @@ def test_an_expired_lease_is_still_requeued_within_one_heartbeat(
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                   checkout_root=str(tmp_path), worker_script="worker.py",
                   tags=["another-box"], resources={"cpu": 1, "mem_gb": 1})
-    claimed = queue.item_path(pool.READY, key).rename(queue.item_path(pool.CLAIMED, key))
+    claimed = queue.records.item_path(pool.record_store.READY, key).rename(queue.records.item_path(pool.record_store.CLAIMED, key))
     record = json.loads(claimed.read_text())
     record["claimed_unix"] = clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)
     record["claimed_by"] = "gone:1:deadbeef"
     record["claimed_host"] = "gone"
     claimed.write_text(json.dumps(record))
-    pool._write_json_atomic(queue.lease_path(key), {
+    pool._write_json_atomic(queue.records.lease_path(key), {
         "action_key": key, "owner": "gone:1:deadbeef",
         "heartbeat_unix": clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S),
     })
 
     # The sweep that runs is the first one, and it finds it.
     assert queue.serve_once() is None
-    assert queue.item_path(pool.READY, key).exists(), "requeued by the reaper"
+    assert queue.records.item_path(pool.record_store.READY, key).exists(), "requeued by the reaper"

@@ -52,14 +52,14 @@ def _claim_stale(queue: pool.PoolQueue, tmp_path: Path, key: str) -> Path:
                   checkout_root=tmp_path / "checkout",
                   worker_script=str(tmp_path / "worker.py"),
                   tags=["another-box"], resources={"cpu": 1, "mem_gb": 1})
-    path = queue.item_path(pool.READY, key).rename(
-        queue.item_path(pool.CLAIMED, key))
+    path = queue.records.item_path(pool.record_store.READY, key).rename(
+        queue.records.item_path(pool.record_store.CLAIMED, key))
     record = json.loads(path.read_text())
     record["claimed_unix"] = pool._now() - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)
     record["claimed_by"] = "gone:1:deadbeef"
     record["claimed_host"] = "gone"
     path.write_text(json.dumps(record))
-    pool._write_json_atomic(queue.lease_path(key), {
+    pool._write_json_atomic(queue.records.lease_path(key), {
         "action_key": key, "owner": "gone:1:deadbeef", "host": "gone",
         "heartbeat_unix": pool._now() - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)})
     return path
@@ -80,20 +80,20 @@ def test_a_saved_finish_retains_its_charge_until_cleanup_is_proved(
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
 
     assert queue.retry_own_pending_finishes() == []
-    pending = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    pending = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
     assert pending["finish_pending"]["status"] == "executed"
     assert pending["container_cleanup_attempts"] == 2
     assert queue.ledger().held() == {"cpu": 1, "mem_gb": 2}
-    assert queue.lease_path(key).exists()
-    assert not queue.item_path(pool.DONE, key).exists()
+    assert queue.records.lease_path(key).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, key).exists()
 
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
     assert queue.retry_own_pending_finishes() == []
-    result = json.loads(queue.item_path(pool.DONE, key).read_text())
+    result = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text())
     assert result["status"] == "executed"
     assert queue.ledger().held() == {}
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    assert not queue.lease_path(key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.lease_path(key).exists()
 
 
 def test_an_ordinary_expired_lease_is_left_for_the_full_reaper(
@@ -116,11 +116,11 @@ def test_an_ordinary_expired_lease_is_left_for_the_full_reaper(
 
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
     assert queue.retry_own_pending_finishes() == []
-    assert queue.item_path(pool.DONE, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
     assert stale_path.read_bytes() == before
 
     assert queue.reap_stale(timeout_s=-1) == [stale_key]
-    assert queue.item_path(pool.READY, stale_key).exists()
+    assert queue.records.item_path(pool.record_store.READY, stale_key).exists()
 
 
 def test_a_malformed_saved_outcome_is_skipped_without_stopping_the_sweep(
@@ -141,8 +141,8 @@ def test_a_malformed_saved_outcome_is_skipped_without_stopping_the_sweep(
                   checkout_root=tmp_path / "checkout",
                   worker_script=str(tmp_path / "worker.py"),
                   resources={"cpu": 1, "mem_gb": 1})
-    broken_path = queue.item_path(pool.READY, broken_key).rename(
-        queue.item_path(pool.CLAIMED, broken_key))
+    broken_path = queue.records.item_path(pool.record_store.READY, broken_key).rename(
+        queue.records.item_path(pool.record_store.CLAIMED, broken_key))
     broken = json.loads(broken_path.read_text())
     broken["claimed_by"] = "this-box:1:beef"
     broken["claimed_host"] = socket.gethostname()
@@ -153,7 +153,7 @@ def test_a_malformed_saved_outcome_is_skipped_without_stopping_the_sweep(
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
     assert queue.retry_own_pending_finishes() == []
     assert broken_path.read_bytes() == before
-    assert queue.item_path(pool.DONE, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
 
 
 def test_a_foreign_boxes_saved_finish_is_left_alone(scoped, monkeypatch):
@@ -169,8 +169,8 @@ def test_a_foreign_boxes_saved_finish_is_left_alone(scoped, monkeypatch):
     monkeypatch.setattr(resource_scope.ResourceScope, "release", release)
 
     foreign_key = "f" * 64
-    live = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
-    foreign_path = queue.item_path(pool.CLAIMED, foreign_key)
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
+    foreign_path = queue.records.item_path(pool.record_store.CLAIMED, foreign_key)
     pool._write_json_atomic(foreign_path, dict(
         live, action_key=foreign_key, claimed_by="foreign-box:1:feed",
         claimed_host="foreign-box"))
@@ -179,7 +179,7 @@ def test_a_foreign_boxes_saved_finish_is_left_alone(scoped, monkeypatch):
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
     assert queue.retry_own_pending_finishes() == []
     assert foreign_path.read_bytes() == before
-    assert queue.item_path(pool.DONE, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
 
 
 def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
@@ -195,7 +195,7 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
     at = [1_788_700_000.0]
     monkeypatch.setattr(pool, "_now", lambda: at[0])
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def save_finish(key: str) -> None:
         queue.publish(action_key=key, cas_root=tmp_path / "cas",
@@ -204,23 +204,23 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
                       resources={"cpu": 1, "mem_gb": 2}, max_attempts=1)
         item = queue.claim(capacity={"cpu": 2, "mem_gb": 4})
         assert item is not None and item["action_key"] == key
-        record = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
         record["finish_pending"] = {"status": "failed",
                                     "detail": {"returncode": 137}}
-        pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), record)
+        pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), record)
 
     first = "1" * 64
     save_finish(first)
     assert queue.retry_own_pending_finishes() == []
-    assert queue.item_path(pool.FAILED, first).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, first).exists()
 
     second = "2" * 64
     save_finish(second)
     assert queue.retry_own_pending_finishes() == []
-    assert queue.item_path(pool.CLAIMED, second).exists(), (
+    assert queue.records.item_path(pool.record_store.CLAIMED, second).exists(), (
         "a second sequential pass inside the same heartbeat must not re-read "
         "the queue")
 
     at[0] += pool.HEARTBEAT_S
     assert queue.retry_own_pending_finishes() == []
-    assert queue.item_path(pool.FAILED, second).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, second).exists()

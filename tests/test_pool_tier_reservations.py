@@ -30,7 +30,7 @@ FILL = f"fill_mb_s_pool_side@{TIER}"
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -133,7 +133,7 @@ def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) 
     assert queue.tier_holdings(KEY_A) == {}
     assert queue.tier_ledger(TIER).available() == {"stage_gib": 2, "fill_mb_s_pool_side": 5}
     # Nothing claim-scoped survives into the outcome or a requeue.
-    done = pool._read_json(queue.item_path(pool.DONE, KEY_A))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY_A))
     assert done is not None and done["tier_reservations"] == {
         TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
     assert "tier_reservations" in pool.PoolQueue._CLAIM_SCOPED_FIELDS
@@ -193,7 +193,7 @@ def test_tier_shortage_denies_without_holding_the_host_or_aging(
     assert queue.ledger().held() == {}, "host tokens must be returned on a tier shortage"
     assert queue.tier_holdings(KEY_A) == {}
     assert queue.passes(KEY_A) == 0, "a cluster-scoped shortage must not withhold this box"
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     denial = _denial(queue, KEY_A)
     assert denial is not None and denial["reason"] == reason
     assert denial["evidence"]["tier_shortage"]["tier_id"] == TIER
@@ -253,7 +253,7 @@ def test_reap_stale_returns_tier_tokens_with_the_host_tokens(queue: pool.PoolQue
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {}
     assert queue.tier_ledger(TIER).available() == {"stage_gib": 1}
-    requeued = pool._read_json(queue.item_path(pool.READY, KEY_A))
+    requeued = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY_A))
     assert requeued is not None and "tier_reservations" not in requeued
 
 
@@ -271,7 +271,7 @@ def test_withdrawing_a_claimed_action_returns_tier_tokens_when_its_owner_conclud
     queue.finish(KEY_A, status="failed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {}
-    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
 
 
 def test_stale_tier_acquisition_is_swept_from_the_tier_root(queue: pool.PoolQueue) -> None:
@@ -282,7 +282,7 @@ def test_stale_tier_acquisition_is_swept_from_the_tier_root(queue: pool.PoolQueu
     assert ledger.available() == {}
     time.sleep(0.01)
     swept = queue.sweep_stale_acquisitions(grace_s=0.0)
-    assert swept == [f"{pool.TIER_RESERVATIONS}/{TIER}/{handle}"]
+    assert swept == [f"{pool.record_store.TIER_RESERVATIONS}/{TIER}/{handle}"]
     assert ledger.available() == {"stage_gib": 1}
 
 
@@ -305,7 +305,7 @@ def test_reclaim_terminal_reservation_reaches_tier_tokens_no_box_holds(
 def test_announce_tier_files_an_advisory_record(queue: pool.PoolQueue) -> None:
     record = {"tier_id": TIER, "tier": "stage", "capacity_bytes": 5 << 30, "mountpoint": "/x"}
     path = queue.announce_tier(record)
-    assert path == queue.root / pool.TIERS / f"{TIER}.json"
+    assert path == queue.root / pool.record_store.TIERS / f"{TIER}.json"
     tiers = queue.tiers()
     assert len(tiers) == 1 and tiers[0]["tier_id"] == TIER
     assert tiers[0]["capacity_bytes"] == 5 << 30 and "announced_unix" in tiers[0]
