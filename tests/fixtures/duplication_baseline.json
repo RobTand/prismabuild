@@ -43,7 +43,6 @@
   "hashlib:src/prismabuild/pool.py::PoolQueue.unlink_retired_move.unlink_locked",
   "hashlib:src/prismabuild/pool.py::_projection_sha256",
   "hashlib:src/prismabuild/pool.py::_retirement_checkpoint_digest",
-  "hashlib:src/prismabuild/pool.py::_stage_ownership_name",
   "hashlib:src/prismabuild/pool_reconcile.py::_cleanup",
   "hashlib:src/prismabuild/pool_reconcile.py::reconcile",
   "hashlib:src/prismabuild/produced_output.py::_DeadStagedReports.refused",

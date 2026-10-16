@@ -198,13 +198,13 @@ def test_revalidating_another_directory_does_not_refresh_this_one(
     receipt.parent.mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
-    assert pool.record_store.read_queue_record(receipt) is None
+    assert pool.record_store.read_document(receipt) is None
     _file_receipt(queue, KEY, complete=True)
     os.close(os.open(queue.root, os.O_RDONLY | os.O_DIRECTORY))
 
-    assert pool.record_store.read_queue_record(receipt) is None
+    assert pool.record_store.read_document(receipt) is None
     os.listdir(receipt.parent)
-    assert pool.record_store.read_queue_record(receipt) is not None
+    assert pool.record_store.read_document(receipt) is not None
 
 
 def test_a_parent_that_cannot_be_opened_leaves_the_first_answer(

@@ -1139,7 +1139,7 @@ def _replay_attestation_from_terminal(queue, action_key: str, nonce: str,
         return False, f"broker-attestation-unreadable-retain: {existing}"
     for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED):
         try:
-            record = pool_mod.record_store.require(queue.records.item(state, action_key))
+            record = pool_mod.record_store.value_or_raise(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError) as exc:
             return False, f"terminal record unreadable: {state}"
         if not isinstance(record, Mapping):
@@ -1404,7 +1404,7 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
     names_this_attempt: bool | None = None
     for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED, pool_mod.record_store.WITHDRAWN):
         try:
-            record = pool_mod.record_store.require(queue.records.item(state, action_key))
+            record = pool_mod.record_store.value_or_raise(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError):
             return False, f"terminal record unreadable: {state}"
         if record is None or not isinstance(record, Mapping):
@@ -3159,7 +3159,7 @@ def _read_claim(queue, action_key: str):
     from prismabuild import pool as pool_mod
 
     try:
-        return pool_mod.record_store.require(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
+        return pool_mod.record_store.value_or_raise(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
     except (OSError, pool_mod.PoolContractError) as exc:
         return exc
 
@@ -3281,7 +3281,7 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if queue is None:
         queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
-        claim = pool_mod.record_store.require(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
+        claim = pool_mod.record_store.value_or_raise(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
     except (OSError, pool_mod.PoolContractError) as exc:
         return {"ok": False, "refusal": f"claim-unreadable: {exc}"}
     if not isinstance(claim, Mapping):

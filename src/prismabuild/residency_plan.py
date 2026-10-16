@@ -1304,7 +1304,7 @@ def window_owned(queue, consumer_action_key: str, *,
             return False, f"the consumer's {state} record could not be read: {exc}"
         if generation is not None:
             try:
-                item = _pool.record_store.read_queue_record(path)
+                item = _pool.record_store.read_document(path)
             except (OSError, ValueError) as exc:
                 return False, f"the consumer's record could not be read: {exc}"
             if not isinstance(item, Mapping):

@@ -7456,7 +7456,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
             f"unknown-retain: release index unreadable: {exc}") from None
     for name in names:
         try:
-            body = pool_mod.record_store.read_queue_record(directory / name)
+            body = pool_mod.record_store.read_document(directory / name)
         except (OSError, pool_mod.PoolContractError) as exc:
             raise ProducedOutputError(
                 f"unknown-retain: release index {name} unreadable: {exc}"
