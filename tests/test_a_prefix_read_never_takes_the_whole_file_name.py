@@ -76,7 +76,7 @@ def _move(queue, stage, cas, source: Path, tmp_path: Path, label: str,
         "--tier-id", TIER, "--stage-root", str(stage),
         "--manifest", str(manifest), "--manifest-sha256", digest,
         "--range-start-bytes", "0", "--range-end-bytes", str(size),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", "1", "--max-readers", "1", "--unpaced"])
     return stage_move.move(args, stop=threading.Event()), consumer, mover
 
@@ -84,7 +84,7 @@ def _move(queue, stage, cas, source: Path, tmp_path: Path, label: str,
 def _staged_path(queue, consumer: str, mover: str) -> Path:
     fragment = residency_map.validate_fragment(
         __import__("json").loads(residency_map.fragment_path(
-            queue.residency_fragment_root(), consumer, mover).read_bytes()))
+            queue.records.residency_fragment_root(), consumer, mover).read_bytes()))
     (entry,) = fragment["entries"].values()
     return Path(str(entry["stage_path"]))
 

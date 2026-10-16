@@ -50,7 +50,7 @@ def _run_failed_mover(world: _World, mover: str, worker: str) -> dict:
 
     claimed = _claim_mover(world.q, worker)
     assert claimed["action_key"] == mover, claimed["action_key"]
-    row = pool._read_json(world.q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.require(world.q.records.item(pool.record_store.CLAIMED, mover))
     outcome = world.q.execute(row, timeout_s=240)
     assert outcome.get("returncode") not in (None, 0), outcome
     return outcome

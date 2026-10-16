@@ -79,7 +79,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
         "--max-readers", "2",
@@ -170,7 +170,7 @@ def test_two_ranges_of_one_file_get_names_of_their_own(tmp_path: Path) -> None:
     assert (stage / "shard.bin.pbrange" / "2048-2048").read_bytes() == payload[2048:]
     # Two movers, two fragments, one composed map with both ranges.
     composed = rm.compose(rm.read_fragments(
-        tmp_path / "queue" / pool.RESIDENCY, CONSUMER))
+        tmp_path / "queue" / pool.record_store.RESIDENCY, CONSUMER))
     assert set(composed["entries"]) == {
         rm.residency_map_key(str(mount / "shard.bin"), 0),
         rm.residency_map_key(str(mount / "shard.bin"), 2048),
@@ -259,12 +259,12 @@ def test_the_receipt_is_filed_where_the_tier_loop_reads_it(tmp_path: Path) -> No
     mount, entries = _three_files(tmp_path)
     args = _args(tmp_path, _manifest(mount, entries), start=0, end=4096)
     queue = pool.PoolQueue(Path(args.pool_root))
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     receipt = stage_move.move(args)
     path = queue.record_move(MOVER, receipt)
 
-    assert path == queue.root / pool.MOVERS / f"{MOVER}.json"
+    assert path == queue.root / pool.record_store.MOVERS / f"{MOVER}.json"
     read = queue.move_record(MOVER)
     assert read is not None
     assert read["schema"] == pool.POOL_MOVE_SCHEMA_V1
@@ -364,7 +364,7 @@ def test_a_second_movers_bad_copy_never_destroys_the_first_ones_good_one(
     # A's copy is untouched, and A's fragment still resolves to it.
     assert staged.read_bytes() == b"a" * 4096
     composed = rm.compose([rm.read_fragments(
-        tmp_path / "queue" / pool.RESIDENCY, CONSUMER)[0]])
+        tmp_path / "queue" / pool.record_store.RESIDENCY, CONSUMER)[0]])
     resolved = rm.lookup(composed, str(mount / "shard.bin"), 0)
     assert resolved is not None and Path(resolved["stage_path"]).exists()
 

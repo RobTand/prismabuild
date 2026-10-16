@@ -79,7 +79,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
         path.write_bytes(b"x" * 16)
         entries[residency_map.residency_map_key(f"/mnt/shared/part-{index}", 0)] = {
             "stage_path": str(path), "bytes": 16, "offset": 0, "sha256": "1" * 64}
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -106,7 +106,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     """The acceptance fixture: one injected failure, a retry, bytes released."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)          # the consumer allows one attempt
     phase = staged["plan"]["phases"][0]
     mover_row, egress_row = phase["mover_row"], phase["egress_row"]
@@ -133,10 +133,10 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     assert first["complete"] is False and first["tokens_released"] == 0, json.dumps(first, default=str)
     queue.finish(egress, status="failed")
 
-    assert queue.item_path(pool.READY, egress).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, egress).exists(), (
         "one transient failure must not end the egress: it is retry-safe "
         "with its own attempt bound")
-    assert not queue.item_path(pool.FAILED, egress).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, egress).exists()
     assert queue.tier_ledger(TIER).holder_tokens(mover) == held
 
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
@@ -148,7 +148,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     assert second["complete"] is True and second["entries_deleted"] == 2
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
     assert not list(stage.rglob("*.bin"))
-    assert queue.item_path(pool.DONE, egress).exists()
+    assert queue.records.item_path(pool.record_store.DONE, egress).exists()
 
 
 @pytest.mark.parametrize("node", ["mover_row", "egress_row"])
@@ -156,7 +156,7 @@ def test_every_movement_node_seals_its_own_retry_policy(tmp_path, node) -> None:
     """Row and sealed body agree, and neither is the consumer's one attempt."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, residency_mover_max_attempts=4)
     row = staged["plan"]["phases"][0][node]
     body = staged["cas"].actions[str(row["action_key"])]
@@ -222,7 +222,7 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
 
     claimed = _claim_mover(q, "w-restage")
     assert claimed["action_key"] == mover
-    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
     first = _execute_mover(q, cas_root, mover, tmp_path / "mover-checkout")
     assert first["complete"] is True, first
@@ -232,7 +232,7 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
     retired = po.retire_batch(q, inst, template, "b1",
                               stage_root=str(stage_root),
                               residency_root=po.output_fragment_root(
-                                  q.root / pool.RESIDENCY))
+                                  q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, json.dumps(retired, default=str)
     assert not staged.exists(), "the egress evicted the staged bytes"
 
