@@ -1170,7 +1170,7 @@ class RecordStore:
         return self.prepare_lane_state(state) / f"{key}.json"
 
     def released_origin_consumer_path(self, consumer: str, checked_ref: Mapping[str, str]) -> Path:
-        raw = json.dumps(dict(checked_ref), sort_keys=True, separators=(",", ":")).encode()
+        raw = digest_primitives.compact_ascii_json_bytes(dict(checked_ref))
         digest = digest_primitives.raw_sha256(raw)
         return self.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
 
