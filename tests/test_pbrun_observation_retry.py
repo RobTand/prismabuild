@@ -28,11 +28,10 @@ KEY = "c" * 64
 class Queue:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.records = pbrun.pool.record_store.RecordStore(root)
         for state in ("done", "failed", "withdrawn"):
             (root / state).mkdir(parents=True)
 
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
 
     def withdrawal_decisions(self, key: str, **_kwargs) -> list:
         return []
@@ -80,7 +79,7 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
     """The first read blocks past its budget; the record is readable later."""
 
     queue = Queue(tmp_path / "queue")
-    path = queue.item_path(state, KEY)
+    path = queue.records.item_path(state, KEY)
     os.mkfifo(path)
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_ending(status, returncode)), encoding="utf-8")
@@ -114,7 +113,7 @@ def test_patient_wait_starts_each_reader_only_after_the_last_was_reaped(
     """Retries are serial: no reader is ever forked beside a live one."""
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     children: list[int] = []
     unreaped_at_fork: list[int] = []
     fork = pbrun.pbstatus.os.fork
@@ -150,7 +149,7 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     _fast_reads(monkeypatch)
     assert pbrun.await_outcome(queue, KEY, wait_s=0.3) == \
         pbrun.RECORD_WRITE_FAILED_EXIT
@@ -176,7 +175,7 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     """
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     retained: list[int] = []
     forks: list[int] = []
     fork = pbrun.pbstatus.os.fork
@@ -223,7 +222,7 @@ def test_zero_patience_keeps_two_bounded_reads_and_exit_74(
     """
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     forks: list[int] = []
     fork = pbrun.pbstatus.os.fork
 

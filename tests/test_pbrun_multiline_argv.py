@@ -73,7 +73,7 @@ def test_a_multiline_shell_script_is_queued_verbatim(
 
     assert _submit(tmp_path, monkeypatch, work) == 75   # queued, nobody served it
 
-    ready = list(queue.dir(pool.READY).glob("*.json"))
+    ready = list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert len(ready) == 1
     item = json.loads(ready[0].read_text(encoding="utf-8"))
     key = str(item["action_key"])
@@ -95,4 +95,4 @@ def test_a_refused_contract_is_a_named_refusal_not_a_traceback(
     monkeypatch.setattr(pbrun.pb, "seal_action", refuse)
     with pytest.raises(SystemExit, match=r"^pbrun: refusing to seal the action: "):
         _submit(tmp_path, monkeypatch, work)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []

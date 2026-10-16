@@ -44,7 +44,7 @@ def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    made.ensure_layout()
+    made.records.ensure_layout()
     return made
 
 
@@ -53,7 +53,7 @@ def _publish(q: pool.PoolQueue, *, max_attempts: int = 1,
     q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", max_attempts=max_attempts,
               retry_safe=retry_safe)
-    ready = json.loads(q.item_path(pool.READY, KEY).read_text(encoding="utf-8"))
+    ready = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"))
     return float(ready["published_unix"])
 
 
@@ -76,7 +76,7 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
     assert second != first
     _run(queue, status="executed", returncode=0, stdout="later run\n")
     terminal = json.loads(
-        queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
     path, ending = pbrun.landed_outcome(
@@ -88,11 +88,11 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
     summary = pbrun.outcome_summary(queue, path, ending)
     assert summary["status"] == "executed"
     assert summary["detail"]["stdout"] == "first run\n"
-    assert path == queue.attempt_path(ending, ending["attempts"])
+    assert path == queue.records.attempt_path(ending, ending["attempts"])
     assert path.exists()
     # Recovery is a read: the later generation's row is left where it is.
     assert json.loads(
-        queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8")) == terminal
+        queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8")) == terminal
 
 
 def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> None:
@@ -119,7 +119,7 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
     _run(queue, status="failed", returncode=3, stdout="later failed\n")
     assert second != first
     terminal = json.loads(
-        queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
     path, ending = pbrun.landed_outcome(
@@ -131,7 +131,7 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
     assert summary["returncode"] == 7
     assert summary["detail"]["stdout"] == "first failed\n"
     assert json.loads(
-        queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8")) == terminal
+        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8")) == terminal
 
 
 def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
@@ -141,7 +141,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
     first = _publish(queue, max_attempts=2, retry_safe=True)
     _run(queue, status="failed", returncode=7, stdout="first attempt\n")
     requeued = json.loads(
-        queue.item_path(pool.READY, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"))
     assert float(requeued["published_unix"]) == first
     assert requeued["attempts"] == 1
     _run(queue, status="failed", returncode=9, stdout="causal retry\n")
@@ -149,7 +149,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
     _run(queue, status="failed", returncode=3, stdout="later run\n")
     assert second != first
     terminal = json.loads(
-        queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
     path, ending = pbrun.landed_outcome(
@@ -161,7 +161,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
     assert [row["attempt"] for row in attempts] == [1, 2]
     assert attempts[0]["stdout"] == "first attempt\n"
     assert attempts[-1]["stdout"] == "causal retry\n"
-    assert path == queue.attempt_path(ending, 2)
+    assert path == queue.records.attempt_path(ending, 2)
     summary = pbrun.outcome_summary(queue, path, ending)
     assert summary["status"] == "failed"
     assert summary["returncode"] == 9
@@ -203,7 +203,7 @@ def test_pbwait_reports_the_recovered_generation(queue, tmp_path, monkeypatch) -
 
 
 def _published_attempt(queue: pool.PoolQueue, generation: float) -> Path:
-    return queue.attempt_path(
+    return queue.records.attempt_path(
         {"action_key": KEY, "published_unix": generation}, 1)
 
 
@@ -265,7 +265,7 @@ def test_an_incomplete_attempt_run_is_refused(queue, absent) -> None:
     _run(queue, status="failed", returncode=8, stdout="attempt two\n")
     _run(queue, status="failed", returncode=9, stdout="attempt three\n")
     number = 1 if absent == "first" else 2
-    removed = queue.attempt_path(
+    removed = queue.records.attempt_path(
         {"action_key": KEY, "published_unix": generation}, number)
     assert removed.exists()
     removed.unlink()
@@ -280,16 +280,16 @@ def test_an_attempt_beyond_its_recorded_budget_is_refused(queue) -> None:
     generation = _publish(queue, max_attempts=2, retry_safe=True)
     _run(queue, status="failed", returncode=7, stdout="first attempt\n")
     _run(queue, status="executed", returncode=0, stdout="retry completed\n")
-    assert queue.item_path(pool.DONE, KEY).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY).exists()
     for number in (1, 2):
         _rewrite(
-            queue.attempt_path(
+            queue.records.attempt_path(
                 {"action_key": KEY, "published_unix": generation}, number),
             lambda value: value.__setitem__("max_attempts", 1),
         )
     # The mutable row is the one a later generation replaces; with it gone the
     # waiter has only the archive to read.
-    queue.item_path(pool.DONE, KEY).unlink()
+    queue.records.item_path(pool.record_store.DONE, KEY).unlink()
 
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)

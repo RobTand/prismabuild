@@ -47,7 +47,7 @@ def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    made.ensure_layout()
+    made.records.ensure_layout()
     return made
 
 
@@ -57,7 +57,7 @@ def _landed(q: pool.PoolQueue, *, status: str = "executed",
 
     q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", max_attempts=1)
-    ready = json.loads(q.item_path(pool.READY, KEY).read_text(encoding="utf-8"))
+    ready = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"))
     claim = q.claim()
     assert claim is not None and claim["action_key"] == KEY
     q.finish(KEY, status=status,
@@ -78,7 +78,7 @@ class StaleName:
 
     def __init__(self, q: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
                  stale) -> None:
-        self.attempts = str(q.root / pool.ATTEMPTS)
+        self.attempts = str(q.root / pool.record_store.ATTEMPTS)
         self.listed = 0
         self.refused = 0
         self._stale = stale
@@ -210,7 +210,7 @@ def test_an_attempt_that_is_really_missing_is_never_a_pass(
     """
 
     generation = _landed(queue)
-    shutil.rmtree(queue.root / pool.ATTEMPTS / KEY)
+    shutil.rmtree(queue.root / pool.record_store.ATTEMPTS / KEY)
     started = time.monotonic()
     rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)

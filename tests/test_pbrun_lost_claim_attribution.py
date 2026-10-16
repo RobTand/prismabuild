@@ -75,10 +75,10 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
     )
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
         assert q.claim(owner=f"{HELD_BY}:1:abc", capacity={"cpu": 1}) is not None
-    path = q.item_path(pool.CLAIMED, KEY)
+    path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     if never_leased:
         # The lease is what says a payload was launched; this one has none.
-        q.lease_path(KEY).unlink()
+        q.records.lease_path(KEY).unlink()
         # ``withdraw`` closes the retry by writing these two onto the live
         # claim.  Written directly here: the subject is what ``pbrun`` renders
         # from the record, not how the record came to be stamped.
@@ -86,7 +86,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         record["max_attempts"] = 1
         record["withdrawn_unix"] = pool._now()
         pool._write_json_atomic(path, record)
-    intent_path = q.item_path(pool.INTENT, KEY)
+    intent_path = q.records.item_path(pool.record_store.INTENT, KEY)
     if forget_claimed_host:
         # The shape of a claim lost between the rename and the record rewrite:
         # the claiming box never got to name itself in the record.
@@ -111,7 +111,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
     with mock.patch.object(pool, "_now", lambda: later):
         # The reaper reports every claim it moved, terminal or requeued.
         assert q.reap_stale(timeout_s=-1) == [KEY]
-    failed = q.item_path(pool.FAILED, KEY)
+    failed = q.records.item_path(pool.record_store.FAILED, KEY)
     assert failed.exists()
     record = json.loads(failed.read_text())
     assert record["status"] == "lease_lost_max_attempts"

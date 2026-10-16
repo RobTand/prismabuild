@@ -2344,7 +2344,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     # Only the isolated fixture's runtime address is bound here. The real
     # source worker executes; no bridge publication, stub or live queue edit.
     row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-    pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+    pool_module._write_json_atomic(queue.records.item_path(pool_module.READY, row["action_key"]), row)
     item = queue.claim(tags=["gb10", "local-dependency-v1"], has_gpu=False,
                        capacity={"cpu": 1, "mem_gb": 4})
     assert item is not None
@@ -2733,7 +2733,7 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
         checkout_root=root / "checkout",
         tags=action["params"]["placement"]["required_tags"], resources={"cpu": 1, "mem_gb": 4},
         queue_root=queue.root)
-    ready = queue.item_path(pool_module.READY, action["action_key"])
+    ready = queue.records.item_path(pool_module.READY, action["action_key"])
     before = ready.read_bytes()
     if not present:
         alias.unlink()
@@ -2743,7 +2743,7 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
@@ -2752,7 +2752,7 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        assert queue.records.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
 
@@ -2889,7 +2889,7 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
         worker_script=Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py",
         checkout_root=root / "checkout", tags=action["params"]["placement"]["required_tags"],
         resources={"cpu": 1, "mem_gb": 4}, queue_root=queue.root)
-    ready = queue.item_path(pool_module.READY, action["action_key"])
+    ready = queue.records.item_path(pool_module.READY, action["action_key"])
     before = ready.read_bytes()
     if not present:
         alias.unlink()
@@ -2899,7 +2899,7 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(row.get("reason") == "local_dependency_not_present"
@@ -2908,7 +2908,7 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.item_path(pool_module.CLAIMED, action["action_key"]).exists()
+        assert queue.records.item_path(pool_module.CLAIMED, action["action_key"]).exists()
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
 
@@ -2989,7 +2989,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+        pool_module._write_json_atomic(queue.records.item_path(pool_module.READY, row["action_key"]), row)
         return row
     return submit, queue, work, alias, declared
 
@@ -2999,7 +2999,7 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     from prismabuild import adaptive_cpu, local_dependencies
     submit, queue, work, alias, declared = relocated_input_submission
     row = submit(case)
-    ready = queue.item_path(pool_module.READY, row["action_key"])
+    ready = queue.records.item_path(pool_module.READY, row["action_key"])
     before = ready.read_bytes()
     if case == "missing":
         alias.unlink()
@@ -3008,7 +3008,7 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     if case == "missing":
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.item_path(pool_module.CLAIMED, row["action_key"]).exists()
+        assert not queue.records.item_path(pool_module.CLAIMED, row["action_key"]).exists()
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
         assert any(entry.get("reason") == "local_dependency_not_present"
@@ -3142,7 +3142,7 @@ def raw_copy_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module._write_json_atomic(queue.item_path(pool_module.READY, row["action_key"]), row)
+        pool_module._write_json_atomic(queue.records.item_path(pool_module.READY, row["action_key"]), row)
         return row
     return submit, queue, work, raw, content
 
