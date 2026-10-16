@@ -37,15 +37,15 @@ CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
 TIERS = {"preferred": list(range(20)), "fallback": []}
 
 
-def _conclude(queue, index, *, state=pool.WITHDRAWN, sidecar=None):
+def _conclude(queue, index, *, state=pool.record_store.WITHDRAWN, sidecar=None):
     """A concluded key with the leftover pass sidecar the fleet carries."""
     key = f"{0xC0DE0000 + index:064x}"
-    queue.passes_path(key).parent.mkdir(exist_ok=True)
-    queue.item_path(state, key).write_text(
+    queue.records.passes_path(key).parent.mkdir(exist_ok=True)
+    queue.records.item_path(state, key).write_text(
         f'{{"action_key": "{key}", "status": "withdrawn"}}', encoding="utf-8")
     record = sidecar if sidecar is not None else (
         f'{{"action_key": "{key}", "passes": 3, "first_unix": 1.0, "updated_unix": 2.0}}')
-    queue.passes_path(key).write_text(record.replace("KEY", key), encoding="utf-8")
+    queue.records.passes_path(key).write_text(record.replace("KEY", key), encoding="utf-8")
     return key
 
 
@@ -61,7 +61,7 @@ def _slow_reads(monkeypatch, seconds):
 
 
 def _claim(queue, key, *, cpu_sampler, gpu_sampler):
-    candidate = pool._read_json(queue.item_path(pool.READY, key))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
     return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                        has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
                        cpu_sampler=cpu_sampler,
@@ -92,9 +92,9 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     rest = queue.sweep_orphan_passes()
     assert sorted(first + rest) == sorted(orphans)
     assert queue.sweep_orphan_passes() == []
-    assert not any(queue.passes_path(key).exists() for key in orphans)
+    assert not any(queue.records.passes_path(key).exists() for key in orphans)
     # Terminal/withdrawal records are untouched: only the sidecar retires.
-    assert all(queue.item_path(pool.WITHDRAWN, key).exists() for key in orphans)
+    assert all(queue.records.item_path(pool.record_store.WITHDRAWN, key).exists() for key in orphans)
 
     tick(11)
     claimed = _claim(queue, ordinary,
@@ -107,7 +107,7 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     live = publish("live-row")
     queue.record_pass(live)
-    prunable = _conclude(queue, 1, state=pool.DONE)
+    prunable = _conclude(queue, 1, state=pool.record_store.DONE)
     elected = _conclude(queue, 2, sidecar=(
         '{"action_key": "KEY", "passes": 1, "measurement_reservation": {"schema": "x"}}'))
     foreign = _conclude(queue, 3, sidecar=(
@@ -115,8 +115,8 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
     unreadable = _conclude(queue, 4, sidecar="{not json")
     locked = _conclude(queue, 5)
     unconcluded = f"{0xC0DE0006:064x}"
-    queue.passes_path(unconcluded).parent.mkdir(exist_ok=True)
-    queue.passes_path(unconcluded).write_text(
+    queue.records.passes_path(unconcluded).parent.mkdir(exist_ok=True)
+    queue.records.passes_path(unconcluded).write_text(
         f'{{"action_key": "{unconcluded}", "passes": 1}}', encoding="utf-8")
 
     holding, release = threading.Event(), threading.Event()
@@ -135,7 +135,7 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
         release.set()
         holder.join(timeout=60)
     for key in (live, elected, foreign, unreadable, locked, unconcluded):
-        assert queue.passes_path(key).exists(), key
+        assert queue.records.passes_path(key).exists(), key
     # Released, the concluded counter-only sidecar goes on the next sweep.
     assert queue.sweep_orphan_passes() == [locked]
 
@@ -151,17 +151,17 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
     ]
     kept = [_conclude(queue, index, sidecar=retained[index % len(retained)])
             for index in range(257)]
-    before = {key: queue.passes_path(key).read_bytes() for key in kept}
+    before = {key: queue.records.passes_path(key).read_bytes() for key in kept}
     orphan = _conclude(queue, 300)
-    real_read = pool._read_json
+    real_read = pool.record_store.read_queue_record
     inspected = []
 
     def read(path, **kwargs):
-        if path.parent == queue.root / pool.PASSES:
+        if path.parent == queue.root / pool.record_store.PASSES:
             inspected.append(path.name)
         return real_read(path, **kwargs)
 
-    monkeypatch.setattr(pool, "_read_json", read)
+    monkeypatch.setattr(pool.record_store, '_read_json', read)
     pruned = []
     for _ in range(math.ceil((len(kept) + 1) / limit)):
         # Different loop instances share the existing host-local sweep owner.
@@ -173,8 +173,8 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
         assert not restarted._sweep_due(), "cursor writes must not change the schedule"
         tick(pool.HEARTBEAT_S + 1)
     assert pruned == [orphan], "the retained sorted prefix starved the later orphan"
-    assert not queue.passes_path(orphan).exists()
-    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+    assert not queue.records.passes_path(orphan).exists()
+    assert {key: queue.records.passes_path(key).read_bytes() for key in kept} == before
 
     # A new earlier key is reached after wrapping, even when the last name
     # inspected was deleted; the cursor is a name, not a surviving-file index.
@@ -185,7 +185,7 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
         pruned += pool.PoolQueue(queue.root).sweep_orphan_passes(limit=limit)
         assert len(inspected) <= limit
     assert pruned == [earlier]
-    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+    assert {key: queue.records.passes_path(key).read_bytes() for key in kept} == before
 
 
 def test_fair_sweep_recovers_capped_census_without_retiring_elections(
@@ -195,19 +195,19 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
     queue.record_pass(ordinary)
     kept = []
     for index in range(257):
-        key = _conclude(queue, index, state=pool.DONE)
+        key = _conclude(queue, index, state=pool.record_store.DONE)
         publication = {"action_key": key, "published_unix": 1.0}
         chosen = {"schema": reservation.SCHEMA, **publication,
                   "generation": core.canonical_sha256(publication),
                   "host": "sparklina", "priority": 0,
                   "epoch_unix": 2.0, "opportunity_unix": 3.0}
-        queue.passes_path(key).write_text(json.dumps(
+        queue.records.passes_path(key).write_text(json.dumps(
             {"action_key": key, reservation.FIELD: chosen}), encoding="utf-8")
-        queue.item_path(pool.DONE, key).write_text(json.dumps(
+        queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps(
             {"schema": pool.POOL_OUTCOME_SCHEMA_V1, **publication,
              "status": "executed", "finished_unix": 4.0}), encoding="utf-8")
         kept.append(key)
-    before = {key: queue.passes_path(key).read_bytes() for key in kept}
+    before = {key: queue.records.passes_path(key).read_bytes() for key in kept}
     orphan = _conclude(queue, 300)
     # Scale only the record cap: real bounded census, retirement proof, reader
     # fence, transition locks, admission gate and capacity claim all execute.
@@ -222,7 +222,7 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
 
     assert queue.sweep_orphan_passes() == []
     assert pool.PoolQueue(queue.root).sweep_orphan_passes() == [orphan]
-    assert {key: queue.passes_path(key).read_bytes() for key in kept} == before
+    assert {key: queue.records.passes_path(key).read_bytes() for key in kept} == before
     census = reservation.CensusReader(queue, queue.ledger()).capture()
     assert set(census["selections"]) == set(kept)
     assert census["elections"] == {}  # exact endings, not missing authority
@@ -236,10 +236,10 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
 def test_swept_census_still_refuses_lower_work_behind_a_live_election(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
-    election = queue.passes_path(measurement).read_bytes()
+    election = queue.records.passes_path(measurement).read_bytes()
     orphans = [_conclude(queue, index) for index in range(40)]
     assert sorted(queue.sweep_orphan_passes()) == sorted(orphans)
-    assert queue.passes_path(measurement).read_bytes() == election
+    assert queue.records.passes_path(measurement).read_bytes() == election
 
     _slow_reads(monkeypatch, 0.002)
     lower = publish("lower-behind-election", timeout_s=5)
@@ -250,7 +250,7 @@ def test_swept_census_still_refuses_lower_work_behind_a_live_election(fleet, mon
     refusal = denial(lower)
     assert refusal["reason"] == "deferred_for_measurement_reservation", refusal
     assert refusal["evidence"]["selection"] == reservation.selection(
-        pool._read_json(queue.passes_path(measurement)))
+        pool.record_store.read_queue_record(queue.records.passes_path(measurement)))
     assert queue.ledger().held_keys() == [holder]
 
 
@@ -314,8 +314,8 @@ def test_serve_once_runs_the_orphan_sweep_on_the_reaper_schedule(fleet, monkeypa
     monkeypatch.setattr(queue, "_sweep_due", lambda **kwargs: False)
     monkeypatch.setattr(queue, "claim", lambda **kwargs: None)
     assert queue.serve_once(python=sys.executable) is None
-    assert queue.passes_path(orphan).exists()
+    assert queue.records.passes_path(orphan).exists()
     monkeypatch.setattr(queue, "_sweep_due", lambda **kwargs: True)
     monkeypatch.setattr(queue, "reap_stale", lambda **kwargs: [])
     assert queue.serve_once(python=sys.executable) is None
-    assert not queue.passes_path(orphan).exists()
+    assert not queue.records.passes_path(orphan).exists()

@@ -71,7 +71,7 @@ def test_worker_offer_and_live_claim_agree_on_observed_paths(tmp_path, kind):
 
     assert (claimed is not None) is expected
     if not expected:
-        assert queue.item_path(pool.READY, "a" * 64).is_file()
+        assert queue.records.item_path(pool.record_store.READY, "a" * 64).is_file()
         assert queue.passes("a" * 64) == 0
         denial = _denials(queue)[-1]
         assert denial["reason"] == "interpreter_not_present"
@@ -117,9 +117,9 @@ def test_publication_and_foreign_claim_keep_their_existing_validation(tmp_path, 
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="absolute path to an executable"):
         _publish(queue, "a" * 64, value)
-    assert not queue.item_path(pool.READY, "a" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "a" * 64).exists()
     _publish(queue, "b" * 64, sys.executable)
-    path = queue.item_path(pool.READY, "b" * 64)
+    path = queue.records.item_path(pool.record_store.READY, "b" * 64)
     record = json.loads(path.read_text())
     record["interpreter"] = value
     path.write_text(json.dumps(record))
@@ -147,7 +147,7 @@ def test_submission_requires_unanimous_negative_answers(tmp_path, answers, expec
     for index, fields in enumerate(answers):
         queue.announce(host=f"host-{index}", tags=[TAG], has_gpu=False,
                        capacity=CAPACITY)
-        path = queue.root / pool.WORKERS / f"host-{index}.json"
+        path = queue.root / pool.record_store.WORKERS / f"host-{index}.json"
         record = json.loads(path.read_text())
         record.update(fields)
         path.write_text(json.dumps(record))
@@ -247,7 +247,7 @@ def test_offer_path_presence_does_not_prove_required_bytes(tmp_path, monkeypatch
             assert denial["evidence"]["expected"] == entry["sha256"]
             assert denial["evidence"]["observed"] == hashlib.sha256(b"different bytes").hexdigest()
         assert queue.passes("a" * 64) == 0
-        assert queue.item_path(pool.READY, "a" * 64).is_file()
+        assert queue.records.item_path(pool.record_store.READY, "a" * 64).is_file()
 
 
 @pytest.mark.parametrize("required_kind", ["path", "executable"])
@@ -303,7 +303,7 @@ def test_local_refusal_precedes_a_foreign_digest_error(tmp_path, monkeypatch, ma
     queue = pool.PoolQueue(tmp_path / "queue")
     _publish_dependencies(queue, "a" * 64, files=[_required(path)],
                           local={str(tmp_path / "missing"): "path"})
-    ready = queue.item_path(pool.READY, "a" * 64)
+    ready = queue.records.item_path(pool.record_store.READY, "a" * 64)
     record = json.loads(ready.read_text())
     record["requires_files"] = False
     if malformed_local:
@@ -327,7 +327,7 @@ def test_first_digest_failure_follows_the_foreign_rows_declared_order(tmp_path):
     files = [_required(path) for path in paths]
     queue = pool.PoolQueue(tmp_path / "queue")
     _publish_dependencies(queue, "a" * 64, files=files)
-    ready = queue.item_path(pool.READY, "a" * 64)
+    ready = queue.records.item_path(pool.record_store.READY, "a" * 64)
     record = json.loads(ready.read_text())
     record["requires_files"] = files
     ready.write_text(json.dumps(record))
@@ -450,7 +450,7 @@ def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkey
             ),
         ),
     )
-    offer_path = queue.root / pool.WORKERS / "observed.json"
+    offer_path = queue.root / pool.record_store.WORKERS / "observed.json"
     offer = json.loads(offer_path.read_text())
     if report_kind != "omitted":
         report = _class_report()

@@ -144,7 +144,7 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
             queue.record_pass(head)
     publish(queue, busy, resources={"cpu": 1, "gpu": 1}, dependent_of=holder, priority=0)
     publish(queue, tail, resources={"cpu": 1}, priority=-10)
-    item = json.loads(queue.item_path(pool.READY, busy).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, busy).read_text())
     queue.record_denial(item, "reservation_unavailable_withholding", {"withhold": {
         "withhold": True, "mode": "tokens", "withhold_age_s": pool.WITHHOLD_CEILING_S + 1.0}})
     transition = queue._transition_locked

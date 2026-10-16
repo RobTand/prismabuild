@@ -191,7 +191,7 @@ def test_real_denial_counts_and_publishes_before_join_without_consuming_holder(
         return record(item, reason, evidence)
 
     def after_publication(self, order, **kwargs):
-        ring = json.loads(queue.denial_transitions_path(waiting).read_text())
+        ring = json.loads(queue.records.denial_transitions_path(waiting).read_text())
         assert ring["transitions"][-1]["reason"].endswith("_withholding")
         trace.append("join")
         return apply(self, order, **kwargs)
@@ -208,4 +208,4 @@ def test_real_denial_counts_and_publishes_before_join_without_consuming_holder(
         assert trace == ["denial", "join"]
         assert denial(waiting)["reason"].endswith("_withholding")
     assert queue.ledger().held_keys() == [holder]
-    assert queue.item_path("ready", waiting).exists()
+    assert queue.records.item_path("ready", waiting).exists()
