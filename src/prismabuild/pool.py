@@ -5892,6 +5892,16 @@ class _TakenClaimTiers:
 
 
 @dataclass(frozen=True)
+class _CommittedClaim:
+    tiers: _TakenClaimTiers
+    moved: _MovedReady
+    class_verdict: Mapping[str, object] | None
+    filed: int
+    tier_filed: int
+    tier_wanted: int
+
+
+@dataclass(frozen=True)
 class _RefusalAccounting:
     order: candidate_policy.ScanOrder
     preempted: bool
@@ -21992,6 +22002,235 @@ class PoolQueue:
                 return _ClaimHandled.REFUSED
         return _TakenClaimTiers(host, tier_borrowed, tier_fill_waived)
 
+    def _rename_and_commit_claim(
+        self, tiers: _TakenClaimTiers, *, ledger, owner, tagset, has_gpu,
+        admission_open, image_host, container_class_policy, reads, pass_census,
+    ) -> _CommittedClaim | _ClaimHandled:
+        host = tiers.host
+        qualified = host.candidate
+        item, key = qualified.item, qualified.key
+        reservation = qualified.reservation
+        demand, reservation_demand = host.demand.host, host.demand.reservation
+        sealed_demand = host.demand.sealed
+        declared_images, class_verdict = qualified.declared_images, qualified.class_verdict
+        scratch_intent = qualified.scratch_intent
+        scratch_evidence = host.request.scratch_evidence if host.request is not None else None
+        gang = host.gang.declaration if host.gang is not None else None
+        gang_record = host.gang.record if host.gang is not None else None
+        gang_entry = host.gang.entry if host.gang is not None else None
+        _gang = host.arbitration.gang_api if host.arbitration is not None else None
+        gang_backfill = host.arbitration.backfill if host.arbitration is not None else []
+        backfill_binding = host.arbitration.backfill_binding if host.arbitration is not None else None
+        # Intent precedes the claim, so a crash in between leaves evidence.
+        # Resign fence, re-checked under this key's transition
+        # exclusion. This narrows the poll-check to rename race
+        # but does NOT lock the broker's gate: a drain can still
+        # begin after this check. A claim that wins then cannot
+        # execute — broker scope ``create`` refuses under its
+        # mutex and the loop's cleanup path releases it — and the
+        # resign proof (repeated census, bracketed park acks,
+        # empty scopes) accounts for it before SUCCESS. ``None``
+        # preserves current behavior for fenceless callers. The
+        # unwind mirrors the tier-shortage path above it.
+        if admission_open is not None and not admission_open():
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "resign_fenced", {
+                "action_key": key,
+            })
+            return _ClaimHandled.REFUSED
+        # The pass listing is a hint (#993): a claim record or a
+        # finish mark filed for this key since it was taken is
+        # found by a fresh listing, under this key's lock, before
+        # the rename.  The unwind is the resign fence's, above.
+        present, why = self._claim_blocked_fresh(key)
+        if present:
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "already_claimed",
+                               {"checked": "before_rename",
+                                **({"error": why} if why else {})})
+            return _ClaimHandled.REFUSED
+        if declared_images and container_class_policy is not None:
+            # Re-evaluate after reservation I/O; a fresh offer or
+            # earlier verdict cannot renew old inventory proof.
+            image_check = image_host.class_check(clock=_now)
+            if isinstance(image_check, capability_eligibility.CapabilityRefusal):
+                reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+                self.record_denial(item, image_check.reason,
+                                   {**image_check.evidence, "checked": "before_rename"})
+                return _ClaimHandled.REFUSED
+            class_verdict = image_check.class_verdict
+        if item.get("gang") is not None and gang_record is None:
+            # A gang row is never claimed outside the gang path.
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "gang_contract_invalid",
+                               {"error": "gang row reached commit without its group"})
+            return _ClaimHandled.REFUSED
+        if gang_record is not None:
+            # Every ordinary gate has passed: this member could
+            # start here now. It commits only beside a complete
+            # set; otherwise it says so and holds nothing (#1517).
+            try:
+                _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
+                readiness = _gang.sibling_readiness(
+                    self, gang_record, gang_entry, socket.gethostname(), _now())
+            except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
+                readiness = {"complete": False, "error": str(exc)}
+            if not readiness["complete"]:
+                reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+                self.record_denial(item, "gang_waiting_for_peers", {
+                    "group": gang["group"], "index": gang["index"], **readiness})
+                return _ClaimHandled.REFUSED
+        self._write_claim_intent(key, owner=owner)
+        src = self.item_path(READY, key)
+        dst = self.item_path(CLAIMED, key)
+        try:
+            os.rename(src, dst)
+        except (FileNotFoundError, NotADirectoryError):
+            reservation.abandon(_ClaimExit.RENAME_LOST)
+            # Leave no evidence of a claim that did not happen.  The marker
+            # is written by rename, so this claimant's copy replaced
+            # whatever was there -- and if the winner wrote first, the
+            # marker now names the box that LOST while still passing the
+            # generation check (#272).
+            #
+            # Only while it is still this claimant's own: ``owner`` is
+            # unique per claimant and the marker carries it.  The check and
+            # the unlink are two operations on a shared mount, so a marker
+            # written between them is removed as well -- but that leaves no
+            # marker, which ``resolve_claim_holder`` already answers as
+            # "nobody said", rather than a marker naming the wrong box.
+            # The ledger is the exact answer either way; this only keeps
+            # the fallback from being confidently wrong.
+            self._discard_claim_intent(key, owner=owner)
+            self.record_denial(item, "claim_rename_lost_race", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "had_reservation": reservation.host_handle is not None,
+            })
+            return _ClaimHandled.REFUSED
+        # This pass renamed into ``claimed/``: a later candidate
+        # of the same pass lists it again (#993), and reads the
+        # tiers' reading sets again (#1091 review 1). The rename
+        # also moves a publication the reused census read, so the
+        # next candidate reads fresh (#1571).
+        reads.renamed_into_claimed()
+        pass_census.invalidate()
+        moved_record = _read_json(dst)
+        moved = moved_record or item
+        if container_class_policy is not None:
+            image_check = (image_host.class_check(clock=_now)
+                           if moved.get("container_images")
+                           else capability_eligibility.ImageAccepted())
+            class_verdict = (image_check.evidence["container_class_verdict"]
+                             if isinstance(image_check, capability_eligibility.CapabilityRefusal)
+                             else image_check.class_verdict)
+        position = candidate_policy.moved_claim_position(class_verdict, moved, gang_backfill)
+        class_refused = position is candidate_policy.MovedClaimPosition.CLASS_REFUSED
+        if (position in (candidate_policy.MovedClaimPosition.CLASS_REFUSED,
+                         candidate_policy.MovedClaimPosition.BACKFILL_REFUSED)
+                or (position is candidate_policy.MovedClaimPosition.BACKFILL_BINDING
+                    and self._preemption_proof_binding(moved) != backfill_binding)
+                or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
+                or self.demand_of(moved) != sealed_demand
+                or (scratch_intent is not None and (
+                    not self._scratch_record_matches(moved_record, item, scratch_intent)
+                    or scratch_evidence["selected_host"] != socket.gethostname()))):
+            # Admission described the scanned generation. A replacement
+            # may need a different host or more tokens; an opted-in
+            # verdict additionally belongs to its exact publication/
+            # attempt, even when replacement demand is identical.
+            # Restore the renamed bytes before committing tokens.
+            reservation.abandon(
+                _ClaimExit.RENAMED_REFUSAL, moved=_MovedReady(src, dst, moved))
+            self.record_denial(item,
+                "container_class_" + str(class_verdict["reason"]) if class_refused else "claimed_record_changed", {
+                "scanned_demand": demand, "moved_demand": self.demand_of(moved),
+                "moved_tags": moved.get("tags"), "moved_needs_gpu": moved.get("needs_gpu"),
+                **({"container_class_verdict": class_verdict, "checked": "after_rename"}
+                   if class_refused else {}),
+            })
+            return _ClaimHandled.REFUSED
+        return self._commit_claim_reservations(
+            tiers, _MovedReady(src, dst, moved), class_verdict, ledger=ledger)
+
+    def _commit_claim_reservations(
+        self, tiers: _TakenClaimTiers, moved_ready: _MovedReady, class_verdict, *, ledger,
+    ) -> _CommittedClaim | _ClaimHandled:
+        host = tiers.host
+        item, key = host.candidate.item, host.candidate.key
+        reservation = host.candidate.reservation
+        tier_demand, reservation_demand = host.demand.tiers, host.demand.reservation
+        tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
+        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+        src, dst, moved = moved_ready
+        # Tier handles commit first: a failure here leaves the host
+        # handle uncommitted, so the guard below still abandons it,
+        # and a committed tier token answers to the key, which every
+        # release path returns.
+        tier_filed = self._commit_tier_acquire(key, reservation.tier_handles)
+        tier_completeness = candidate_policy.tier_completeness(
+            tier_demand, reservation.tier_funded, tier_borrowed,
+            tier_fill_waived, filed=tier_filed)
+        tier_wanted = tier_completeness.wanted
+        incomplete = tier_completeness.incomplete
+        filed = 0
+        if ledger is not None and reservation.host_handle is not None:
+            # Won the rename, so the reservation stops belonging to this
+            # claimant and starts belonging to the action.  Every branch
+            # below releases by action key, which is correct only once the
+            # tokens are filed under it.
+            filed = reservation.commit_host()
+            # Past this call the handle directory is empty and the
+            # tokens answer to the action key, so the branches
+            # below release by key and the guard must stop trying
+            # to abandon a handle that owns nothing.
+            if (filed < sum(reservation_demand.values())
+                    or (adaptive is not None and not
+                        ledger.holder_census().cpu_record(key).present)
+                    or (adaptive_gpu is not None and not
+                        ledger.holder_census().gpu_record(key).present)):
+                incomplete = True
+
+        if incomplete:
+            # A stale-acquisition sweep took part of the reservation,
+            # or tokens of an earlier incarnation are filed under this
+            # key.  Fail closed rather than run unreserved: ``dst`` is
+            # still byte-identical to the ready record, because the
+            # rewrite below has not happened yet, so putting it back
+            # restores the item exactly as it was.
+            #
+            # A funded claim unwinds fence-first: the verified fence
+            # stays fused under this key (the record is untouched,
+            # same generation), so the entitlement survives the
+            # failure and the next attempt re-verifies the same
+            # binding instead of re-taking it from free -- while the
+            # remainder this attempt newly committed goes home via
+            # the reservation owner (release-by-key would
+            # free the fence into a stealer window; keeping it all
+            # would double-hold on retry).  Physical occupancy keeps
+            # the pre-existing release semantics everywhere else,
+            # unchanged here.
+            reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                moved=_MovedReady(src, dst, moved))
+            self.record_denial(item, "committed_reservation_incomplete", {
+                "filed_tokens": filed,
+                "expected_tokens": sum(reservation_demand.values()),
+                "tier_filed_tokens": tier_filed,
+                "tier_expected_tokens": tier_wanted,
+                "adaptive_cpu": adaptive is not None,
+                "adaptive_gpu": adaptive_gpu is not None,
+            })
+            # The owner links rather than renaming:
+            # ``publish`` writes ``ready`` unconditionally, so a
+            # re-submission of this key can already be sitting
+            # there, and a rename would replace that new
+            # generation with these older bytes and lose the
+            # request.  If it is there, leave the claim for the
+            # reaper instead: an extra reaper cycle costs one
+            # attempt, a clobbered generation costs the whole
+            # submission.
+            return _ClaimHandled.REFUSED
+        return _CommittedClaim(tiers, moved_ready, class_verdict, filed, tier_filed, tier_wanted)
+
     def _claim_pass(
         self,
         *,
@@ -22415,201 +22654,16 @@ class PoolQueue:
                     if tiers is _ClaimHandled.REFUSED:
                         continue
                     tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
-                    # Intent precedes the claim, so a crash in between leaves evidence.
-                    # Resign fence, re-checked under this key's transition
-                    # exclusion. This narrows the poll-check to rename race
-                    # but does NOT lock the broker's gate: a drain can still
-                    # begin after this check. A claim that wins then cannot
-                    # execute — broker scope ``create`` refuses under its
-                    # mutex and the loop's cleanup path releases it — and the
-                    # resign proof (repeated census, bracketed park acks,
-                    # empty scopes) accounts for it before SUCCESS. ``None``
-                    # preserves current behavior for fenceless callers. The
-                    # unwind mirrors the tier-shortage path above it.
-                    if admission_open is not None and not admission_open():
-                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                        self.record_denial(item, "resign_fenced", {
-                            "action_key": key,
-                        })
+                    committed = self._rename_and_commit_claim(
+                        tiers, ledger=ledger, owner=owner, tagset=tagset, has_gpu=has_gpu,
+                        admission_open=admission_open, image_host=image_host,
+                        container_class_policy=container_class_policy, reads=reads,
+                        pass_census=pass_census)
+                    if committed is _ClaimHandled.REFUSED:
                         continue
-                    # The pass listing is a hint (#993): a claim record or a
-                    # finish mark filed for this key since it was taken is
-                    # found by a fresh listing, under this key's lock, before
-                    # the rename.  The unwind is the resign fence's, above.
-                    present, why = self._claim_blocked_fresh(key)
-                    if present:
-                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                        self.record_denial(item, "already_claimed",
-                                           {"checked": "before_rename",
-                                            **({"error": why} if why else {})})
-                        continue
-                    if declared_images and container_class_policy is not None:
-                        # Re-evaluate after reservation I/O; a fresh offer or
-                        # earlier verdict cannot renew old inventory proof.
-                        image_check = image_host.class_check(clock=_now)
-                        if isinstance(image_check, capability_eligibility.CapabilityRefusal):
-                            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                            self.record_denial(item, image_check.reason,
-                                               {**image_check.evidence, "checked": "before_rename"})
-                            continue
-                        class_verdict = image_check.class_verdict
-                    if item.get("gang") is not None and gang_record is None:
-                        # A gang row is never claimed outside the gang path.
-                        reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                        self.record_denial(item, "gang_contract_invalid",
-                                           {"error": "gang row reached commit without its group"})
-                        continue
-                    if gang_record is not None:
-                        # Every ordinary gate has passed: this member could
-                        # start here now. It commits only beside a complete
-                        # set; otherwise it says so and holds nothing (#1517).
-                        try:
-                            _gang.mark_ready(self, gang_record, gang_entry, socket.gethostname(), _now())
-                            readiness = _gang.sibling_readiness(
-                                self, gang_record, gang_entry, socket.gethostname(), _now())
-                        except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
-                            readiness = {"complete": False, "error": str(exc)}
-                        if not readiness["complete"]:
-                            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-                            self.record_denial(item, "gang_waiting_for_peers", {
-                                "group": gang["group"], "index": gang["index"], **readiness})
-                            continue
-                    self._write_claim_intent(key, owner=owner)
-                    src = self.item_path(READY, key)
-                    dst = self.item_path(CLAIMED, key)
-                    try:
-                        os.rename(src, dst)
-                    except (FileNotFoundError, NotADirectoryError):
-                        reservation.abandon(_ClaimExit.RENAME_LOST)
-                        # Leave no evidence of a claim that did not happen.  The marker
-                        # is written by rename, so this claimant's copy replaced
-                        # whatever was there -- and if the winner wrote first, the
-                        # marker now names the box that LOST while still passing the
-                        # generation check (#272).
-                        #
-                        # Only while it is still this claimant's own: ``owner`` is
-                        # unique per claimant and the marker carries it.  The check and
-                        # the unlink are two operations on a shared mount, so a marker
-                        # written between them is removed as well -- but that leaves no
-                        # marker, which ``resolve_claim_holder`` already answers as
-                        # "nobody said", rather than a marker naming the wrong box.
-                        # The ledger is the exact answer either way; this only keeps
-                        # the fallback from being confidently wrong.
-                        self._discard_claim_intent(key, owner=owner)
-                        self.record_denial(item, "claim_rename_lost_race", {
-                            "demand": demand, "reservation_demand": reservation_demand,
-                            "had_reservation": reservation.host_handle is not None,
-                        })
-                        continue
-                    # This pass renamed into ``claimed/``: a later candidate
-                    # of the same pass lists it again (#993), and reads the
-                    # tiers' reading sets again (#1091 review 1). The rename
-                    # also moves a publication the reused census read, so the
-                    # next candidate reads fresh (#1571).
-                    reads.renamed_into_claimed()
-                    pass_census.invalidate()
-                    moved_record = _read_json(dst)
-                    moved = moved_record or item
-                    if container_class_policy is not None:
-                        image_check = (image_host.class_check(clock=_now)
-                                       if moved.get("container_images")
-                                       else capability_eligibility.ImageAccepted())
-                        class_verdict = (image_check.evidence["container_class_verdict"]
-                                         if isinstance(image_check, capability_eligibility.CapabilityRefusal)
-                                         else image_check.class_verdict)
-                    position = candidate_policy.moved_claim_position(class_verdict, moved, gang_backfill)
-                    class_refused = position is candidate_policy.MovedClaimPosition.CLASS_REFUSED
-                    if (position in (candidate_policy.MovedClaimPosition.CLASS_REFUSED,
-                                     candidate_policy.MovedClaimPosition.BACKFILL_REFUSED)
-                            or (position is candidate_policy.MovedClaimPosition.BACKFILL_BINDING
-                                and self._preemption_proof_binding(moved) != backfill_binding)
-                            or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
-                            or self.demand_of(moved) != sealed_demand
-                            or (scratch_intent is not None and (
-                                not self._scratch_record_matches(moved_record, item, scratch_intent)
-                                or scratch_evidence["selected_host"] != socket.gethostname()))):
-                        # Admission described the scanned generation. A replacement
-                        # may need a different host or more tokens; an opted-in
-                        # verdict additionally belongs to its exact publication/
-                        # attempt, even when replacement demand is identical.
-                        # Restore the renamed bytes before committing tokens.
-                        reservation.abandon(
-                            _ClaimExit.RENAMED_REFUSAL, moved=_MovedReady(src, dst, moved))
-                        self.record_denial(item,
-                            "container_class_" + str(class_verdict["reason"]) if class_refused else "claimed_record_changed", {
-                            "scanned_demand": demand, "moved_demand": self.demand_of(moved),
-                            "moved_tags": moved.get("tags"), "moved_needs_gpu": moved.get("needs_gpu"),
-                            **({"container_class_verdict": class_verdict, "checked": "after_rename"}
-                               if class_refused else {}),
-                        })
-                        continue
-                    # Tier handles commit first: a failure here leaves the host
-                    # handle uncommitted, so the guard below still abandons it,
-                    # and a committed tier token answers to the key, which every
-                    # release path returns.
-                    tier_filed = self._commit_tier_acquire(key, reservation.tier_handles)
-                    tier_completeness = candidate_policy.tier_completeness(
-                        tier_demand, reservation.tier_funded, tier_borrowed,
-                        tier_fill_waived, filed=tier_filed)
-                    tier_wanted = tier_completeness.wanted
-                    incomplete = tier_completeness.incomplete
-                    filed = 0
-                    if ledger is not None and reservation.host_handle is not None:
-                        # Won the rename, so the reservation stops belonging to this
-                        # claimant and starts belonging to the action.  Every branch
-                        # below releases by action key, which is correct only once the
-                        # tokens are filed under it.
-                        filed = reservation.commit_host()
-                        # Past this call the handle directory is empty and the
-                        # tokens answer to the action key, so the branches
-                        # below release by key and the guard must stop trying
-                        # to abandon a handle that owns nothing.
-                        if (filed < sum(reservation_demand.values())
-                                or (adaptive is not None and not
-                                    ledger.holder_census().cpu_record(key).present)
-                                or (adaptive_gpu is not None and not
-                                    ledger.holder_census().gpu_record(key).present)):
-                            incomplete = True
-
-                    if incomplete:
-                        # A stale-acquisition sweep took part of the reservation,
-                        # or tokens of an earlier incarnation are filed under this
-                        # key.  Fail closed rather than run unreserved: ``dst`` is
-                        # still byte-identical to the ready record, because the
-                        # rewrite below has not happened yet, so putting it back
-                        # restores the item exactly as it was.
-                        #
-                        # A funded claim unwinds fence-first: the verified fence
-                        # stays fused under this key (the record is untouched,
-                        # same generation), so the entitlement survives the
-                        # failure and the next attempt re-verifies the same
-                        # binding instead of re-taking it from free -- while the
-                        # remainder this attempt newly committed goes home via
-                        # the reservation owner (release-by-key would
-                        # free the fence into a stealer window; keeping it all
-                        # would double-hold on retry).  Physical occupancy keeps
-                        # the pre-existing release semantics everywhere else,
-                        # unchanged here.
-                        reservation.abandon(_ClaimExit.COMMITTED_RETRY,
-                                            moved=_MovedReady(src, dst, moved))
-                        self.record_denial(item, "committed_reservation_incomplete", {
-                            "filed_tokens": filed,
-                            "expected_tokens": sum(reservation_demand.values()),
-                            "tier_filed_tokens": tier_filed,
-                            "tier_expected_tokens": tier_wanted,
-                            "adaptive_cpu": adaptive is not None,
-                            "adaptive_gpu": adaptive_gpu is not None,
-                        })
-                        # The owner links rather than renaming:
-                        # ``publish`` writes ``ready`` unconditionally, so a
-                        # re-submission of this key can already be sitting
-                        # there, and a rename would replace that new
-                        # generation with these older bytes and lose the
-                        # request.  If it is there, leave the claim for the
-                        # reaper instead: an extra reaper cycle costs one
-                        # attempt, a clobbered generation costs the whole
-                        # submission.
-                        continue
+                    src, dst, moved = committed.moved
+                    class_verdict = committed.class_verdict
+                    filed, tier_filed, tier_wanted = committed.filed, committed.tier_filed, committed.tier_wanted
                 except BaseException:
                     reservation.abandon(_ClaimExit.UNCERTAIN)
                     raise
