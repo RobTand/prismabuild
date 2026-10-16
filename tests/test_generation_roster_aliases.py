@@ -114,7 +114,8 @@ def test_barrier_preserves_its_alias_shape_policy(fleet, alias, accepted):
             barrier_publisher._barrier_roster(generations)
 
 
-@pytest.mark.parametrize("document", [{}, {"boxes": {}}])
+@pytest.mark.parametrize("document", [
+    pytest.param({}, id="document0"), pytest.param({"boxes": {}}, id="document2")])
 def test_candidate_preserves_its_roster_shape_policy(tmp_path, monkeypatch, document):
     checkout = _checkout(tmp_path / "checkout", document)
     mirror = _publish(tmp_path, monkeypatch, checkout, [])

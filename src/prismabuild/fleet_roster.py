@@ -1,4 +1,4 @@
-"""Presence states for boxes in ``tools/fleet/fleet_boxes.json`` (#606).
+"""Captured fleet configuration, declared presence and hostname facts.
 
 A roster box that is gone still vetoes every barrier publish: the attestation
 preflight demands the target agent's version from *every* declared box, so one

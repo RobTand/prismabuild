@@ -64,8 +64,8 @@ def stamp() -> dict:
     return {"unix": now, "utc": datetime.fromtimestamp(now, timezone.utc).isoformat()}
 
 
-def file_identity(path: Path) -> dict:
-    data = path.read_bytes()
+def file_identity(path: Path, *, raw: bytes | None = None) -> dict:
+    data = path.read_bytes() if raw is None else raw
     stat = path.stat()
     return {"path": str(path), "resolved": str(path.resolve()),
             "sha256": digest_primitives.raw_sha256(data), "bytes": len(data),
@@ -154,9 +154,7 @@ def collect_prewarm_stage_census(args) -> dict:
     result["published_runtime"]["commit"] = json.loads(
         (runtime / "RUNTIME_VERSION.json").read_bytes()).get("commit")
     roster = fleet_roster.Roster.at(runtime)
-    result["roster"] = file_identity(roster.path)
-    result["roster"]["sha256"] = roster.sha256
-    result["roster"]["bytes"] = len(roster.raw)
+    result["roster"] = file_identity(roster.path, raw=roster.raw)
     result["roster_hosts"] = [
         {"key": key, "alias": box.get("_alias"), "status": box.get("status"),
          "storage_argv": box.get("roles", {}).get("storage")}

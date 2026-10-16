@@ -510,9 +510,6 @@ SPOOL_KIND = "spool_gb"
 #: roots themselves are the actions' sealed variables, not something a box
 #: knows, so the roster names the disk rather than the supervisor guessing it.
 LOCAL_DISK_FIELD = "local_disk"
-#: Fleet-wide, beside ``boxes``: the share of a local filesystem, in whole
-#: percent of its size, that the fleet keeps free.  It is Rob's disk-headroom
-#: rule, stated in the file rather than assumed by the code.
 GIB = 1 << 30
 #: One settled set of loop arguments per distinct declaration for the life of
 #: this process.  The arguments carry the first measurement and do not follow
