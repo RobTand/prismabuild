@@ -35,8 +35,8 @@ def _publish_all(queue, tiers, movers, *, rounds=10):
     seen: list[dict] = []
     for _ in range(rounds):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-        if all(queue.item_path(pool.READY, m).exists()
-               or queue.item_path(pool.CLAIMED, m).exists() for m in movers):
+        if all(queue.records.item_path(pool.record_store.READY, m).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, m).exists() for m in movers):
             break
     return seen
 
@@ -64,9 +64,9 @@ def _end_first_capture(queue, consumer, unit, movers, final="consumed"):
         assert queue.advance_funding_state(
             mover, TIER, expect="transferring", advance_to=final,
             generation=str(record["generation"]))
-        queue.item_path(pool.READY, mover).unlink()
+        queue.records.item_path(pool.record_store.READY, mover).unlink()
         queue.release_tier_reservations(mover)
-    queue.item_path(pool.READY, consumer).unlink()
+    queue.records.item_path(pool.record_store.READY, consumer).unlink()
     queue.release_tier_reservations(unit.holder)
 
 
@@ -101,8 +101,8 @@ def test_a_second_capture_of_the_same_manifest_publishes_its_chunks(
     refused = [event for event in seen
                if "prelaunch-mover-occupied" in str(event)]
     assert not refused, f"{len(refused)} chunk publications refused as occupied"
-    assert all(queue.item_path(pool.READY, m).exists()
-               or queue.item_path(pool.CLAIMED, m).exists() for m in movers)
+    assert all(queue.records.item_path(pool.record_store.READY, m).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, m).exists() for m in movers)
     for mover in movers:
         record = queue.read_funding(mover, TIER)
         assert record["state"] == "transferring"
@@ -231,7 +231,7 @@ def _same_consumer_republication(tmp_path, retained):
     group = pool.held_names_visible(ledger, unit.holder)
     assert len(prior) == retained and len(group) == 4 - retained
     assert not group.intersection(old["tokens"])
-    queue.item_path(pool.READY, mover).unlink()
+    queue.records.item_path(pool.record_store.READY, mover).unlink()
     row = _publish_leg(queue, plan, mover)
     assert row["published_unix"] != old["published_unix"]
     leg = {**unit.legs[0], "mover_action_key": mover}

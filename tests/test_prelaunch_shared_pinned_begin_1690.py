@@ -123,13 +123,13 @@ def _land_range(queue, stage_root: Path, *, consumer: str, mover: str,
                      "sha256": "b" * 64}}
     assert queue.tier_ledger(TIER).acquire(
         mover, {"stage_gib": storage_tiers.stage_tokens_for_bytes(size)})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage_root),
         "manifest_sha256": manifest, "entries": entries})
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage_root),
         manifest_sha256=manifest, generation="c" * 32,
         entries={key: {**entries[key],
@@ -170,7 +170,7 @@ def _done_record(queue, mover: str, manifest: str, gib: int, start: int,
                           "manifest_bytes": 121 * storage_tiers.GIB,
                           "range_start_bytes": start,
                           "range_end_bytes": end}}
-    queue.item_path(pool.DONE, mover).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.DONE, mover).write_text(json.dumps({
         **node, "schema": pool.POOL_OUTCOME_SCHEMA_V1, "status": "executed",
         "attempts": 1, "finished_unix": 2100.0,
         "finished_host": "dl380g10", "detail": {}}))
@@ -207,12 +207,12 @@ def _state_1690(tmp_path):
                     manifest=manifest, name=str(leg["phase"]),
                     start=start, end=end)
         _done_record(queue, mover, manifest, gib_of[mover], start, end)
-    queue.item_path(pool.FAILED, first).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.FAILED, first).write_text(json.dumps(
         {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": first,
          "status": "failed", "attempts": 1}))
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            queue.item_path(state, first).unlink()
+            queue.records.item_path(state, first).unlink()
         except OSError:
             pass
     for mover in movers[2:]:
@@ -220,7 +220,7 @@ def _state_1690(tmp_path):
         receipt = stage_release.evict(
             queue, mover, consumer_action_key=consumer,
             stage_root=str(stage_root),
-            residency_root=queue.root / pool.RESIDENCY,
+            residency_root=queue.root / pool.record_store.RESIDENCY,
             reason="orphan-sweep")
         assert receipt["complete"] is True, receipt
         assert not queue.tier_ledger(TIER).holder_tokens(mover)
@@ -229,7 +229,7 @@ def _state_1690(tmp_path):
     assert _holder_tokens(queue, movers[0]) == 40
     assert _holder_tokens(queue, movers[1]) == 40
     for mover in movers:
-        done = pool._read_json(queue.item_path(pool.DONE, mover))
+        done = pool.record_store.require(queue.records.item(pool.record_store.DONE, mover))
         assert isinstance(done, dict) and done.get("status") == "executed"
     ledger = queue.tier_ledger(TIER)
     held = int(ledger.held().get("stage_gib", 0))
@@ -260,7 +260,7 @@ def _claim_chunk(queue, gib: int) -> str:
 def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
                     manifest: str) -> None:
     """Land the claimed chunk's bytes, then finish it executed pinned."""
-    claimed = pool.read_queue_record(queue.item_path(pool.CLAIMED, mover))
+    claimed = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, mover))
     assert isinstance(claimed, dict)
     sealed = dict(claimed.get("residency"))
     start = int(sealed.get("range_start_bytes"))
@@ -276,13 +276,13 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
         stream.truncate(size)
     entries = {key: {"stage_path": str(path), "bytes": size, "offset": 0,
                      "sha256": "d" * 64}}
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage_root),
         "manifest_sha256": manifest, "entries": entries})
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=namespace,
+        queue.records.residency_fragment_root(), consumer_action_key=namespace,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage_root),
         manifest_sha256=manifest, generation="e" * 32,
         entries={key: {**entries[key],
@@ -295,7 +295,7 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
         "entries_declared": 1, "entries_staged": 1,
         "complete": True, "seconds": 60.0, "unix": 3000.0})
     queue.finish(mover, status="executed")
-    done = pool._read_json(queue.item_path(pool.DONE, mover))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, mover))
     assert isinstance(done, dict) and done.get("status") == "executed"
     assert queue.tier_ledger(TIER).holder_tokens(mover)
 
@@ -344,8 +344,8 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     movers = _movers_of(unit)
     # The window republishes only the two unpinned chunks; the pinned pair
     # already stand done with their tokens and are never republished.
-    assert all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+    assert all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers[2:])
     # The republished chunks fund their claims from the group fence:
     # each covers its whole demand with no second stage charge.
@@ -353,7 +353,7 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
         record = queue.read_funding(mover, TIER)
         assert record is not None and record["state"] == "transferring"
         assert record["consumer_action_key"] == second
-        row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+        row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
         assert isinstance(row, dict)
         covered, _generation = queue.funded_cover(TIER, row, "stage_gib", 40 if mover != movers[3] else 1)
         assert covered == (40 if mover != movers[3] else 1), (mover[-8:], covered)
@@ -374,7 +374,7 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     tier_loop.fan_out_shared_ranges(queue, planned)
     for _ in range(4):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-    row = pool.read_queue_record(queue.item_path(pool.READY, second))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, second))
     assert isinstance(row, dict)
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "resident", verdict
@@ -518,8 +518,8 @@ def _prepared_shared_recovery(tmp_path):
                       unit.demand_gib, movers)
     assert (found.h, found.p, found.m, found.s) == (0, 0, 41, 80)
     assert found.receipts["committed.json"]["demand_gib"] == 121
-    assert queue.item_path(pool.READY, movers[2]).exists()
-    assert not queue.item_path(pool.CLAIMED, movers[2]).exists()
+    assert queue.records.item_path(pool.record_store.READY, movers[2]).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, movers[2]).exists()
     shared = {mover: set(pool.held_names_visible(ledger, mover))
               for mover in movers[:2]}
     # The orphan sweep removed this range. Its replacement has not run,
@@ -528,9 +528,9 @@ def _prepared_shared_recovery(tmp_path):
         str(plan["manifest_sha256"]), TIER,
         80 * storage_tiers.GIB, 120 * storage_tiers.GIB)
     assert not residency_map.read_fragments(
-        queue.residency_fragment_root(), namespace)
+        queue.records.residency_fragment_root(), namespace)
     assert ledger.release(movers[2]) == 40
-    queue.item_path(pool.READY, movers[2]).unlink()
+    queue.records.item_path(pool.record_store.READY, movers[2]).unlink()
     found = pg.census(queue, TIER, unit.unit, unit.holder,
                       unit.demand_gib, movers)
     assert (found.h, found.p, found.m, found.s) == (0, 0, 1, 80)
@@ -593,7 +593,7 @@ def test_shared_recovery_preserves_request_amount_and_admits(
         names.update(held)
     assert len(names) == 127
     for mover, gib in zip(movers[2:], (40, 1)):
-        row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+        row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
         assert queue.funded_cover(TIER, row, "stage_gib", gib)[0] == gib
     stage_root = Path(tiers[TIER]["mountpoint"])
     for _ in range(2):

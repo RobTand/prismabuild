@@ -66,7 +66,7 @@ def _committed_then_withdrawn(tmp_path):
     unit, movers = _declared_movers(queue, consumer)
     first = _cycles(queue, tiers, 10)
     assert _holder_tokens(queue, unit.holder) > 0 or any(
-        queue.item_path(pool.READY, mover).exists() for mover in movers), _names(first)
+        queue.records.item_path(pool.record_store.READY, mover).exists() for mover in movers), _names(first)
     assert "committed.json" in " ".join(_group_files(queue, consumer)), _names(first)
     queue.withdraw(consumer, reason="test: the owner withdrew the band", by="test")
     ended = _cycles(queue, tiers, 8)
@@ -95,8 +95,8 @@ def test_the_same_key_resubmitted_after_a_withdrawal_begins_its_group_again(
                                         .get("stage_gib", 0)) for mover in movers},
         "events": sorted(set(_names(seen))),
     }
-    published = any(queue.item_path(pool.READY, mover).exists()
-                    or queue.item_path(pool.CLAIMED, mover).exists()
+    published = any(queue.records.item_path(pool.record_store.READY, mover).exists()
+                    or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                     for mover in movers)
     assert _holder_tokens(queue, unit.holder) > 0 or published, json.dumps(state, indent=1)
 
@@ -142,7 +142,7 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     state["uncovered movers"] = _uncovered(queue, movers, gib_of)
     assert state["uncovered movers"] == {}, json.dumps(state, indent=1)
     # The claim spends the restored fence and takes nothing more from the tier.
-    ready = [m for m in movers if queue.item_path(pool.READY, m).exists()]
+    ready = [m for m in movers if queue.records.item_path(pool.record_store.READY, m).exists()]
     free_before = ledger.available().get("stage_gib")
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     state["claimed"] = None if got is None else str(got["action_key"])[-8:]
@@ -155,14 +155,14 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
 
 
 def _row(queue, mover: str) -> dict:
-    return json.loads(queue.item_path(pool.READY, mover).read_text(encoding="utf-8"))
+    return json.loads(queue.records.item_path(pool.record_store.READY, mover).read_text(encoding="utf-8"))
 
 
 def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:
     """Every READY mover whose funding record does not cover its whole row."""
     out = {}
     for mover in movers:
-        if not queue.item_path(pool.READY, mover).exists():
+        if not queue.records.item_path(pool.record_store.READY, mover).exists():
             continue
         covered = queue.funded_cover(TIER, _row(queue, mover), "stage_gib",
                                      gib_of[mover])

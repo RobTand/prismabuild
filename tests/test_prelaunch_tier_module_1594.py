@@ -135,7 +135,7 @@ def _publish_leg(queue, plan, mover):
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 

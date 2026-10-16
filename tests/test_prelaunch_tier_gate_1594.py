@@ -427,7 +427,7 @@ def test_incomplete_census_withholds_the_release(tmp_path) -> None:
     holder = _orphan(queue, "half")
     _plain_live(queue, "half")
     stranger = _hexkey("half-stranger")
-    Path(queue.residency_plan_path(stranger)).write_text("{not json")
+    Path(queue.records.residency_plan_path(stranger)).write_text("{not json")
     queue.publish(
         action_key=stranger, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
