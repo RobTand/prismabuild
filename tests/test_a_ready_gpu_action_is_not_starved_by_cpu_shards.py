@@ -75,7 +75,7 @@ def generation_actions(monkeypatch):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -225,7 +225,7 @@ def test_a_gpu_action_behind_2cpu_shards_is_admitted_within_one_shard_lifetime(
                                 else "reservation_unavailable_withholding")
     assert denial["evidence"]["withhold"]["why"] == "drains_soon"
     assert denial["evidence"]["withhold"]["gpu_first"] is True
-    assert all(queue.item_path(pool.READY, key).exists() for key in stream)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in stream)
 
     # One shard lifetime later the first shard finishes, and the action runs.
     clock[0] = T0 + 30
@@ -277,7 +277,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     assert named["requested_timeout_s"] is None
     assert named["age_s"] == pytest.approx(36_000.0, abs=1.0)
     assert queue.passes(shard) == pool.STARVATION_FLOOR
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
 
 
 @pytest.mark.parametrize("timeout_s,expected_bound", [(86_400, "long"), (2_500, "transient")],
@@ -330,7 +330,7 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     assert isinstance(claimed_unix, float)
     assert verdict["drain_until_unix"] == pytest.approx(max(
         claimed_unix + timeout_s, clock[0] + pool.WITHHOLD_CEILING_S))
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
     clock[0] = verdict["drain_until_unix"] + 1
     assert claim() == behind
     expired = _denial(queue, measurement)["evidence"]["withhold"]
@@ -391,7 +391,7 @@ def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longe
     assert bound["bound"] == "transient"
     assert bound["governed_by"] == "deadline"
     assert bound["requested_timeout_s"] == SHARD_DEADLINE_S
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
     clock[0] = T0 + 2
     assert claim() == behind, (
@@ -401,7 +401,7 @@ def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longe
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == shard[:12] and named["bound"] == "overdue"
-    assert queue.item_path(pool.READY, gpu_action).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_action).exists()
 
 
 @pytest.mark.parametrize("timeout_s,age_s,withholds,bound", [
@@ -498,7 +498,7 @@ def test_a_pbtest_cpu_shards_sealed_end_reads_transient_at_every_age(
         f"shard's {CPU_SHARD_SEALED_END_S:g}s declared life): a same-band CPU "
         "shard claimed the box out from under it, reproducing #1123")
     assert _denial(queue, gpu_action)["reason"] == "reservation_unavailable_withholding"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 # -- the measurement's exclusive need ----------------------------------------
@@ -537,7 +537,7 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     # #1185 protects a measurement before the ordinary starvation floor.
     assert queue.passes(measurement) == 0
     assert claim() is None, "the measurement never withheld against a shard stream"
-    assert all(queue.item_path(pool.READY, key).exists() for key in shards)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in shards)
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding"
     assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
@@ -547,7 +547,7 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     # The holders are gone; the sample still carries their load.
     assert claim() is None
     assert _denial(queue, measurement)["evidence"]["withhold"]["why"] == "holder_tail"
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     carried = queue._carried_withhold(queue._host_denial_records(), item,
                                      host=queue.ledger().base.name, now=clock[0])
@@ -661,7 +661,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
         return answer
 
     assert verdict()["withhold"] is True
-    epoch = json.loads(queue.passes_path(waiting).read_text())["epoch_unix"]
+    epoch = json.loads(queue.records.passes_path(waiting).read_text())["epoch_unix"]
 
     # Higher-priority work ahead of it refills the box, young every time.
     clock[0] += pool.WITHHOLD_CEILING_S - 10
@@ -673,7 +673,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     answer = verdict()
     assert answer["withhold"] is False and answer["why"] == "refilled_past_ceiling"
     assert answer["refills"] == [refill[:12]]
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert record["epoch_unix"] == epoch and record["expired_unix"] == clock[0]
 
     # Work claimed after the expiry is not a refill of that veto; the episode
@@ -684,7 +684,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     assert _key_of(queue.claim(capacity=capacity)) == later
     answer = verdict()
     assert answer["withhold"] is True and answer["why"] == "drains_soon"
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert record["epoch_unix"] == clock[0] and "expired_unix" not in record
 
 
@@ -704,7 +704,7 @@ def test_a_gpu_action_withholds_on_its_first_denial_when_the_gpu_is_free(
     assert queue.claim(capacity=capacity) is None
     assert queue.passes(gpu_action) == 1
     assert _denial(queue, gpu_action)["evidence"]["withhold"]["gpu_first"] is True
-    assert queue.item_path(pool.READY, cpu_only).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_only).exists()
 
 
 def test_a_cpu_only_action_still_waits_for_the_floor(queue: pool.PoolQueue, clock) -> None:
@@ -740,7 +740,7 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
     queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
     assert answer["gpu_first"] is gpu_first
     assert answer["eligible"] is gpu_first
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert ("foreign_unix" in record) is foreign
 
 

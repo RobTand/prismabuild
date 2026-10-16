@@ -169,7 +169,7 @@ def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
 
     _inode_exhausted(monkeypatch)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tier_id = storage_tiers.tier_id("ram", HOST)
     kind = storage_tiers.RAM_CAPACITY_KIND
     discovery_window = 160

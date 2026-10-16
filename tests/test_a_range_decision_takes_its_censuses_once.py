@@ -98,7 +98,7 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
         entries[key] = {"stage_path": str(path), "bytes": SIZE,
                         "sha256": OLD_DIGEST, "file_id": _identity(path)}
     stale._write_sidecar(queue, stage, consumer, mover, entries)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -130,7 +130,7 @@ def _terminal_pair(queue: pool.PoolQueue, stage: Path, destination: Path,
     base._publish(queue, mover, max_attempts=1)
     queue.finish(mover, status="executed", detail={"returncode": 0})
     key = residency_map.residency_map_key(str(destination), 0)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -180,7 +180,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     claimed_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "action_key": key,
@@ -264,8 +264,8 @@ def _adoption_world(fleet, count: int, monkeypatch):
         path.write_bytes(NEW)
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
-    queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
-    after_paths(monkeypatch, *destinations, destinations[0].parent, queue.dir(pool.CLAIMED))
+    queue.records.dir(pool.record_store.CLAIMED).mkdir(parents=True, exist_ok=True)
+    after_paths(monkeypatch, *destinations, destinations[0].parent, queue.records.dir(pool.record_store.CLAIMED))
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor)
     return publisher, destinations
@@ -628,5 +628,5 @@ def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
     assert len(publisher.invalidated) == 2
     live, tainted = reader_lease.live_for(
         queue, {os.path.normpath(str(pinned))},
-        residency_root=queue.residency_fragment_root())
+        residency_root=queue.records.residency_fragment_root())
     assert live and not tainted, (live, tainted)

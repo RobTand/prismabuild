@@ -59,7 +59,7 @@ def _claim_export(queue: pool.PoolQueue, cas: Path, *,
 
     key = base._key()
     base._publish(queue, key, cas_root=str(cas), max_attempts=1)
-    claimed = queue.item_path(pool.CLAIMED, key)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
     item = json.loads(claimed.read_text())
     item["resources"] = (resources if resources is not None
                          else {"cpu": 1, "mem_gb": 1, FILL: 510})
@@ -127,9 +127,9 @@ def test_a_rate_only_export_does_not_block_a_dead_owners_retirement(fleet) -> No
     assert any(entry.get("complete") is True for entry in own), own
     assert not any((stage / name).exists() for name in NAMES)
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
     # The export's claim is untouched: it is still the worker's.
-    assert queue.item_path(pool.CLAIMED, export).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, export).exists()
 
 
 def test_a_rate_only_export_does_not_block_an_orphan_under_pressure(fleet) -> None:
@@ -176,7 +176,7 @@ def test_a_copy_that_seals_no_range_still_taints(fleet, resources) -> None:
                for error in errors), errors
     assert all((stage / name).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 @pytest.mark.parametrize("resources", [
