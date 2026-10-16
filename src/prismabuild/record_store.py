@@ -1218,9 +1218,6 @@ class RecordStore:
     def replace_reader_scope_at(self, path: Path, payload: Mapping[str, object]) -> None:
         _write_json(path, payload, text="sorted_lf", tmp="pid")
 
-    def replace_cycle_at(self, path: Path, payload: Mapping[str, object]) -> None:
-        self._replace_cycle(path, payload)
-
 
     def replace_record_bytes_at(self, path: Path, raw: bytes) -> None:
         _write_bytes(path, raw)
@@ -1252,7 +1249,7 @@ class RecordStore:
             path, digest_primitives._canonical_bytes(dict(payload)) + b"\n")
 
     @staticmethod
-    def _replace_cycle(path: Path, record: Mapping[str, object]) -> None:
+    def replace_cycle_at(path: Path, record: Mapping[str, object]) -> None:
         """Publish a record a loop rewrites every cycle, making its directory once.
 
         The directory is made only when the write finds it missing, so the

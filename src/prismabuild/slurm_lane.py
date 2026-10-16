@@ -2482,8 +2482,6 @@ def _summary_lock(path: Path) -> Iterator[None]:
     """
 
     lock_path = record_store.RecordStore.summary_lock_path(path)
-    directory = lock_path.parent
-    lock_path = lock_path
     with posix_lock.held(lock_path):
         yield
 
