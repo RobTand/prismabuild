@@ -36,10 +36,10 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
     monkeypatch.setattr(pool, "_write_json_atomic", advance_after_marker)
     monkeypatch.setattr(pool, "find_launcher_pids", lambda key: [])
     queue.withdraw(KEY, signal_child=False)
-    live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
+    live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     assert live is not None and pool._same_claim(live, successor)
     assert live["max_attempts"] == 2
-    assert pool.record_store.read_queue_record(queue.records.lease_path(KEY))["owner"] == "second"
+    assert pool.record_store.read_document(queue.records.lease_path(KEY))["owner"] == "second"
     assert queue.ledger().held() == {"cpu": 1}
 
 
@@ -54,7 +54,7 @@ def test_resubmission_does_not_erase_original_stop_request(tmp_path):
     first = queue.claim(owner="first")
     queue.withdraw(KEY, signal_child=False)
     publish()
-    second = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    second = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert queue.withdrawal_covers(first) is not None
     assert queue.withdrawal_covers(second) is None
 
@@ -65,17 +65,17 @@ def test_withdraw_restores_ready_replacement_without_cancelling_it(tmp_path, mon
         queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                       checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
     publish()
-    first = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    first = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     write = pool._write_json_atomic
     replacement = {}
     def advance_after_marker(path, record):
         write(path, record)
         if path == queue.records.item_path(pool.record_store.WITHDRAWN, KEY) and not replacement:
             publish()
-            replacement.update(pool.record_store.require(queue.records.item(pool.record_store.READY, KEY)))
+            replacement.update(pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY)))
     monkeypatch.setattr(pool, "_write_json_atomic", advance_after_marker)
     queue.withdraw(KEY, signal_child=False)
-    assert pool.record_store.require(queue.records.item(pool.record_store.READY, KEY)) == replacement
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY)) == replacement
     assert queue.withdrawal_covers(first) is not None
     assert queue.withdrawal_covers(replacement) is None
 
@@ -136,7 +136,7 @@ def test_retiring_marker_does_not_remove_another_concurrent_decision(tmp_path, m
         return result
     monkeypatch.setattr(queue, "_file_superseded", publish_after_archive)
     queue._supersede_withdrawal(KEY)
-    assert pool.record_store.read_queue_record(path) == successor
+    assert pool.record_store.read_document(path) == successor
 
 
 @pytest.mark.parametrize("operation", ["finish", "reap_stale"])
@@ -165,9 +165,9 @@ def test_cancelled_cleanup_does_not_conclude_a_successor(tmp_path, monkeypatch, 
         queue.finish(KEY, status="withdrawn", claim_snapshot=first)
     else:
         queue.reap_stale(timeout_s=-1)
-    live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
+    live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     assert live is not None and pool._same_claim(live, successor)
-    assert pool.record_store.read_queue_record(queue.records.lease_path(KEY))["owner"] == "second"
+    assert pool.record_store.read_document(queue.records.lease_path(KEY))["owner"] == "second"
     assert queue.ledger().held() == {"cpu": 1}
 
 
@@ -194,7 +194,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
-    original = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    original = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     if old_terminal:
         pool._write_json_atomic(queue.records.item_path(pool.record_store.DONE, KEY), {
             "action_key": KEY, "status": "executed", "published_unix": 1.0,

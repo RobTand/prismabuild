@@ -650,7 +650,7 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     assert result["released"] == 0
     assert result["container_cleanup"]["deferred"] is True
     queue.finish(KEY_A, status="withdrawn")
-    pending = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY_A))
+    pending = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY_A))
     assert pending["container_cleanup_pending"]["remaining"] == ["stuck-container"]
     assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().held_keys() == [KEY_A]

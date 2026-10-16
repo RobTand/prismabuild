@@ -204,7 +204,7 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
                       resources={"cpu": 1, "mem_gb": 2}, max_attempts=1)
         item = queue.claim(capacity={"cpu": 2, "mem_gb": 4})
         assert item is not None and item["action_key"] == key
-        record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+        record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         record["finish_pending"] = {"status": "failed",
                                     "detail": {"returncode": 137}}
         pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), record)

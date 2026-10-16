@@ -133,7 +133,7 @@ def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) 
     assert queue.tier_holdings(KEY_A) == {}
     assert queue.tier_ledger(TIER).available() == {"stage_gib": 2, "fill_mb_s_pool_side": 5}
     # Nothing claim-scoped survives into the outcome or a requeue.
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY_A))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY_A))
     assert done is not None and done["tier_reservations"] == {
         TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
     assert "tier_reservations" in pool.PoolQueue._CLAIM_SCOPED_FIELDS
@@ -253,7 +253,7 @@ def test_reap_stale_returns_tier_tokens_with_the_host_tokens(queue: pool.PoolQue
     assert queue.ledger().held() == {}
     assert queue.tier_holdings(KEY_A) == {}
     assert queue.tier_ledger(TIER).available() == {"stage_gib": 1}
-    requeued = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY_A))
+    requeued = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY_A))
     assert requeued is not None and "tier_reservations" not in requeued
 
 

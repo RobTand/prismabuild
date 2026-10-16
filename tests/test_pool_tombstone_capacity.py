@@ -76,7 +76,7 @@ def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     publish(queue, tmp_path)
     first = queue.claim(owner="original", capacity={"cpu": 1})
     queue.withdraw(KEY, signal_child=False)
-    saved = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
+    saved = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     queue.finish(KEY, status="withdrawn", claim_snapshot=first)
     publish(queue, tmp_path)
     successor = queue.claim(owner="successor", capacity={"cpu": 1})
@@ -85,6 +85,6 @@ def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     pool._write_json_atomic(tombstone, saved)
     lease = queue.records.lease_path(KEY).read_bytes()
     queue.sweep_finish_tombstones(grace_s=-1)
-    assert pool._same_claim(pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY)), successor)
+    assert pool._same_claim(pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)), successor)
     assert queue.records.lease_path(KEY).read_bytes() == lease
     assert queue.ledger().held() == {"cpu": 1}
