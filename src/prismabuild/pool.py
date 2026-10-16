@@ -373,7 +373,6 @@ CONTAINER_SCOPE_LABEL = "prismabuild.scope"
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 DOCKER = "/usr/bin/docker"
-ATTEMPTS = "attempts"
 
 # Ported verbatim from pqwork: 30 s refresh, 300 s expiry.  The 10x margin is
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
