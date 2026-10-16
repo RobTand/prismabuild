@@ -131,7 +131,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     })
     control = scope.control_record()
     path = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -229,7 +229,7 @@ def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
         socket_path=endpoint)
     control = scope.create()
     path = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert isinstance(live, dict)
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -1212,7 +1212,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     queue.publish(action_key=MOVER0, cas_root="/cas", worker_script="/w.py",
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1},
                   max_attempts=1)
-    assert pool.record_store.require(queue.records.item(pool.record_store.READY, MOVER0)) is not None
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, MOVER0)) is not None
     assert po.due_mover_rows(queue, instance, template) == []
     assert [(e["batch_id"], e["event"]) for e in
             po.recover_batches(queue, instance, template)] == [

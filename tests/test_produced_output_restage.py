@@ -122,7 +122,7 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
     })
     control = scope.control_record()
     path = q.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -258,7 +258,7 @@ def _producer_request(tmp_path: Path, cas_root: Path, template: dict) -> str:
 
 
 def _execute_mover(q: pool.PoolQueue, mover: str) -> dict:
-    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict), "mover row must be claimed to execute"
     outcome = q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, outcome

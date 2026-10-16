@@ -101,7 +101,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     })
     control = scope.control_record()
     path = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -461,7 +461,7 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
     # projected ref names a foreign digest while the sealed request still
     # declares the admitted template. Egress must taint, not skip.
     claim_path = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    row = pool.record_store.read_queue_record(claim_path)
+    row = pool.record_store.read_document(claim_path)
     assert isinstance(row, dict)
     row["produced_output"] = dict(row["produced_output"])
     row["produced_output"]["template_sha256"] = "0" * 64
@@ -684,7 +684,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
             socket_path=endpoint)
         control = scope.create()
-        live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, owner))
+        live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
         assert isinstance(live, dict)
         live["resource_scope"] = control
         pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, owner), live)
