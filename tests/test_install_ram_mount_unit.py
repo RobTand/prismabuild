@@ -182,13 +182,30 @@ def test_actual_cli_refuses_invalid_or_unsupported_policy_before_effects(generat
     assert _snapshot(generation.parent) == before
 
 
-@pytest.mark.parametrize("text", ["{", "[]", '{"schema":"wrong","schema":"also wrong"}'])
+@pytest.mark.parametrize("text", ["{", "[]"])
 def test_actual_cli_refuses_malformed_and_ambiguous_policy(generation, text):
     path = generation / "bad.json"
     path.write_text(text)
     arguments = _arguments(generation)
     arguments[1] = str(path)
     assert _cli(generation, arguments).returncode != 0
+
+
+def test_actual_cli_refuses_duplicate_valid_policy_before_effects(generation):
+    original = (generation / "tools/ram_tier_policy.json").read_text()
+    schema = json.loads(original)["schema"]
+    path = generation / "duplicate-valid-policy.json"
+    path.write_text('{"schema": ' + json.dumps(schema) + ", " + original.lstrip()[1:])
+    arguments = _arguments(generation)
+    arguments[1] = str(path)
+    before = _snapshot(generation.parent)
+
+    result = _cli(generation, arguments)
+
+    assert result.returncode != 0
+    assert b"duplicate policy field: schema" in result.stderr
+    assert result.stdout == b""
+    assert _snapshot(generation.parent) == before
 
 
 @pytest.mark.parametrize("symlink", [False, True])
