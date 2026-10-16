@@ -137,7 +137,7 @@ def _assert_fallback(queue, set_id, monkeypatch):
     for host in HOSTS:
         _announce(queue, host)
     _publish(queue, "f" * 64, resident_set=set_id)
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, "f" * 64))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, "f" * 64))
     assert queue.resident_copy_hosts(set_id) == set()
     assert queue.placeable_hosts(item) == list(HOSTS)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "ahost")
@@ -388,7 +388,7 @@ def resident_gang(fleet, tmp_path, monkeypatch):
                           resources={"cpu": 2, "gpu": 1, "mem_gb": 100},
                           needs_gpu=True, tags=tags or ["gb10"], priority=0, gang=gang,
                           max_attempts=1, resident_set=set_id if resident_set else None)
-            rows.append(pool.record_store.require(queue.records.item(pool.record_store.READY, key)))
+            rows.append(pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)))
         _gang.publish_group(queue, group, rows)
         return group, [row["action_key"] for row in rows]
 
@@ -460,7 +460,7 @@ def test_resident_hold_ignores_a_future_publish_stamp(tmp_path, published):
 def test_gang_deadline_is_publication_based_and_expires_exactly(resident_gang, monkeypatch):
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("resident-deadline")
-    published = pool.record_store.require(queue.records.item(pool.record_store.READY, first))["published_unix"]
+    published = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, first))["published_unix"]
     assert pool.RESIDENT_COPY_PREFER_S == 30.0
     deadline = published + pool.RESIDENT_COPY_PREFER_S
     for now in (published + 1, published + 10, deadline - 0.001, deadline - 0.001):
@@ -489,7 +489,7 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("no-locality-wait", resident_set=kind != "no-set",
                                      tags=["sparklina"] if kind == "ineligible-copy" else None)
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, first))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, first))
     if kind not in {"no-set", "ineligible-copy"}:
         store = rs.ResidentSets(queue.root)
         set_id = item["resident_set"]
@@ -505,7 +505,7 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
             damaged_id = _rewrite_body(store, set_id, body, rehash=True)
             for key in (first, second):
                 path = queue.records.item_path(pool.record_store.READY, key)
-                row = pool.record_store.read_queue_record(path)
+                row = pool.record_store.read_document(path)
                 row["resident_set"] = damaged_id
                 pool._write_json_atomic(path, row)
     assert gclaim("sparklina", advance=0) is None

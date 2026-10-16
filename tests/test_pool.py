@@ -1528,7 +1528,7 @@ def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
     _publish(queue, KEY_A)
     assert queue.claim() is not None
     claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
-    real_read = pool.record_store.read_queue_record
+    real_read = pool.record_store._read_json
 
     def vanishing_read(path: object) -> object:
         if pathlib.Path(str(path)) == claimed_path:

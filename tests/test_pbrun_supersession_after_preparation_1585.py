@@ -92,7 +92,7 @@ def test_a_staged_submission_refused_in_preparation_files_no_supersession_and_th
     corrected = _submitted(monkeypatch, capsys, work, manifest, "--residency", "stage",
                            "--supersedes", OLD, word="printf corrected")
     assert ae.read_supersession(queue.root, OLD)["new"] == corrected
-    assert pool.record_store.require(queue.records.item(pool.record_store.READY, corrected)) is not None, "the replacement never published"
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, corrected)) is not None, "the replacement never published"
 
 
 def test_a_refused_seal_after_the_phase_table_files_no_supersession(tmp_path, monkeypatch):
@@ -163,7 +163,7 @@ def test_the_record_is_filed_at_the_commit_point_and_a_publish_refusal_is_recove
     key = _submitted(monkeypatch, capsys, work, manifest, "--residency", "stage", "--supersedes", OLD,
                      word="printf retry")
     assert key == filed["new"], "the retry is the same work, so it is the key the record names"
-    assert pool.record_store.require(queue.records.item(pool.record_store.READY, key)) is not None
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)) is not None
 
 
 def test_check_supersession_writes_nothing_and_refuses_what_filing_refuses(tmp_path):

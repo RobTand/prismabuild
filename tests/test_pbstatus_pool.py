@@ -179,7 +179,7 @@ def test_pool_freshness_uses_the_completed_census(
         directory = live_pool.ledger(host).base / "adaptive"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
-    original_records, original_read = pbstatus._pool_records, pool.record_store.read_queue_record
+    original_records, original_read = pbstatus._pool_records, pool.record_store._read_json
 
     def stalled_records(directory):
         result = original_records(directory)
@@ -225,7 +225,7 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
         "lease": live_pool.records.lease_path("a" * 64),
         "passes": live_pool.records.passes_path(key),
     }[sidecar]
-    original_read = pool.record_store.read_queue_record
+    original_read = pool.record_store._read_json
 
     def unreadable(path, **kwargs):
         if path == denied:
