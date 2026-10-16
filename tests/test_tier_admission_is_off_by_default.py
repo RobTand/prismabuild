@@ -56,7 +56,7 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue: pool.PoolQueue,
 ) -> None:
     _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None and "residency" not in item
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
@@ -75,7 +75,7 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_ids() == []
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
     assert "tier_reservations" not in done and "residency_verdict" not in done
 
@@ -135,7 +135,7 @@ def test_the_residency_gate_is_inert_without_a_residency_block(
     """The gate reads one absent field and says so; it cannot refuse anything."""
 
     _publish(queue, KEY, {"cpu": 1})
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None
     assert queue.residency_verdict(item) == {"state": "not_requested"}
     # ...and on a record that predates the field entirely.
@@ -186,7 +186,7 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
 
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
 
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not queue.records.lease_path(KEY).exists()
@@ -211,8 +211,8 @@ def test_without_the_containment_that_finish_loses_the_outcome(
     with pytest.raises(OSError):
         queue.finish(KEY, status="executed", claim_snapshot=claimed)
     # Claim entombed, lease gone, and no outcome filed anywhere.
-    assert pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY)) is None
-    assert pool.record_store.require(queue.records.item(pool.record_store.FAILED, KEY)) is None
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY)) is None
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, KEY)) is None
     assert not queue.records.lease_path(KEY).exists()
 
 

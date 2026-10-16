@@ -335,7 +335,7 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
     control = {"action_key": owner, "nonce": nonce,
                "scope_id": po._broker_scope_id(owner, nonce)}
     path = queue.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)

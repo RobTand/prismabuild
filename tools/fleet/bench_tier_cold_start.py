@@ -144,7 +144,7 @@ def run(args) -> dict[str, object]:
         delay = args.read_ms / 1000.0
         receipt_dirs = {str(queue.root / pool.record_store.MOVERS),
                         str(queue.root / pool.record_store.PREWARM)}
-        real_read = pool.record_store.read_queue_record
+        real_read = pool.record_store._read_json
         reads = [0]
         lock = threading.Lock()
 
@@ -155,7 +155,7 @@ def run(args) -> dict[str, object]:
                 time.sleep(delay)
             return real_read(path, *a, **kw)
 
-        pool.record_store.read_queue_record = slow_read
+        pool.record_store.read_document = slow_read
         writes: list[float] = []
         real_announce = queue.announce_tier
 
@@ -209,7 +209,7 @@ def run(args) -> dict[str, object]:
             (warm_serial if serial else warm).append(round(float(
                 tier_loop.LAST_CYCLE.get("phases", {}).get("receipts", 0.0)), 4))
         tier_loop.RECEIPT_READERS = readers
-        pool.record_store.read_queue_record = real_read
+        pool.record_store.read_document = real_read
         return {
             "bench": "tier-cold-start-1153",
             "fix_present": callable(getattr(tier_loop, "_start", None)),

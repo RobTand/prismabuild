@@ -235,7 +235,7 @@ def test_the_producer_admission_charges_no_stage_window(tmp_path: Path) -> None:
     before = (ledger.capacity(), ledger.available())
     owner = fx._hexkey("wo-admission")
     instance = fx._bind(queue, template, owner)
-    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, owner))
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
     assert claimed["resources"] == {"cpu": 1, "mem_gb": 1}
     assert (ledger.capacity(), ledger.available()) == before
     assert ledger.available() == ledger.capacity()

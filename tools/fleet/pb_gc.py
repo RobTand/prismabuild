@@ -1246,7 +1246,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
                 KIND_MOVEMENT_RECEIPT, path, "not a regular file"))
             continue
         try:
-            record = pool.record_store.read_queue_record(path)
+            record = pool.record_store.read_document(path)
         except (OSError, pool.PoolContractError) as exc:
             section["keep"].append(_retain(
                 KIND_MOVEMENT_RECEIPT, path, f"unreadable: {exc}"))
