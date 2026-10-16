@@ -722,6 +722,12 @@ class RecordStore:
 
         return self.root / DENIAL_TRANSITIONS / f"{residency_action_key(action_key)}.json"
 
+    def consumer_event_path(self, key: str, host: str) -> Path:
+        return self.consumer_events_dir(key) / f"{host}.jsonl"
+
+    def host_event_path(self, host: str) -> Path:
+        return self.host_events_dir() / f"{host}.jsonl"
+
     def consumer_events_dir(self, action_key: str) -> Path:
         """``residency-events/<consumer>/``: one ``<host>.jsonl`` per tier loop."""
 
@@ -1421,3 +1427,26 @@ def pricing_unknown_line(name: str) -> bytes:
 def pricing_line(name: str, record: Mapping[str, object]) -> bytes:
     body = digest_primitives._canonical_bytes(record)
     return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"
+
+
+def event_line_count(path: Path) -> int:
+    try:
+        with open(path) as stream:
+            return sum(1 for _line in stream)
+    except FileNotFoundError:
+        return 0
+
+
+def append_event_record(path: Path, record: Mapping[str, object]) -> None:
+    with open(path, "a") as stream:
+        stream.write(json.dumps(record, default=str) + "\n")
+
+
+def replace_event_tail(path: Path, limit: int) -> int:
+    with open(path) as stream:
+        kept = stream.readlines()[-limit:]
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(temporary, "w") as stream:
+        stream.writelines(kept)
+    os.replace(temporary, path)
+    return len(kept)

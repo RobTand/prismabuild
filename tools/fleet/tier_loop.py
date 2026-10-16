@@ -200,22 +200,11 @@ def _append_bounded_event(path: Path, record: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     count = _EVENT_LINES.get(str(path))
     if count is None:
-        try:
-            with open(path) as stream:
-                count = sum(1 for _line in stream)
-        except FileNotFoundError:
-            count = 0
-    with open(path, "a") as stream:
-        stream.write(json.dumps(record, default=str) + "\n")
+        count = pool.record_store.event_line_count(path)
+    pool.record_store.append_event_record(path, record)
     count += 1
     if count >= 2 * pool.MAX_CONSUMER_EVENT_LINES:
-        with open(path) as stream:
-            kept = stream.readlines()[-pool.MAX_CONSUMER_EVENT_LINES:]
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with open(temporary, "w") as stream:
-            stream.writelines(kept)
-        os.replace(temporary, path)
-        count = len(kept)
+        count = pool.record_store.replace_event_tail(path, pool.MAX_CONSUMER_EVENT_LINES)
     _EVENT_LINES[str(path)] = count
 
 
@@ -230,10 +219,9 @@ def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
     """
 
     try:
-        directory = queue.records.consumer_events_dir(consumer)
+        path = queue.records.consumer_event_path(consumer, host)
     except pool.PoolContractError:
         return
-    path = directory / f"{host}.jsonl"
     try:
         _append_bounded_event(path, record)
     except OSError as exc:
@@ -254,7 +242,7 @@ def _append_host_event(queue: pool.PoolQueue, host: str,
     idiom and bound as :func:`_append_consumer_event`; best-effort the same way.
     """
 
-    path = queue.records.host_events_dir() / f"{host}.jsonl"
+    path = queue.records.host_event_path(host)
     try:
         _append_bounded_event(path, record)
     except OSError as exc:
@@ -697,7 +685,6 @@ class ReceiptCache:
         return copy.deepcopy(kept[1])
 
 
-
 def probe_fill_demand(ready: list[dict[str, object]], tier_id: str) -> int | None:
     """The fill the oldest ready item asks of this tier, or ``None`` when none does."""
 
@@ -947,7 +934,9 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     """
 
     try:
-        marker = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
+        marker = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.WITHDRAWN, key),
+        )
     except (OSError, pool.PoolContractError):
         return False      # unreadable: not a decision this cycle acts on
     if not isinstance(marker, Mapping) or marker.get("preempted_by"):
@@ -968,7 +957,9 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
         prefix = holder[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
         if len(prefix) != 16 or any(c not in "0123456789abcdef" for c in prefix):
             return "none", "malformed blind-grant name"
-        candidates = [p.stem for p in pb.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
+        candidates = [p.stem for p in pb.immutable_files.scan_optional(
+            queue.root / pool.record_store.RESIDENCY_PLANS,
+        )
                       if p.suffix == ".json" and len(p.stem) == 64
                       and p.stem.startswith(prefix)]
         if len(candidates) > 1:
@@ -2389,7 +2380,9 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     # under the consumer lock before withdrawing or reaping anything. A plan
     # filed after this observation is conservatively deferred to the next pass.
     try:
-        filed_keys = {path.stem for path in pb.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
+        filed_keys = {path.stem for path in pb.immutable_files.scan_optional(
+            queue.root / pool.record_store.RESIDENCY_PLANS,
+        )
                       if path.suffix == ".json" and len(path.stem) == 64}
     except OSError:
         return events
@@ -3573,7 +3566,6 @@ def _agreed_shared_rows(rows: list[dict[str, object]],
                                    for row in nominated)
         out.append(merged)
     return out
-
 
 
 def _unpublished_lead(needs: Mapping[str, object], published: set[str]) -> bool:
@@ -5588,7 +5580,6 @@ def _pressure_skip_events(queue: pool.PoolQueue,
     return events
 
 
-
 def window_pressure(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -6337,7 +6328,8 @@ def reclaim_failed_mover_partials(
                     continue      # already asked; asking again would double the row
                 if (queue.records.item_path(pool.record_store.DONE, egress_key).exists()
                         or queue.records.item_path(pool.record_store.FAILED, egress_key).exists()
-                        or queue.records.item_path(pool.record_store.WITHDRAWN, egress_key).exists()):
+                        or queue.records.item_path(pool.record_store.WITHDRAWN, egress_key).exists(
+                        )):
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
                 reading = readers.get(mover_key)
@@ -6486,7 +6478,9 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
         plan_digest = residency_plan.plan_sha256(plan)
         start = int(leg["start_bytes"])
         stop = int(leg["end_bytes"])
-        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, str(leg["mover_action_key"])))
+        row = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.READY, str(leg["mover_action_key"])),
+        )
         published_unix = float((row or {}).get("published_unix"))  # type: ignore[arg-type]
     except (ValueError, OSError, KeyError, TypeError, pool.PoolContractError):
         return False
@@ -8143,9 +8137,13 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
 
     try:
         for state in (_pool_mod.record_store.READY, _pool_mod.record_store.CLAIMED):
-            if _pool_mod.record_store.value_or_raise(queue.records.item(state, mover_name)) is not None:
+            if _pool_mod.record_store.value_or_raise(
+                queue.records.item(state, mover_name),
+            ) is not None:
                 return events
-        withdrawn = _pool_mod.record_store.value_or_raise(queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name))
+        withdrawn = _pool_mod.record_store.value_or_raise(
+            queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name),
+        )
         if withdrawn is None:
             return events
     except (OSError, _pool_mod.PoolContractError, ValueError) as exc:
@@ -8209,7 +8207,6 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
         events.append({"event": "output-funding-reconcile-released",
                        "tier_id": str(scan_tier), "mover": mover_name})
     return events
-
 
 
 def _settle_protected(queue: pool.PoolQueue,
@@ -10569,7 +10566,10 @@ class Liveness:
         now = self._now()
         suffix = f":{host}"
         adopted: list[str] = []
-        for path in pb.immutable_files.match_optional(queue.root / pool.record_store.TIERS, "*.json"):
+        for path in pb.immutable_files.match_optional(
+            queue.root / pool.record_store.TIERS,
+            "*.json",
+        ):
             tier_id = path.stem
             if not tier_id.endswith(suffix):
                 continue
@@ -11685,7 +11685,6 @@ def _serve_cycles(args, stop: Event) -> int:
         if stop.is_set() or runtime_gate.read_maintenance_gate() is not None:
             continue
         stop.wait(max(0.0, args.interval_s - (time.monotonic() - started)))
-
 
 
 def main(argv: list[str] | None = None) -> int:
