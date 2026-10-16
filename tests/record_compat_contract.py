@@ -50,7 +50,11 @@ def has_historical_participant(case, generation, root, manifest):
 
 
 @pytest.fixture(scope="module")
-def generations():
+def generations(pytestconfig):
+    global EVIDENCE
+    output = pytestconfig.getoption("--surface-json", default=None)
+    if EVIDENCE is None and output:
+        EVIDENCE = Path(output).with_suffix(".compat-attestations")
     with retained() as result:
         yield result
 

@@ -7,6 +7,7 @@ import datetime
 import itertools
 import json
 import os
+import runpy
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -87,7 +88,12 @@ def operate(request, store, load):
                         raise OSError("private unavailable telemetry fixture")
                     queue._resource_profile = unavailable
                     try:
-                        value = queue.execute({"action_key": "c" * 64})["resource_profile"]
+                        body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
+                        action = core.seal_action(body)
+                        cas = core.PrismaBuildCAS(store / "cas")
+                        cas.publish_action_request(action)
+                        item = {"action_key": action["action_key"], "cas_root": str(cas.root)}
+                        value = queue.execute(item)["resource_profile"]
                     finally:
                         pool._execution_checkout = checkout
                 else:
