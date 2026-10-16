@@ -44,7 +44,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 1},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -75,7 +75,7 @@ def _requeued_by_finish(q: pool.PoolQueue, key: str) -> dict:
     q.finish(key, status="failed", detail={"returncode": 3},
              claim_snapshot=claimed)
     return json.loads(
-        q.item_path(pool.READY, key).read_text(encoding="utf-8")
+        q.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8")
     )
 
 
@@ -86,7 +86,7 @@ def _requeued_by_the_reaper(q: pool.PoolQueue, key: str) -> dict:
     assert claimed is not None and claimed["action_key"] == key
     assert q.reap_stale(timeout_s=-1.0) == [key]
     return json.loads(
-        q.item_path(pool.READY, key).read_text(encoding="utf-8")
+        q.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8")
     )
 
 

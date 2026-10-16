@@ -79,7 +79,7 @@ def _failed(
         record["detail"]["slurm"] = {
             "job_id": "1001", "state": state, "gres": gres,
         }
-    path = queue_root / pool.FAILED / f"{key}.json"
+    path = queue_root / pool.record_store.FAILED / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
     return path
@@ -209,7 +209,7 @@ def test_a_withdrawal_of_this_generation_is_never_resubmitted(fleet) -> None:
     be there.  Re-submitting past it undoes an operator's decision.
     """
 
-    marker = fleet["queue_root"] / pool.WITHDRAWN / f"{KEY_SLURM}.json"
+    marker = fleet["queue_root"] / pool.record_store.WITHDRAWN / f"{KEY_SLURM}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": KEY_SLURM, "status": "withdrawn",
@@ -233,7 +233,7 @@ def test_a_withdrawal_of_another_generation_does_not_blacklist_the_key(
     is what this tool did -- turns one cancellation into a permanent ban.
     """
 
-    marker = fleet["queue_root"] / pool.WITHDRAWN / f"{KEY_SLURM}.json"
+    marker = fleet["queue_root"] / pool.record_store.WITHDRAWN / f"{KEY_SLURM}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": KEY_SLURM, "status": "withdrawn",
@@ -377,7 +377,7 @@ def _sealed_failure(
                    "slurm": {"job_id": "4242", "state": "FAILED",
                              "gres": gres}},
     }
-    path = queue_root / pool.FAILED / f"{key}.json"
+    path = queue_root / pool.record_store.FAILED / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
     return {"key": key, "action": action, "cas_root": tmp_path / "cas",
@@ -525,7 +525,7 @@ def test_a_sealed_reset_leaves_its_ending_to_pbwait(
     assert f"pbwait.py {sealed['key'][:12]}" in out
 
     # No ending, and no second failure record: the ending is pbwait's.
-    assert not (sealed["queue_root"] / pool.DONE).exists()
+    assert not (sealed["queue_root"] / pool.record_store.DONE).exists()
     assert json.loads(
         sealed["record_path"].read_text())["status"] == "reset"
     # And the submission pbwait resolves it from.

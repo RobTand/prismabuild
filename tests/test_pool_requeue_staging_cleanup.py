@@ -31,7 +31,7 @@ from unittest import mock
 queue = pool.PoolQueue(sys.argv[1])
 key = sys.argv[2]
 pool._now = lambda: float(sys.argv[3])
-ready = queue.item_path(pool.READY, key)
+ready = queue.records.item_path(pool.record_store.READY, key)
 link = os.link
 if sys.argv[4]:
     entomb = queue._entomb_claim
@@ -47,7 +47,7 @@ def crash_after_link(source, destination, *args, **kwargs):
     return result
 
 pool.os.link = crash_after_link
-claim = json.loads(queue.item_path(pool.CLAIMED, key).read_bytes())
+claim = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_bytes())
 queue.finish(key, status="failed", detail={"returncode": 17}, claim_snapshot=claim)
 raise RuntimeError("the real READY link was not reached")
 """
@@ -80,17 +80,17 @@ def _crashed_requeue(
         capture_output=True, text=True, timeout=20,
     )
     assert child.returncode == -signal.SIGKILL, (child.returncode, child.stdout, child.stderr)
-    staged = list(queue.dir(pool.CLAIMED).glob(".*.tombstone.tmp"))
+    staged = list(queue.records.dir(pool.record_store.CLAIMED).glob(".*.tombstone.tmp"))
     assert len(staged) == 1
     stage = staged[0]
     tombstone = stage.with_name(stage.name[1:-len(".tmp")])
     assert tombstone.exists()
     assert json.loads(tombstone.read_bytes()) == claim
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     assert stage.samefile(ready)
     assert json.loads(ready.read_bytes())["attempts"] == 1
     assert queue.ledger().held() == {}
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     clock[0] = max(clock[0], stage.stat().st_mtime)
     return stage, tombstone
 
@@ -106,24 +106,24 @@ def _recover_owner_while_staging_is_fresh(
     assert stage.exists(), "a fresh staging file was removed during owner recovery"
 
 
-@pytest.mark.parametrize("successor_state", (pool.READY, pool.CLAIMED, pool.DONE))
+@pytest.mark.parametrize("successor_state", (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE))
 def test_sigkill_staging_orphan_is_reaped_without_changing_successor(
     queue: pool.PoolQueue, clock: list[float], successor_state: str,
 ) -> None:
     stage, tombstone = _crashed_requeue(queue, clock)
     _recover_owner_while_staging_is_fresh(queue, clock, stage, tombstone)
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     ready_identity = (ready.stat().st_dev, ready.stat().st_ino)
-    if successor_state != pool.READY:
+    if successor_state != pool.record_store.READY:
         claim = queue.claim(owner="successor", capacity=DEMAND)
         assert claim is not None
-        if successor_state == pool.DONE:
+        if successor_state == pool.record_store.DONE:
             queue.finish(KEY, status="executed", claim_snapshot=claim)
-    paths = [queue.item_path(successor_state, KEY)]
-    if successor_state == pool.CLAIMED:
-        paths.append(queue.lease_path(KEY))
-    paths.extend((queue.root / pool.ATTEMPTS).rglob("*"))
-    paths.extend(queue.superseded_dir().glob("*.json"))
+    paths = [queue.records.item_path(successor_state, KEY)]
+    if successor_state == pool.record_store.CLAIMED:
+        paths.append(queue.records.lease_path(KEY))
+    paths.extend((queue.root / pool.record_store.ATTEMPTS).rglob("*"))
+    paths.extend(queue.records.superseded_dir().glob("*.json"))
     saved = {path: path.read_bytes() for path in paths if path.is_file()}
     held = queue.ledger().held()
 
@@ -134,7 +134,7 @@ def test_sigkill_staging_orphan_is_reaped_without_changing_successor(
     assert not stage.exists(), "SIGKILL left an aged staging orphan with no cleanup owner"
     assert all(path.read_bytes() == value for path, value in saved.items())
     assert queue.ledger().held() == held
-    if successor_state == pool.READY:
+    if successor_state == pool.record_store.READY:
         assert (ready.stat().st_dev, ready.stat().st_ino) == ready_identity
 
 
@@ -178,7 +178,7 @@ def test_orphan_staging_cleanup_respects_the_key_lock(
 def test_staging_cleanup_ignores_unrelated_names_and_nonregular_entries(
     queue: pool.PoolQueue, clock: list[float], tmp_path: Path,
 ) -> None:
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     names = (
         f".{KEY}.1.worker.17.short.tombstone.tmp",
         f".{KEY.upper()}.1.worker.17.12345678.tombstone.tmp",
@@ -189,16 +189,16 @@ def test_staging_cleanup_ignores_unrelated_names_and_nonregular_entries(
         f"{KEY}.1.worker.17.12345678.tombstone.tmp",
         ".unrelated.tmp",
     )
-    files = [queue.dir(pool.CLAIMED) / name for name in names]
+    files = [queue.records.dir(pool.record_store.CLAIMED) / name for name in names]
     for path in files:
         path.write_bytes(b"unrelated")
         old = clock[0] - GRACE - 1
         os.utime(path, (old, old))
     target = tmp_path / "symlink-target"
     target.write_bytes(b"retained target")
-    symbolic = queue.dir(pool.CLAIMED) / f".{KEY}.1.worker.example.17.0000000a.tombstone.tmp"
+    symbolic = queue.records.dir(pool.record_store.CLAIMED) / f".{KEY}.1.worker.example.17.0000000a.tombstone.tmp"
     symbolic.symlink_to(target)
-    directory = queue.dir(pool.CLAIMED) / f".{KEY}.1.worker.example.17.0000000b.tombstone.tmp"
+    directory = queue.records.dir(pool.record_store.CLAIMED) / f".{KEY}.1.worker.example.17.0000000b.tombstone.tmp"
     directory.mkdir()
     for path in (target, symbolic, directory):
         os.utime(path, (old, old), follow_symlinks=False)
@@ -240,7 +240,7 @@ def test_staging_cleanup_retains_unknown_file_or_owner_observation(
         return lstat(path, *args, **kwargs)
 
     def unavailable_listing(directory):
-        if directory == queue.dir(pool.CLAIMED):
+        if directory == queue.records.dir(pool.record_store.CLAIMED):
             raise OSError(errno.ESTALE, "owner listing unavailable")
         return listdir(directory)
 

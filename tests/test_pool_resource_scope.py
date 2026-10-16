@@ -72,7 +72,7 @@ def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):
     class Process:
         pid = 999999999
         def __init__(self, argv, **kw):
-            persisted = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
+            persisted = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
             assert persisted['resource_scope']['token'] == 'b'*64
             assert persisted['resource_scope']['memory_max_bytes'] == 2 * 1024**3
             assert '--token' in argv
@@ -117,9 +117,9 @@ def test_broker_cleanup_failure_retains_claim_and_reservation(scoped, monkeypatc
     monkeypatch.setattr(resource_scope.ResourceScope, 'release',
                         lambda scope: (_ for _ in ()).throw(OSError('broker down')))
     path = queue.finish(item['action_key'], status='executed', detail=outcome, claim_snapshot=item)
-    assert path == queue.item_path(pool.CLAIMED, item['action_key'])
+    assert path == queue.records.item_path(pool.record_store.CLAIMED, item['action_key'])
     assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
-    assert queue.lease_path(item['action_key']).exists()
+    assert queue.records.lease_path(item['action_key']).exists()
     assert 'learn' not in calls
 
 
@@ -129,7 +129,7 @@ def test_reaper_stops_scope_before_requeue_and_strips_ownership(scoped, monkeypa
     queue.execute(item, containment=True)
     assert queue.reap_stale(timeout_s=-1) == [item['action_key']]
     assert 'stop' in calls and 'release' in calls
-    ready = json.loads(queue.item_path(pool.READY, item['action_key']).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, item['action_key']).read_text())
     assert 'resource_scope' not in ready
     assert 'resource_scope_cleanup' not in ready
     assert queue.ledger().held() == {}
@@ -143,7 +143,7 @@ def test_foreign_reaper_never_controls_local_scope(scoped, monkeypatch):
     monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'other-host')
     assert queue.reap_stale(timeout_s=-1) == []
     assert 'stop' not in calls and 'release' not in calls
-    assert queue.item_path(pool.CLAIMED, item['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).exists()
 
 
 def test_kernel_oom_is_failure_even_if_launcher_reports_zero(scoped, monkeypatch):
@@ -180,7 +180,7 @@ def test_withdraw_stops_scope_and_releases_only_after_broker_proof(scoped, monke
     queue.finish(item['action_key'], status='withdrawn', claim_snapshot=item)
     assert 'release' in calls
     assert queue.ledger().held() == {}
-    assert not queue.item_path(pool.CLAIMED, item['action_key']).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).exists()
 
 
 @pytest.mark.parametrize('scoped', [False], indirect=True)
@@ -250,9 +250,9 @@ def test_orphan_lease_retains_scope_authority_for_cleanup(scoped, monkeypatch):
     _process(monkeypatch, queue, item, calls)
     queue.execute(item, containment=True)
     key = item['action_key']
-    lease = json.loads(queue.lease_path(key).read_text())
+    lease = json.loads(queue.records.lease_path(key).read_text())
     assert lease['resource_scope']['nonce'] == item['resource_scope']['nonce']
-    queue.item_path(pool.CLAIMED, key).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
     assert queue.sweep_widowed_leases(timeout_s=-1) == [key]
     assert 'stop' in calls and 'release' in calls
     assert queue.ledger().held() == {}
@@ -350,7 +350,7 @@ def test_reaper_preserves_original_resource_failure_in_attempt_history(scoped, m
         return answer
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', status)
     assert queue.reap_stale(timeout_s=-1) == [item['action_key']]
-    ready = json.loads(queue.item_path(pool.READY, item['action_key']).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, item['action_key']).read_text())
     assert ready['detail']['termination_reason'] == 'gpu_budget_exceeded'
     assert ready['detail']['termination_evidence'] == {'source': 'broker-resource-monitor'}
 
@@ -395,7 +395,7 @@ def test_a_raising_learning_hook_does_not_escape_the_token_return_gate(scoped, m
     outcome = queue.execute(item, containment=True)
     monkeypatch.setattr(pool.cpu_admission, 'record_completion',
                         _raising_hook(RuntimeError('unsafe PrismaBuild admission lock file')))
-    record = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
 
     cleanup = queue.cleanup_action_containers(record)
 
@@ -421,9 +421,9 @@ def test_a_raising_learning_hook_still_completes_the_claim(scoped, monkeypatch):
 
     # Not still claimed, tokens back, lease gone: the three things the escape
     # cost.  Under the old tuple this call raised and none of them happened.
-    assert path != queue.item_path(pool.CLAIMED, item['action_key'])
+    assert path != queue.records.item_path(pool.record_store.CLAIMED, item['action_key'])
     assert queue.ledger().held() == {}
-    assert not queue.lease_path(item['action_key']).exists()
+    assert not queue.records.lease_path(item['action_key']).exists()
 
 
 def test_an_unexpected_failure_in_the_hook_is_recorded_the_same_way(scoped, monkeypatch):
@@ -438,7 +438,7 @@ def test_an_unexpected_failure_in_the_hook_is_recorded_the_same_way(scoped, monk
     queue.execute(item, containment=True)
     monkeypatch.setattr(pool.cpu_admission, 'record_completion',
                         _raising_hook(ZeroDivisionError('division by zero')))
-    record = json.loads(queue.item_path(pool.CLAIMED, item['action_key']).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
 
     cleanup = queue.cleanup_action_containers(record)
 
@@ -451,7 +451,7 @@ def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, 
     queue, item, calls = scoped
     key = item['action_key']
     item['max_attempts'] = 1
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), item)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     _process(monkeypatch, queue, item, calls)
     outcome = queue.execute(item, containment=True)
     path = queue.finish(key, status=status, detail=outcome, claim_snapshot=item)
@@ -463,8 +463,8 @@ def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, 
     assert cleanup['telemetry']['complete'] is True
     assert cleanup['telemetry']['nonce'] == cleanup['nonce']
     assert calls.index('stop') < calls.index('release') < calls.index('learn')
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    assert not queue.lease_path(key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.lease_path(key).exists()
     assert queue.ledger().held() == {}
 
 

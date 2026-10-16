@@ -47,7 +47,7 @@ def endings(tmp_path: Path) -> dict:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=KEY_POOL,
         cas_root=str(tmp_path / "cas"),
@@ -66,9 +66,9 @@ def endings(tmp_path: Path) -> dict:
             "elapsed_s": 12.0,
         },
     )
-    assert pool_path == queue.item_path(pool.FAILED, KEY_POOL)
+    assert pool_path == queue.records.item_path(pool.record_store.FAILED, KEY_POOL)
 
-    lane_path = queue.item_path(pool.FAILED, KEY_SLURM)
+    lane_path = queue.records.item_path(pool.record_store.FAILED, KEY_SLURM)
     lane_path.write_text(json.dumps({
         "schema": "prismaquant.prismabuild.slurm_outcome.v1",
         "action_key": KEY_SLURM,
@@ -110,7 +110,7 @@ def test_the_rewrite_is_published_by_rename(
     with contextlib.suppress(OSError):
         pool_reset._file_reset({"paths": [path]}, reason="operator reset")
 
-    record = pool._read_json(path)
+    record = pool.record_store.read_queue_record(path)
     assert record is not None
     assert record["status"] == "reset"
 
