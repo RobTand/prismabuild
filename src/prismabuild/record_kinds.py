@@ -34,6 +34,9 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("checkout-recovery-plan", "prismabuild.checkout_recovery_plan.v1", "operator-held exact banked checkout recovery plan", "closed",
+               "prismabuild.checkout_recovery:apply_checkout_recovery", ("prismabuild.checkout_recovery:_checkout_recovery_capture",), ("banked",),
+               ("actual private Git/CAS/queue/archive and cleanup; supplied process/stat observations are not physical abandonment or operator RootGO",), stable_paths=True),
     RecordKind("spool-record", "prismabuild.produced_spool.v1", "private spool reservation, manifest, copy, receipt and retirement intent", "closed",
                "prismabuild.produced_spool:ProducedSpool._reservation",
                ("prismabuild.produced_spool:ProducedSpool.reserve_group", "prismabuild.produced_spool:ProducedSpool.submit_group",
