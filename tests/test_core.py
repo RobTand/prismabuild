@@ -3022,7 +3022,7 @@ def test_cas_lookup_rejects_receipt_parent_swapped_after_open(
         outside
         / "v3"
         / str(action["action_key"])[:2]
-        / f"{action['action_key']}.json"
+        / f"{action["action_key"]}.json"
     )
     hostile.parent.mkdir(parents=True)
     hostile.write_text("{}\n", encoding="utf-8")

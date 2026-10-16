@@ -18064,8 +18064,14 @@ permissive JSON and missing/empty behavior. Core has no private forwarding
 reader or decoder aliases. Its public `ReplacedRecordError` is the exact
 native class object, alongside its existing canonical CAS error bindings.
 Dynamic tools with a loaded Core use that Core's native/digest module objects,
-while package modules import the native owner directly,
+while package modules import the native owner directly. Strict decoder callers
+use either their loaded Core's digest member or the direct digest owner; each
+module uses one native-owner access form,
 so isolated, installed and retained source bundles keep their own dependency
 and exception identity. The attested member set is unchanged, and current,
 historical optional-member and retained receipt-listed proof rules remain in
 force. This ownership move does not complete the wider queue RecordStore work.
+
+The three variable-mode native producers are `action_result`,
+`checkout_recovery`, and `pool_reconcile`. Each selects its immutable or stable
+reader before calling it, preserving its existing flag and read timing.

@@ -21,6 +21,8 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 from prismabuild import materialize
 
 from collections.abc import Mapping
@@ -98,7 +100,7 @@ def state_dir(queue, group: str) -> Path:
 
 def _gang_read(path: Path, *, optional: bool = True) -> dict | None:
     try:
-        raw = core.immutable_files.read_stable_file(
+        raw = immutable_files.read_stable_file(
             path,
             where="gang record",
             max_bytes=MAX_RECORD_BYTES,

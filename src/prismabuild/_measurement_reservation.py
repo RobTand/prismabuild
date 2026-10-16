@@ -7,6 +7,8 @@ metadata only. No current candidate has a proved admission-to-release bound.
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 from collections.abc import Mapping
 from contextlib import contextmanager, ExitStack
 import fcntl
@@ -58,7 +60,7 @@ class PublicationDisappeared(CensusUnavailable):
 
 def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) -> dict | None:
     try:
-        raw = core.immutable_files.read_replaced_record(path, where=READ_SECTION, max_bytes=limit)
+        raw = immutable_files.read_replaced_record(path, where=READ_SECTION, max_bytes=limit)
     except FileNotFoundError:
         if optional:
             return None

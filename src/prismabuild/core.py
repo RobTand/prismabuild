@@ -66,10 +66,7 @@ except ImportError:  # Isolated -I -S execution binds the sibling owner directly
 
 if __package__:
     from . import immutable_files
-    if Path(immutable_files.__file__).resolve(
-    ) != Path(__file__).resolve().with_name(
-        "immutable_files.py",
-    ):
+    if Path(immutable_files.__file__).resolve() != Path(__file__).resolve().with_name("immutable_files.py"):
         raise ActionContractError("PrismaBuild immutable file owner is not the Core sibling")
 else:
     import importlib.util as _immutable_util
