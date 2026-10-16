@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import json
 from pathlib import Path
 import socket
 import sys
 
 from . import action_wait, core as pb, endings, pool
+from .digest_primitives import sorted_json
 
 #: What ``pbrun`` exits with when it stopped waiting before the work finished.
 #: The pool path already spells it this way; the SLURM path means the same
@@ -411,7 +411,7 @@ def await_outcome(
                   f"{error}. That reader was still retained when "
                   f"--wait-s ran out, {result.waited_s:.1f}s after its read "
                   f"timed out (retained reader="
-                  f"{json.dumps(still, sort_keys=True)}), so no second "
+                  f"{sorted_json(still)}), so no second "
                   f"reader was started beside it. Nothing was cancelled. "
                   f"Read pb-queue/{{done,failed,withdrawn}}/{key[:12]}"
                   f"*.json or run pbwait.py {key[:12]}", file=sys.stderr, flush=True)

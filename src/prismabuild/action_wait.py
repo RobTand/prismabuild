@@ -388,6 +388,17 @@ def await_action(
     Ordinary readers retain the existing own-child waitpid contract. Persistent
     scope-owned readers keep their separate durable fence protocol. Pool
     integrity failures and BaseException cancellation propagate through cleanup.
+
+    A positive synchronous deadline starts no read after expiry (#938). Its
+    zero-patience probe keeps one final bounded reread on failure. A detached
+    waiter always makes its first read and follows a causal handoff at expiry.
+    Verification has its own finite budget after an ending is observed.
+
+    Hard NFS reads can outlive SIGKILL (#1033). Patient callers wait for that
+    exact child before another read and report progress while it remains
+    retained (#1048). Listed but not yet visible attempt records retry inside
+    the same deadline (#1100). Only synchronous reporting accepts a complete
+    delivered payload whose reader missed its reap grace (#630).
     """
     clock = time
     if not isinstance(profile, AwaitProfile):

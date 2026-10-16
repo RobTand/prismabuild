@@ -173,7 +173,6 @@
   "sorted-json:tools/fleet/pbcanary_legs/common.py::canonical_json",
   "sorted-json:tools/fleet/pbmcp.py::_content",
   "sorted-json:tools/fleet/pbmetrics.py::_refusal_record",
-  "sorted-json:tools/fleet/pbrun.py::await_outcome",
   "sorted-json:tools/fleet/pbrun.py::bounded_offer_snapshot",
   "sorted-json:tools/fleet/pbrun.py::detach_line",
   "sorted-json:tools/fleet/pbrun.py::freeze_action_template",

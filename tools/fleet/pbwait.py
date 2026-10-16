@@ -69,11 +69,6 @@ KEY_WIDTH = 12
 #: actual wait has begun. This is separate from ``--wait-s``.
 PREFIX_RESOLUTION_READ_TIMEOUT_S = 5.0
 
-#: A detached wait has the same hard shared-filesystem failure mode as the
-#: synchronous pool wait.  This is a reader budget, not ``--wait-s``: it limits
-#: one read-only submission/CAS/outcome observation or one immutable-summary
-#: verification while the parent retains the run identity and any SLURM work.
-
 _COLUMNS = (
     ("key", "key"),
     ("status", "status"),
@@ -524,19 +519,6 @@ def _observation_error_row(key, exc, *, waiting):
     return _row(key, 'record_error', transport=waiting['transport'], job=job_id, note=str(exc))
 
 
-def _look_once(q, key: str, *, cas, deadline: float, **kwargs):
-    """Observe one point and render its typed failure, without a retry loop."""
-    try:
-        return _look_once_checked(
-            q, key, cas=cas,
-            remaining_s=lambda: action_wait.remaining_until(deadline), **kwargs)
-    except (action_wait.UnreadableTerminal, action_wait.OutcomeReadUnavailable,
-            pool.PoolContractError, OSError, slurm_lane.SlurmLaneError) as exc:
-        found = (kwargs.get('state') or {}).get('found')
-        waiting = _row(key, 'waiting', transport=found[0] if found else '-', job=_job_id(found))
-        return _observation_error_row(key, exc, waiting=waiting)
-
-
 def _look_once_checked(
     q,
     key: str,
@@ -556,8 +538,11 @@ def _look_once_checked(
     recorded, no ending is filed, and the CAS holds no receipt.  Every other
     answer is a row, because every other answer is about a run this can name.
 
-    Split out of ``wait_one`` so the pass reads in one screen and the loop
-    around it holds nothing but the deadline and the interval.
+    A wait can begin before submission exists. Once a publication is selected,
+    later publications cannot replace its generation. Receipts are checked
+    before asking SLURM; this waiter may be the only process that can file a
+    completed scheduler job's terminal record. Resume stays in the parent,
+    after the bounded read has ended, with freshly measured remaining patience.
     """
 
     previous_generation = generation

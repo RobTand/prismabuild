@@ -18237,3 +18237,31 @@ without importing project code. Native histories and exact-source PB evidence
 are required separately. The diagnostic tests exercise real claims and failure
 ports rather than patching `_claim_pass`. The extraction changes no queue
 schema, lock scope, fairness limit, ready-GPU rule or default.
+
+
+### Ending queries and client wait ownership
+
+`endings` owns the pure current-key, exact-generation and immutable-attempt
+questions. Exact-run queries request their existing conditional inputs through
+`NeedsRunInputs`; observing current status does not inherit exact-run fallback
+rules or authorize queue mutation. Publication supersession remains distinct
+from execution.
+
+`action_wait` owns one await loop and its per-call reader state. The synchronous
+profile preserves zero-patience final rereads, remaining-budget observations,
+separate verification budgets and delivered-snapshot acceptance. The detached
+profile always makes its first bounded read and follows exact preemption
+handoffs at expiry. Both use the owner clock at call time. Its `await_ending`
+adapter now clamps a positive wait's last sleep to the deadline; the only
+production caller requests zero patience. Own-child waitpid remains the reap
+authority. Persistent scoped readers retain their separate durable protocol.
+
+`action_client` owns synchronous outcome intake, immutable verification, expanded
+attempt output, human reporting and the existing client exit constants. Both
+waiters and inspection consumers call that package owner directly. `pbrun`
+retains submission, publication, transport and command orchestration. The
+package operation imports no CLI. `pbwait` keeps SLURM resume in its durable
+parent, after bounded observation, and checks receipts before scheduler state.
+This ownership change does not change queue records or the reserved-exit clamp.
+The dedicated typed client channel and replacement of pbtest's runpy recovery
+remain a separate, required C06 unit.
