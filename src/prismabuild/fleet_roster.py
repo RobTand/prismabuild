@@ -111,13 +111,23 @@ class Roster:
         return Path(entrypoint).resolve().with_name("fleet_boxes.json")
 
     @classmethod
-    def at(cls, root: str | Path, *, flat_first: bool = False) -> Roster:
+    def at(cls, root: str | Path, *, flat_first: bool = False,
+           expected_sha256: str | None = None) -> Roster:
         for path in cls.paths(root, flat_first=flat_first):
             try:
-                return cls.read(path)
+                return cls.read(path, expected_sha256=expected_sha256)
             except OSError:
                 continue
         raise FileNotFoundError(f"no readable fleet roster under {root}")
+
+    @classmethod
+    def qualified(cls, root: str | Path, files: Mapping[str, str]) -> Roster:
+        root = Path(root)
+        for path in cls.paths(root):
+            member = path.relative_to(root).as_posix()
+            if member in files:
+                return cls.read(path, expected_sha256=files[member])
+        raise ValueError("roster is not a qualified generation manifest member")
 
     @classmethod
     def available(cls, *, roots=(), paths=(), modules=(), flat_first: bool = False):
@@ -180,6 +190,18 @@ class Roster:
             raise ValueError("no boxes declared")
         return [(key, names, self.boxes[key])
                 for key, names in generation_aliases(self.boxes).items()]
+
+    def barrier_declarations(self) -> list[tuple[str, frozenset[str], dict]]:
+        declarations = self.declarations()
+        for key, names, entry in declarations:
+            alias = entry.get("_alias") if isinstance(entry, dict) else None
+            if alias and not isinstance(alias, str):
+                raise ValueError("invalid roster name")
+            if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name) is None
+                   for name in names):
+                raise ValueError("invalid roster name")
+            box_status(key, entry)
+        return declarations
 
     def validate_publication(self) -> None:
         """Reject newly published bytes before strict generation readers use them."""
