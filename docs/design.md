@@ -4601,6 +4601,10 @@ local tier, prewarm and metrics install SIGTERM and SIGINT. Prewarm passes
 that same Event to its readers. Worker loops remain multi-instance. Storage,
 tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
+The kit names the shared deferral exit as `ROLE_DEFERRED_EXIT = 75`; each role
+chooses when to return it. Worker `--once` generation drift still exits 0.
+Worker idle paths that use `time.sleep` finish that interval after a stop
+request. Their timing remains role policy under D05.
 `generation_receipt` owns receipt parsing and identity comparison, while the
 stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by

@@ -11602,7 +11602,7 @@ def _serve_cycles(args, stop: Event) -> int:
         # All adoption/cycle/final receipt and log writes have finished here.
         # A raised cycle is not a completed-cycle quiescence certificate.
         if cycle_failed and stop.is_set():
-            return 75
+            return runtime_gate.ROLE_DEFERRED_EXIT
         decision = runtime_decision()
         if isinstance(decision, generation_receipt.Drift):
             print(json.dumps({
@@ -11610,13 +11610,13 @@ def _serve_cycles(args, stop: Event) -> int:
                 "loaded": decision.loaded.commit[:12],
                 "published": decision.published.commit[:12],
             }), flush=True)
-            return 75 if args.once else 0
+            return runtime_gate.ROLE_DEFERRED_EXIT if args.once else 0
         gate = runtime_gate.read_maintenance_gate()
         if gate is not None:
             if cycle_failed:
                 # Retain the failure record, but never label an interrupted
                 # composite cycle as an acknowledged natural boundary.
-                return 75
+                return runtime_gate.ROLE_DEFERRED_EXIT
             epoch = park_proof.gate_key(gate)
             if parked_epoch != epoch:
                 print(json.dumps({"event": "tier-maintenance-park", "unix": time.time(),
@@ -11629,9 +11629,9 @@ def _serve_cycles(args, stop: Event) -> int:
                       and epoch != "unknown" and current == gate)
             parked_epoch = epoch if proven else None
             if args.once:
-                return 75
+                return runtime_gate.ROLE_DEFERRED_EXIT
             if stop.is_set():
-                return 0 if proven else 75
+                return 0 if proven else runtime_gate.ROLE_DEFERRED_EXIT
             stop.wait(args.interval_s)
             continue
         parked_epoch = None
@@ -11642,7 +11642,7 @@ def _serve_cycles(args, stop: Event) -> int:
                 name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
                 for name, value in (("loaded", decision.loaded), ("published", decision.published))}}), flush=True)
             if args.once:
-                return 75
+                return runtime_gate.ROLE_DEFERRED_EXIT
             stop.wait(args.interval_s)
             continue
         if queue is None:

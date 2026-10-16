@@ -1190,7 +1190,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             if gate is not None:
                 role_session.post_park_marker(gate)
             if args.once:
-                return 75
+                return role_session.ROLE_DEFERRED_EXIT
             stop.wait(args.poll_s)
             continue
         loaded_commit = decision.identity.commit
@@ -1630,7 +1630,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             if gate is not None:
                 role_session.post_park_marker(gate)
             if args.once:
-                return 75
+                return role_session.ROLE_DEFERRED_EXIT
             stop.wait(args.poll_s)
             continue
         # The claim's own evidence, taken after publication so it is not the

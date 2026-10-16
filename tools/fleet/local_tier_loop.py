@@ -48,7 +48,7 @@ def main(argv=None):
                         loaded = runtime_gate.loaded_runtime()
                     decision = generation_receipt.compare(loaded, runtime_gate.published_runtime())
                     if isinstance(decision, generation_receipt.Drift):
-                        return 75 if args.once else 0
+                        return runtime_gate.ROLE_DEFERRED_EXIT if args.once else 0
                     gate = runtime_gate.read_maintenance_gate()
                     if gate is not None:
                         runtime_gate.post_park_marker(gate)
@@ -59,7 +59,7 @@ def main(argv=None):
                         }
                         print(json.dumps({"event": "localtier-runtime-unknown", **reasons}), flush=True)
                         if args.once:
-                            return 75
+                            return runtime_gate.ROLE_DEFERRED_EXIT
                     elif gate is None:
                         try:
                             queue = pool.PoolQueue(args.pool_root)
@@ -75,7 +75,7 @@ def main(argv=None):
                             if args.once:
                                 return 1 if any(row.get("error") for row in result.get("lease_pass", [])) else 0
                     elif args.once:
-                        return 75
+                        return runtime_gate.ROLE_DEFERRED_EXIT
                     stop.wait(args.interval_s)
     except (runtime_gate.RoleLockHeld, runtime_gate.RoleLockUnavailable) as exc:
         print(f"localtier: {exc}", file=sys.stderr)

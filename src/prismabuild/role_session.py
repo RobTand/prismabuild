@@ -46,6 +46,7 @@ def stop_requests(*signals: int):
 
 ROLE_LOCK_ROOT = Path(f"/tmp/prismabuild-roles-{os.getuid()}")
 ROLE_SINGLETON_HELD_EXIT = 3
+ROLE_DEFERRED_EXIT = 75
 
 
 class RoleLockHeld(RuntimeError):

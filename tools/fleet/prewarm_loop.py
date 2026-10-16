@@ -2785,7 +2785,7 @@ def _warm_storage(args, stop: threading.Event) -> int:
         if isinstance(decision, generation_receipt.Drift):
             print("prewarm: runtime moved; exiting for supervisor reload",
                   file=sys.stderr, flush=True)
-            return 75 if args.once else 0
+            return runtime_gate.ROLE_DEFERRED_EXIT if args.once else 0
         gate = runtime_gate.read_maintenance_gate()
         if gate is not None:
             runtime_gate.post_park_marker(gate)
@@ -2794,7 +2794,7 @@ def _warm_storage(args, stop: threading.Event) -> int:
             if stop.is_set():
                 return 0
             if args.once:
-                return 75
+                return runtime_gate.ROLE_DEFERRED_EXIT
             stop.wait(args.poll_s)
             continue
         if stop.is_set():
@@ -2804,7 +2804,7 @@ def _warm_storage(args, stop: threading.Event) -> int:
                 name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
                 for name, value in (("loaded", decision.loaded), ("published", decision.published))}})
             if args.once:
-                return 75
+                return runtime_gate.ROLE_DEFERRED_EXIT
             stop.wait(args.poll_s)
             continue
         if queue is None:
