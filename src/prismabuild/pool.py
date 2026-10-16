@@ -670,8 +670,6 @@ MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
 #: same root, one ``<host>.jsonl`` per writing host, bounded the same way.
 #: The leading underscore keeps it out of ``sweep_consumer_events``, which
 #: only reaps directories named by a 64-character action key.
-RESIDENCY_EVENTS_HOST_DIR = "_host"
-WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
 #: write a ready item is never.  The prewarm runs while the item is still in
