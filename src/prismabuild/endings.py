@@ -6,9 +6,9 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 
-_DONE = "done"
-_FAILED = "failed"
-_WITHDRAWN = "withdrawn"
+DONE = "done"
+FAILED = "failed"
+WITHDRAWN = "withdrawn"
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,6 @@ def publication_generation(value: object) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
-
 
 
 def resolve_current(
@@ -89,7 +88,7 @@ def resolve_current(
         # ``OverflowError`` out of a status census (#1446).
         return publication_generation(readable[state][1].get("published_unix"))
 
-    present = [state for state in (_DONE, _FAILED, _WITHDRAWN)
+    present = [state for state in (DONE, FAILED, WITHDRAWN)
                if state in readable]
     unreadable_states = [str(entry["state"]) for entry in unreadable]
     coexisting = present + unreadable_states
@@ -117,7 +116,7 @@ def resolve_current(
         }
 
     def failure() -> str | None:
-        return next((state for state in (_FAILED, _WITHDRAWN)
+        return next((state for state in (FAILED, WITHDRAWN)
                      if state in readable), None)
 
     if not coexisting:
@@ -134,18 +133,18 @@ def resolve_current(
                    if value == newest]
         if len(winners) == 1:
             winner = winners[0]
-            if winner == _DONE and len(orderable) != len(coexisting):
+            if winner == DONE and len(orderable) != len(coexisting):
                 # An unorderable or unreadable sibling stands against
                 # the success; a unique maximum over every candidate
                 # does not.
                 return result(failure(), ambiguous=True)
             return result(winner, ambiguous=bool(unreadable))
         failure_winner = next(
-            (state for state in winners if state != _DONE), winners[0])
+            (state for state in winners if state != DONE), winners[0])
         return result(failure_winner, ambiguous=True)
     if len(orderable) == 1:
         only = orderable[0]
-        if only == _DONE and len(coexisting) > 1:
+        if only == DONE and len(coexisting) > 1:
             return result(failure(), ambiguous=True)
         return result(only, ambiguous=len(coexisting) > 1)
     return result(failure() or (present[0] if present else None),

@@ -307,14 +307,14 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 
 READY = "ready"
 CLAIMED = "claimed"
-DONE = "done"
-FAILED = "failed"
+DONE = endings.DONE
+FAILED = endings.FAILED
 INTENT = "intent"
 #: Where an operator's cancellation is filed.  Deliberately not ``failed``: a
 #: withdrawn action is a decision, and putting it in the failure record makes
 #: the failure record lie about the fleet.  Four withdrawn test suites are in
 #: the live ``failed/`` for exactly that reason.
-WITHDRAWN = "withdrawn"
+WITHDRAWN = endings.WITHDRAWN
 _STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 
 #: Suffix of a claim that has been moved out of the way while its finisher
@@ -1039,8 +1039,6 @@ class PoolError(pb.PrismaBuildError):
 
 class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
-
-
 
 
 def normalize_priority_reason(value: object) -> str | None:
@@ -2592,8 +2590,6 @@ def _read_json_confirmed(path: Path, *, max_bytes: int | None = None) -> dict[st
     if not isinstance(value, dict):
         raise PoolContractError(f"terminal proof record is not an object: {path}")
     return value
-
-
 
 
 def _is_hex64(value: object) -> bool:
@@ -26528,7 +26524,6 @@ class PoolQueue:
             if record is not None:
                 readable[state] = (path, record)
         return readable, unreadable
-
 
     def current_ending(
         self, action_key: str, *, max_bytes: int | None = None,
