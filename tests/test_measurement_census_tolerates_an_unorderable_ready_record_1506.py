@@ -34,7 +34,7 @@ POISON = "c" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -42,7 +42,7 @@ def _publish(queue: pool.PoolQueue, key: str) -> Path:
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py", resources={"cpu": 1})
-    return queue.item_path(pool.READY, key)
+    return queue.records.item_path(pool.record_store.READY, key)
 
 
 def _rewrite(path: Path, **changes: object) -> None:
@@ -57,7 +57,7 @@ def test_a_ready_record_the_queue_cannot_order_does_not_blank_the_census(
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority=value)
     assert pool.PoolQueue._unorderable_queue_field(
-        json.loads(queue.item_path(pool.READY, POISON).read_text())) is not None
+        json.loads(queue.records.item_path(pool.record_store.READY, POISON).read_text())) is not None
 
     census = mr._capture(queue)
 
@@ -78,7 +78,7 @@ def test_a_priority_the_queue_can_order_is_not_skipped(
 
     _rewrite(_publish(queue, POISON), priority=value)
     assert pool.PoolQueue._unorderable_queue_field(
-        json.loads(queue.item_path(pool.READY, POISON).read_text())) is None
+        json.loads(queue.records.item_path(pool.record_store.READY, POISON).read_text())) is None
 
     with pytest.raises(mr.CensusUnavailable, match="unreadable publication priority"):
         mr._capture(queue)
@@ -97,7 +97,7 @@ def test_an_orderable_priority_beside_another_bad_field_is_not_skipped(
 
     _rewrite(_publish(queue, POISON), priority=5.5, **bad_field)
     field = pool.PoolQueue._unorderable_queue_field(
-        json.loads(queue.item_path(pool.READY, POISON).read_text()))
+        json.loads(queue.records.item_path(pool.record_store.READY, POISON).read_text()))
     assert field is not None and field[0] != "priority"
 
     with pytest.raises((mr.CensusUnavailable, pool.PoolContractError, ValueError)):
@@ -111,7 +111,7 @@ def test_an_unreadable_priority_beside_another_bad_field_is_still_skipped(
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority="high", passes="garbage")
     field = pool.PoolQueue._unorderable_queue_field(
-        json.loads(queue.item_path(pool.READY, POISON).read_text()))
+        json.loads(queue.records.item_path(pool.record_store.READY, POISON).read_text()))
     assert field is not None and field[0] == "priority"
 
     mr._capture(queue)
@@ -127,8 +127,8 @@ def test_a_skipped_record_is_never_claimed_so_it_cannot_reach_the_claimed_census
 
     assert first is not None and first["action_key"] == GOOD
     assert second is None
-    assert queue.item_path(pool.READY, POISON).exists()
-    assert not queue.item_path(pool.CLAIMED, POISON).exists()
+    assert queue.records.item_path(pool.record_store.READY, POISON).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, POISON).exists()
     mr._capture(queue)          # and the census is still available after
 
 
@@ -146,7 +146,7 @@ def test_an_elected_gang_keeps_its_fences_when_its_ready_members_are_unorderable
     assert len(before) == 2, before
 
     for key in keys:
-        _rewrite(queue.item_path(pool.READY, key), priority="high")
+        _rewrite(queue.records.item_path(pool.record_store.READY, key), priority="high")
 
     after = mr._capture(queue)["gang_elections"]
     assert after == before, "the census dropped the host fences of a live gang"
@@ -156,7 +156,7 @@ def test_a_claimed_record_with_an_unreadable_priority_still_refuses(
         queue: pool.PoolQueue) -> None:
     _publish(queue, POISON)
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is not None
-    _rewrite(queue.item_path(pool.CLAIMED, POISON), priority="high")
+    _rewrite(queue.records.item_path(pool.record_store.CLAIMED, POISON), priority="high")
 
     with pytest.raises(mr.CensusUnavailable, match="unreadable publication priority"):
         mr._capture(queue)

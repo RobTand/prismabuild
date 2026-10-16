@@ -622,7 +622,7 @@ def test_the_superseded_directory_is_listed_once_per_call(tmp_path, monkeypatch)
         return real_scan(directory)
 
     monkeypatch.setattr(
-        __import__("prismabuild.pool", fromlist=["_scan"]), "_scan", counting)
+        __import__("prismabuild.pool", fromlist=["_scan"]).immutable_files, 'scan_optional', counting)
 
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),

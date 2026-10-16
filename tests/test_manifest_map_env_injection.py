@@ -17,7 +17,7 @@ import prismabuild.pool as pool
 
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -40,7 +40,7 @@ def _request(cas_root: Path, key: str, *, manifest: bool) -> None:
 
 
 def _map_for(queue: pool.PoolQueue, key: str) -> Path:
-    path = queue.residency_map_path(key)
+    path = queue.records.residency_map_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema": "prismaquant.prismabuild."
                                    "residency_map.v1"}))
@@ -58,7 +58,7 @@ def test_a_declaring_row_with_a_composed_map_is_injected(tmp_path):
 
     env = queue.residency_map_environment(_item(key, cas_root))
 
-    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.residency_map_path(key))}
+    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(key))}
 
 
 def test_a_declaring_row_without_a_map_launches_byte_identically(tmp_path):
@@ -109,4 +109,4 @@ def test_a_sealed_residency_row_keeps_its_own_path(tmp_path):
         _item(key, cas_root,
               residency={"leads": ["f" * 64], "tier_id": "x"}))
 
-    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.residency_map_path(key))}
+    assert env == {pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(key))}
