@@ -294,11 +294,10 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     # worker's scratch filesystem (Btrfs subvolume devices can be unknown).
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
-    if filesystem is None:
-        validated_resume_trust(monkeypatch, [fragment, material], 'zfs')
-    fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
-    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda _device: filesystem)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: fence)
+    fixture_trust = validated_resume_trust(
+        monkeypatch, [fragment, material], filesystem)
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence',
+                        fixture_trust.file_fence)
 
     parsing = threading.Event()
     release = threading.Event()
