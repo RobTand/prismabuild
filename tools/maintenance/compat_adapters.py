@@ -73,6 +73,7 @@ def operate(request, store, load):
     write = request["op"] == "write"
     time.time = lambda: 100.0
     socket.gethostname = lambda: "compat-host"
+    os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
     path = store / "record.json"
     if not write:

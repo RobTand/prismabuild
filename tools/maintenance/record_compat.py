@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import contextmanager
-import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -16,6 +15,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
+from prismabuild.compatibility_window import require_reachable
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
@@ -89,6 +89,7 @@ def retained(directory=CAPTURE):
             assert version["generation"] == name and version["commit"] == generation["commit"] == manifest["commit"]
             for name, expected in manifest["files"].items():
                 assert sha((destination / name).read_bytes()) == expected == version["files"][name]
+            require_reachable(ROOT, destination)
             result.append((generation["generation"], destination, manifest_path))
         yield result
 
