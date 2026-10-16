@@ -141,7 +141,7 @@ def _seal_member(cas, checkout: Path, queue, group: str, index: int,
 
 def _file_map(queue, key: str) -> Path:
     """File an empty composed map for one consumer; return its path."""
-    path = queue.residency_map_path(key)
+    path = queue.records.residency_map_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{}\n")
     return path
@@ -179,7 +179,7 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
             tag=name)
         keys.append(key)
         leads.append(lead)
-    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    rows = [pool.record_store.require(queue.records.item(pool.record_store.READY, key)) for key in keys]
     _gang.publish_group(queue, group, rows)
     return queue, clock, publish, finish, gclaim, denial, group, keys, leads
 
@@ -242,7 +242,7 @@ def test_declared_manifest_with_streaming_plan_is_refused(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-refused",
                    declare_manifest=True, declare_plan=False)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "prelaunch_undeclared", verdict
     assert verdict["manifest_declares"] == ["phase-0"], verdict
@@ -254,7 +254,7 @@ def test_matching_declaration_passes_shape_check(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-match",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "lead_not_resident", verdict
     assert verdict["pending"] == [{"lead": leads[0], "status": "absent"}]
@@ -265,11 +265,11 @@ def test_no_declaration_keeps_todays_verdict(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-clean",
                    declare_manifest=False, declare_plan=False)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "lead_not_resident", verdict
     assert verdict["pending"] == [{"lead": leads[0], "status": "absent"}]
-    text = Path(queue.residency_plan_path(keys[0])).read_text()
+    text = Path(queue.records.residency_plan_path(keys[0])).read_text()
     assert "resident_before_launch" not in text
 
 
@@ -278,7 +278,7 @@ def test_unreadable_manifest_is_not_a_pass(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-unreadable",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, keys[0]))
     _delete_manifest_blob(row, keys[0])
     verdict = queue.residency_verdict(row)
     assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES, verdict
@@ -290,7 +290,7 @@ def test_manifest_parses_once_per_blob(gang_fleet, tmp_path, monkeypatch):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-memo",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, keys[0]))
     calls = []
     original = pb.read_data_manifest
 
@@ -372,7 +372,7 @@ def test_unreadable_sibling_evidence_defers(
                   {key: [leads[index]] for index, key in enumerate(keys)})
 
     first, second = keys
-    sibling_row = pool._read_json(queue.item_path(pool.READY, second))
+    sibling_row = pool.record_store.require(queue.records.item(pool.record_store.READY, second))
     _delete_manifest_blob(sibling_row, second)
 
     assert gclaim("sparklina") is None

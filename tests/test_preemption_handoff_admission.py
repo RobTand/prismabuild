@@ -102,7 +102,7 @@ def test_stalled_handoff_allows_fitting_claim_without_second_preemption(rig, mon
                  for _, d in rig.withdrawal_decisions(key)]
     assert len(decisions) == 1
     victim = decisions[0]["action_key"]
-    retry = json.loads(rig.item_path(pool.READY, victim).read_text())
+    retry = json.loads(rig.records.item_path(pool.record_store.READY, victim).read_text())
     assert retry["priority"] == -10 and retry["attempts"] == 1
     assert retry["max_attempts"] == 3
     assert rig.ledger().held() == {"cpu": 3, "mem_gb": 5}, "handoff returned live tokens"
@@ -204,7 +204,7 @@ def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
     rig, monkeypatch, field, value,
 ):
     """A stale proof cannot turn a second holder into a preemption victim."""
-    foreground = rig.item_path(pool.READY, FOREGROUND)
+    foreground = rig.records.item_path(pool.record_store.READY, FOREGROUND)
     item = json.loads(foreground.read_text())
     item["resources"]["mem_gb"] = 7
     foreground.write_text(json.dumps(item))
@@ -212,11 +212,11 @@ def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
 
     def stale(ledger, *, action_key):
         proofs = original(ledger, action_key=action_key)
-        background = rig.item_path(pool.CLAIMED, BACKGROUND)
+        background = rig.records.item_path(pool.record_store.CLAIMED, BACKGROUND)
         changed = json.loads(background.read_text())
         changed[field] = value
         background.write_text(json.dumps(changed))
-        other = rig.item_path(pool.CLAIMED, OTHER_BACKGROUND)
+        other = rig.records.item_path(pool.record_store.CLAIMED, OTHER_BACKGROUND)
         pending = json.loads(other.read_text())
         pending["finish_pending"] = {"reason": "simulated concurrent finish"}
         other.write_text(json.dumps(pending))
@@ -231,7 +231,7 @@ def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
 
 def test_nonfinite_retry_budget_is_ineligible_before_proof_preparation(rig):
     for key in (BACKGROUND, OTHER_BACKGROUND):
-        path = rig.item_path(pool.CLAIMED, key)
+        path = rig.records.item_path(pool.record_store.CLAIMED, key)
         record = json.loads(path.read_text())
         record["max_attempts"] = float("nan")
         path.write_text(json.dumps(record))

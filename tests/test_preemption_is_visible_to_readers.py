@@ -47,7 +47,7 @@ def preempted(tmp_path: Path):
     """A queue where a foreground denial has just preempted the holder."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.ledger().ensure_capacity({"gpu": 1})
 
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
@@ -61,7 +61,7 @@ def preempted(tmp_path: Path):
     assert q.claim(capacity={"gpu": 1}) is None
 
     stopped = float(holder["published_unix"])
-    requeued = json.loads(q.item_path(pool.READY, BACKGROUND).read_text())
+    requeued = json.loads(q.records.item_path(pool.record_store.READY, BACKGROUND).read_text())
     assert float(requeued["published_unix"]) != stopped
     return q, holder, stopped
 
@@ -103,11 +103,11 @@ def test_an_operator_withdrawal_still_ends_the_wait(tmp_path: Path) -> None:
     """Only a preemption is followed.  A decision is still a decision."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=-10)
     generation = float(json.loads(
-        q.item_path(pool.READY, BACKGROUND).read_text())["published_unix"])
+        q.records.item_path(pool.record_store.READY, BACKGROUND).read_text())["published_unix"])
     q.withdraw(BACKGROUND, reason="an operator changed their mind",
                by="an operator")
 
@@ -197,7 +197,7 @@ def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
     q.finish(fg, status='executed', claim_snapshot=foreground)
     retry = q.claim(capacity={'gpu': 1})
     q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=retry)
-    assert q.item_path(pool.FAILED, bg).exists()
+    assert q.records.item_path(pool.record_store.FAILED, bg).exists()
     q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
     unrelated = q.claim(capacity={'gpu': 1})
@@ -235,7 +235,7 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q.finish(bg, status=status, detail={'returncode': 9 if status == 'failed' else 0,
                                       'stdout': 'unrelated later run'},
              claim_snapshot=unrelated)
-    terminal = q.item_path(pool.FAILED if status == 'failed' else pool.DONE, bg)
+    terminal = q.records.item_path(pool.record_store.FAILED if status == 'failed' else pool.record_store.DONE, bg)
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
     landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=original_generation)
     assert landed is not None
@@ -244,7 +244,7 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     assert summary['status'] == status
     assert summary['returncode'] == retry_code
     assert summary['detail']['stdout'] == 'causal retry'
-    assert landed[0] == q.attempt_path(landed[1], landed[1]['attempts'])
+    assert landed[0] == q.records.attempt_path(landed[1], landed[1]['attempts'])
     assert landed[0].exists()
     # Recovery is read-only: it must not replace G3's current summary with G2.
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']

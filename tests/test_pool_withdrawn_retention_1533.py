@@ -45,21 +45,21 @@ def _start(queue, item, monkeypatch):
                         lambda record: {"complete": True, "used": True,
                                         "removed": ["owned-container"], "remaining": []})
     queue._start_resource_scope(item)
-    return pool._read_json(queue.item_path(pool.CLAIMED, item["action_key"]))
+    return pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, item["action_key"]))
 
 
 def _conclude(queue, item, monkeypatch):
     live = _start(queue, item, monkeypatch)
     key = live["action_key"]
     queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
-    path = queue.item_path(pool.WITHDRAWN, key)
-    decision = pool._read_json(path)
-    immutable = queue.withdrawal_decision_path(decision)
+    path = queue.records.item_path(pool.record_store.WITHDRAWN, key)
+    decision = pool.record_store.read_queue_record(path)
+    immutable = queue.records.withdrawal_decision_path(decision)
     decision_bytes = immutable.read_bytes()
     assert queue.finish(key, status="withdrawn", detail={"returncode": -15,
                         "stdout": "last output\n", "stderr": "stopped\n"},
                         claim_snapshot=live) == path
-    record = pool._read_json(path)
+    record = pool.record_store.read_queue_record(path)
     assert record["resource_scope_cleanup"]["export"]["stopped"] is True
     assert all(record[field] == value for field, value in decision.items()), "decision fields changed"
     assert immutable.read_bytes() == decision_bytes
@@ -82,21 +82,21 @@ def test_running_withdrawal_retains_cleanup_and_immutable_attempt(scoped, monkey
     retained = record["withdrawn_attempt"]
     outcomes = queue.attempt_outcomes(retained)
     assert [attempt["status"] for attempt in outcomes] == (["failed"] if retried else []) + ["withdrawn"]
-    assert outcomes[-1]["disposition"] == pool.WITHDRAWN
+    assert outcomes[-1]["disposition"] == pool.record_store.WITHDRAWN
     assert outcomes[-1]["detail"]["resource_scope_cleanup"] == cleanup
     assert outcomes[-1]["detail"]["resource_scope"] == live["resource_scope"]
     assert outcomes[-1]["detail"]["container_cleanup"] == record["container_cleanup"]
     assert outcomes[-1]["stdout"] == "last output\n"
-    attempt_path = queue.attempt_path(retained, retained["attempts"])
+    attempt_path = queue.records.attempt_path(retained, retained["attempts"])
     assert not attempt_path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
     before = path.read_bytes(), attempt_path.read_bytes()
     queue.finish(live["action_key"], status="withdrawn")
     queue.withdraw(live["action_key"], by="someone else", reason="second request", signal_child=False)
     assert (path.read_bytes(), attempt_path.read_bytes()) == before
     assert queue.ledger().held() == {}
-    assert not queue.lease_path(live["action_key"]).exists()
-    assert all(not queue.item_path(state, live["action_key"]).exists()
-               for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED))
+    assert not queue.records.lease_path(live["action_key"]).exists()
+    assert all(not queue.records.item_path(state, live["action_key"]).exists()
+               for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED))
 
 
 def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broker, gang_fleet, monkeypatch, tmp_path):
@@ -138,7 +138,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
     # The admission fixture freezes wall time; isolate the signal ladder
     # (tested elsewhere) while stopping this exact real payload group.
     monkeypatch.setattr(pool, "terminate_action", lambda pid: os.killpg(pid, signal.SIGTERM))
-    snapshots = {key: pool._read_json(queue.item_path(pool.CLAIMED, key)) for key in (first, second)}
+    snapshots = {key: pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key)) for key in (first, second)}
 
     def execute(key):
         try:
@@ -160,24 +160,24 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
         assert not threads[1].is_alive() and not errors, errors
         queue.finish(second, status=outcomes[second]["status"], detail=outcomes[second],
                      claim_snapshot=snapshots[second])
-        failed = pool._read_json(queue.item_path(pool.FAILED, second))
+        failed = pool.record_store.require(queue.records.item(pool.record_store.FAILED, second))
         assert failed["status"] == "failed"
         assert failed["resource_scope_cleanup"]["nonce"] == snapshots[second]["resource_scope"]["nonce"]
         assert failed["resource_scope_cleanup"]["export"]["stopped"] is True
         assert queue.attempt_outcomes(failed)[-1]["status"] == "failed"
-        decision = pool._read_json(queue.item_path(pool.WITHDRAWN, first))
+        decision = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, first))
         assert decision["withdrawn_by"] == "gang:" + group
         threads[0].join(20)
         assert not threads[0].is_alive() and not errors, errors
         assert outcomes[first]["status"] == "withdrawn"
         monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
         queue.finish(first, status="withdrawn", detail=outcomes[first], claim_snapshot=snapshots[first])
-        record = pool._read_json(queue.item_path(pool.WITHDRAWN, first))
+        record = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, first))
         assert record["resource_scope_cleanup"]["nonce"] == snapshots[first]["resource_scope"]["nonce"]
         assert all(record[field] == value for field, value in decision.items())
         assert queue.attempt_outcomes(record["withdrawn_attempt"])[-1]["status"] == "withdrawn"
         assert record["finished_host"] == "sparklina"
-        assert all(not queue.item_path(state, first).exists() for state in (pool.DONE, pool.FAILED, pool.READY))
+        assert all(not queue.records.item_path(state, first).exists() for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.READY))
     finally:
         fail.touch()
         stop.touch()
@@ -196,11 +196,11 @@ def test_ready_withdrawal_adds_no_worker_evidence(scoped):
     queue.publish(action_key=key, cas_root=item["cas_root"], checkout_root=item["checkout_root"],
                   worker_script=item["worker_script"], resources={"cpu": 1, "mem_gb": 1})
     queue.withdraw(key, by="rob", signal_child=False)
-    record = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
-    assert record["withdrawn_from"] == pool.READY
+    record = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
+    assert record["withdrawn_from"] == pool.record_store.READY
     assert not any(field in record for field in ("resource_scope", "resource_scope_cleanup",
                    "container_cleanup", "finished_unix", "finished_host", "withdrawn_attempt"))
-    assert not (queue.root / pool.ATTEMPTS / key).exists()
+    assert not (queue.root / pool.record_store.ATTEMPTS / key).exists()
 
 
 @pytest.mark.parametrize("reader", ["outcome_summary", "adopted_attempt_summary", "terminal_outcome_covers",
@@ -239,12 +239,12 @@ def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped,
     live = _start(queue, item, monkeypatch)
     key = item["action_key"]
     queue.withdraw(key, by="rob", reason="old generation", signal_child=False)
-    decision_path = queue.withdrawal_decision_path(live)
+    decision_path = queue.records.withdrawal_decision_path(live)
     decision_bytes = decision_path.read_bytes()
     queue.publish(action_key=key, cas_root=item["cas_root"], checkout_root=item["checkout_root"],
                   worker_script=item["worker_script"], resources={"cpu": 1, "mem_gb": 2})
     queue.withdraw(key, by="second operator", reason="new generation", signal_child=False)
-    new_path = queue.item_path(pool.WITHDRAWN, key)
+    new_path = queue.records.item_path(pool.record_store.WITHDRAWN, key)
     new_bytes = new_path.read_bytes()
     entomb = queue._entomb_claim
     monkeypatch.setattr(queue, "_entomb_claim", lambda *args, **kwargs: (None, False))
@@ -255,7 +255,7 @@ def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped,
     assert decision_path.read_bytes() == decision_bytes
     # Superseded cancellations retain the old worker's evidence outside the
     # current terminal slot; it may not revive a marker over the successor.
-    retained = [pool._read_json(path) for path in queue.superseded_dir().glob(key + "*.json")]
+    retained = [pool.record_store.read_queue_record(path) for path in queue.records.superseded_dir().glob(key + "*.json")]
     matching = [record for record in retained if record.get("withdrawn_attempt")]
     assert len(matching) == 1
     assert matching[0]["published_unix"] == live["published_unix"]
@@ -277,10 +277,10 @@ def test_late_withdrawn_finish_archives_the_withdrawn_disposition(scoped):
     # The reaper concludes a withdrawal-covered claim without filing an
     # attempt, so this worker's finish becomes a late one.
     queue.reap_stale(timeout_s=-1)
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    decision_path = queue.item_path(pool.WITHDRAWN, key)
-    decision = pool._read_json(decision_path)
-    immutable = queue.withdrawal_decision_path(decision)
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    decision_path = queue.records.item_path(pool.record_store.WITHDRAWN, key)
+    decision = pool.record_store.read_queue_record(decision_path)
+    immutable = queue.records.withdrawal_decision_path(decision)
     immutable_bytes = immutable.read_bytes()
     _publish_successor(queue, item)
     # A re-submission retires the visible marker; the durable decision stays.
@@ -288,17 +288,17 @@ def test_late_withdrawn_finish_archives_the_withdrawn_disposition(scoped):
     result = queue.finish(key, status="withdrawn", detail={"returncode": -15,
                           "stdout": "last output\n", "stderr": "stopped\n"},
                           claim_snapshot=item)
-    assert result == queue.attempt_path(item, 1)
-    archived = pool._read_json(result)
-    assert archived["status"] == pool.WITHDRAWN
-    assert archived["disposition"] == pool.WITHDRAWN
+    assert result == queue.records.attempt_path(item, 1)
+    archived = pool.record_store.read_queue_record(result)
+    assert archived["status"] == pool.record_store.WITHDRAWN
+    assert archived["disposition"] == pool.record_store.WITHDRAWN
     # The verifying reader checks the attempt's identity, digests and adopted
     # summary, and reports no terminal: only cancellation owns this ending.
     assert queue.archived_generation_outcomes(key, generation=item["published_unix"]) == []
     assert immutable.read_bytes() == immutable_bytes
-    assert queue.item_path(pool.READY, key).exists()
-    assert not any(queue.item_path(state, key).exists()
-                   for state in (pool.CLAIMED, pool.DONE, pool.FAILED))
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not any(queue.records.item_path(state, key).exists()
+                   for state in (pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED))
     assert queue.ledger().held() == {}
 
 
@@ -314,10 +314,10 @@ def test_late_withdrawn_finish_after_a_charged_retry_reads_back_withdrawn(scoped
     _publish_successor(queue, item)
     result = queue.finish(key, status="withdrawn", detail={"returncode": -15},
                           claim_snapshot=item)
-    assert result == queue.attempt_path(item, 2)
-    archived = pool._read_json(result)
-    assert archived["status"] == pool.WITHDRAWN
-    assert archived["disposition"] == pool.WITHDRAWN
+    assert result == queue.records.attempt_path(item, 2)
+    archived = pool.record_store.read_queue_record(result)
+    assert archived["status"] == pool.record_store.WITHDRAWN
+    assert archived["disposition"] == pool.record_store.WITHDRAWN
     # With a charged retry this attempt was on the failure ladder pre-#1537:
     # the verifying reader refused the whole generation as a conflicting
     # disposition instead of answering the cancellation.
@@ -336,15 +336,15 @@ def test_late_scope_withdrawn_finish_archives_the_withdrawn_disposition(scoped, 
     result = queue.finish(key, status="withdrawn", detail={"returncode": -15,
                           "stdout": "last output\n", "stderr": "stopped\n"},
                           claim_snapshot=live)
-    assert result == queue.attempt_path(live, 1)
-    archived = pool._read_json(result)
-    assert archived["status"] == pool.WITHDRAWN
-    assert archived["disposition"] == pool.WITHDRAWN
+    assert result == queue.records.attempt_path(live, 1)
+    archived = pool.record_store.read_queue_record(result)
+    assert archived["status"] == pool.record_store.WITHDRAWN
+    assert archived["disposition"] == pool.record_store.WITHDRAWN
     assert archived["detail"]["resource_scope_cleanup"]["nonce"] == live["resource_scope"]["nonce"]
-    assert not list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.LATE_FINISH_SUFFIX}"))
-    retained = [pool._read_json(path) for path
-                in queue.superseded_dir().glob(f"{key}.*.late-finish.json")]
-    assert len(retained) == 1 and retained[0]["status"] == pool.WITHDRAWN
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.LATE_FINISH_SUFFIX}"))
+    retained = [pool.record_store.read_queue_record(path) for path
+                in queue.records.superseded_dir().glob(f"{key}.*.late-finish.json")]
+    assert len(retained) == 1 and retained[0]["status"] == pool.record_store.WITHDRAWN
     assert queue.archived_generation_outcomes(key, generation=live["published_unix"]) == []
 
 
