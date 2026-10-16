@@ -3565,7 +3565,7 @@ def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
     """
 
     marker = _owner_record(queue, pool.record_store.WITHDRAWN, key)
-    decisions = queue.withdrawal_decisions(key, generation=marker["published_unix"])
+    decisions = queue.records.withdrawal_decisions(key, generation=marker["published_unix"])
     if (marker.get("status") != "withdrawn" or len(decisions) != 1
             or queue.withdrawal_covers(marker, action_key=key) != decisions[0][1]):
         raise pool.PoolContractError("withdrawal lacks its exact immutable decision")

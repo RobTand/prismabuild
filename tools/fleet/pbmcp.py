@@ -840,7 +840,7 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     queue = pool.PoolQueue(Path(queue_root).absolute())
     candidates: list[Mapping[str, object]] = []
     try:
-        candidates.extend(record for _path, record in queue.withdrawal_decisions(key))
+        candidates.extend(record for _path, record in queue.records.withdrawal_decisions(key))
     except OSError as error:
         if not _absent(error):
             raise

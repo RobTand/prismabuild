@@ -1490,7 +1490,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
         decision, out["decision_live"] = live, True
     else:
         try:
-            candidates = queue.withdrawal_decisions(key)
+            candidates = queue.records.withdrawal_decisions(key)
         except (OSError, ValueError, pool_module.PoolContractError):
             candidates = []
         for _, candidate in candidates:

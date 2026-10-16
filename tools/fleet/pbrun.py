@@ -2903,7 +2903,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     # Reading the marker before the replacement exists is an intermediate
     # transition, not evidence that the preempted action was abandoned.
     with q._transition_locked(key):
-        records = [record for _, record in q.withdrawal_decisions(key)]
+        records = [record for _, record in q.records.withdrawal_decisions(key)]
         records.extend(record for _, record in q.archived_preemption_outcomes(key))
         for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
                       pool.record_store.WITHDRAWN):
@@ -2979,9 +2979,9 @@ def outcome_poll(
     # before updating withdrawn/<key>.json, or publication retired that
     # visible marker while an earlier generation's waiter was still here.
     decisions = (
-        q.withdrawal_decisions(key)
+        q.records.withdrawal_decisions(key)
         if generation is None
-        else q.withdrawal_decisions(key, generation=generation)
+        else q.records.withdrawal_decisions(key, generation=generation)
     )
     for path, record in decisions:
         if generation is None or float(record["published_unix"]) == float(generation):
