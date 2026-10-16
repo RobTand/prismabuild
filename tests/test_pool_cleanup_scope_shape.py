@@ -14,7 +14,7 @@ def test_cached_cleanup_with_invalid_scope_preserves_finish(tmp_path, control):
     record["resource_scope"] = control
     record["resource_scope_cleanup"] = {"complete": True, "nonce": "old"}
     path = queue.records.item_path(pool.record_store.CLAIMED, key)
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
     detail = {"returncode": 0, "stdout": "completed payload"}
     assert queue.finish(key, status="executed", detail=detail, claim_snapshot=record) == path
     pending = pool.record_store.read_document(path)

@@ -66,7 +66,6 @@ def test_action_key_must_be_a_digest(plain_queue: pool.PoolQueue) -> None:
         _publish(plain_queue, "short")
 
 
-
 def test_publish_then_claim_moves_between_directories(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A)
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
@@ -204,7 +203,9 @@ def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held_keys() == []
-    assert json.loads(queue.records.item_path(pool.record_store.DONE, KEY_A).read_text()) == terminal
+    assert json.loads(
+        queue.records.item_path(pool.record_store.DONE, KEY_A).read_text(),
+    ) == terminal
     dropped = list(
         queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
@@ -242,7 +243,9 @@ def test_a_late_copy_of_a_terminal_generation_cannot_be_claimed(
 
     assert queue.claim() is None
     assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
-    assert json.loads(queue.records.item_path(pool.record_store.DONE, KEY_A).read_text()) == terminal
+    assert json.loads(
+        queue.records.item_path(pool.record_store.DONE, KEY_A).read_text(),
+    ) == terminal
     dropped = list(
         queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
@@ -375,7 +378,7 @@ def test_atomic_write_leaves_no_partial_file(
     queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "rec.json"
-    pool._write_json_atomic(target, {"schema": "x", "n": 1})
+    pool.record_store._write_json(target, {"schema": "x", "n": 1})
     assert json.loads(target.read_bytes())["n"] == 1
     assert not list(tmp_path.glob(".*tmp"))
 
@@ -387,7 +390,7 @@ def test_atomic_write_leaves_no_partial_file(
 
     monkeypatch.setattr(pool.materialize.os, "fsync", out_of_space)
     with pytest.raises(OSError):
-        pool._write_json_atomic(tmp_path / "torn.json", {"schema": "x", "n": 2})
+        pool.record_store._write_json(tmp_path / "torn.json", {"schema": "x", "n": 2})
 
     assert not (tmp_path / "torn.json").exists()   # nothing at the target name
     assert not list(tmp_path.glob(".*tmp"))        # and no scratch left behind
@@ -731,7 +734,10 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     # ignored checkout_snapshot and used it. Persist the same claim identity
     # that execute's heartbeat validates.
     item["checkout_root"] = str(source)
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]), item)
+    pool.record_store._write_json(
+        queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]),
+        item,
+    )
     mutated: list[bool] = []
 
     def mutate_after_preflight() -> None:
@@ -1395,7 +1401,6 @@ def test_admission_requires_explicit_capacity(
     assert not plain_queue.ledger().held_keys()
 
 
-
 def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
     queue: pool.PoolQueue, monkeypatch,
 ) -> None:
@@ -1596,7 +1601,6 @@ def test_an_unplaceable_item_is_knowable_before_it_is_published(
     assert plain_queue.offered_tags() == ["cpu", "dl380g10", "gb10", "sparky", "x86"]
 
 
-
 def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(plain_queue: pool.PoolQueue) -> None:
     """Tags alone would match; the offer has to carry the GPU fact too."""
 
@@ -1607,7 +1611,6 @@ def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(plain_queue: pool.PoolQueue)
     assert plain_queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
 
 
-
 def test_a_demand_larger_than_any_box_is_refused_not_queued(
     plain_queue: pool.PoolQueue,
 ) -> None:
@@ -1616,7 +1619,6 @@ def test_a_demand_larger_than_any_box_is_refused_not_queued(
     plain_queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"gpu": 4, "mem_gb": 100})
     assert plain_queue.placeable({"tags": [], "resources": {"mem_gb": 400}}) is False
-
 
 
 def test_an_empty_registry_answers_unknown_rather_than_no(
@@ -1634,7 +1636,6 @@ def test_an_empty_registry_answers_unknown_rather_than_no(
     assert plain_queue.offered_tags() == []
 
 
-
 def test_a_stale_offer_does_not_vouch_for_a_dead_box(plain_queue: pool.PoolQueue) -> None:
     """An offer is a claim refreshed by its own box; expiry is what makes it one."""
 
@@ -1643,7 +1644,6 @@ def test_a_stale_offer_does_not_vouch_for_a_dead_box(plain_queue: pool.PoolQueue
     assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
     assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
     assert plain_queue.offered_tags(max_age_s=-1.0) == []
-
 
 
 def test_finish_does_not_republish_a_payloadless_stub(
@@ -1819,7 +1819,8 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     assert queue.passes(KEY_A) >= before, (
         "the starved item must keep its passes, and so its place in the ordering"
     )
-    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists(), "it is still queued, not dropped"
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists(
+    ), "it is still queued, not dropped"
 
 
 def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(

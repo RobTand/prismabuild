@@ -62,7 +62,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _win_but_die_before_naming_itself(q: pool.PoolQueue) -> None:
     claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
-    real = pool._write_json_atomic
+    real = pool.record_store._write_json
 
     def dies(path, payload):
         if Path(path) == claimed_path and "claimed_host" in payload:
@@ -70,12 +70,13 @@ def _win_but_die_before_naming_itself(q: pool.PoolQueue) -> None:
         return real(path, payload)
 
     with mock.patch.object(pool.socket, "gethostname", lambda: WON_BY):
-        with mock.patch.object(pool, "_write_json_atomic", dies):
+        with mock.patch.object(pool.record_store, '_write_json', dies):
             with pytest.raises(_ClaimantDied):
                 q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity=DEMAND)
 
     assert q.ledger(WON_BY).held() == DEMAND, "the winner committed nothing"
-    assert not q.records.item_path(pool.record_store.READY, KEY).exists(), "the rename did not happen"
+    assert not q.records.item_path(pool.record_store.READY, KEY).exists(
+    ), "the rename did not happen"
 
 
 def _a_second_box_races_and_loses(q: pool.PoolQueue, stale: list) -> None:
@@ -260,7 +261,9 @@ def test_a_legacy_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_pat
         q._write_claim_intent(KEY, owner=f"{WON_BY}:1:aaaa0001")
     record = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text())
     record.update(claimed_by=f"{WON_BY}:1:aaaa0001", claimed_unix=time.time())
-    q.records.item_path(pool.record_store.READY, KEY).rename(q.records.item_path(pool.record_store.CLAIMED, KEY))
+    q.records.item_path(pool.record_store.READY, KEY).rename(
+        q.records.item_path(pool.record_store.CLAIMED, KEY),
+    )
     q.records.item_path(pool.record_store.CLAIMED, KEY).write_text(json.dumps(record))
     assert q.claim_reservation_hosts(KEY) == []
     assert q.resolve_claim_holder(KEY, record) == WON_BY
