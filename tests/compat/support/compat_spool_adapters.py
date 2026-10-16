@@ -80,21 +80,55 @@ def operate(request, store, load):
             if variant == "manifest-replay":
                 assert producer.submit_group("batch", entries, paced=False)["ok"]
         record = spool._export_record(group, producer.owner) if (group / "export.json").exists() else None
-        if variant in ("copy", "receipt", "receipt-paced", "reservation-released"):
+        if variant.startswith("copy") or variant in ("receipt", "receipt-paced", "reservation-released"):
             if record is None:
                 producer.submit_group("batch", entries, paced=False)
                 record = spool._export_record(group, producer.owner)
             pool._write_json_atomic(queue.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
             counter = itertools.count()
             time.monotonic = lambda: float(next(counter))
-            spool.export_group(queue, group / "manifest.json", record["manifest_sha256"], record["export_key"],
-                pace_mb_s=1 if variant == "receipt-paced" else None, pace_tier=TIER if variant == "receipt-paced" else None)
+            persist, writes = spool._write, []
+            class InterruptedFixture(Exception):
+                pass
+            def interrupted(path, value):
+                persist(path, value)
+                if path.name == "copy-0.json":
+                    writes.append(True)
+                    if len(writes) == (1 if variant == "copy-started" else 2):
+                        raise InterruptedFixture("after the actual durable copy proof")
+            if variant in ("copy-started", "copy-ready"):
+                spool._write = interrupted
+            try:
+                spool.export_group(queue, group / "manifest.json", record["manifest_sha256"], record["export_key"],
+                    pace_mb_s=1 if variant == "receipt-paced" else None, pace_tier=TIER if variant == "receipt-paced" else None)
+            except InterruptedFixture:
+                assert variant in ("copy-started", "copy-ready")
+            finally:
+                spool._write = persist
+            if variant in ("copy-adopted", "copy-repinned"):
+                manifest = spool._read(group / "manifest.json")
+                entry = manifest["entries"][0]
+                destination = Path(entry["destination_path"])
+                with spool._parent(destination) as directory:
+                    if variant == "copy-adopted":
+                        others = spool._OtherClaims(queue, manifest, record["export_key"], group)
+                        others._claims = {str(destination): [{"owner_action_key": "b" * 64, "owner_nonce": "8" * 32,
+                            "template_id": manifest["template"]["template_id"], "owner_kind": "batch",
+                            "owner_batch_id": "prior-batch", "owner_state": "succeeded"}]}
+                        proof = others.take_over(directory, destination, entry, 0, record["manifest_sha256"],
+                                                 spool._identity(destination, directory=directory))
+                    else:
+                        lease.portable_identity = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 4, "ctime_ns": 5}
+                        proof = spool._repinned(spool._read(group / "copy-0.json"),
+                            spool._identity(destination, directory=directory), code="completed destination changed",
+                            index=0, path=destination, name=destination.name, directory=directory, where="export")
+                    spool._write(group / "copy-0.json", proof)
             time.monotonic = monotonic
             if variant == "reservation-released":
                 assert producer._release_locked(group)["ok"]
                 path = group / "reservation.json"
             else:
-                path = group / ("copy-0.json" if variant == "copy" else "receipt.json")
+                path = group / ("copy-0.json" if variant.startswith("copy") else "receipt.json")
         if variant == "retirement-intent":
             others = spool._OtherClaims(queue, {}, record["export_key"], group)
             retire = spool._retire_foreign
@@ -139,7 +173,7 @@ def operate(request, store, load):
             assert result["ok"]
             return result
         manifest = spool._read(group / "manifest.json")
-        if variant == "copy":
+        if variant.startswith("copy"):
             return spool._check_copy(json.loads(raw), manifest["entries"][0], 0, record["manifest_sha256"])
         if variant == "retirement-intent":
             result = spool._OtherClaims(queue, {}, record["export_key"], group)
