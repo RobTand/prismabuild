@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -100,10 +101,22 @@ def test_sparse_check_flags_a_hole():
 
 
 def test_written_file_reports_backing(tmp_path):
-    path = str(tmp_path / "backed.bin")
-    probe.write_test_file(path, 2 * 1024 * 1024)
-    assert os.path.getsize(path) == 2 * 1024 * 1024
-    assert probe.is_sparse(2 * 1024 * 1024, probe.allocated_bytes(path)) is False
+    # ZFS compression and delayed block accounting invalidate this fixture's
+    # allocated-byte assumption. Private tmpfs pages report their allocation.
+    with tempfile.TemporaryDirectory(prefix=f"pb1730-{tmp_path.name}-", dir="/dev/shm") as root:
+        path = str(Path(root) / "backed.bin")
+        probe.write_test_file(path, 2 * 1024 * 1024)
+        assert os.path.getsize(path) == 2 * 1024 * 1024
+        assert probe.is_sparse(2 * 1024 * 1024, probe.allocated_bytes(path)) is False
+
+
+def test_private_backing_fixture_still_detects_a_real_hole(tmp_path):
+    with tempfile.TemporaryDirectory(prefix=f"pb1730-{tmp_path.name}-", dir="/dev/shm") as root:
+        path = str(Path(root) / "hole.bin")
+        with open(path, "wb") as stream:
+            stream.truncate(2 * 1024 * 1024)
+        assert os.path.getsize(path) == 2 * 1024 * 1024
+        assert probe.is_sparse(2 * 1024 * 1024, probe.allocated_bytes(path)) is True
 
 
 def test_a8s_constant_matches_canonical_bytes():
