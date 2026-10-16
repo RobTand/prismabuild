@@ -66,6 +66,7 @@ import time
 import math
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -85,7 +86,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import endings
+from prismabuild import endings  # noqa: E402
 from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
@@ -2873,7 +2874,7 @@ def terminal_record(
     return record
 
 
-def _preemption_requeue(q, key: str, ending, generation) -> float | None:
+def _read_preemption_successor(q, key: str, ending, generation) -> float | None:
     """The generation a preemption requeued this one as, or ``None``.
 
     ``PoolQueue`` stops an admitted background holder to admit foreground work
@@ -2896,9 +2897,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     about the stop and never about the ending that followed it.
     """
 
-    if generation is None or ending.get("preempted_by") is None:
-        return None
-    if str(ending.get("status") or "") != "withdrawn":
+    if not endings.preempted(ending, generation):
         return None
     # Admission holds this lock across withdrawal and replacement publication.
     # Reading the marker before the replacement exists is an intermediate
@@ -2915,48 +2914,23 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
                 continue
             if isinstance(record, dict):
                 records.append(record)
-        successors = []
-        for record in records:
-            theirs = record.get("published_unix")
-            parent = record.get("supersedes_withdrawal")
-            if (type(theirs) not in (int, float)
-                    or not isinstance(parent, dict)
-                    or parent.get("published_unix") != generation
-                    or parent.get("preempted_by") != ending.get("preempted_by")):
-                continue
-            # Follow the actual handoff, never an unrelated later submission
-            # of the same key. Immutable decisions retain intermediate links
-            # when the action was preempted more than once.
-            if float(theirs) > float(generation):
-                successors.append(float(theirs))
-        return min(successors) if successors else None
+        # Preserve this reader's historical JSON-object intake. The pure
+        # handoff policy also serves inspection's broader Mapping capture.
+        candidates = [record for record in records
+                      if isinstance(record.get("supersedes_withdrawal"), dict)]
+        return endings.preemption_successor(ending, generation, candidates)
 
 
 def outcome_poll(
     q, key: str, generation: float | None, *, report_unreadable: bool = False,
 ) -> tuple[endings.ObservedEnding | None, float | None]:
-    """Read one terminal-outcome snapshot and select its next state.
+    """Capture this poll's facts and fulfill the pure run query's needed reads.
 
-    This is the canonical selection step shared by the historical synchronous
-    waiter and its bounded pool caller.  It returns ``(landed, generation)``:
-    ``landed`` is an execution/withdrawal ``(path, record)``, a typed
-    publication supersession, or ``None``; ``generation`` is either the input generation
-    or the exact successor a preemption published.  Keeping that successor in
-    the return value is essential because a bounded caller observes each poll
-    in a new child process.
-
-    It never changes an action's state.  The preemption lookup may take the
-    queue's existing transition lock while it reads the handoff, but a missing
-    successor is still a withdrawal verdict and a failed or unavailable reader
-    never cancels, republishes, or invents a terminal outcome.
+    The query preserves exact-generation, legacy fallback and preemption
+    ordering. Archives and publication proofs are read only when requested.
+    A new poll always starts with a fresh capture. Handoff reads retain the
+    existing transition lock; no reader mutates or republishes queue state.
     """
-
-    def _stamp(entry) -> float:
-        value = entry[1].get("published_unix")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-        return float("-inf")
-
     watched = [q.item_path(state, key)
                for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
     found = []
@@ -2976,75 +2950,29 @@ def outcome_poll(
                 publication_errors.append(exc)
             else:
                 found.append((path, record))
-    # The immutable cancellation is already an ending if its writer died
-    # before updating withdrawn/<key>.json, or publication retired that
-    # visible marker while an earlier generation's waiter was still here.
-    decisions = (
-        q.withdrawal_decisions(key)
-        if generation is None
-        else q.withdrawal_decisions(key, generation=generation)
-    )
-    for path, record in decisions:
-        if generation is None or float(record["published_unix"]) == float(generation):
-            if not any(existing.get("status") == "withdrawn"
-                       and existing.get("published_unix") == record.get("published_unix")
-                       for _, existing in found):
-                found.append((path, record))
-    if generation is not None and not any(
-            record.get("published_unix") == generation for _, record in found):
-        # A later generation may have replaced the only mutable terminal row:
-        # done/ and failed/ are one slot per action key, so a re-run of the
-        # same content-addressed work legitimately overwrites the earlier
-        # row (#817).  The immutable attempt filed before that row moved still
-        # carries this generation's verdict, its complete history and its
-        # logs.  A preemption successor's handoff context is one shape of that
-        # evidence and an ordinary generation is the other; the reader is
-        # exact to the generation and refuses tampered or incomplete
-        # archives rather than reporting a neighbour's verdict.
-        found.extend(q.archived_generation_outcomes(key, generation=generation))
-    if generation is not None:
-        # A legacy ending with no generation remains the fallback when it is
-        # the only account of this run.  It must not outrank an exact ending
-        # that is also present: otherwise an old unstamped DONE can hide this
-        # generation's withdrawal and report cancelled work as successful.
-        exact = [
-            entry for entry in found
-            if isinstance(entry[1].get("published_unix"), (int, float))
-            and not isinstance(entry[1].get("published_unix"), bool)
-            and float(entry[1]["published_unix"]) == float(generation)
-        ]
-        if not exact:
+    capture = endings.RunCapture(tuple(found), tuple(broken), tuple(publication_errors))
+    while True:
+        answer = endings.resolve_run(capture, generation)
+        if isinstance(answer, endings.RunAnswer):
+            return answer.ending, answer.generation
+        if isinstance(answer, endings.WithdrawalInputs):
+            decisions = (q.withdrawal_decisions(key) if answer.generation is None
+                         else q.withdrawal_decisions(key, generation=answer.generation))
+            capture = replace(capture, withdrawals=tuple(decisions))
+        elif isinstance(answer, endings.ArchiveInputs):
+            capture = replace(capture, archives=tuple(q.archived_generation_outcomes(
+                key, generation=answer.generation)))
+        elif isinstance(answer, endings.PublicationInputs):
             try:
-                superseded = q.publication_ending(key, generation=generation)
+                publication = q.publication_ending(key, generation=answer.generation)
             except (OSError, pb.PrismaBuildError) as exc:
                 raise OutcomeReadUnavailable(f"unavailable publication ending: {exc}") from exc
-            if superseded is not None:
-                return superseded, generation
-            if publication_errors:
-                raise publication_errors[0]
-        if not found:
-            if broken:
-                raise broken[0]
-            return None, generation
-        landed = (exact or found)[0]
-        requeued = _preemption_requeue(q, key, landed[1], generation)
-        if requeued is None:
-            return landed, generation
-        # Admission stopped this generation to give a foreground item the box,
-        # and published another one to run it again (#364).  Reporting the
-        # cancellation would tell the caller its work was decided against,
-        # when the queue is already running it: follow the generation the
-        # requeue published instead.
-        return None, requeued
-    if publication_errors:
-        raise publication_errors[0]
-    if len(found) == 1:
-        return found[0], generation
-    if found:
-        return max(found, key=_stamp), generation
-    if broken:
-        raise broken[0]
-    return None, generation
+            capture = replace(capture, publication=publication)
+        elif isinstance(answer, endings.PreemptionInputs):
+            capture = replace(capture, successor=_read_preemption_successor(
+                q, key, answer.ending[1], answer.generation))
+        else:
+            raise AssertionError(f"unknown run input request: {answer!r}")
 
 
 def landed_outcome(

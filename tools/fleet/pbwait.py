@@ -42,7 +42,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import endings
+from prismabuild import endings  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 import pbrun  # noqa: E402

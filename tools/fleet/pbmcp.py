@@ -820,7 +820,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
 def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> float | None:
     """The generation a preemption requeued this one as, read without the lock.
 
-    ``pbrun._preemption_requeue`` holds the transition lock while it looks,
+    ``pbrun._read_preemption_successor`` holds the transition lock while it looks,
     because it is deciding what to tell a waiter and must not answer in the
     middle of admission's withdraw-then-republish.  This is reporting, and
     taking that lock would make a read-only server a participant in the
@@ -832,9 +832,7 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     """
 
     generation = ending.get("published_unix")
-    if ending.get("preempted_by") is None or type(generation) not in (int, float):
-        return None
-    if str(ending.get("status") or "") != "withdrawn":
+    if type(generation) not in (int, float) or not endings.preempted(ending, generation):
         return None
     queue = pool.PoolQueue(Path(queue_root).absolute())
     candidates: list[Mapping[str, object]] = []
@@ -847,17 +845,7 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
         pass
     candidates.extend(_archived_preemption_records(queue_root, key))
     candidates.extend(_records_for(queue_root, key).values())
-    successors = []
-    for record in candidates:
-        theirs = record.get("published_unix")
-        parent = record.get("supersedes_withdrawal")
-        if (type(theirs) not in (int, float) or not isinstance(parent, Mapping)
-                or parent.get("published_unix") != generation
-                or parent.get("preempted_by") != ending.get("preempted_by")):
-            continue
-        if float(theirs) > float(generation):
-            successors.append(float(theirs))
-    return min(successors) if successors else None
+    return endings.preemption_successor(ending, generation, candidates)
 
 
 def _sealed(record: Mapping[str, object]) -> dict:

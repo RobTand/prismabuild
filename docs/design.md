@@ -1194,6 +1194,22 @@ retained versions or pin a stale answer beside a replaced slot. The
 exporter's gauges do not consume the field, and the limit is stated where
 the kept path is defined.
 
+Generation-bound selection belongs to `endings.resolve_run`, a pure query over
+`RunCapture`. It requests withdrawal, archive, publication or preemption inputs
+only when the existing selection order needs them. `pbrun.outcome_poll` fulfills
+those requests through its concrete readers and returns the answer. Each poll
+starts with a fresh capture; an uncaptured query input is separate from an
+absent file or an unreadable record. Exact evidence still outranks a legacy
+unstamped ending, and publication supersession retains its separate type.
+Run equality and legacy fallback retain their existing rules; the finite
+ordering of point-in-time status does not replace them.
+
+`endings.preemption_successor` supplies the common causal-handoff rule for
+waiters and MCP. The waiter captures and selects under the existing key
+transition lock. MCP keeps its unlocked, read-only capture and marks that
+limitation in its report. Both follow the earliest matching actual handoff,
+without following an unrelated publication or changing the queue.
+
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
 the three mutable terminal rows, immutable withdrawal decisions, the archived

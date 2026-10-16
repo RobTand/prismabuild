@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 import math
 from pathlib import Path
 
@@ -22,7 +23,144 @@ class PublicationSupersession:
     record: Mapping[str, object]
 
 
-ObservedEnding = tuple[Path, dict[str, object]] | PublicationSupersession
+RecordedEnding = tuple[Path, dict[str, object]]
+ObservedEnding = RecordedEnding | PublicationSupersession
+
+
+class _Uncaptured(Enum):
+    INPUT = "not_captured"
+
+
+@dataclass(frozen=True)
+class RunCapture:
+    """One run's observed facts; uncaptured inputs request their existing reads.
+
+    This marker describes query progress, not a file's presence or readability.
+    A captured absent publication or successor is ``None``; a captured empty
+    set of records is ``()``. Filesystem failures retain their original errors.
+    """
+
+    terminals: tuple[RecordedEnding, ...]
+    broken: tuple[Exception, ...] = ()
+    publication_errors: tuple[Exception, ...] = ()
+    withdrawals: tuple[RecordedEnding, ...] | _Uncaptured = _Uncaptured.INPUT
+    archives: tuple[RecordedEnding, ...] | _Uncaptured = _Uncaptured.INPUT
+    publication: PublicationSupersession | None | _Uncaptured = _Uncaptured.INPUT
+    successor: float | None | _Uncaptured = _Uncaptured.INPUT
+
+
+@dataclass(frozen=True)
+class RunAnswer:
+    ending: ObservedEnding | None
+    generation: float | None
+
+
+@dataclass(frozen=True)
+class WithdrawalInputs:
+    generation: float | None
+
+
+@dataclass(frozen=True)
+class ArchiveInputs:
+    generation: float
+
+
+@dataclass(frozen=True)
+class PublicationInputs:
+    generation: float
+
+
+@dataclass(frozen=True)
+class PreemptionInputs:
+    generation: float
+    ending: RecordedEnding
+
+
+NeedsRunInputs = WithdrawalInputs | ArchiveInputs | PublicationInputs | PreemptionInputs
+
+
+def preempted(ending: Mapping[str, object], generation: float | None) -> bool:
+    return (generation is not None and ending.get("preempted_by") is not None
+            and str(ending.get("status") or "") == WITHDRAWN)
+
+
+def preemption_successor(
+    ending: Mapping[str, object], generation: float,
+    records: Sequence[Mapping[str, object]],
+) -> float | None:
+    """The earliest actual handoff from this stop, never an unrelated rerun."""
+    successors = []
+    for record in records:
+        theirs = record.get("published_unix")
+        parent = record.get("supersedes_withdrawal")
+        if (type(theirs) not in (int, float)
+                or not isinstance(parent, Mapping)
+                or parent.get("published_unix") != generation
+                or parent.get("preempted_by") != ending.get("preempted_by")):
+            continue
+        if float(theirs) > float(generation):
+            successors.append(float(theirs))
+    return min(successors) if successors else None
+
+
+def resolve_run(capture: RunCapture, generation: float | None) -> RunAnswer | NeedsRunInputs:
+    """Resolve the watched run, requesting only its conditionally needed inputs.
+
+    Run equality and legacy fallback retain the waiter's historical rules.
+    They differ from the finite ordering used by point-in-time status below.
+    A request performs no I/O and never grants mutation or a fresh deadline.
+    """
+    if isinstance(capture.withdrawals, _Uncaptured):
+        return WithdrawalInputs(generation)
+    found = list(capture.terminals)
+    for path, record in capture.withdrawals:
+        if generation is None or float(record["published_unix"]) == float(generation):
+            if not any(existing.get("status") == WITHDRAWN
+                       and existing.get("published_unix") == record.get("published_unix")
+                       for _, existing in found):
+                found.append((path, record))
+    if generation is not None and not any(
+            record.get("published_unix") == generation for _, record in found):
+        if isinstance(capture.archives, _Uncaptured):
+            return ArchiveInputs(generation)
+        found.extend(capture.archives)
+    if generation is not None:
+        exact = [entry for entry in found
+                 if isinstance(entry[1].get("published_unix"), (int, float))
+                 and not isinstance(entry[1].get("published_unix"), bool)
+                 and float(entry[1]["published_unix"]) == float(generation)]
+        if not exact:
+            if isinstance(capture.publication, _Uncaptured):
+                return PublicationInputs(generation)
+            if capture.publication is not None:
+                return RunAnswer(capture.publication, generation)
+            if capture.publication_errors:
+                raise capture.publication_errors[0]
+        if not found:
+            if capture.broken:
+                raise capture.broken[0]
+            return RunAnswer(None, generation)
+        landed = (exact or found)[0]
+        if preempted(landed[1], generation):
+            if isinstance(capture.successor, _Uncaptured):
+                return PreemptionInputs(generation, landed)
+            if capture.successor is not None:
+                return RunAnswer(None, capture.successor)
+        return RunAnswer(landed, generation)
+    if capture.publication_errors:
+        raise capture.publication_errors[0]
+    if len(found) == 1:
+        return RunAnswer(found[0], generation)
+    if found:
+        def stamp(entry: RecordedEnding) -> float:
+            value = entry[1].get("published_unix")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            return float("-inf")
+        return RunAnswer(max(found, key=stamp), generation)
+    if capture.broken:
+        raise capture.broken[0]
+    return RunAnswer(None, generation)
 
 
 def publication_generation(value: object) -> float | None:

@@ -1,6 +1,6 @@
 """The preemption successor an agent is told about, read without the lock.
 
-``pbrun._preemption_requeue`` is the authority on which generation a stopped
+``pbrun._read_preemption_successor`` is the authority on which generation a stopped
 one was requeued as, and it answers under ``_transition_locked`` because it is
 deciding what to tell a waiter.  ``pbmcp`` is reporting, not participating, so
 it re-derives the same answer unlocked -- and re-deriving is only honest if it
@@ -104,7 +104,7 @@ def test_the_successor_is_found_where_only_the_immutable_attempt_kept_it(
 
     found = pbmcp._requeued_as(queue.root, key, second_stop)
     assert found == generations[2], "the G2->G3 handoff was not recovered"
-    assert found == pbrun._preemption_requeue(queue, key, second_stop, generations[1])
+    assert found == pbrun._read_preemption_successor(queue, key, second_stop, generations[1])
 
 
 def test_the_unlocked_reader_agrees_with_the_locked_one_at_every_stop(
@@ -114,7 +114,7 @@ def test_the_unlocked_reader_agrees_with_the_locked_one_at_every_stop(
     for stop in stops:
         generation = stop["published_unix"]
         assert (pbmcp._requeued_as(queue.root, key, stop)
-                == pbrun._preemption_requeue(queue, key, stop, generation))
+                == pbrun._read_preemption_successor(queue, key, stop, generation))
 
 
 def test_an_ordinary_ending_names_no_successor(tmp_path: Path) -> None:
