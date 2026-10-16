@@ -14,6 +14,11 @@ import test_a_hold_by_an_unknown_attempt_is_named as holds
 import test_incomplete_ram_promotions_release_their_tokens as incomplete
 import test_the_tier_loop_drops_a_prior_epoch_and_holds as epochs
 import tier_loop
+from test_one_publisher_parses_unchanged_publication_metadata_once import (
+    forest, _sweep as publication_sweep, CONSUMER as PUBLICATION_CONSUMER,
+    MOVER as PUBLICATION_MOVER,
+)
+from prismabuild import residency_map, kept_reads
 
 
 def _unreadable_stat(monkeypatch, target, error):
@@ -162,3 +167,39 @@ def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(tmp_
     assert status == 'unknown', 'unavailable metadata certified a present empty funding intent as absent'
     assert record is None
     assert 'census unreadable' in reason
+
+
+def test_unreadable_publication_metadata_is_not_reused_when_coarse_ctime_repeats(forest, monkeypatch):
+    fragment = residency_map.fragment_path(
+        forest['residency_root'], PUBLICATION_CONSUMER, PUBLICATION_MOVER)
+    assert all(row[1] == 'proof' for row in publication_sweep(forest))
+    before = fragment.stat()
+    fragment.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            fragment.read_bytes()
+        current = fragment.stat()
+        class CoarsePermissionStat:
+            st_ctime_ns = before.st_ctime_ns
+            st_ctime = before.st_ctime
+            def __getattr__(self, name):
+                return getattr(current, name)
+        observed = CoarsePermissionStat()
+        facts = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        assert tuple(getattr(observed, field) for field in facts) == tuple(
+            getattr(before, field) for field in facts)
+        assert observed.st_mode & 0o777 == 0
+        real = os.stat
+        seen = []
+        def stat(path, *args, **kwargs):
+            if (isinstance(path, (str, bytes, os.PathLike))
+                    and Path(os.fsdecode(path)) == fragment):
+                seen.append(str(path))
+                return observed
+            return real(path, *args, **kwargs)
+        monkeypatch.setattr(os, 'stat', stat)
+        rows = publication_sweep(forest)
+        assert seen
+        assert rows[0][1] == 'unknown', 'an unreadable file still authorized the real publication proof'
+    finally:
+        fragment.chmod(before.st_mode)
