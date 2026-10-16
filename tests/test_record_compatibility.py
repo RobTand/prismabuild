@@ -85,7 +85,10 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
 def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations, tmp_path):
     case = kind.name + "/" + kind.variants[0]
     body = json.loads(decoded(GOLDENS[case]))
-    body[kind.negative_field] = "compat.foreign.v999"
+    if kind.negative_field is None:
+        body = []
+    else:
+        body[kind.negative_field] = "compat.foreign.v999"
     raw = json.dumps(body).encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):

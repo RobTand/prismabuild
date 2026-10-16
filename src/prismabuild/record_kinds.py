@@ -15,7 +15,7 @@ class RecordKind:
     variants: tuple[str, ...]
     legacy: tuple[str, ...] = ()
     closed_sets: tuple[str, ...] = ()
-    negative_field: str = "schema"
+    negative_field: str | None = "schema"
     legacy_writers: tuple[str, ...] = ()
     legacy_readers: tuple[str, ...] = ()
 
@@ -41,7 +41,7 @@ KINDS = (
                ("prismabuild.residency_map:_LANDING_KEYS", "prismabuild.residency_map:_LANDING_RANGE_KEYS",
                 "prismabuild.residency_map:_LANDING_HORIZON_KEYS")),
     RecordKind("material", "prismaquant.prismabuild.reader_material.v1",
-               "residency/<consumer>/<mover>.material.json", "closed",
+               "residency/material/<consumer>/<mover>.json", "closed",
                "prismabuild.reader_lease:read_material", ("prismabuild.reader_lease:write_material",),
                ("ssd", "empty-epoch", "ram"), ("SSD material permits absent or empty epoch",)),
     RecordKind("retiring", "prismaquant.prismabuild.reader_retiring.v2",
@@ -94,7 +94,7 @@ KINDS = (
     RecordKind("q-funding", "prismabuild.tier_funding.v1", "tier-funding/<mover>.<tier>.funding.json", "closed",
                "prismabuild.pool:PoolQueue.read_funding", ("prismabuild.pool:PoolQueue.write_funding",),
                ("reserved", "transferring", "consumed", "released")),
-    RecordKind("q-output-funding", "prismabuild.tier_funding.output.v1", "tier-funding output binding", "closed",
+    RecordKind("q-output-funding", "prismabuild.tier_funding.output.v1", "tier-funding/<mover>.<tier>.output-funding.json", "closed",
                "prismabuild.pool:PoolQueue.read_output_funding", ("prismabuild.pool:PoolQueue.write_output_funding",),
                ("reserved", "transferring", "consumed", "released")),
     RecordKind("q-denials", "prismabuild.claim_denials.v1", "host adaptive/claim-denials.json", "additive",
@@ -122,11 +122,11 @@ KINDS = (
                "prismabuild.action_edges:read_published", ("prismabuild.action_edges:file_published",), ("published",)),
     RecordKind("edge-supersession", "prismabuild.supersession.v1", "supersessions/<old>.json", "additive",
                "prismabuild.action_edges:read_supersession", ("prismabuild.action_edges:file_supersession",), ("key", "pending")),
-    RecordKind("out-template", "prismaquant.prismabuild.produced_output_template.v1", "produced-output/templates/<id>.json", "closed",
+    RecordKind("out-template", "prismaquant.prismabuild.produced_output_template.v1", "residency/produced-output-templates/<id>.json", "closed",
                "prismabuild.produced_output:validate_template", ("prismabuild.produced_output:declare_template",),
                ("read-back", "read-back-rate", "write-only", "write-only-rate"),
                ("write_only absent means false; export_rate_family may be absent",)),
-    RecordKind("out-instance", "prismaquant.prismabuild.produced_output_instance.v1", "produced-output/<owner>/<template>/<nonce>/instance.json", "closed",
+    RecordKind("out-instance", "prismaquant.prismabuild.produced_output_instance.v1", "residency/produced-output-scopes/<owner>/<template>.<nonce>/instance.json", "closed",
                "prismabuild.produced_output:validate_instance", ("prismabuild.produced_output:declare_instance",), ("bound",)),
     RecordKind("out-declaration", "prismabuild.produced_output_declaration.v1", "action.params.produced_output_template", "closed",
                "prismabuild.core:validate_produced_output_declaration", ("prismabuild.produced_output:build_declaration",), ("sealed",)),
@@ -138,17 +138,29 @@ KINDS = (
     RecordKind("resident-movements", "prismabuild.resident_movements.v1", "resident-sets/<id>/movements/<host>.json", "additive",
                "prismabuild.resident_sets:ResidentSets.read_movements", ("prismabuild.resident_sets:ResidentSets.update_movements",),
                ("copy", "evict", "adopt")),
-    RecordKind("tier-epoch", "prismabuild.ram_epoch.v1", "RAM mount .prismabuild-epoch.json", "additive",
+    RecordKind("tier-epoch", "prismabuild.ram_epoch.v1", "RAM mount .prismabuild-ram-epoch.json", "additive",
                "prismabuild.storage_tiers:read_ram_epoch", ("prismabuild.storage_tiers:ensure_ram_epoch",), ("bootstrap",),
                ("reader accepts absent unix and host",)),
     RecordKind("plan", "prismaquant.prismabuild.residency_plan.v1", "residency-plans/<consumer>.json", "closed",
                "prismabuild.residency_plan:read", ("prismabuild.residency_plan:freeze",),
                ("whole", "chunks", "ram-whole", "ram-chunks", "reader-depth", "reader-rate", "reader-both", "demand-source", "prelaunch", "combined"),
                ("whole stage leg is accepted alongside chunked shape; optional reader/demand/RAM/prelaunch declarations may be absent",)),
-    RecordKind("shared-range", "prismaquant.prismabuild.shared_range.v1", "shared-ranges/<namespace>.json", "additive",
+    RecordKind("shared-range", "prismaquant.prismabuild.shared_range.v1", "residency-plans/shared/ranges/<namespace>.json", "additive",
                "prismabuild.residency_plan:read_shared_range", ("prismabuild.residency_plan:register_shared_range",), ("first", "stale", "withdrawn")),
-    RecordKind("shared-mover", "prismaquant.prismabuild.shared_mover.v1", "shared-ranges/movers/<mover>.json", "additive",
+    RecordKind("shared-mover", "prismaquant.prismabuild.shared_mover.v1", "residency-plans/shared/movers/<mover>.json", "additive",
                "prismabuild.residency_plan:read_shared_mover", ("prismabuild.residency_plan:register_shared_range",), ("first", "stale", "withdrawn")),
+    RecordKind("gang-group", "prismabuild.gang_group.v1", "gangs/<group>.json", "additive",
+               "prismabuild._gang:read_group", ("prismabuild._gang:publish_group",), ("paired",)),
+    RecordKind("gang-election", "prismabuild.gang_election.v1", "gangs/<group>/elect-<index>.json", "additive",
+               "prismabuild._gang:elections", ("prismabuild._gang:elect_gang_member",), ("elected",)),
+    RecordKind("gang-ready", "prismabuild.gang_ready.v1", "gangs/<group>/ready-<index>.json", "additive",
+               "prismabuild._gang:sibling_readiness", ("prismabuild._gang:mark_ready",), ("fresh",)),
+    RecordKind("gang-teardown", "prismabuild.gang_teardown.v1", "gangs/<group>/teardown.json", "additive",
+               "prismabuild._gang:teardown", ("prismabuild._gang:tear_down",), ("presence",),
+               ("any nonempty object establishes teardown; schema is diagnostic",), negative_field=None),
+    RecordKind("gang-terminal", "prismabuild.gang_terminal_mark.v1", "gangs/<group>/terminal-<key>.json", "additive",
+               "prismabuild._gang:note_terminal", ("prismabuild._gang:note_terminal",), ("observed", "empty"),
+               ("foreign schema/signature resets confirmation instead of authorizing teardown",)),
 )
 
 
