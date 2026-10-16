@@ -10,7 +10,7 @@ import pytest
 import fleet_membership
 import resource_broker
 import supervise
-from prismabuild import pool
+from prismabuild import park_proof, pool
 
 
 class EmptyKernel:
@@ -43,7 +43,8 @@ def test_resign_requires_known_gate_even_with_a_proved_empty_census(
     queue.ensure_layout()
     runtime = tmp_path / "private-runtime"
     runtime.mkdir()
-    monkeypatch.setattr(supervise, "_proven_roots", lambda: [runtime])
+    native_census = park_proof.proc_census
+    monkeypatch.setattr(park_proof, "proc_census", lambda: native_census(runtime))
     assert fleet_membership.live_loop_census() == ([], None)
 
     clock = SimpleNamespace(now=0.0, waits=[])

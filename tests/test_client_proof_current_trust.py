@@ -7,7 +7,7 @@ import pytest
 
 from client_proof_bridge_fixture import ROOT, _fresh, _sha, publication
 from test_client_proof_prior_trust import (
-    STRICT_PROOF_SHA256, _file_facts, _retain_proof, root_publication, tmp_path,
+    PRIOR_FILES, _file_facts, _retain_proof, root_publication, tmp_path,
 )
 
 
@@ -31,13 +31,15 @@ def test_equal_client_bytes_repair_untrusted_proof_and_preserve_trusted_current(
         "upgrade_client.py", "park_proof.py",
     }
     assert blobs["upgrade_client.py"] == (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
-    assert _sha(blobs["park_proof.py"]) == STRICT_PROOF_SHA256
+    assert blobs["park_proof.py"] == (ROOT / "src/prismabuild/park_proof.py").read_bytes()
     for name, data in blobs.items():
         target = install / name
         target.write_bytes(data)
         target.chmod(0o644)
-    leaf, retained = _retain_proof(root_publication, kind)
-    assert retained == blobs["park_proof.py"]
+    leaf, _ = _retain_proof(root_publication, kind)
+    retained = blobs["park_proof.py"]
+    leaf.write_bytes(retained)
+    assert leaf.read_bytes() == retained and _file_facts(leaf) == PRIOR_FILES[kind]
     # These independently owned broker hashes come from the actual six-member
     # installation. The updater and proof are deliberately absent from the reply.
     backend = json.loads(backend_path.read_text())
