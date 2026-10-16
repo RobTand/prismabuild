@@ -63,9 +63,9 @@ def _absent(path: Path, reason: str) -> None:
 
 
 def _quiescent(q: pool.PoolQueue, key: str, record: dict | None = None) -> None:
-    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.WITHDRAWN):
-        _absent(q.item_path(state, key), f"conflicting {state} record for this action")
-    _absent(q.lease_path(key), "action still has a lease")
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.WITHDRAWN):
+        _absent(q.records.item_path(state, key), f"conflicting {state} record for this action")
+    _absent(q.records.lease_path(key), "action still has a lease")
     reservations = q.root / pool.RESERVATIONS
     _require(stat.S_ISDIR(reservations.lstat().st_mode), "reservation root is not a directory")
     for host in reservations.iterdir():
@@ -77,7 +77,7 @@ def _quiescent(q: pool.PoolQueue, key: str, record: dict | None = None) -> None:
         # Claim intent normally survives finish. Only the intent of this
         # already-finished claimant is harmless; a newer one is a conflict.
         try:
-            intent, _ = _read(q.item_path(pool.INTENT, key))
+            intent, _ = _read(q.records.item_path(pool.record_store.INTENT, key))
         except FileNotFoundError:
             return
         declared = intent.get("intent_unix")
@@ -158,12 +158,12 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
     # No host admission lock is held while verifying CAS bytes.
     with q._transition_locked(key):
         _quiescent(q, key)
-        terminal_path = q.item_path(pool.FAILED, key)
+        terminal_path = q.records.item_path(pool.record_store.FAILED, key)
         record, terminal_raw = _read(terminal_path)
         _require(record.get("schema") == pool.POOL_OUTCOME_SCHEMA_V1
                  and record.get("action_key") == key and record.get("status") == "failed",
                  "selected ending is not a failed pool execution")
-        _require(q.attempt_generation(record) == generation
+        _require(q.records.attempt_generation(record) == generation
                  and type(record.get("attempts")) is int and record["attempts"] == attempt,
                  "selected generation or final attempt differs from current ending")
         _require(not record.get("finish_pending") and not record.get("container_cleanup_pending"),
@@ -174,7 +174,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         _require(bool(outcomes) and outcomes[-1]["attempt"] == attempt,
                  "final immutable attempt is missing")
         archived = outcomes[-1]
-        _require(archived.get("status") == "failed" and archived.get("disposition") == pool.FAILED,
+        _require(archived.get("status") == "failed" and archived.get("disposition") == pool.record_store.FAILED,
                  "immutable attempt has a different terminal disposition")
         _require(isinstance(archived.get("detail"), dict), "immutable attempt detail is missing")
         # The mutable ending's streams are the bounded tail of the immutable
@@ -220,7 +220,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
                  "receipt recovery requires a generation action")
         receipt = cas.lookup(action)  # Full manifest, producer attestation and blob verification.
         _require(receipt is not None, "no verified canonical receipt for this action")
-        attempt_path = q.attempt_path(record, attempt)
+        attempt_path = q.records.attempt_path(record, attempt)
         _, attempt_raw = _read(attempt_path, readonly=True)
         supplement_path = attempt_path.with_name(f"{attempt:08d}.receipt-reconciliation.json")
         body = {

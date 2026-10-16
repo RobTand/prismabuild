@@ -1051,7 +1051,7 @@ class DirectoryRecords:
         flight, so a raise, first in name order as a serial read's is, stops
         the read with at most that many reads wasted, and nothing a reader
         did is kept.  ``parse`` must then be safe to call from several
-        threads at once; ``pool._read_json`` is.
+        threads at once; ``pool.record_store.read_queue_record`` is.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,

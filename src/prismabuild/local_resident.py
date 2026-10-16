@@ -104,7 +104,7 @@ def sources(store, record, reader_context):
     """Prefer published stage bytes only while their ordinary reader pin is held."""
     canonical = {entry["path"]: entry["path"] for entry in record["manifest"]["entries"]}
     queue = pool.PoolQueue(store.queue_root)
-    base = queue.root / pool.RESIDENCY
+    base = queue.root / pool.record_store.RESIDENCY
     expected = {residency_map.residency_map_key(entry["path"], 0):
                 {"bytes": entry["bytes"], "sha256": entry["sha256"]}
                 for entry in record["manifest"]["entries"]}
@@ -284,7 +284,7 @@ def publish_actions(template, store, set_id, tiers, *, policy_path):
 
 
 def _resident_live_rows(store, set_id):
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         directory = store.queue_root / state
         if not directory.exists():
             continue

@@ -238,7 +238,7 @@ def ephemeral_scratch_path(declaration: Mapping[str, object]) -> Path:
     from .core import canonical_sha256
 
     checked = _scratch_declaration(declaration)
-    # Same submission-generation recipe as PoolQueue.attempt_generation;
+    # Same submission-generation recipe as record_store.RecordStore.attempt_generation;
     # tests pin this agreement. This is not the runtime generation's identity.
     generation = canonical_sha256({
         "action_key": checked["owner_action_key"],
@@ -301,7 +301,7 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
     try:
         expected = _scratch_claim_envelope(claim_snapshot)
         key = str(expected["action_key"])
-        live = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
         observed = _scratch_claim_envelope(live)
         if core.canonical_sha256(observed) != core.canonical_sha256(expected):
             raise LocalScratchError("claim snapshot no longer matches the live envelope")
@@ -343,7 +343,7 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
             "owner_host": host, "owner_attempt": attempt})
         # Refuse a successor observed during the sealed-request/holder reads.
         # This recheck cannot make shared reads atomic or authorize a mutation.
-        final = _scratch_claim_envelope(pool._read_json(queue.item_path(pool.CLAIMED, key)))
+        final = _scratch_claim_envelope(pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key)))
         if core.canonical_sha256(final) != core.canonical_sha256(expected):
             raise LocalScratchError("claim changed during scratch binding")
         return declaration
