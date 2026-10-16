@@ -106,7 +106,7 @@ def test_recovery_does_not_replace_a_new_publication(tmp_path, monkeypatch):
     q, ready, original = queue_and_record(tmp_path)
     stranded_capture(q, ready, monkeypatch)
     replacement = {**original, 'published_unix': original['published_unix'] + 1}
-    pool._write_json_atomic(ready, replacement)
+    pool.record_store._write_json(ready, replacement)
     q.sweep_ready_transitions()
     assert json.loads(ready.read_text()) == replacement
     assert not list((q.root / 'ready-transitions').glob('*.json'))
@@ -118,7 +118,7 @@ def test_an_old_terminal_does_not_retire_a_later_captured_request(tmp_path, monk
     stranded_capture(q, ready, monkeypatch)
     prior = {**original, 'published_unix': original['published_unix'] - 1,
              'status': 'executed', 'schema': pool.POOL_OUTCOME_SCHEMA_V1}
-    pool._write_json_atomic(q.records.item_path(pool.record_store.DONE, KEY), prior)
+    pool.record_store._write_json(q.records.item_path(pool.record_store.DONE, KEY), prior)
     q.sweep_ready_transitions()
     assert json.loads(ready.read_text()) == original
     assert json.loads(q.records.item_path(pool.record_store.DONE, KEY).read_text()) == prior

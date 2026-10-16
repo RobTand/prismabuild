@@ -78,7 +78,7 @@ def _rewrite_resources(q: pool.PoolQueue, key: str, resources: object) -> None:
     item = pool.record_store.read_document(path)
     assert item is not None
     item["resources"] = resources
-    pool._write_json_atomic(path, item)
+    pool.record_store._write_json(path, item)
 
 
 def _write_foreign_bytes(path: Path, payload: bytes) -> None:
@@ -167,7 +167,10 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
 ) -> None:
     # A foreign writer truncated the mover's done record: the bytes parse to
     # nothing, and the consumer naming that lead must not take the loop down.
-    _write_foreign_bytes(queue.records.item_path(pool.record_store.DONE, MOVER), b'{"status": "execut')
+    _write_foreign_bytes(
+        queue.records.item_path(pool.record_store.DONE, MOVER),
+        b'{"status": "execut',
+    )
     _publish_consumer(queue, [MOVER])
     _publish(queue, GOOD, {"cpu": 1})
 
@@ -195,7 +198,7 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
     """
 
     done_path = queue.records.item_path(pool.record_store.DONE, MOVER)
-    pool._write_json_atomic(done_path, {"status": "executed"})
+    pool.record_store._write_json(done_path, {"status": "executed"})
     real_read_json = pool.record_store._read_json
 
     def stale_for_the_done_path(

@@ -176,7 +176,7 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
         newer_bytes = ready.read_bytes()
 
     link = pool.os.link
-    file_superseded = queue._file_superseded
+    file_superseded = queue.records.file_superseded
 
     def failing_link(source, destination, *args, **kwargs):
         if destination == ready:
@@ -192,7 +192,7 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
         if failure == "link":
             patch.setattr(pool.os, "link", failing_link)
         else:
-            patch.setattr(queue, "_file_superseded", failing_filing)
+            patch.setattr(queue.records, "file_superseded", failing_filing)
         if ending.startswith("reap_"):
             _end_claim(queue, claim, ending, clock)
         else:
@@ -200,7 +200,9 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
                 _end_claim(queue, claim, ending, clock)
 
     retained = [
-        *queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        *queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
         *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
     ]
     assert len(retained) == 1
@@ -218,7 +220,9 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
     queue.reap_stale()
 
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert queue.ledger().held() == {}
     charged = ending in {"finish_retry", "reap_lease_lost"}
     assert queue.records.attempt_path(claim, 1).exists() == charged

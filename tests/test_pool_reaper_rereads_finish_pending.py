@@ -69,7 +69,7 @@ def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
                 "status": "executed",
                 "detail": {"returncode": 0, "stdout": "", "stderr": ""},
             }
-            pool._write_json_atomic(path, record)
+            pool.record_store._write_json(path, record)
         return age
 
     with mock.patch.object(pool.PoolQueue, "lease_age", lease_age):

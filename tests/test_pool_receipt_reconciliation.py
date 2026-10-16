@@ -27,14 +27,21 @@ def recover(fixture, **kwargs):
 
 
 def snapshots(q, key):
-    roots = [q.records.item_path(pool.record_store.FAILED, key), *sorted((q.root / pool.record_store.ATTEMPTS / key).rglob('*'))]
+    roots = [q.records.item_path(
+        pool.record_store.FAILED,
+        key,
+    ), *sorted(
+        (q.root / pool.record_store.ATTEMPTS / key).rglob('*'),
+    )]
     return {str(p): p.read_bytes() for p in roots if p.is_file()}
 
 
 def rewrite_ending(fixture, edit):
     q, _, action, ending = fixture
     edit(ending)
-    q.records.item_path(pool.record_store.FAILED, action['action_key']).write_text(json.dumps(ending))
+    q.records.item_path(pool.record_store.FAILED, action['action_key']).write_text(
+        json.dumps(ending),
+    )
 
 
 def test_explicit_recovery_verifies_action_payload_without_rewriting_attempt(failure):
@@ -75,7 +82,10 @@ def test_no_receipt_eof_is_not_recoverable(tmp_path, monkeypatch):
         recover(failure)
 
 
-@pytest.mark.parametrize('state', [pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.INTENT, pool.record_store.DONE, pool.record_store.WITHDRAWN])
+@pytest.mark.parametrize(
+    'state',
+    [pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.INTENT, pool.record_store.DONE, pool.record_store.WITHDRAWN],
+)
 def test_active_work_or_another_terminal_is_never_reconciled(failure, state):
     q, _, action, ending = failure
     path = q.records.item_path(state, action['action_key'])
@@ -210,7 +220,9 @@ def test_cli_recovery_is_explicit_and_preserves_original_exit(failure, monkeypat
     output = capsys.readouterr().out
     assert 'payload_verified' in output and '125' in output
     assert 'failed' in output and 'reconciliation' in output
-    assert json.loads(q.records.item_path(pool.record_store.FAILED, action['action_key']).read_text())['status'] == 'failed'
+    assert json.loads(
+        q.records.item_path(pool.record_store.FAILED, action['action_key']).read_text(),
+    )['status'] == 'failed'
 
 
 @pytest.mark.parametrize('argv', [
@@ -252,7 +264,9 @@ def test_changed_ending_during_cas_verification_never_files_supplement(failure, 
     monkeypatch.setattr(cas, 'lookup', lookup)
     with pytest.raises(ValueError):
         recover(failure)
-    assert not list((q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
+    assert not list(
+        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'),
+    )
 
 
 def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch):
@@ -260,12 +274,16 @@ def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch)
     original_lookup = cas.lookup
     def lookup(action):
         receipt = original_lookup(action)
-        q.records.item_path(pool.record_store.WITHDRAWN, action['action_key']).write_text(json.dumps(ending))
+        q.records.item_path(pool.record_store.WITHDRAWN, action['action_key']).write_text(
+            json.dumps(ending),
+        )
         return receipt
     monkeypatch.setattr(cas, 'lookup', lookup)
     with pytest.raises(ValueError, match='withdrawn'):
         recover(failure)
-    assert not list((q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
+    assert not list(
+        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'),
+    )
 
 
 def test_cli_reports_cas_corruption_as_refusal(failure, monkeypatch, capsys):
@@ -287,7 +305,7 @@ def test_retired_withdrawal_decision_is_scoped_to_its_generation(failure, same_g
     decision = {**ending, 'status': 'withdrawn'}
     if not same_generation:
         decision['published_unix'] -= 1
-    q._persist_withdrawal_decision(decision)
+    q.records.file_withdrawal_decision(decision)
     assert not q.records.item_path(pool.record_store.WITHDRAWN, action['action_key']).exists()
     if same_generation:
         with pytest.raises(ValueError, match='withdrawal decision'):
