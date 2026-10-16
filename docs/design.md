@@ -17801,6 +17801,11 @@ imports are also standard library. It has a private roster decoder because the
 pinned digest owner has no strict decoding API. It does not import Core or the
 native immutable-file owner.
 
+The digest owner's `unique_json_object` constructs ordered objects and rejects
+duplicate keys for the roster, Core's strict decoder and the RAM mount installer.
+Each boundary supplies its existing exception class and message. UTF-8,
+nonfinite-number and overflow policies remain with the corresponding decoder.
+
 `Roster.at` prefers the nested checkout layout, then the flat export.
 Supervisor and recorder lookups explicitly prefer the flat current generation.
 Supervisor retains `CONFIG` as its checkout/test fallback. Membership prefers

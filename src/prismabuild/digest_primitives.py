@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -16,6 +17,18 @@ class PrismaBuildError(RuntimeError):
 
 class ActionContractError(PrismaBuildError, ValueError):
     """An action, closure, receipt, or worker identity is not exact."""
+
+
+def unique_json_object(
+    pairs: list[tuple[str, object]], *,
+    duplicate_error: Callable[[str], ValueError],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise duplicate_error(key)
+        result[key] = value
+    return result
 
 
 def _canonical_bytes(value: object) -> bytes:

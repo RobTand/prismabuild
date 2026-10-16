@@ -32,6 +32,7 @@ from runtime_paths import generation_root  # noqa: E402
 _GENERATION = generation_root(_ENTRYPOINT)
 sys.path.insert(0, str(_GENERATION / "src"))
 from prismabuild.storage_tiers import GIB, read_ram_policy  # noqa: E402
+from prismabuild.digest_primitives import unique_json_object  # noqa: E402
 
 UNIT_NAME = "ram-prewarm.mount"
 _MOUNTPOINT = "/ram/prewarm"
@@ -61,22 +62,14 @@ def _owner(text: str) -> int:
     return number
 
 
-def _unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate policy field: {key}")
-        result[key] = value
-    return result
-
-
 def plan_unit(*, policy: str, size_bytes: int, owner_uid: int, owner_gid: int) -> bytes:
     """Validate explicit inputs and render the sole authoritative unit format."""
     path = Path(policy).resolve(strict=True)
     if not path.is_relative_to(_GENERATION):
         raise ValueError("policy must belong to the pinned entrypoint generation")
     # The shared validator owns the schema; also refuse ambiguous JSON keys.
-    json.loads(path.read_text(), object_pairs_hook=_unique_object)
+    json.loads(path.read_text(), object_pairs_hook=lambda pairs: unique_json_object(
+        pairs, duplicate_error=lambda key: ValueError(f"duplicate policy field: {key}")))
     declared = read_ram_policy(path)
     if declared is None:
         raise ValueError("invalid RAM policy")

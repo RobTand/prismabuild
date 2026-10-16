@@ -37,7 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .digest_primitives import raw_sha256
+from .digest_primitives import raw_sha256, unique_json_object
 
 
 ACTIVE = "active"
@@ -81,14 +81,6 @@ class Roster:
         if expected_sha256 is not None and digest != expected_sha256:
             raise ValueError("roster bytes differ from publication manifest")
 
-        def pairs(items):
-            result = {}
-            for key, value in items:
-                if key in result:
-                    raise ValueError(f"duplicate roster key {key!r}")
-                result[key] = value
-            return result
-
         def constant(value):
             raise ValueError(f"nonfinite roster number {value}")
 
@@ -98,8 +90,11 @@ class Roster:
                 constant(value)
             return number
 
-        document = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
-                              parse_constant=constant, parse_float=finite)
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=lambda pairs: unique_json_object(
+                pairs, duplicate_error=lambda key: ValueError(f"duplicate roster key {key!r}")),
+            parse_constant=constant, parse_float=finite)
         if not isinstance(document, dict):
             raise ValueError("fleet roster must be a JSON object")
         return cls(Path(path), raw, digest, document)

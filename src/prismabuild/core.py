@@ -674,21 +674,15 @@ def _normalize_string_mapping(
 
 
 def _decode_strict_json(raw: bytes, *, where: str) -> object:
-    def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ActionContractError(f"{where} contains duplicate key {key!r}")
-            result[key] = value
-        return result
-
     def reject_constant(value: str) -> object:
         raise ActionContractError(f"{where} contains non-finite number {value}")
 
     try:
         return json.loads(
             raw.decode("utf-8"),
-            object_pairs_hook=pairs_hook,
+            object_pairs_hook=lambda pairs: digest_primitives.unique_json_object(
+                pairs, duplicate_error=lambda key: ActionContractError(
+                    f"{where} contains duplicate key {key!r}")),
             parse_constant=reject_constant,
         )
     except ActionContractError:

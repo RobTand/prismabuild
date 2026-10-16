@@ -11,7 +11,7 @@ import subprocess
 PATTERN = re.compile(r"fleet_boxes|fleet_roster|generation_aliases|entry_for_host|recorder_hostnames|local_disk_free_floor_percent|gpu_interpreters|d38_enforce|FLEET_ROSTER_PATH|_roster_entry|_configured_boxes")
 
 
-def inventory(root: Path):
+def roster_references(root: Path):
     paths = subprocess.check_output(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=root).decode().split("\0")
     for name in sorted(set(paths) - {"", "tools/maintenance/inventory_fleet_roster.py"}):
         path = root / name
@@ -40,5 +40,5 @@ if __name__ == "__main__":
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     args = parser.parse_args()
     print("path\tline\tkind\tsymbol\treference")
-    for row in inventory(args.root):
+    for row in roster_references(args.root):
         print("\t".join(row))
