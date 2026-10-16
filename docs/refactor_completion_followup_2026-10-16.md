@@ -149,9 +149,6 @@ passing current-source architecture evidence whenever a production Python
 unit changes. C03, C05 and C31 continue in isolated worktrees, alongside the
 remaining original requirements.
 
-The final integrated suite, remaining source requirements, native ARM/NFS and
-paired-host drain proofs, compatibility corpus and deployment checks remain
-open. No runtime publication or GitHub PR-state change is included.
 ## Completed role kit boundary
 
 C17 is complete under D05's accepted shared-kit design. Each role keeps its
@@ -192,3 +189,7 @@ Rerunnable source and population checks are under
 `final-combined-primary.json`, `final-population.json`, `final-source-audit.json`
 and `exit-source-equivalence.json` bind that result to its source. The privileged
 drain profiles and ARM/NFS proof remain separate work.
+
+The final integrated suite, remaining source requirements, native ARM/NFS and
+paired-host drain proofs, compatibility corpus and deployment checks remain
+open. No runtime publication or GitHub PR-state change is included.
