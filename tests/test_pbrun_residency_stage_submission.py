@@ -210,7 +210,7 @@ def test_the_submission_publishes_the_consumer_and_no_mover_at_all(
     second = str(plan["phases"][1]["mover_row"]["action_key"])
     assert lead != second, "two phases sealed the same mover"
 
-    consumer = pool._read_json(queue.item_path(pool.READY, consumer_key))
+    consumer = pool.record_store.require(queue.records.item(pool.record_store.READY, consumer_key))
     assert consumer is not None, "the consumer row was not published"
     block = consumer.get("residency")
     assert isinstance(block, dict), "the consumer row carries no residency block"
@@ -221,11 +221,11 @@ def test_the_submission_publishes_the_consumer_and_no_mover_at_all(
         submitted["manifest_raw"]).hexdigest()
     assert block["manifest_bytes"] == len(submitted["manifest_raw"])
 
-    assert not queue.item_path(pool.READY, lead).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "the lead is the loop's to adopt or publish, like every other phase")
-    assert not queue.item_path(pool.READY, second).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, second).exists(), (
         "the second phase publishes as accepted progress advances, not here")
-    assert {path.stem for path in queue.dir(pool.READY).glob("*.json")} == {
+    assert {path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")} == {
         consumer_key}, "the submission publishes the consumer and nothing else"
 
 
@@ -244,8 +244,7 @@ def test_the_frozen_plan_rows_are_the_ones_sealed(
     for phase in plan["phases"]:
         sealed.append(str(phase["mover_row"]["action_key"]))
         sealed.append(str(phase["egress_row"]["action_key"]))
-        mover_row = pool._read_json(
-            queue.item_path(pool.READY, str(phase["mover_row"]["action_key"])))
+        mover_row = pool.record_store.require(queue.records.item(pool.record_store.READY, str(phase["mover_row"]["action_key"])))
         if phase["name"] == "phase-0":
             assert mover_row is not None
             assert mover_row["residency"] == phase["mover_row"]["residency"], (
@@ -265,12 +264,12 @@ STALE_RECEIPT = "a" * 64
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
-    source = queue.item_path(pool.READY, key)
+    source = queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": key, "claimed_unix": 1000.0,
                  "claimed_by": "worker", "claimed_host": "sparky"})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
 
 
 def test_a_superseded_window_reseals_at_the_tier_current_offer(
@@ -331,7 +330,7 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     assert residency_plan.superseded(queue, fresh) is None, (
         "the stale cancellation never covers the replacement")
     # The old body was reaped by the planner before the fresh one was frozen.
-    directory = queue.residency_plan_path(consumer_key).parent
+    directory = queue.records.residency_plan_path(consumer_key).parent
     archived = [path for path in (directory / residency_plan.SUPERSEDED).iterdir()
                 if not path.name.endswith(".superseded.json")
                 and not path.name.endswith(".marker.json")]
@@ -341,8 +340,7 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     # with -- the property #710 refused to break by rewriting in place.  The
     # loop publishes the row now, so the cycle comes before it is read.
     _tier_cycle(queue, tmp_path / "stage")
-    ledger_row = pool._read_json(
-        queue.item_path(pool.READY, str(mover["action_key"])))
+    ledger_row = pool.record_store.require(queue.records.item(pool.record_store.READY, str(mover["action_key"])))
     assert ledger_row is not None
     assert ledger_row["resources"][FILL_KIND] == 65
     blob = _receipt_blob(tmp_path, str(mover["action_key"]))
@@ -351,7 +349,7 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     command = blob["params"]["command"]
     assert command[command.index("--fill-mb-s-pool-side") + 1] == "65"
     assert command[command.index("--range-start-bytes") + 1] == "0"
-    consumer_row = pool._read_json(queue.item_path(pool.READY, consumer_key))
+    consumer_row = pool.record_store.require(queue.records.item(pool.record_store.READY, consumer_key))
     assert consumer_row["residency"]["leads"] == [str(mover["action_key"])]
 
 
@@ -537,7 +535,7 @@ def test_a_deliberate_reseal_renews_a_reaped_windows_cancelled_children(
     assert queue.withdrawal_decisions(late_stage), (
         "the operator's decision is evidence, not something retirement erases")
     assert queue.withdrawal_decisions(late_ram)
-    retired = {path.name for path in queue.superseded_dir().iterdir()}
+    retired = {path.name for path in queue.records.superseded_dir().iterdir()}
     assert any(late_stage in name for name in retired)
     assert any(late_ram in name for name in retired)
 
@@ -547,7 +545,7 @@ def test_a_deliberate_reseal_renews_a_reaped_windows_cancelled_children(
         "the fresh plan must survive its own window cycle")
     assert late_stage in _published(events), (
         "the fresh plan's later children must be publishable")
-    assert queue.item_path(pool.READY, late_stage).exists()
+    assert queue.records.item_path(pool.record_store.READY, late_stage).exists()
     assert queue.live_withdrawal(late_ram) is None
 
 
@@ -570,13 +568,13 @@ def test_a_cancellation_after_the_renewal_still_supersedes_the_fresh_plan(
     events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
     assert late_stage in _published(events), (
         "the renewed window is a schedule until a new decision cancels it")
-    assert queue.item_path(pool.READY, late_stage).exists()
+    assert queue.records.item_path(pool.record_store.READY, late_stage).exists()
 
     queue.withdraw(late_stage, reason="changed my mind", by="operator")
     events = tier_loop.residency_window(queue, tiers={TIER: _stage_tier(tmp_path)})
 
     assert late_stage not in _published(events)
-    assert not queue.item_path(pool.READY, late_stage).exists()
+    assert not queue.records.item_path(pool.record_store.READY, late_stage).exists()
     assert residency_plan.superseded(queue, fresh) is not None, (
         "a cancellation filed after the renewal is a decision about the new plan")
 
@@ -605,7 +603,7 @@ def test_a_resubmission_refuses_an_unreadable_child_cancellation(
     queue.withdraw(consumer_key, reason="stale price", by="operator")
     tier_loop.withdraw_dead_consumer_movers(queue)
 
-    marker = queue.item_path(pool.WITHDRAWN, late)
+    marker = queue.records.item_path(pool.record_store.WITHDRAWN, late)
     marker.unlink()
     marker.mkdir()        # present, and unreadable as a marker
 
@@ -614,7 +612,7 @@ def test_a_resubmission_refuses_an_unreadable_child_cancellation(
 
     assert residency_plan.read(queue, consumer_key) is None, (
         "no fresh plan may be sealed over a cancellation nobody can read")
-    assert not queue.item_path(pool.READY, consumer_key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, consumer_key).exists()
 
 
 # ------------------------------------- the lead the coordinator never saw
@@ -667,14 +665,14 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
                 "sha256": "a" * 64}
     assert queue.tier_ledger(TIER).acquire(
         mover, {"stage_gib": (end - start) // GIB})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": manifest_sha256, "entries": entries})
     if material is not None:
         reader_lease.write_material(
-            queue.residency_fragment_root(), consumer_action_key=consumer,
+            queue.records.residency_fragment_root(), consumer_action_key=consumer,
             mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
             manifest_sha256=manifest_sha256, generation="a" * 32,
             entries={key: {**dict(mention),
@@ -740,11 +738,11 @@ def test_a_cold_lead_is_published_by_the_loop_on_its_next_cycle(
     plan = residency_plan.read(queue, consumer_key)
     assert plan is not None
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
-    assert not queue.item_path(pool.READY, lead).exists(), "precondition"
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists(), "precondition"
 
     _tier_cycle(queue, tmp_path / "stage")
 
-    assert queue.item_path(pool.READY, lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "a cold lead nobody can adopt must be published by the loop")
 
 
@@ -781,9 +779,9 @@ def test_a_warm_lead_is_adopted_by_the_loop_and_never_copied(
     assert isinstance(receipt, dict)
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == donor
     assert receipt["bytes_copied"] == 0, "adoption copies no byte"
-    assert not queue.item_path(pool.READY, lead).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "an adopted range was queued for copying as well")
-    assert not queue.item_path(pool.CLAIMED, lead).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, lead).exists()
 
 
 def test_an_eager_worker_finds_no_lead_to_claim_before_the_loop_runs(
@@ -811,7 +809,7 @@ def test_an_eager_worker_finds_no_lead_to_claim_before_the_loop_runs(
 
     # The eager worker, before any tier cycle: nothing of this plan is
     # claimable, so no copy of a resident range can start.
-    claimable = {path.stem for path in queue.dir(pool.READY).glob("*.json")}
+    claimable = {path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")}
     assert lead not in claimable
     assert claimable == {consumer_key}
 
@@ -854,7 +852,7 @@ def test_a_donor_the_reader_could_not_use_is_declined_and_the_copy_runs(
 
     assert queue.move_record(lead) is None, (
         f"{shape} was adopted: the reader could not prove that range")
-    assert queue.item_path(pool.READY, lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), (
         f"{shape} must fall back to the ordinary copy, not strand the lead")
     assert queue.tier_ledger(TIER).holder_tokens(donor) == {
         "stage_gib": PHASE_BYTES // GIB}, "a declined donor lost its tokens"
@@ -892,4 +890,4 @@ def test_a_valid_donor_is_still_taken_when_an_unusable_one_sorts_first(
     assert isinstance(receipt, dict), (
         "the undated donor suppressed the usable one behind it")
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == usable
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
