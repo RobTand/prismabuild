@@ -62,6 +62,7 @@ def operate(request, store, load):
     target = path(root, key)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(raw)
+    request["_consumer_boundary"]()
     result = reader(root, key)
     assert result and result.get("action_key", result.get("new", result.get("pending_id"))), "edge consumer lost binding"
     return result

@@ -110,6 +110,7 @@ def operate(request, store, load):
         return {"raw": base64.b64encode(path.read_bytes()).decode()}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(base64.b64decode(request["raw"]))
+    request["_consumer_boundary"]()
     if family == "pg-decline":
         result = pg.latest_decline_reason(queue, UNIT, TIER)
         assert result == "compat-shortage", "decline consumer lost the shortage cause"

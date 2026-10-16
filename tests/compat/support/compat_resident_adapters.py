@@ -60,6 +60,7 @@ def operate(request, store, load):
             assert tiers.ensure_ram_epoch(store, host="compat-host", now=100)
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             value = tiers.read_ram_epoch(store)
             assert value and value["epoch"] == "100-" + "7" * 16, "epoch reader lost mounted generation"
             return value
@@ -93,6 +94,7 @@ def operate(request, store, load):
                 path, reader, args = resident.movement_path(key, "compat-host"), resident.read_movements, (key, "compat-host")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
+            request["_consumer_boundary"]()
             result = reader(*args)
             assert result, "resident consumer lost its body or movement rows"
             if family == "resident-copy":

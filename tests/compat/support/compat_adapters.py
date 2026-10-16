@@ -146,14 +146,17 @@ def operate(request, store, load):
                 destination = rm.fragment_path(store, C, M)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
+                request["_consumer_boundary"]()
                 rows = rm.read_fragments(store, C)
                 assert len(rows) == 1, "fragment consumer skipped the record"
                 value = rows[0]
             elif family == "map":
+                request["_consumer_boundary"]()
                 value = rm.read_map(path)
                 found = rm.lookup(value, "/compat/input")
                 assert found and found["bytes"] == 8, "map did not resolve the declared input"
             else:
+                request["_consumer_boundary"]()
                 value = rm.read_landing(path)
                 assert len(value["ranges"]) == 1 and value["ranges"][0]["range_end_bytes"] == 16
             return value
@@ -181,12 +184,14 @@ def operate(request, store, load):
                 destination = lease.material_path(store, C, M)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
+                request["_consumer_boundary"]()
                 value = lease.read_material(store, C, M)
                 assert isinstance(value, dict), f"material consumer refused: {value!r}"
             else:
                 destination = lease.retiring_path(store, C, M)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
+                request["_consumer_boundary"]()
                 rows, taint = lease.retiring_for(store, M)
                 assert len(rows) == 1 and not taint, f"retiring consumer refused: {taint}"
                 value = rows[0]
@@ -222,6 +227,7 @@ def operate(request, store, load):
                     destination = queue.move_path(M)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
+                request["_consumer_boundary"]()
                 if family == "prewarm":
                     value = queue.prewarm(M)
                 elif family == "export":
@@ -260,6 +266,7 @@ def operate(request, store, load):
             else:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
+                request["_consumer_boundary"]()
                 if family == "staged-wait":
                     value, reason = pool.read_staged_wait(destination, token=TOKEN)
                     assert not reason, reason

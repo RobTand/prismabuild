@@ -93,6 +93,7 @@ def operate(request, store, load):
         path, reader = rp.shared_mover_path(queue, key), rp.read_shared_mover
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
+    request["_consumer_boundary"]()
     result = reader(queue, key)
     assert result, "plan/shared-range consumer refused the record"
     if family == "plan":

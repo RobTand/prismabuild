@@ -63,6 +63,7 @@ def operate(request, store, load):
     if path.exists():
         path.unlink()
     path.write_bytes(base64.b64decode(request["raw"]))
+    request["_consumer_boundary"]()
     if family == "gang-group":
         result = gang.read_group(queue, GROUP)
         assert result and result["size"] == 2
