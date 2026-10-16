@@ -152,7 +152,8 @@ def roster_entry(host: str, roster_path: Path | None = None) -> fleet_roster.Box
     """Captured roster entry for ``host`` (alias-aware), or None when unreadable."""
     box = fleet_roster.Roster.for_host(
         host, paths=(roster_path,) if roster_path is not None else (),
-        roots=() if roster_path is not None else (REPO_ROOT,))
+        roots=() if roster_path is not None else (REPO_ROOT,),
+        modules=() if roster_path is not None else (__file__,))
     return box
 
 
@@ -560,9 +561,11 @@ def check_shared_mount(
         entry = roster_entry(host, roster_path)
     except ValueError as exc:
         return False, {"mount": mount, "reason": str(exc)}
-    roles = entry.get("roles") if isinstance(entry, dict) else None
-    serves_files = isinstance(roles, dict) and bool(
-        set(roles) & {"storage", "tiers"})
+    try:
+        roles = entry.roles if entry is not None else {}
+    except ValueError as exc:
+        return False, {"mount": mount, "reason": str(exc)}
+    serves_files = bool(set(roles) & {"storage", "tiers"})
     fstype = str(mount.get("fstype"))
     if fstype in ("nfs", "nfs4"):
         shared = True

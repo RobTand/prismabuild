@@ -116,10 +116,10 @@ class Roster:
         raise FileNotFoundError(f"no readable fleet roster under {root}")
 
     @classmethod
-    def available(cls, *, roots=(), paths=(), flat_first: bool = False):
+    def available(cls, *, roots=(), paths=(), modules=(), flat_first: bool = False):
         """Readable boxed captures in deliberate layout/fallback order."""
         candidates = [p for root in roots for p in cls.paths(root, flat_first=flat_first)]
-        for path in (*candidates, *paths):
+        for path in (*candidates, *paths, *(Path(m).resolve().with_name("fleet_boxes.json") for m in modules)):
             try:
                 roster = cls.read(path)
                 roster.boxes
@@ -164,8 +164,8 @@ class Roster:
         return Box(key, entry, self)
 
     @classmethod
-    def for_host(cls, host: str, *, roots=(), paths=(), flat_first: bool = False) -> Box | None:
-        for roster in cls.available(roots=roots, paths=paths, flat_first=flat_first):
+    def for_host(cls, host: str, *, roots=(), paths=(), modules=(), flat_first: bool = False) -> Box | None:
+        for roster in cls.available(roots=roots, paths=paths, modules=modules, flat_first=flat_first):
             box = roster.canonical_box(host)
             if box is not None:
                 return box
@@ -208,7 +208,7 @@ class Box:
     def loop_args(self) -> list[str]:
         args = self.entry.get("args") or []
         if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
-            raise ValueError(f"roster box {self.key!r} args must be an array of strings")
+            raise ValueError(f"roster box {self.key!r} args must be an array of strings (found {args!r})")
         return list(args)
 
     @property
