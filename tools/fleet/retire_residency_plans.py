@@ -43,9 +43,9 @@ def candidates(queue: pool.PoolQueue) -> list[str]:
         key = path.stem
         if path.suffix != ".json" or not path.is_file():
             continue
-        if queue.records.item_path(pool.record_store.READY, key).exists():
+        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key))):
             continue
-        if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
+        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key))):
             continue
         keys.append(key)
     return keys

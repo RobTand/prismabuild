@@ -819,8 +819,8 @@ def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
             staged.add(key)
-        if (queue.records.item_path(pool.record_store.READY, key).exists()
-                or queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+        if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key)))
+                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)))
                 or pinned):
             published.add(key)
     return published, staged
@@ -846,8 +846,8 @@ def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
             staged.add(key)
-        if (queue.records.item_path(pool.record_store.READY, key).exists()
-                or queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+        if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key)))
+                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)))
                 or pinned):
             published.add(key)
     return published, staged
@@ -1015,7 +1015,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                 queue, item, str(observed["phase"]))
         already, held = _ram_mover_state(queue, plan, tier_id)
         rowed = [key for key in residency_plan.ram_mover_keys(plan)
-                 if queue.records.item_path(pool.record_store.READY, key).exists()]
+                 if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key)))]
         needs = residency_plan.advance_needs(
             plan, accepted, published=sorted(already), staged=sorted(held),
             rowed=rowed, mover_role="ram_mover_row")
@@ -1183,7 +1183,7 @@ def drop_prior_ram_epochs(
         for key in held:
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
+            if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)):
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
                 # judges it then.
@@ -1216,7 +1216,7 @@ def drop_prior_ram_epochs(
                                        "tier_id": tier_id, "holder": key,
                                        "reason": reason})
                     continue
-                if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
+                if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key)):
                     continue
                 receipt = queue.move_record(key)
                 epoch = (str(receipt.get("epoch") or "")
@@ -1306,8 +1306,8 @@ def release_incomplete_ram_promotions(
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if (queue.records.item_path(pool.record_store.READY, key).exists()
-                    or queue.records.item_path(pool.record_store.CLAIMED, key).exists()):
+            if (pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key))
+                    or pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key))):
                 # Queued or running: the window or the copy owns this key, and
                 # a receipt read now would race the mover filing it.
                 continue
@@ -1789,8 +1789,8 @@ def ram_residency_window(
                 continue
             row = dict(egress_row)
             egress_key = str(row["action_key"])
-            if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
-                    or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
+            if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, egress_key)))
+                    or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, egress_key)))):
                 continue      # already asked; asking again would double the row
             try:
                 # And the same question again under the queue's lock, so the
@@ -2492,9 +2492,9 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         if (isinstance(receipt, Mapping)
                 and receipt.get("complete") is True):
             continue  # a resident range: adoption's, not withdrawal's
-        if queue.records.item_path(pool.record_store.READY, mover_key).exists():
+        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover_key))):
             origin = pool.record_store.READY
-        elif queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists():
+        elif bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover_key))):
             origin = pool.record_store.CLAIMED
         else:
             continue  # finished or never published: nothing to stop
@@ -3002,8 +3002,8 @@ def adopt_resident_ranges(
                 if ledger.holder_tokens(new_key):
                     prefix_blocked = True
                     break         # booked room is not qualified residency
-                if (queue.records.item_path(pool.record_store.READY, new_key).exists()
-                        or queue.records.item_path(pool.record_store.CLAIMED, new_key).exists()):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, new_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, new_key)))):
                     prefix_blocked = True
                     break         # let its own copy finish before adopting ahead
                 if not admission_asked:
@@ -3397,7 +3397,7 @@ def _landed_past(queue: pool.PoolQueue, key: str,
         try:
             held = int(ledger.holder_tokens(mover).get(kind, 0))
             busy = any(
-                queue.records.item_path(state, name).exists()
+                bool(pool.record_store.value_or_raise(queue.records.item_presence(state, name)))
                 for state in (pool.record_store.READY, pool.record_store.CLAIMED)
                 for name in (mover, egress_key) if name)
         except (OSError, pool.PoolContractError, ValueError):
@@ -4396,8 +4396,8 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
             ledger = queue.tier_ledger(tier_id)
             for lead in leads:
                 lead = str(lead)
-                if (queue.records.item_path(pool.record_store.READY, lead).exists()
-                        or queue.records.item_path(pool.record_store.CLAIMED, lead).exists()
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, lead)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, lead)))
                         or ledger.holder_tokens(lead)):
                     return tier_id
         except (OSError, ValueError, pool.PoolContractError):
@@ -5419,7 +5419,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                           if isinstance(egress, Mapping) else "")
             try:
                 held = int(ledger.holder_tokens(mover).get(kind, 0))
-                busy = any(queue.records.item_path(state, name).exists()
+                busy = any(bool(pool.record_store.value_or_raise(queue.records.item_presence(state, name)))
                            for state in (pool.record_store.READY, pool.record_store.CLAIMED)
                            for name in (mover, egress_key) if name)
             except (OSError, pool.PoolContractError, ValueError):
@@ -6296,8 +6296,8 @@ def reclaim_failed_mover_partials(
                     continue
                 if pinned:
                     continue
-                if (queue.records.item_path(pool.record_store.READY, mover_key).exists()
-                        or queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists()):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover_key)))):
                     continue      # its own recopy is queued or running; let it finish
                 receipt = queue.move_record(mover_key)
                 if receipt is not None and (
@@ -6322,14 +6322,13 @@ def reclaim_failed_mover_partials(
                     continue      # names nothing readable: nothing to evict
                 if not fragment["entries"]:
                     continue
-                if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
-                        or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, egress_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, egress_key)))):
                     asked.add(mover_key)
                     continue      # already asked; asking again would double the row
-                if (queue.records.item_path(pool.record_store.DONE, egress_key).exists()
-                        or queue.records.item_path(pool.record_store.FAILED, egress_key).exists()
-                        or queue.records.item_path(pool.record_store.WITHDRAWN, egress_key).exists(
-                        )):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.DONE, egress_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.FAILED, egress_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.WITHDRAWN, egress_key)))):
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
                 reading = readers.get(mover_key)
@@ -6427,7 +6426,7 @@ def _advance_wants(queue: pool.PoolQueue,
                          if mover_role == "ram_mover_row"
                          else residency_plan.stage_mover_keys(plan))
             rowed = [key for key in role_keys
-                     if queue.records.item_path(pool.record_store.READY, str(key)).exists()]
+                     if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, str(key))))]
         except (OSError, pool.PoolContractError, ValueError) as exc:
             unknown.append({
                 "consumer": key, "tier_id": tier_id, "leg": mover_role,
@@ -7183,7 +7182,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             "reserved", "transferring")):
                     target_fence_live = True
             try:
-                mover_rowed = queue.records.item_path(pool.record_store.READY, mover).exists()
+                mover_rowed = bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover)))
             except (OSError, pool.PoolContractError) as exc:
                 unknown_consumers.add((key, tier_id))
                 events.append({"event": "advance-deferred-unknown-evidence",
@@ -7389,8 +7388,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 if str(leg["mover_action_key"]) in want["staged"]:
                     continue
                 try:
-                    if queue.records.item_path(
-                            pool.record_store.DONE, str(leg["egress_action_key"])).exists():
+                    if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.DONE, str(leg["egress_action_key"])))):
                         continue
                 except (OSError, pool.PoolContractError) as exc:
                     prior_unknown = exc
@@ -7748,11 +7746,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
 def _settle_live_row(queue: pool.PoolQueue,
                      mover: str) -> dict[str, object] | None:
     """One live ready or claimed row, or None when the key has none."""
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        row = pool.read_queue_record(queue.records.item_path(state, mover))
-        if isinstance(row, Mapping):
-            return dict(row)
-    return None
+    row = pool.record_store.value_or_raise(queue.records.ready_first_live_row(mover))
+    return dict(row) if isinstance(row, Mapping) else None
 
 
 def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
@@ -7835,10 +7830,9 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 return events
             try:
                 live_row = _settle_live_row(queue, mover)
-                terminal = (queue.records.item_path(pool.record_store.DONE, mover).exists()
-                            or queue.records.item_path(pool.record_store.FAILED, mover).exists()
-                            or queue.records.item_path(
-                                pool.record_store.WITHDRAWN, mover).exists())
+                terminal = (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.DONE, mover)))
+                            or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.FAILED, mover)))
+                            or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.WITHDRAWN, mover))))
             except (OSError, pool.PoolContractError) as exc:
                 events.append({"event": "advance-deferred-unknown-evidence",
                                "consumer": consumer, "tier_id": str(tier_id),
@@ -7873,7 +7867,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         # A terminal file that exists but cannot be read
                         # may bind this fence: defer, do not free.
                         try:
-                            if queue.records.item_path(_state, mover).exists():
+                            if bool(pool.record_store.value_or_raise(queue.records.item_presence(_state, mover))):
                                 proof_unknown = exc
                                 break
                         except (OSError, pool.PoolContractError) as exc2:
@@ -7887,7 +7881,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         # unproved -- it may be this attempt's own torn
                         # binding, so it defers like any unreadable one.
                         try:
-                            if queue.records.item_path(_state, mover).exists():
+                            if bool(pool.record_store.value_or_raise(queue.records.item_presence(_state, mover))):
                                 proof_reason = (
                                     f"terminal proof present but empty: "
                                     f"{queue.records.item_path(_state, mover)}")
@@ -8259,12 +8253,11 @@ def _settle_protected(queue: pool.PoolQueue,
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
                 try:
-                    terminal = (queue.records.item_path(pool.record_store.DONE, mover).exists()
-                                or queue.records.item_path(pool.record_store.FAILED, mover).exists()
-                                or queue.records.item_path(
-                                    pool.record_store.WITHDRAWN, mover).exists())
-                    rowed = (queue.records.item_path(pool.record_store.READY, mover).exists()
-                             or queue.records.item_path(pool.record_store.CLAIMED, mover).exists())
+                    terminal = (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.DONE, mover)))
+                                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.FAILED, mover)))
+                                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.WITHDRAWN, mover))))
+                    rowed = (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover)))
+                             or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover))))
                 except (OSError, pool.PoolContractError):
                     continue
                 bound = (record.get("tokens") if isinstance(record, dict)
@@ -8878,8 +8871,7 @@ def publish_landing_expectations(
                 # Error-visible: a holder this cannot list falls through to
                 # the plain unpublished label rather than a guess.
                 finished: str | None = None
-                if state is None and not superseded and queue.records.item_path(
-                        pool.record_store.DONE, mover).exists():
+                if state is None and not superseded and bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.DONE, mover))):
                     try:
                         finished = ("done-not-resident" if pool.held_names_visible(
                             queue.tier_ledger(tier_id), mover) else "evicted")
@@ -8958,7 +8950,7 @@ def publish_landing_expectations(
                         row["deferred_by"] = deferred
                     ranges.append(row)
                     continue
-                failed = queue.records.item_path(pool.record_store.FAILED, mover).exists()
+                failed = bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.FAILED, mover)))
                 if superseded:
                     row.update({"state": "terminal-no-receipt",
                                 "waiting_for": "nothing: the plan is superseded, "
@@ -9447,8 +9439,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 entry.get("chunk_index"))
             if isinstance(egress_row, Mapping):
                 egress_key = str(egress_row["action_key"])  # type: ignore[index]
-                if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
-                        or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, egress_key)))
+                        or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, egress_key)))):
                     # A reclaim published this leg's egress and it has not
                     # run yet (#627).  The egress frees device bytes, not
                     # ledger tokens, so the window would otherwise republish
@@ -9569,8 +9561,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         for entry in decision["evict"]:
             row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
-            if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
-                    or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
+            if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, egress_key)))
+                    or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, egress_key)))):
                 continue      # already asked; asking again would double the row
             sharers = readers_of.get(str(entry["mover_action_key"]))
             if (sharers is not None and set(sharers[1]) - {key}
@@ -9656,7 +9648,7 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
             continue
         for key in sorted(keys):
             try:
-                if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
+                if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key))):
                     continue
                 rates = {kind: count
                          for kind, count in ledger.holder_tokens(key).items()
