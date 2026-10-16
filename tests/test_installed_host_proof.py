@@ -156,10 +156,13 @@ def test_installed_rule_owner_is_required_with_a_retained_real_marker(
 
 
 @pytest.mark.parametrize("kind", ["worker-owned", "worker-writable", "trusted"])
+@pytest.mark.parametrize("generation", ["historical", "current"])
 def test_fresh_consumer_rejects_unsafe_rule_owner_after_real_failed_transaction_rollback(
-        host_publication, parked_role, kind):
+        host_publication, parked_role, kind, generation):
     _, install, state, _, backend_path, _ = host_publication
-    leaf, retained = _retain_proof(host_publication, kind)
+    retain = _retain_proof if generation == "historical" else _retain_current_proof
+    leaf, retained = retain(host_publication, kind)
+    retained_sha256 = STRICT_PROOF_SHA256 if generation == "historical" else _sha(retained)
     previous_reader = (install / "upgrade_client.py").read_bytes()
     backend = json.loads(backend_path.read_text())
     backend["fail_new_health"] = True
@@ -170,14 +173,14 @@ def test_fresh_consumer_rejects_unsafe_rule_owner_after_real_failed_transaction_
         assert reader.message() == {"bridge_cut": "restore-updater-after-replace", "phase": "recover"}
         transaction = json.loads((state / "transaction.json").read_text())
         assert "broker did not become healthy while drained" in transaction["error"]
-        assert transaction["previous"]["park_proof.py"] == STRICT_PROOF_SHA256
+        assert transaction["previous"]["park_proof.py"] == retained_sha256
         uid, gid, mode = PRIOR_FILES[kind]
         assert transaction["previous_proof_file"] == {"uid": uid, "gid": gid, "mode": mode}
         assert (state / "previous/park_proof.py").read_bytes() == retained
         assert leaf.read_bytes() == retained and _file_facts(leaf) == PRIOR_FILES[kind]
         restored = json.loads(restored_metadata.read_text())
         assert (restored["uid"], restored["gid"], restored["mode"]) == PRIOR_FILES[kind]
-        assert restored["sha256"] == STRICT_PROOF_SHA256
+        assert restored["sha256"] == retained_sha256
         assert (install / "upgrade_client.py").read_bytes() == previous_reader
         reader.kill()
     recovered = _fresh(host_publication)
@@ -195,10 +198,12 @@ def test_fresh_consumer_rejects_unsafe_rule_owner_after_real_failed_transaction_
         observed = _observe(host_publication, authority, selected)
         assert marker.read_bytes() == b""
         assert leaf.read_bytes() == retained and _file_facts(leaf) == PRIOR_FILES[kind]
-        assert observed["result"]["drained"] is False, {
-            "invariant": "restoring historical bytes does not establish a current physical-proof owner",
-            "kind": kind, "facts": _file_facts(leaf), "observed": observed}
-        assert observed["result"]["evidence_errors"]
+        expected = generation == "current" and kind == "trusted"
+        assert observed["result"]["drained"] is expected, {
+            "invariant": "rollback must restore a capable proof owner with its original trust",
+            "generation": generation, "kind": kind, "facts": _file_facts(leaf),
+            "observed": observed}
+        assert bool(observed["result"].get("evidence_errors")) is (not expected)
 
 
 @pytest.mark.parametrize("fault", [

@@ -5,7 +5,7 @@
       "tests/test_park_proof_real_writer.py": 20,
       "tests/test_required_park_identity.py": 25,
       "tests/test_park_epoch_injectivity.py": 15,
-      "tests/test_installed_host_proof.py": 13,
+      "tests/test_installed_host_proof.py": 16,
       "tests/test_client_proof_prior_trust.py": 8,
       "tests/test_client_proof_metadata.py": 22,
       "tests/test_client_proof_current_trust.py": 3,

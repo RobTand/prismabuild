@@ -75,11 +75,20 @@ def test_a_one_shot_run_by_hand_is_still_a_process_that_can_claim():
 
 
 def test_both_proof_profiles_cover_the_supervised_work_and_storage_roles():
+    import ast
+    from client_proof_bridge_fixture import INSTALLED_READER
     from supervise import LOOP_SCRIPT, ROLE_SCRIPTS
 
     expected = {LOOP_SCRIPT, "worker.py", *ROLE_SCRIPTS.values()} - {"pbmetrics.py"}
     assert park_proof.HOST_QUIESCENT == expected
     assert park_proof.MEMBER_LOOPS == expected
+    observer = next(node for node in ast.walk(ast.parse(INSTALLED_READER))
+                    if isinstance(node, ast.FunctionDef) and node.name == "selected_census")
+    names = next(node.value for node in observer.body
+                 if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "names"
+                         for target in node.targets))
+    assert ast.literal_eval(names) == expected
 
 
 def test_the_key_comes_from_the_gate_the_broker_actually_wrote(tmp_path):
