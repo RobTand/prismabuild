@@ -47,7 +47,7 @@ def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
     path = queue.records.passes_path(key)
     first = json.loads(path.read_text())["first_unix"]
     reads = []
-    original = pool.record_store.read_queue_record
+    original = pool.record_store._read_json
 
     def record(candidate):
         if candidate == path:

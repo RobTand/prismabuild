@@ -39,7 +39,7 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     keys = [publish(f"reuse-candidate-{index}", priority=-10,
                     cpu=2, gpu=0, mem_gb=16)
             for index in range(CANDIDATES)]
-    records = [pool.record_store.require(queue.records.item(pool.record_store.READY, key)) for key in keys]
+    records = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)) for key in keys]
 
     scans: list[int] = []
     real_census = reservation.CensusReader._census

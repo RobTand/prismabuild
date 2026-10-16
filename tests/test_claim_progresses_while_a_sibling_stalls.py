@@ -160,7 +160,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
     """The fixed topology is not changing headroom; reading it needs no gate."""
     rig.ledger().configure_cpu_tiers(TIERS)
     entered, release = threading.Event(), threading.Event()
-    original = pool.record_store.read_queue_record
+    original = pool.record_store._read_json
     outcome = {}
 
     def stalled_read(path, **kwargs):
@@ -195,7 +195,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
 
 def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool.record_store.read_queue_record
+    original = pool.record_store._read_json
     reads = []
 
     def checked_read(path, **kwargs):
@@ -227,7 +227,7 @@ def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
 
 def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool.record_store.read_queue_record
+    original = pool.record_store._read_json
     descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
     entered = []
 

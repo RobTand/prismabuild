@@ -45,7 +45,7 @@ def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tm
                for e in events), events
     assert queue.records.item_path(base.pool.record_store.READY, low).exists(), (
         'CLAIMED rolling window with retired original lead established a new-admission barrier', events)
-    row = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, low))
+    row = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, low))
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='small-qualifier',
                           capacity={'cpu': 4, 'mem_gb': 4})
     assert claimed and claimed['action_key'] == low
