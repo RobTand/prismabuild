@@ -290,6 +290,20 @@ def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
             before = pending.pop(descriptor)
             os.replace(incoming, path)
             after = os.fstat(descriptor)
+            # ZFS can retain ctime across rename; this fixture requires an
+            # actual ctime-only race, independent of rename's timestamp policy.
+            deadline = time.monotonic() + 1.0
+            while after.st_ctime_ns == before.st_ctime_ns:
+                os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+                after = os.fstat(descriptor)
+                if after.st_ctime_ns != before.st_ctime_ns:
+                    break
+                assert time.monotonic() < deadline, "fixture could not change ctime"
+                time.sleep(0.001)
+            assert (before.st_dev, before.st_ino, before.st_size, before.st_mode,
+                    before.st_uid, before.st_gid, before.st_mtime_ns, before.st_nlink) == (
+                        after.st_dev, after.st_ino, after.st_size, after.st_mode,
+                        after.st_uid, after.st_gid, after.st_mtime_ns, after.st_nlink)
             observations.append({
                 "ctime": (before.st_ctime_ns, after.st_ctime_ns),
                 "mtime": (before.st_mtime_ns, after.st_mtime_ns),
