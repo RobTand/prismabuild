@@ -63,7 +63,7 @@ def _pbrun_env(tmp_path: Path, queue, monkeypatch) -> Path:
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path)
 

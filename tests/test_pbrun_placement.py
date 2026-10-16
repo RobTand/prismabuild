@@ -1739,7 +1739,7 @@ def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
     # and IPC under suite load, and the read timeout's exit (74) is not this
     # test's subject; the sealed action it reads is unaffected (#822).
     with mock.patch.object(pbrun, "SH", root), \
-         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--here",
@@ -1985,7 +1985,7 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     # the read timeout's 74 is not what this test asserts (#822).
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
-         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
              mock.patch.object(socket, "gethostname", return_value=HOST), \
              mock.patch.object(sys, "argv",
                                ["pbrun.py", "--cwd", str(work), "--here",
@@ -2031,7 +2031,7 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
     # accepted-and-unclaimed 75 into the read timeout's 74 (#822).
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
-         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--tag", "x86",
@@ -2114,7 +2114,7 @@ def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
     with mock.patch.object(pbrun, "SH", tmp_path), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
-         mock.patch.object(pbrun, "POLL_S", 0.001), \
+         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--anywhere",
                             "--tag", "x86", "--wait-s", "0.01",

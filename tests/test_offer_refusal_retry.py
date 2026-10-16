@@ -247,7 +247,7 @@ def test_offer_discovery_retries_end_at_the_campaign_deadline(monkeypatch):
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", poll)
     monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(pbcampaign.time, "sleep", sleep)
-    monkeypatch.setattr(pbcampaign.pbrun, "POLL_S", 1.0)
+    monkeypatch.setattr(pbcampaign.pbrun.action_wait, "POLL_S", 1.0)
 
     submissions, waited = pbcampaign.run_windowed(
         [{"index": 0}, {"index": 1}], transport="pool", max_inflight=2, wait_s=5,

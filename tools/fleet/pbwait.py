@@ -42,7 +42,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import endings  # noqa: E402
+from prismabuild import action_wait, endings  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 import pbrun  # noqa: E402
@@ -72,7 +72,7 @@ PREFIX_RESOLUTION_READ_TIMEOUT_S = 5.0
 #: synchronous pool wait.  This is a reader budget, not ``--wait-s``: it limits
 #: one read-only submission/CAS/outcome observation or one immutable-summary
 #: verification while the parent retains the run identity and any SLURM work.
-PBWAIT_READ_TIMEOUT_S = pbrun.OUTCOME_READ_TIMEOUT_S
+PBWAIT_READ_TIMEOUT_S = action_wait.OUTCOME_READ_TIMEOUT_S
 
 _COLUMNS = (
     ("key", "key"),
@@ -164,12 +164,12 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
     if not text:
         raise _misnamed("pbwait: an empty key resolves to nothing")
     try:
-        found = set(pbrun._bounded_pool_read(
+        found = set(action_wait.bounded_read(
             "pbwait prefix resolution",
             lambda: _prefix_candidates(q, text, lane_root=lane_root),
             budget_s=PREFIX_RESOLUTION_READ_TIMEOUT_S,
         ))
-    except (pbrun.OutcomeReadUnavailable, OSError) as exc:
+    except (action_wait.OutcomeReadUnavailable, OSError) as exc:
         raise _prefix_unavailable(str(exc)) from None
     if not found:
         raise _misnamed(
@@ -217,7 +217,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
             "generation": next_generation,
             **pbrun.encode_outcome_ending(landed),
         }
-    except pbrun.UnreadableTerminal as exc:
+    except action_wait.UnreadableTerminal as exc:
         # Keep the already selected generation with an unreadable record. The
         # parent needs it to decide whether this is the recorded SLURM run it
         # may repair; pbrun's public helper intentionally only needs the error.
@@ -271,14 +271,14 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
     identity on every later observation.
     """
 
-    value = pbrun._bounded_pool_read(
+    value = action_wait.bounded_read(
         "pbwait observation",
         lambda: _bounded_observation_value(
             q, key, cas, generation, lane_root=lane_root),
         budget_s=PBWAIT_READ_TIMEOUT_S,
     )
     if not isinstance(value, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid payload")
     raw_found = value.get("found")
     if raw_found is None:
@@ -293,45 +293,45 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
             raw_found["submission"],
         )
     else:
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid submission")
     raw_outcome = value.get("outcome")
     if not isinstance(raw_outcome, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid outcome")
     unreadable = raw_outcome.get("unreadable")
     if unreadable is not None:
         if (not isinstance(unreadable, dict)
                 or not isinstance(unreadable.get("path"), str)
                 or not isinstance(unreadable.get("reason"), str)):
-            raise pbrun.OutcomeReadUnavailable(
+            raise action_wait.OutcomeReadUnavailable(
                 "pbwait observation returned an invalid unreadable ending")
         unreadable = Path(unreadable["path"]), unreadable["reason"]
     next_generation = raw_outcome.get("generation")
     if (next_generation is not None
             and (not isinstance(next_generation, (int, float))
                  or isinstance(next_generation, bool))):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid generation")
     landed = pbrun.decode_outcome_ending(q, key, next_generation, raw_outcome)
     action = value.get("action")
     if action is not None and not isinstance(action, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid sealed action")
     receipt_published = value.get("receipt_published")
     if not isinstance(receipt_published, bool):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid receipt result")
     observed_generation = value.get("observed_generation")
     if (observed_generation is not None
             and (not isinstance(observed_generation, (int, float))
                  or isinstance(observed_generation, bool))):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid observed generation")
     if isinstance(landed, endings.PublicationSupersession):
         expected = generation if generation is not None else found[1] if found else None
         if next_generation != observed_generation or next_generation != expected:
-            raise pbrun.OutcomeReadUnavailable("publication supersession changed the watched generation")
+            raise action_wait.OutcomeReadUnavailable("publication supersession changed the watched generation")
     return found, landed, (
         float(next_generation) if next_generation is not None else None
     ), action, receipt_published, unreadable, (
@@ -482,12 +482,12 @@ def wait_one(
             now = time.monotonic()
             if now < deadline:
                 if last_notice is None or now - last_notice >= \
-                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
+                        action_wait.UNAVAILABLE_NOTICE_INTERVAL_S:
                     last_notice = now
                     print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
                           f"{unavailable_count} consecutive unavailable read(s), "
                           "retrying inside --wait-s", file=sys.stderr, flush=True)
-                time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
+                time.sleep(max(0.0, min(action_wait.POLL_S, deadline - time.monotonic())))
                 continue
             if deadline > entered:
                 row = dict(row, note=(
@@ -501,13 +501,13 @@ def wait_one(
             # no second reader starts beside it.  Past the deadline this is
             # one non-blocking reap, and the row goes back as it is.
             unavailable_count += 1
-            still, waited_s = pbrun.wait_out_retained_readers(
+            still, waited_s = action_wait.wait_out_retained_readers(
                 row["retained_readers"], deadline, tool="pbwait",
                 subject=key[:12])
             now = time.monotonic()
             if not still and now < deadline:
                 if last_notice is None or now - last_notice >= \
-                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
+                        action_wait.UNAVAILABLE_NOTICE_INTERVAL_S:
                     last_notice = now
                     print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
                           "the reader has exited and was reaped, "
@@ -549,7 +549,7 @@ def wait_one(
             )
         # Read on each pass rather than captured: a test that shortens the
         # interval sets it on the module.
-        time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
+        time.sleep(max(0.0, min(action_wait.POLL_S, deadline - time.monotonic())))
 
 
 def _look_once(q, key: str, *, cas, **kwargs):
@@ -557,16 +557,16 @@ def _look_once(q, key: str, *, cas, **kwargs):
 
     try:
         return _look_once_checked(q, key, cas=cas, **kwargs)
-    except pbrun.UnreadableTerminal as exc:
+    except action_wait.UnreadableTerminal as exc:
         return _row(
             key, "unreadable", note=str(exc))
-    except pbrun.OutcomeObservationTimedOut as exc:
+    except action_wait.OutcomeObservationTimedOut as exc:
         # The reader ran out of budget and was killed and reaped, so no
         # earlier reader remains for a later read to race. The row is marked
         # so that ``wait_one`` and a ``pbcampaign`` window can look again
         # while their deadline lasts; at the deadline it stays exit 74.
         return _row(key, "record_error", note=str(exc), observation_timed_out=True)
-    except pbrun.OutcomeReaderRetained as exc:
+    except action_wait.OutcomeReaderRetained as exc:
         # The reader timed out and is still in the kernel.  ``wait_one`` (and
         # a ``pbcampaign`` window) waits it out before any later read, and the
         # row carries it by PID and starttime so they can (#1048).
@@ -576,7 +576,7 @@ def _look_once(q, key: str, *, cas, **kwargs):
         # Other integrity failures have no verified diagnostic. Refuse this
         # key without rereading evidence or aborting the other keys (#1351).
         return _row(key, "record_error", note=str(exc))
-    except pbrun.OutcomeReadUnavailable as exc:
+    except action_wait.OutcomeReadUnavailable as exc:
         # A failed child, or one that delivered and was not reaped, is the
         # exact reader a later diagnostic read would race.  Refuse this key
         # without another shared-filesystem observation, lookup, or record

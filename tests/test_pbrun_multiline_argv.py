@@ -52,7 +52,7 @@ def _work_and_queue(tmp_path: Path) -> tuple[Path, pool.PoolQueue]:
 
 def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path) -> int:
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     # ``--wait-s 0`` is one immediate observation with the standard bounded
     # reader budget.  A subsecond caller deadline races bounded-reader startup

@@ -117,7 +117,7 @@ def _prepare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, objec
     _announce_tier(queue, mountpoint=tmp_path / "stage")
 
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01",

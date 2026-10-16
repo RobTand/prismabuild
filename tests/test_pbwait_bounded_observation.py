@@ -109,7 +109,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
 ) -> None:
     queue = _queue(tmp_path)
     queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
-    real_read = pbrun._bounded_pool_read
+    real_read = pbrun.action_wait.bounded_read
 
     def short_verification(section, read, *, budget_s, **kwargs):
         # Only the verification is meant to time out. The observation before
@@ -121,7 +121,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
     def blocked(*_args, **_kwargs):
         time.sleep(30)
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
@@ -261,7 +261,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
         try:
             return read()
         except _BlockedRead:
-            raise pbrun.OutcomeObservationTimedOut(
+            raise pbrun.action_wait.OutcomeObservationTimedOut(
                 f"{section} timed out after {budget_s}s") from None
 
     real_wait_one = pbwait.wait_one
@@ -273,7 +273,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
         return row
 
     monkeypatch.setattr(pbwait, "outstanding", outstanding)
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", inline_reader)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", inline_reader)
     monkeypatch.setattr(pbwait, "wait_one", observed_wait_one)
     # Zero patience: the blocked key's single timed-out read is its row. A
     # patient wait would retry it until the deadline (#558).
@@ -299,7 +299,7 @@ def test_reader_setup_failure_never_retries_reads_in_the_parent(
     def forbidden(*_args, **_kwargs):
         pytest.fail("reader setup failure must not retry shared reads")
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", setup_failed)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", setup_failed)
     monkeypatch.setattr(pbwait, "outstanding", forbidden)
     monkeypatch.setattr(pbwait, "recorded_action", forbidden)
     row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)

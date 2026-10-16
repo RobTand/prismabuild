@@ -138,7 +138,7 @@ def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
         record.unlink()
         record.write_text(json.dumps(_ending()), encoding="utf-8")
 
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(
         monkeypatch, release_at=time.monotonic() + 2.0, on_release=land)
@@ -169,8 +169,8 @@ def test_a_long_wait_on_a_retained_reader_is_not_silent(
         record.unlink()
         record.write_text(json.dumps(_ending()), encoding="utf-8")
 
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.3)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.3)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(
         monkeypatch, release_at=time.monotonic() + 1.5, on_release=land)
@@ -192,13 +192,13 @@ def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
         started = time.monotonic()
         assert pbrun.await_outcome(queue, KEY, wait_s=1.0) == pbrun.RECORD_WRITE_FAILED_EXIT
-        assert time.monotonic() - started < 1.0 + pbrun.POLL_S
+        assert time.monotonic() - started < 1.0 + pbrun.action_wait.POLL_S
         err = capsys.readouterr().err
         assert "still retained when --wait-s ran out" in err
         assert f'"pid": {readers.forked[0]}' in err
@@ -212,9 +212,9 @@ def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
 def test_a_retained_reader_is_its_own_exception_and_still_unavailable() -> None:
     """Every ``except OutcomeReadUnavailable`` keeps catching it (exit 74)."""
 
-    exc = pbrun.OutcomeReaderRetained("stuck", [{"pid": 1, "starttime_ticks": 2}])
-    assert isinstance(exc, pbrun.OutcomeReadUnavailable)
-    assert not isinstance(exc, pbrun.OutcomeObservationTimedOut)
+    exc = pbrun.action_wait.OutcomeReaderRetained("stuck", [{"pid": 1, "starttime_ticks": 2}])
+    assert isinstance(exc, pbrun.action_wait.OutcomeReadUnavailable)
+    assert not isinstance(exc, pbrun.action_wait.OutcomeObservationTimedOut)
     assert exc.retained == [{"pid": 1, "starttime_ticks": 2}]
 
 
@@ -329,10 +329,10 @@ def test_a_retained_verification_reader_is_waited_out_too(
         return real_render(q, outcome_path, outcome)
 
     monkeypatch.setattr(pbrun, "_outcome_render_value", render)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.5)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.5)
     # Every unavailable read is reported, so what the wait says does not
     # depend on which read came first inside a notice interval.
-    monkeypatch.setattr(pbrun, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(pbrun.action_wait, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.0)
     readers = Readers(monkeypatch)
     held = {"from": None, "pid": None, "reaps": 0}
     # pbstatus's own reap after its kill, then the wait's first look: both
@@ -398,7 +398,7 @@ def test_a_reader_reaped_at_the_deadline_starts_no_new_read(
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     started = time.monotonic()
     _hold_one_reader(monkeypatch, readers, index=0, release_at=started + 0.9)
@@ -429,9 +429,9 @@ def test_the_retained_reader_notice_keeps_its_interval(
         record.write_text(json.dumps(_ending()), encoding="utf-8")
 
     interval = 0.3
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.02)
-    monkeypatch.setattr(pbrun, "UNAVAILABLE_NOTICE_INTERVAL_S", interval)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.02)
+    monkeypatch.setattr(pbrun.action_wait, "UNAVAILABLE_NOTICE_INTERVAL_S", interval)
     readers = Readers(monkeypatch)
     started = time.monotonic()
     _kernel_holds_the_reader_until(
@@ -459,8 +459,8 @@ def test_the_read_after_a_reap_waits_out_the_poll_interval(
         record.unlink()
         record.write_text(json.dumps(_ending()), encoding="utf-8")
 
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun, "POLL_S", 1.0)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 1.0)
     readers = Readers(monkeypatch)
     _hold_one_reader(monkeypatch, readers, index=0,
                      release_at=time.monotonic() + 0.1, on_release=land)
@@ -480,7 +480,7 @@ def test_the_final_74_states_the_seconds_and_the_host_once(
 
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
@@ -534,8 +534,8 @@ def test_a_waiting_client_names_its_retained_reader_once_not_per_read(
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
-        with pytest.raises(pbrun.OutcomeReaderRetained) as raised:
-            pbrun._bounded_pool_read("pool outcome observation",
+        with pytest.raises(pbrun.action_wait.OutcomeReaderRetained) as raised:
+            pbrun.action_wait.bounded_read("pool outcome observation",
                                      fifo.read_bytes, budget_s=0.05)
         assert f'"pid": {readers.forked[0]}' in str(raised.value)
         assert "pbstatus: retained reader" not in capsys.readouterr().err

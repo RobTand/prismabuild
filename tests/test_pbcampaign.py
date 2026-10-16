@@ -35,7 +35,7 @@ def fleet_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point every tool at one private fleet, as the boxes share one for real."""
 
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 

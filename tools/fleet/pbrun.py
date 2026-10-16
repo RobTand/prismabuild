@@ -47,7 +47,6 @@ from __future__ import annotations
 import argparse
 import bisect
 import contextlib
-import contextvars
 import getpass
 import hashlib
 import inspect
@@ -86,7 +85,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import endings  # noqa: E402
+from prismabuild import action_wait, endings  # noqa: E402
 from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
@@ -104,7 +103,6 @@ from prismabuild.record_store import (  # noqa: E402
 
 FLEET_ROSTER_PATH = fleet_roster.Roster.beside(__file__)
 
-POLL_S = 5.0
 #: Which transport carries a submission.  The pull queue is still the default:
 #: SLURM is installed box by box, and the day a controller comes up is not the
 #: day every agent's ``pbrun`` should start talking to it.  Cutover is one
@@ -136,16 +134,6 @@ RECORDED_OFFER_MAX_AGE_S = float("inf")
 #: This is intentionally not a user flag: it is a control-plane safety bound,
 #: not an execution policy the action can sensibly choose.
 SUBMISSION_OFFER_READ_TIMEOUT_S = 5.0
-#: A synchronous pool wait may spend this much on one read-only observation.
-#: This is deliberately separate from ``--wait-s``: the latter is the caller's
-#: patience for an outcome to land, while a hard shared-filesystem read needs a
-#: finite process boundary even for a non-blocking probe or for verification of
-#: an outcome that has already landed.
-OUTCOME_READ_TIMEOUT_S = 5.0
-#: A patient wait retries an observation whose reader timed out and was reaped.
-#: In a shared-filesystem stall that can happen at every poll for hours, so the
-#: stderr notice about it is printed at most this often.
-UNAVAILABLE_NOTICE_INTERVAL_S = 60.0
 #: Detached repeats discover a prior submission before publishing anything.
 #: This read is independent of caller patience and execution deadlines.
 ATTACHMENT_READ_TIMEOUT_S = 5.0
@@ -1794,7 +1782,6 @@ def placement_contract(
     return ([hostname] if requirements else []), requirements, command, bound_caller
 
 
-
 def is_box_local(cwd: Path) -> bool:
     """Does this path exist on exactly one box?
 
@@ -2811,15 +2798,6 @@ def published_generation(q, key: str, path) -> float | None:
     return None
 
 
-class UnreadableTerminal(ValueError):
-    """A published ending exists but cannot supply a verdict."""
-
-    def __init__(self, path: Path, reason: str):
-        self.path = path
-        self.reason = reason
-        super().__init__(f"{reason}: {path}")
-
-
 def terminal_record(
     path: Path, generation: float | None, *, report_unreadable: bool = False,
 ):
@@ -2860,11 +2838,11 @@ def terminal_record(
         if report_unreadable:
             reason = (str(exc.strerror or type(exc).__name__).lower()
                       if isinstance(exc, OSError) else "not valid JSON")
-            raise UnreadableTerminal(path, reason) from exc
+            raise action_wait.UnreadableTerminal(path, reason) from exc
         return None
     if not isinstance(record, dict):
         if report_unreadable:
-            raise UnreadableTerminal(path, "not a JSON object")
+            raise action_wait.UnreadableTerminal(path, "not a JSON object")
         return None
     if generation is None:
         return record
@@ -2940,13 +2918,13 @@ def outcome_poll(
         try:
             record = terminal_record(
                 path, generation, report_unreadable=report_unreadable)
-        except UnreadableTerminal as exc:
+        except action_wait.UnreadableTerminal as exc:
             broken.append(exc)
             continue
         if record is not None:
             try:
                 _require_execution_ending(record, where=str(path))
-            except OutcomeReadUnavailable as exc:
+            except action_wait.OutcomeReadUnavailable as exc:
                 publication_errors.append(exc)
             else:
                 found.append((path, record))
@@ -2966,7 +2944,7 @@ def outcome_poll(
             try:
                 publication = q.publication_ending(key, generation=answer.generation)
             except (OSError, pb.PrismaBuildError) as exc:
-                raise OutcomeReadUnavailable(f"unavailable publication ending: {exc}") from exc
+                raise action_wait.OutcomeReadUnavailable(f"unavailable publication ending: {exc}") from exc
             capture = replace(capture, publication=publication)
         elif isinstance(answer, endings.PreemptionInputs):
             capture = replace(capture, successor=_read_preemption_successor(
@@ -3020,219 +2998,14 @@ def landed_outcome(
         # interval finding out that it had none to spend.
         if time.monotonic() >= deadline:
             return None
-        time.sleep(POLL_S)
-
-
-class OutcomeReadUnavailable(RuntimeError):
-    """A bounded pool outcome read did not return a trustworthy result."""
+        time.sleep(action_wait.POLL_S)
 
 
 def _require_execution_ending(record: Mapping[str, object], *, where: str) -> None:
     if (record.get("status") == "superseded"
             or record.get("schema") == pool.PUBLICATION_SUPERSEDED_SCHEMA_V1):
-        raise OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             f"publication evidence cannot supply an execution ending: {where}")
-
-
-class OutcomeObservationTimedOut(OutcomeReadUnavailable):
-    """A bounded read ran out of budget, and its reader was killed and reaped.
-
-    This is the one unavailable read that a caller with patience left may
-    repeat at once. No reader is left behind, so the next reader cannot race an
-    earlier one. A reader that failed and an invalid reply stay plain
-    ``OutcomeReadUnavailable`` and end the wait; a timed-out reader that could
-    not be reaped yet is :class:`OutcomeReaderRetained`. Every existing
-    ``except OutcomeReadUnavailable`` also catches both subclasses, so a caller
-    that does not retry keeps its exit 74.
-    """
-
-
-class OutcomeNotYetVisible(OutcomeObservationTimedOut):
-    """A landed ending's attempt record is listed but not visible here yet.
-
-    The reader raised ``pool.StaleAbsenceError``: every directory on the
-    record's canonical path lists it, and this box's NFS client still answers
-    ``ENOENT`` from a lookup it cached before the record was created (#1100).
-    The reader exited and was reaped, so a caller with patience left repeats
-    the read exactly as it repeats a reaped timeout; at zero patience, or at
-    the deadline, it stays exit 74.  A record that no listing shows is not
-    this error, and it still ends the wait at once.
-    """
-
-
-class OutcomeReaderRetained(OutcomeReadUnavailable):
-    """A bounded read ran out of budget, and its reader is still in the kernel.
-
-    The reader was sent SIGKILL and has not exited: a read on a hard NFS mount
-    finishes its RPC before the signal lands. It is this process's own child,
-    so ``waitpid`` reaps it the moment that read returns. ``retained`` names
-    it by PID and ``starttime`` exactly as ``pbstatus`` recorded it.
-
-    A caller with patience left waits for that exit and then reads again
-    (#1033), so no second reader ever starts beside it. Before #1033 this ended
-    the wait with 74 even with hours of ``--wait-s`` left: four shards of one
-    broad ``pbtest`` run read red while their actions had landed rc 0.
-    """
-
-    def __init__(self, message: str, retained: list[dict]) -> None:
-        super().__init__(message)
-        self.retained = [dict(child) for child in retained]
-
-
-def _bounded_pool_read(section: str, read, *, budget_s: float,
-                       use_delivered_snapshot: bool = False):
-    """Return one pool reader's value or raise without continuing a wait.
-
-    A reader retained without delivering a payload is unsafe to ignore: its
-    exit and resources are no longer known, and it is the exact reader a later
-    poll would otherwise race with. Refuse before launching another reader,
-    naming its PID/starttime pair in the error so an operator can identify it.
-
-    A reader retained *after* delivering its payload is a different event, and
-    only the outcome path opts into treating it that way
-    (``use_delivered_snapshot``).  EOF on the pipe is the proof the payload is
-    whole, and the child holds nothing but that pipe (``_isolate_child_fds``
-    closed everything else before the section ran, so no lock or descriptor
-    survives it).  The reap grace is 0.25 s, and a parent starved of CPU under
-    load misses it with the data already in hand -- which is #630, three
-    finished shards reported unobserved for actions already in ``done/``.
-    Discarding a complete, valid payload over a scheduling artifact is the
-    bug; the outcome path returns it.  A later poll then runs a new
-    independent read-only child, which is safe here because the retained one
-    can deliver nothing more: its pipe is closed and ``outcome_poll`` mutates
-    no queue state.  Every other reader -- attachment discovery, prefix scans,
-    ``pbwait`` -- keeps the strict refusal, because what follows their payload
-    is a scheduler query or a documented ``record_error``, not a printout.
-    """
-
-    abandoned: list[dict] = []
-    # Every refusal below names the retained reader, so ``pbstatus`` need not:
-    # its own line is not throttled, and a waiting client meets a retained
-    # reader once per turn of its wait (#1048).
-    result = pbstatus.bounded(
-        section, read, deadline=pbstatus.Deadline(budget_s), abandoned=abandoned,
-        announce_retained=False)
-    retained = ("; retained reader=" + json.dumps(abandoned, sort_keys=True)
-                if abandoned else "")
-    if result.get("status") == "ok":
-        if abandoned and not use_delivered_snapshot:
-            raise OutcomeReadUnavailable(
-                f"{section} reader could not be reaped{retained}")
-        if abandoned:
-            print(f"pbrun: {section} payload delivered but its reader could "
-                  f"not be reaped on {socket.gethostname()}{retained}; using "
-                  f"the delivered snapshot", file=sys.stderr, flush=True)
-            lingering = _DELIVERED_READERS.get()
-            if lingering is not None:
-                # The waiting caller reaps it later, without blocking, so a
-                # long wait does not collect a zombie per poll (#1048).
-                lingering.extend(abandoned)
-        return result.get("value")
-    if abandoned:
-        if result.get("status") == "timed_out":
-            # Transient, like a reaped timeout, but only once this reader is
-            # gone: the caller that retries waits for it first (#1033).
-            raise OutcomeReaderRetained(
-                f"{section} timed out after {result.get('elapsed_s', budget_s)}s "
-                f"and its reader could not be reaped on "
-                f"{socket.gethostname()}{retained}", abandoned)
-        kind = str(result.get("type") or "RuntimeError")
-        message = str(result.get("error") or "reader failed")
-        raise OutcomeReadUnavailable(
-            f"{section} failed ({kind}: {message}) and its reader could not be "
-            f"reaped on {socket.gethostname()}{retained}")
-    if result.get("status") == "timed_out":
-        # ``abandoned`` is empty here: ``pbstatus._stop_reader`` killed and
-        # reaped this reader (or never started one), so a later read cannot
-        # race it. Only this case is transient.
-        raise OutcomeObservationTimedOut(
-            f"{section} timed out after {result.get('elapsed_s', budget_s)}s")
-    kind = str(result.get("type") or "RuntimeError")
-    message = str(result.get("error") or "reader failed")
-    # These two historical errors remain meaningful to callers of
-    # ``await_outcome`` even though their originating read now lived in a child.
-    if kind in {"PoolContractError", "_TerminalSummaryConflict"}:
-        raise pool.PoolContractError(message)
-    if kind == pool.StaleAbsenceError.__name__:
-        # Listed, not yet visible on this box (#1100); the reader is reaped.
-        raise OutcomeNotYetVisible(f"{section}: {message}")
-    raise OutcomeReadUnavailable(f"{section} failed: {kind}: {message}")
-
-
-def _await_retained_readers(retained: list[dict], deadline: float, *,
-                            on_wait=None) -> list[dict]:
-    """Reap retained readers as they exit, until the deadline. Return the rest.
-
-    Each one is this process's own child (``pbstatus`` forked it), so
-    ``waitpid`` names it exactly and reaps it; a PID that is no longer this
-    process's child is already gone. Nothing new starts meanwhile, which is
-    what keeps a wait to one reader at a time (#1033). The cadence starts at
-    the reap grace ``pbstatus`` already gave the reader and doubles up to the
-    wait's own poll interval; the only bound is the caller's deadline.
-
-    A hung mount can hold a reader for as long as the deadline allows, so the
-    wait is not silent: ``on_wait(alive, waited_s)`` runs once every
-    ``UNAVAILABLE_NOTICE_INTERVAL_S`` while a reader is still retained.
-    """
-
-    alive = [dict(child) for child in retained]
-    delay = pbstatus.KILL_GRACE_S
-    started = last_notice = time.monotonic()
-    while True:
-        alive = [child for child in alive
-                 if not pbstatus._reap_within(int(child["pid"]), 0)]
-        now = time.monotonic()
-        remaining = deadline - now
-        if not alive or remaining <= 0:
-            return alive
-        if on_wait is not None and now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
-            last_notice = now
-            on_wait(alive, now - started)
-        time.sleep(min(delay, remaining))
-        delay = min(delay * 2, POLL_S)
-
-
-def wait_out_retained_readers(retained: list[dict], deadline: float, *,
-                              tool: str, subject: str) -> tuple[list[dict], float]:
-    """Wait out a timed-out reader that could not be reaped, as every client does.
-
-    ``await_outcome``, ``pbwait.wait_one`` and ``pbcampaign``'s window all
-    meet :class:`OutcomeReaderRetained` and must not start a second reader
-    beside the first (#1033, #1048). This is the one wait they share: reap
-    the reader as it exits (:func:`_await_retained_readers`), saying so every
-    ``UNAVAILABLE_NOTICE_INTERVAL_S`` as ``{tool}: {subject} not observed
-    yet``, until the deadline.
-
-    Returns ``(still_retained, waited_s)``. When the reader was reaped, the
-    rest of one ``POLL_S`` is slept first, bounded by the deadline, so a
-    retry after a reap reads no more often than a retry after a reaped
-    timeout does. The caller then reads again only while time is left; a
-    non-empty ``still_retained`` means the deadline came first, and nothing
-    new may start.
-    """
-
-    started = time.monotonic()
-
-    def waiting(alive, waited_s):
-        print(f"{tool}: {subject} not observed yet: its reader is still "
-              f"retained after {waited_s:.0f}s (retained reader="
-              f"{json.dumps(alive, sort_keys=True)}); waiting for it to exit "
-              "before reading again, inside --wait-s", file=sys.stderr, flush=True)
-
-    still = _await_retained_readers(retained, deadline, on_wait=waiting)
-    waited_s = time.monotonic() - started
-    if not still:
-        time.sleep(max(0.0, min(POLL_S - waited_s, deadline - time.monotonic())))
-    return still, waited_s
-
-
-#: Readers that delivered a snapshot ``await_outcome`` used but that missed
-#: their reap (#630). They have closed their pipe and are exiting, not
-#: reading, so the wait goes on beside them; it reaps them later, without
-#: blocking, rather than leaving a zombie per poll (#1048). A context
-#: variable, so each wait (and each thread) keeps its own list.
-_DELIVERED_READERS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
-    "pbrun_delivered_readers", default=None)
 
 
 def bounded_outcome_observation(
@@ -3252,30 +3025,30 @@ def bounded_outcome_observation(
     ``pbwait`` and the other readers keep the strict refusal.
     """
 
-    value = _bounded_pool_read(
+    value = action_wait.bounded_read(
         "pool outcome observation",
         lambda: _outcome_observation_value(q, key, generation),
         budget_s=budget_s,
         use_delivered_snapshot=use_delivered_snapshot,
     )
     if not isinstance(value, dict):
-        raise OutcomeReadUnavailable("pool outcome observation returned an invalid payload")
+        raise action_wait.OutcomeReadUnavailable("pool outcome observation returned an invalid payload")
     unreadable = value.get("unreadable")
     if unreadable is not None:
         if (not isinstance(unreadable, dict)
                 or not isinstance(unreadable.get("path"), str)
                 or not isinstance(unreadable.get("reason"), str)):
-            raise OutcomeReadUnavailable(
+            raise action_wait.OutcomeReadUnavailable(
                 "pool outcome observation returned an invalid unreadable ending")
-        raise UnreadableTerminal(Path(unreadable["path"]), unreadable["reason"])
+        raise action_wait.UnreadableTerminal(Path(unreadable["path"]), unreadable["reason"])
     next_generation = value.get("generation")
     if (next_generation is not None
             and (not isinstance(next_generation, (int, float))
                  or isinstance(next_generation, bool))):
-        raise OutcomeReadUnavailable("pool outcome observation returned an invalid generation")
+        raise action_wait.OutcomeReadUnavailable("pool outcome observation returned an invalid generation")
     landed = decode_outcome_ending(q, key, next_generation, value)
     if isinstance(landed, endings.PublicationSupersession) and next_generation != generation:
-        raise OutcomeReadUnavailable("publication supersession changed the watched generation")
+        raise action_wait.OutcomeReadUnavailable("publication supersession changed the watched generation")
     return landed, float(next_generation) if next_generation is not None else None
 
 
@@ -3300,16 +3073,16 @@ def decode_outcome_ending(q, key: str, generation: float | None, value: dict
     if (not isinstance(raw, dict) or not isinstance(raw.get("path"), str)
             or not isinstance(raw.get("record"), dict)
             or (superseded is not None and landed is not None)):
-        raise OutcomeReadUnavailable("pool outcome observation returned an invalid ending")
+        raise action_wait.OutcomeReadUnavailable("pool outcome observation returned an invalid ending")
     if superseded is None:
         _require_execution_ending(raw["record"], where="outcome execution IPC branch")
         return Path(raw["path"]), raw["record"]
     try:
         ending = q.decode_publication_supersession(Path(raw["path"]), raw["record"])
     except (OSError, pb.PrismaBuildError) as exc:
-        raise OutcomeReadUnavailable(f"invalid observed publication ending: {exc}") from exc
+        raise action_wait.OutcomeReadUnavailable(f"invalid observed publication ending: {exc}") from exc
     if ending.action_key != key or ending.published_unix != generation:
-        raise OutcomeReadUnavailable("observed publication ending differs from the watched identity")
+        raise action_wait.OutcomeReadUnavailable("observed publication ending differs from the watched identity")
     return ending
 
 
@@ -3317,7 +3090,7 @@ def _outcome_observation_value(q, key: str, generation: float | None) -> dict:
     try:
         landed, next_generation = outcome_poll(
             q, key, generation, report_unreadable=True)
-    except UnreadableTerminal as exc:
+    except action_wait.UnreadableTerminal as exc:
         return {"unreadable": {"path": str(exc.path), "reason": exc.reason}}
     return {
         "generation": next_generation,
@@ -3352,7 +3125,7 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
     """
 
     _require_execution_ending(outcome, where=str(outcome_path))
-    value = _bounded_pool_read(
+    value = action_wait.bounded_read(
         "pool outcome verification",
         lambda: (_diagnosed_outcome_render_value if diagnose_conflicts
                  else _outcome_render_value)(q, str(outcome_path), outcome),
@@ -3360,11 +3133,11 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
         use_delivered_snapshot=use_delivered_snapshot,
     )
     if not isinstance(value, dict):
-        raise OutcomeReadUnavailable("pool outcome verification returned an invalid payload")
+        raise action_wait.OutcomeReadUnavailable("pool outcome verification returned an invalid payload")
     if diagnose_conflicts and isinstance(value.get("integrity_error"), dict):
         return value
     if not isinstance(value.get("summary"), dict) or not isinstance(value.get("attempts"), list):
-        raise OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
+        raise action_wait.OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
     _require_execution_ending(value["summary"], where="execution verification IPC summary")
     return value
 
@@ -3742,7 +3515,7 @@ def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
     Existing tolerant record parsing and liveness rules remain in force.
     """
 
-    value = _bounded_pool_read(
+    value = action_wait.bounded_read(
         "attachment discovery",
         lambda: _attachment_value(q, key, lane_root=lane_root),
         budget_s=ATTACHMENT_READ_TIMEOUT_S)
@@ -3756,10 +3529,10 @@ def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
             or not isinstance(value.get("job_id"), str)
             or not isinstance(value.get("submission"), str)
             or not value["submission"]):
-        raise OutcomeReadUnavailable("attachment discovery returned an invalid payload")
+        raise action_wait.OutcomeReadUnavailable("attachment discovery returned an invalid payload")
     if value["transport"] == "slurm":
         if not value["job_id"]:
-            raise OutcomeReadUnavailable("attachment discovery returned no SLURM job id")
+            raise action_wait.OutcomeReadUnavailable("attachment discovery returned no SLURM job id")
         if not _slurm_submission_live(value["job_id"], **lane_commands):
             return None
     return value
@@ -3819,160 +3592,154 @@ def await_outcome(
     landed = None
     rendered = None
     # The most recent transient read, cleared by any read that succeeds.
-    unavailable: OutcomeReadUnavailable | None = None
+    unavailable: action_wait.OutcomeReadUnavailable | None = None
     unavailable_count = 0
     last_notice = None
     host = socket.gethostname()
-    lingering: list[dict] = []
-    lingering_token = _DELIVERED_READERS.set(lingering)
-    try:
-        while True:
-            # One ``WNOHANG`` pass: never blocks, never forks.
-            lingering[:] = _await_retained_readers(lingering, time.monotonic())
-            if first_observation and wait_s <= 0:
-                budget_s = OUTCOME_READ_TIMEOUT_S
-            else:
-                remaining = deadline - time.monotonic()
-                # An expired deadline is expired on the first read too (#938).
-                # This used to preserve one observation with the full read
-                # budget when the deadline passed before the loop began.  That
-                # gave a caller past its deadline more time than any caller
-                # still inside it, whose read gets ``min(budget, remaining)``,
-                # so the time a wait could take was not monotonic in the time
-                # it was given.  A caller that wants one observation whatever
-                # the time says ``wait_s=0``, which keeps that contract.
-                if remaining <= 0:
+    with action_wait.reader_session() as lingering:
+        try:
+            while True:
+                # One ``WNOHANG`` pass: never blocks, never forks.
+                lingering[:] = action_wait.reap_retained(lingering, time.monotonic())
+                if first_observation and wait_s <= 0:
+                    budget_s = action_wait.OUTCOME_READ_TIMEOUT_S
+                else:
+                    remaining = deadline - time.monotonic()
+                    # An expired deadline is expired on the first read too (#938).
+                    # This used to preserve one observation with the full read
+                    # budget when the deadline passed before the loop began.  That
+                    # gave a caller past its deadline more time than any caller
+                    # still inside it, whose read gets ``min(budget, remaining)``,
+                    # so the time a wait could take was not monotonic in the time
+                    # it was given.  A caller that wants one observation whatever
+                    # the time says ``wait_s=0``, which keeps that contract.
+                    if remaining <= 0:
+                        landed = None
+                        break
+                    budget_s = min(action_wait.OUTCOME_READ_TIMEOUT_S, remaining)
+                previous_generation = generation
+                try:
+                    landed, generation = bounded_outcome_observation(
+                        q, key, generation, budget_s=budget_s,
+                        use_delivered_snapshot=True)
+                    first_observation = False
+                    if landed is not None:
+                        if isinstance(landed, endings.PublicationSupersession):
+                            break
+                        # Verification keeps its own full budget once an ending
+                        # has landed; it does not borrow the caller's deadline.
+                        rendered = bounded_outcome_render(
+                            q, landed[0], landed[1],
+                            budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
+                            use_delivered_snapshot=True)
+                        break
+                except action_wait.OutcomeObservationTimedOut as exc:
+                    first_observation = False
+                    landed = None
+                    if wait_s <= 0:
+                        raise
+                    unavailable, unavailable_count = exc, unavailable_count + 1
+                    if time.monotonic() >= deadline:
+                        break
+                    now = time.monotonic()
+                    if last_notice is None or now - last_notice >= action_wait.UNAVAILABLE_NOTICE_INTERVAL_S:
+                        last_notice = now
+                        print(f"pbrun: pool outcome for {key[:12]} not observed yet "
+                              f"({exc}); {unavailable_count} consecutive unavailable "
+                              "read(s), retrying inside --wait-s",
+                              file=sys.stderr, flush=True)
+                    time.sleep(min(action_wait.POLL_S, max(0.0, deadline - time.monotonic())))
+                    continue
+                except action_wait.OutcomeReaderRetained as exc:
+                    first_observation = False
+                    landed = None
+                    if wait_s <= 0:
+                        raise
+                    unavailable, unavailable_count = exc, unavailable_count + 1
+                    still, waited_s = action_wait.wait_out_retained_readers(
+                        exc.retained, deadline, tool="pbrun",
+                        subject=f"pool outcome for {key[:12]}")
+                    if still:
+                        # The deadline came before the reader left the kernel.
+                        # ``exc`` already names the host.
+                        print(f"pbrun: unavailable pool outcome for {key[:12]}: "
+                              f"{exc}. That reader was still retained when "
+                              f"--wait-s ran out, {waited_s:.1f}s after its read "
+                              f"timed out (retained reader="
+                              f"{json.dumps(still, sort_keys=True)}), so no second "
+                              f"reader was started beside it. Nothing was cancelled. "
+                              f"Read pb-queue/{{done,failed,withdrawn}}/{key[:12]}"
+                              f"*.json or run pbwait.py {key[:12]}",
+                              file=sys.stderr, flush=True)
+                        return RECORD_WRITE_FAILED_EXIT
+                    now = time.monotonic()
+                    if last_notice is None or now - last_notice >= action_wait.UNAVAILABLE_NOTICE_INTERVAL_S:
+                        last_notice = now
+                        print(f"pbrun: pool outcome for {key[:12]} not observed yet "
+                              f"({exc}); the reader has exited and was reaped, "
+                              f"{unavailable_count} consecutive unavailable read(s), "
+                              "retrying inside --wait-s", file=sys.stderr, flush=True)
+                    continue
+                unavailable, unavailable_count = None, 0
+                if generation != previous_generation:
+                    # The just-observed preemption named an exact successor.
+                    # Preserve the old immediate lineage handoff without allowing
+                    # a caller whose deadline has expired to start another reader.
+                    if wait_s > 0 and time.monotonic() < deadline:
+                        continue
                     landed = None
                     break
-                budget_s = min(OUTCOME_READ_TIMEOUT_S, remaining)
-            previous_generation = generation
+                if wait_s <= 0 or time.monotonic() >= deadline:
+                    landed = None
+                    break
+                time.sleep(min(action_wait.POLL_S, max(0.0, deadline - time.monotonic())))
+        except action_wait.UnreadableTerminal as exc:
+            print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
+            return 1
+        except action_wait.OutcomeReadUnavailable as exc:
+            print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
+                  file=sys.stderr)
+            # One last bounded snapshot before reporting unobserved (#630).  The
+            # ending may have landed while its reader was being reaped; reading
+            # the terminal directories again answers that without trusting the
+            # failed read.  Bounded, read-only, and terminal: after it the wait
+            # never polls again, retained reader or not.
             try:
                 landed, generation = bounded_outcome_observation(
-                    q, key, generation, budget_s=budget_s,
+                    q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
                     use_delivered_snapshot=True)
-                first_observation = False
-                if landed is not None:
-                    if isinstance(landed, endings.PublicationSupersession):
-                        break
-                    # Verification keeps its own full budget once an ending
-                    # has landed; it does not borrow the caller's deadline.
-                    rendered = bounded_outcome_render(
-                        q, landed[0], landed[1],
-                        budget_s=OUTCOME_READ_TIMEOUT_S,
-                        use_delivered_snapshot=True)
-                    break
-            except OutcomeObservationTimedOut as exc:
-                first_observation = False
-                landed = None
-                if wait_s <= 0:
-                    raise
-                unavailable, unavailable_count = exc, unavailable_count + 1
-                if time.monotonic() >= deadline:
-                    break
-                now = time.monotonic()
-                if last_notice is None or now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
-                    last_notice = now
-                    print(f"pbrun: pool outcome for {key[:12]} not observed yet "
-                          f"({exc}); {unavailable_count} consecutive unavailable "
-                          "read(s), retrying inside --wait-s",
-                          file=sys.stderr, flush=True)
-                time.sleep(min(POLL_S, max(0.0, deadline - time.monotonic())))
-                continue
-            except OutcomeReaderRetained as exc:
-                first_observation = False
-                landed = None
-                if wait_s <= 0:
-                    raise
-                unavailable, unavailable_count = exc, unavailable_count + 1
-                still, waited_s = wait_out_retained_readers(
-                    exc.retained, deadline, tool="pbrun",
-                    subject=f"pool outcome for {key[:12]}")
-                if still:
-                    # The deadline came before the reader left the kernel.
-                    # ``exc`` already names the host.
-                    print(f"pbrun: unavailable pool outcome for {key[:12]}: "
-                          f"{exc}. That reader was still retained when "
-                          f"--wait-s ran out, {waited_s:.1f}s after its read "
-                          f"timed out (retained reader="
-                          f"{json.dumps(still, sort_keys=True)}), so no second "
-                          f"reader was started beside it. Nothing was cancelled. "
-                          f"Read pb-queue/{{done,failed,withdrawn}}/{key[:12]}"
-                          f"*.json or run pbwait.py {key[:12]}",
-                          file=sys.stderr, flush=True)
-                    return RECORD_WRITE_FAILED_EXIT
-                now = time.monotonic()
-                if last_notice is None or now - last_notice >= UNAVAILABLE_NOTICE_INTERVAL_S:
-                    last_notice = now
-                    print(f"pbrun: pool outcome for {key[:12]} not observed yet "
-                          f"({exc}); the reader has exited and was reaped, "
-                          f"{unavailable_count} consecutive unavailable read(s), "
-                          "retrying inside --wait-s", file=sys.stderr, flush=True)
-                continue
-            unavailable, unavailable_count = None, 0
-            if generation != previous_generation:
-                # The just-observed preemption named an exact successor.
-                # Preserve the old immediate lineage handoff without allowing
-                # a caller whose deadline has expired to start another reader.
-                if wait_s > 0 and time.monotonic() < deadline:
-                    continue
-                landed = None
-                break
-            if wait_s <= 0 or time.monotonic() >= deadline:
-                landed = None
-                break
-            time.sleep(min(POLL_S, max(0.0, deadline - time.monotonic())))
-    except UnreadableTerminal as exc:
-        print(f"pbrun: unreadable ending for {key[:12]}: {exc}", file=sys.stderr)
-        return 1
-    except OutcomeReadUnavailable as exc:
-        print(f"pbrun: unavailable pool outcome for {key[:12]}: {exc}",
-              file=sys.stderr)
-        # One last bounded snapshot before reporting unobserved (#630).  The
-        # ending may have landed while its reader was being reaped; reading
-        # the terminal directories again answers that without trusting the
-        # failed read.  Bounded, read-only, and terminal: after it the wait
-        # never polls again, retained reader or not.
-        try:
-            landed, generation = bounded_outcome_observation(
-                q, key, generation, budget_s=OUTCOME_READ_TIMEOUT_S,
-                use_delivered_snapshot=True)
-        except UnreadableTerminal as exc2:
-            print(f"pbrun: unreadable ending for {key[:12]}: {exc2}",
-                  file=sys.stderr)
-            return 1
-        except OutcomeReadUnavailable as exc2:
-            print(f"pbrun: unavailable pool outcome for {key[:12]} on {host} "
-                  f"when the terminal re-read ended: {exc2}. The action may "
-                  f"still be running or may already have landed; nothing was "
-                  f"cancelled. Read pb-queue/{{done,failed,withdrawn}}/"
-                  f"{key[:12]}*.json or run pbwait.py {key[:12]}",
-                  file=sys.stderr)
-            return RECORD_WRITE_FAILED_EXIT
-        if landed is not None and not isinstance(landed, endings.PublicationSupersession):
-            try:
-                rendered = bounded_outcome_render(
-                    q, landed[0], landed[1],
-                    budget_s=OUTCOME_READ_TIMEOUT_S,
-                    use_delivered_snapshot=True)
-            except OutcomeReadUnavailable as exc2:
-                print(f"pbrun: unavailable pool outcome for {key[:12]} on "
-                      f"{host} when its verification ended: {exc2}",
+            except action_wait.UnreadableTerminal as exc2:
+                print(f"pbrun: unreadable ending for {key[:12]}: {exc2}",
+                      file=sys.stderr)
+                return 1
+            except action_wait.OutcomeReadUnavailable as exc2:
+                print(f"pbrun: unavailable pool outcome for {key[:12]} on {host} "
+                      f"when the terminal re-read ended: {exc2}. The action may "
+                      f"still be running or may already have landed; nothing was "
+                      f"cancelled. Read pb-queue/{{done,failed,withdrawn}}/"
+                      f"{key[:12]}*.json or run pbwait.py {key[:12]}",
                       file=sys.stderr)
                 return RECORD_WRITE_FAILED_EXIT
-            unavailable, unavailable_count = None, 0
-        elif landed is None:
-            print(f"pbrun: unavailable pool outcome for {key[:12]} on {host}; "
-                  f"the terminal re-read saw no ending either. The action may "
-                  f"still be running or may already have landed; nothing was "
-                  f"cancelled. Read pb-queue/{{done,failed,withdrawn}}/"
-                  f"{key[:12]}*.json or run pbwait.py {key[:12]}",
-                  file=sys.stderr)
-            return RECORD_WRITE_FAILED_EXIT
-    finally:
-        # The wait's last reads are done: collect any snapshot reader that has
-        # exited since, still without blocking.
-        _await_retained_readers(lingering, time.monotonic())
-        _DELIVERED_READERS.reset(lingering_token)
+            if landed is not None and not isinstance(landed, endings.PublicationSupersession):
+                try:
+                    rendered = bounded_outcome_render(
+                        q, landed[0], landed[1],
+                        budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
+                        use_delivered_snapshot=True)
+                except action_wait.OutcomeReadUnavailable as exc2:
+                    print(f"pbrun: unavailable pool outcome for {key[:12]} on "
+                          f"{host} when its verification ended: {exc2}",
+                          file=sys.stderr)
+                    return RECORD_WRITE_FAILED_EXIT
+                unavailable, unavailable_count = None, 0
+            elif landed is None:
+                print(f"pbrun: unavailable pool outcome for {key[:12]} on {host}; "
+                      f"the terminal re-read saw no ending either. The action may "
+                      f"still be running or may already have landed; nothing was "
+                      f"cancelled. Read pb-queue/{{done,failed,withdrawn}}/"
+                      f"{key[:12]}*.json or run pbwait.py {key[:12]}",
+                      file=sys.stderr)
+                return RECORD_WRITE_FAILED_EXIT
     if landed is None and unavailable is not None:
         print(f"pbrun: unavailable pool outcome for {key[:12]} when the wait "
               f"ended: {unavailable_count} consecutive unavailable read(s), "
@@ -8736,7 +8503,7 @@ def await_release(q, pending_id: str, *, wait_s: float) -> int:
                   f"and is released when its producers succeed",
                   file=sys.stderr, flush=True)
             return GAVE_UP_EXIT
-        time.sleep(min(POLL_S, remaining))
+        time.sleep(min(action_wait.POLL_S, remaining))
 
 
 def sealing_runtime(template: Mapping[str, object]) -> dict[str, str]:
@@ -9179,7 +8946,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         # node must be attached to rather than submitted again.
         try:
             live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
-        except (OutcomeReadUnavailable, OSError) as exc:
+        except (action_wait.OutcomeReadUnavailable, OSError) as exc:
             print(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}",
                   file=sys.stderr, flush=True)
             return RECORD_WRITE_FAILED_EXIT
@@ -9215,7 +8982,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         if not args.detach:
             try:
                 live = bounded_attachment(pool.PoolQueue(SH / "pb-queue"), key)
-            except (OutcomeReadUnavailable, OSError):
+            except (action_wait.OutcomeReadUnavailable, OSError):
                 live = None
             if live is not None and live["transport"] == "pool":
                 print(f"pbrun: {key[:12]} is already running on the pool; "

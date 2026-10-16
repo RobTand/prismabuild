@@ -131,7 +131,7 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
     """
 
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,

@@ -81,7 +81,7 @@ def _submits_on_the_first_lookup(
 def _wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str):
     """One wait started before the submission, and the rows it returned."""
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.0)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.0)
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", verdict)
     monkeypatch.setenv(
         "PRISMABUILD_LOCAL_CHECKOUT_ROOT", str(tmp_path / "checkouts"))
@@ -164,7 +164,7 @@ def test_a_key_nothing_ever_records_still_gives_up_as_waiting(
     work is still out there".
     """
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.0)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.0)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")

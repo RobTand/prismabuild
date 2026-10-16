@@ -57,7 +57,7 @@ class _Queue:
 
 
 def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
     return pbrun.await_outcome(queue, key, wait_s=wait_s)
 
 
@@ -243,7 +243,7 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
     q.claim()
     q.finish(KEY_A, status="executed", detail={"returncode": 0})
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
     assert pbrun.await_outcome(q, KEY_A, wait_s=5.0) == 0
     err = capsys.readouterr().err
     assert "withdrawn by" not in err and "four suites" not in err

@@ -79,14 +79,14 @@ def test_a_wait_whose_deadline_passed_before_the_first_read_starts_none(
 
     assert code == pbrun.GAVE_UP_EXIT
     assert budgets == [], "an expired wait started a read"
-    assert clock.now - expired_at < pbrun.POLL_S
+    assert clock.now - expired_at < pbrun.action_wait.POLL_S
     assert clock.now == expired_at, "an expired wait spent time"
     assert "gave up waiting" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(("wait_s", "late_s", "expected"), [
-    pytest.param(0.0, 0.0, [pbrun.OUTCOME_READ_TIMEOUT_S], id="wait-0-observes-once"),
-    pytest.param(0.0, 9.0, [pbrun.OUTCOME_READ_TIMEOUT_S], id="wait-0-late-still-observes"),
+    pytest.param(0.0, 0.0, [pbrun.action_wait.OUTCOME_READ_TIMEOUT_S], id="wait-0-observes-once"),
+    pytest.param(0.0, 9.0, [pbrun.action_wait.OUTCOME_READ_TIMEOUT_S], id="wait-0-late-still-observes"),
     pytest.param(1.0, 0.0, [1.0], id="inside-deadline-reads-what-is-left"),
     pytest.param(1.0, 0.75, [0.25], id="late-inside-deadline-reads-less"),
     pytest.param(1.0, 1.0, [], id="deadline-exactly-passed-reads-nothing"),

@@ -239,6 +239,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_wait  # noqa: E402
 from prismabuild import immutable_files  # noqa: E402
 from prismabuild import (  # noqa: E402
     core as pb, decomposition as dc, pool, residency_plan,
@@ -978,7 +979,7 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                         # campaign's deadline, before any pass reads again.
                         # A reader still retained at the deadline stops the
                         # window, and its row says so (exit 74).
-                        still, waited_s = (pbrun.wait_out_retained_readers(
+                        still, waited_s = (action_wait.wait_out_retained_readers(
                             row["retained_readers"], deadline, tool="pbcampaign",
                             subject=key[:12])
                             if row["retained_readers"] else ([], 0.0))
@@ -1035,7 +1036,7 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
         # once, even when nothing else is pending.
         if retrying or (pending and (len(pending) >= max_inflight
                                      or len(submissions) == len(rows))):
-            time.sleep(min(pbrun.POLL_S, remaining))
+            time.sleep(min(action_wait.POLL_S, remaining))
 
     for index in range(len(submissions), len(rows)):
         print(f"pbcampaign: row {index} not_submitted; "
@@ -1132,7 +1133,7 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
         ))
     try:
         live = pbrun.bounded_attachment(queue, key)
-    except (pbrun.OutcomeReadUnavailable, OSError) as exc:
+    except (action_wait.OutcomeReadUnavailable, OSError) as exc:
         raise SystemExit(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}")
     if live is not None:
         return json.loads(pbrun.detach_line(

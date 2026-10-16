@@ -88,7 +88,7 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     (tmp_path / "repo").symlink_to(pbrun.RUNTIME_ROOT)
     return queue, _checkout(tmp_path)
@@ -733,7 +733,7 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     work = _checkout(tmp_path)
     mirror = tmp_path / "repo"

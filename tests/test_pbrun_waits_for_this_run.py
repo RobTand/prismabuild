@@ -59,7 +59,7 @@ def _outcome(generation, *, status: str, returncode: int) -> dict:
 
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     made = pool.PoolQueue(tmp_path / "pb-queue")
     made.ensure_layout()
     return made

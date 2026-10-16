@@ -108,7 +108,7 @@ def _retained_fakes(monkeypatch, polls, *, still_at_deadline=False):
         return (list(retained) if still_at_deadline else []), 1.5
 
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", wait)
-    monkeypatch.setattr(pbcampaign.pbrun, "wait_out_retained_readers", wait_out)
+    monkeypatch.setattr(pbcampaign.pbrun.action_wait, "wait_out_retained_readers", wait_out)
     return events
 
 

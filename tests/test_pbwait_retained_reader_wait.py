@@ -58,7 +58,7 @@ def _stuck_queue(tmp_path: Path):
 
 def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.1)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.1)
 
 
 def test_a_patient_pbwait_outlasts_a_reader_stuck_in_the_kernel(
@@ -99,7 +99,7 @@ def test_a_reader_still_retained_when_pbwait_ends_is_named_with_no_second_reader
         row = pbwait.wait_one(
             queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
             deadline=started + 1.0, lane_root=tmp_path / "lane")
-        assert time.monotonic() - started < 1.0 + 2 * pbrun.POLL_S + 1.0
+        assert time.monotonic() - started < 1.0 + 2 * pbrun.action_wait.POLL_S + 1.0
         assert row["status"] == "record_error"
         assert pbwait.verdict([row]) == pbrun.RECORD_WRITE_FAILED_EXIT
         assert "still retained when the wait ended" in row["note"]

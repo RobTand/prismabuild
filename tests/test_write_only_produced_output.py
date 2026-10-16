@@ -397,7 +397,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -474,7 +474,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",

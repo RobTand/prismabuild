@@ -153,10 +153,10 @@ def test_retained_reader_refuses_before_scheduler_query(
         return {"status": "ok", "value": {"transport": "slurm",
                 "generation": 200.0, "job_id": "41", "submission": "unused"}}
 
-    monkeypatch.setattr(pbrun.pbstatus, "bounded", retained)
+    monkeypatch.setattr(pbrun.action_wait._reader, "bounded", retained)
     monkeypatch.setattr(pbrun.slurm_lane, "query_state", lambda *_args, **_kwargs:
                         pytest.fail("retained reader must stop discovery"))
-    with pytest.raises(pbrun.OutcomeReadUnavailable, match='"starttime_ticks": 67890'):
+    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable, match='"starttime_ticks": 67890'):
         pbrun.bounded_attachment(pool.PoolQueue(tmp_path / "queue"), "c" * 64)
 
 
@@ -170,7 +170,7 @@ def test_claim_lease_read_is_inside_attachment_budget(
         "action_key": key, "published_unix": 123.0}))
     os.mkfifo(queue.lease_path(key))
     monkeypatch.setattr(pbrun, "ATTACHMENT_READ_TIMEOUT_S", 0.05)
-    with pytest.raises(pbrun.OutcomeReadUnavailable, match="attachment discovery timed out"):
+    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable, match="attachment discovery timed out"):
         pbrun.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
 
 

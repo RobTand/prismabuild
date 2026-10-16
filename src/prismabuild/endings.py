@@ -289,7 +289,6 @@ def resolve_current(
                   ambiguous=len(coexisting) > 1)
 
 
-
 #: Inline cap on an action stream inside a mutable queue record (#1203).  The
 #: immutable attempt log keeps the full stream and the record names it, so a
 #: reader that needs the bytes follows the reference instead of the row.

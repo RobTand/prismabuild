@@ -164,7 +164,14 @@ facts, decisions, denial writes and lock scopes remain in `PoolQueue`.
 The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
 private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
-and fence retained readers by their exact PID/starttime identity. This
+and fence retained readers by their exact PID/starttime identity.
+`prismabuild.action_wait` owns the action-wait error types, bounded-read result
+translation, retained-reader polling, delivered-reader scope and timing defaults.
+The synchronous and detached frontends, campaign window and canary import that
+owner directly. `pbrun` no longer exports those internal wait helpers. The
+generic reader mechanism and persistent scope-owned protocol are unchanged.
+The shared await loop and typed submission/recovery channel remain separate
+C06 work; moving these owners does not establish their completion. This
 infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private

@@ -129,7 +129,7 @@ def test_full_key_resolution_never_starts_a_prefix_reader(
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     key = "a" * 64
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", lambda *_args, **_kwargs:
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", lambda *_args, **_kwargs:
                         pytest.fail("a full key must retain its fast path"))
     assert pbwait.resolve_key(queue, key) == key
 
@@ -211,7 +211,7 @@ def test_prefix_reader_setup_error_is_exit_seventy_four(
     def cannot_fork(*_args, **_kwargs):
         raise OSError(24, "Too many open files")
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", cannot_fork)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", cannot_fork)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
     assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
@@ -317,7 +317,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
     """The whole point of detaching is that the ending is filed later.  A wait
     that answered "nothing is filed" would make the pair useless."""
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -345,7 +345,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
 def test_a_failed_action_makes_the_verdict_nonzero_beside_the_ones_that_worked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -377,7 +377,7 @@ def test_the_newest_ending_answers_when_no_generation_is_named(
     case where nobody can, which is why the newest ending has to win.
     """
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -412,7 +412,7 @@ def test_a_terminal_record_nobody_can_read_ends_the_wait(
     can only find the same broken file.
     """
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -438,7 +438,7 @@ def test_patience_running_out_is_reported_as_waiting_not_as_failure(
     """A job that has not ended has not failed, and 75 is what ``pbrun`` says
     for the same thing: the work is still running."""
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")

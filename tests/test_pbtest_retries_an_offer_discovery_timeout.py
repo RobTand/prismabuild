@@ -158,7 +158,7 @@ def test_a_shard_whose_offer_read_timed_out_once_is_submitted_again(
     assert record["ran"] is True
     assert record["summary"] == "1 passed in 0.01s"
     assert exit_code == 0
-    assert clock.sleeps == [pbrun.POLL_S]         # the pace pbcampaign retries at
+    assert clock.sleeps == [pbrun.action_wait.POLL_S]         # the pace pbcampaign retries at
     # The retry is announced while it happens, and the shard's own line
     # carries it, so the receipt shows the run was not a first submission.
     assert any("worker-offer discovery timed out" in line and "attempt 2" in line

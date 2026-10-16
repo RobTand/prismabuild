@@ -52,7 +52,7 @@ OUTCOME = {
 
 def _wait(monkeypatch, capsys, queue: _Queue, key: str, wait_s: float = 5.0):
     """Drive only pbrun's terminal-outcome half, with the queue already filed."""
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
     return pbrun.await_outcome(queue, key, wait_s=wait_s)
 
 

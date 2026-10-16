@@ -143,7 +143,7 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -609,7 +609,7 @@ def test_a_submission_without_declared_batches_files_nothing(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",

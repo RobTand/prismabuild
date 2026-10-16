@@ -57,9 +57,9 @@ def test_malformed_ipc_refuses_without_following_or_changing_queue_state(
         "outcome": wire, "observed_generation": generation,
         "action": None, "receipt_published": False,
     }
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", lambda *args, **kwargs: payload)
 
-    with pytest.raises(pbrun.OutcomeReadUnavailable):
+    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
         if consumer == "pbrun":
             pbrun.bounded_outcome_observation(queue, KEY, generation, budget_s=5)
         else:
@@ -75,7 +75,7 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
     queue, clock, monkeypatch,
 ):
     original, _, _ = _ended(queue, clock)
-    read = pbrun._bounded_pool_read
+    read = pbrun.action_wait.bounded_read
     observations = 0
 
     def unavailable_once(section, *args, **kwargs):
@@ -84,10 +84,10 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
             pytest.fail("a publication ending entered execution verification")
         observations += 1
         if observations == 1:
-            raise pbrun.OutcomeReadUnavailable("initial reader unavailable")
+            raise pbrun.action_wait.OutcomeReadUnavailable("initial reader unavailable")
         return read(section, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", unavailable_once)
+    monkeypatch.setattr(pbrun.action_wait, "bounded_read", unavailable_once)
 
     assert pbrun.await_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 76

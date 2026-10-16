@@ -40,7 +40,7 @@ KEY = "f" * 64
 
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
@@ -98,7 +98,7 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
 def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> None:
     """The CLI's own bounded wait selects the archive for the pinned run."""
 
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 30.0)
     first = _publish(queue)
     _run(queue, status="executed", returncode=0, stdout="first run\n")
     second = _publish(queue)

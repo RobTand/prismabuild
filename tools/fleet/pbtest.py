@@ -57,6 +57,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
 from prismabuild import dependency_digest  # noqa: E402
@@ -214,7 +215,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
     ``first`` is the attempt the caller already launched, so shards start in
     order as before.  An attempt whose ``pbrun`` ended in
     ``OFFER_DISCOVERY_TIMED_OUT`` published nothing and holds nothing, so the
-    same command is run again after ``pbrun.POLL_S``, while the shard's own
+    same command is run again after ``action_wait.POLL_S``, while the shard's own
     ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
     row (#560). An unobserved outcome (74) may instead start one read-only
     recovery of the same stamped generation inside the original deadline.
@@ -267,7 +268,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
         if not offer_discovery_timed_out(lines, proc.returncode):
             return
         remaining = deadline - time.monotonic()
-        if remaining <= pbrun.POLL_S:
+        if remaining <= action_wait.POLL_S:
             # The pause would reach the deadline; pbcampaign would stop there
             # too.  The shard keeps pbrun's refusal as its ending.
             _say(f"shard {index:>3} pbtest: worker-offer discovery timed out on "
@@ -279,8 +280,8 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
             progress.observe(index, result)
         _say(f"shard {index:>3} pbtest: worker-offer discovery timed out and "
              f"nothing was published; attempt {result['attempts']} in "
-             f"{pbrun.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
-        time.sleep(pbrun.POLL_S)
+             f"{action_wait.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
+        time.sleep(action_wait.POLL_S)
         try:
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

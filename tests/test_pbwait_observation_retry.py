@@ -46,7 +46,7 @@ def _outcome(status: str, returncode: int) -> dict:
 
 def _fast_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
 
 
 @pytest.mark.parametrize(
@@ -77,7 +77,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
             # record's reads get the production budget, so a loaded box
             # cannot time them out too (#1170).
             monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S",
-                                pbrun.OUTCOME_READ_TIMEOUT_S)
+                                pbrun.action_wait.OUTCOME_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)

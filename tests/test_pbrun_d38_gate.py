@@ -93,7 +93,7 @@ def _argv(work: Path, *options: str, command=COMMAND) -> list[str]:
 
 def _prepare(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
 
 

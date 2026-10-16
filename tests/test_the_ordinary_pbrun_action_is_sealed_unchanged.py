@@ -162,7 +162,7 @@ def _seal(
     if row == "rich":
         extra += ["--data-manifest", str(_data_manifest(root))]
     monkeypatch.setattr(pbrun, "SH", root)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
