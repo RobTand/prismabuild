@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 
 import pytest
@@ -59,6 +62,46 @@ def test_outer_client_exit_cannot_hide_behind_a_valid_green_report(tmp_path, mon
     assert code == 0
     got = consume(tmp_path, report, FILES, 1)
     assert got.inconclusive == FILES, 'C26: outer nonzero client exit was ignored'
+
+
+@pytest.mark.parametrize('ending', [1, 7, -signal.SIGKILL], ids=['ordinary', 'abnormal', 'killed'])
+def test_outer_client_ending_preserves_known_failures_and_unknown_coverage(tmp_path, ending):
+    from test_c26_progress_characterization import DRIVER
+    from test_pbmergeq import make_queue
+
+    root = repository(tmp_path / 'suite', {FILES[0]: 'def test_one():\n    assert False\n'})
+    report = tmp_path / 'report.json'
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    finish = ('code = subject.main()\nassert code == 1\n'
+              + (f'os.kill(os.getpid(), {-ending})' if ending < 0
+                 else f'raise SystemExit({ending})'))
+    driver = DRIVER.replace('raise SystemExit(subject.main())', finish)
+    observed = subprocess.run([sys.executable, '-c', driver,
+        str(ROOT / 'tools/fleet/pbtest.py'), str(tmp_path / 'private-store'),
+        '--checkout', str(root), '--python', sys.executable,
+        '--tmpdir', str(scratch), '--threads-per-shard', '1', '--shards', '1',
+        '--timeout-s', '60', '--json', str(report), 'tests'],
+        env={**os.environ, 'C26_CHECKOUT': str(root),
+             'PYTHONPATH': os.pathsep.join(str(ROOT / path) for path in ('src', 'tests', 'tools/fleet'))},
+        capture_output=True, text=True, timeout=90)
+    assert observed.returncode == ending, observed.stdout + observed.stderr
+    rows = json.loads(report.read_text())
+    assert rows[0]['returncode'] == 1 and rows[0]['ran']
+    assert record(rows[0]['output'])['reports'] == [
+        ['tests/test_one.py::test_one', 'call', 'failed', None, None]]
+    got = consume(tmp_path, report, FILES, observed.returncode)
+    assert got.failed == {'tests/test_one.py::test_one'}
+    assert not got.runtime_refusal
+    assert got.inconclusive == ([] if ending == 1 else FILES), (
+        'C26: abnormal outer client ending was hidden by an observed test failure', got)
+    queue, _, _, _ = make_queue(tmp_path / 'queue-control')
+    batch = {'id': 'c26-outer', 'runs': {}}
+    if ending == 1:
+        queue.check_results(batch, {'candidate': got})
+    else:
+        with pytest.raises(mq.Inconclusive):
+            queue.check_results(batch, {'candidate': got})
 
 
 @pytest.mark.parametrize('damage', ['whole-report', 'whole-row', 'foreign-assignment'])
