@@ -152,7 +152,7 @@ def _execute(world, mover_key: str) -> dict:
     failure IS that message: the worker's checkout-identity preflight.
     """
 
-    row = pool.record_store.require(world.q.records.item(pool.record_store.CLAIMED, mover_key))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.CLAIMED, mover_key))
     assert isinstance(row, dict) and row["action_key"] == mover_key
     outcome = world.q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, (
@@ -263,7 +263,7 @@ def test_the_first_mover_seals_the_producers_checkout_snapshot(
     assert world.snapshot["input"] in mover["inputs"]
     assert world.snapshot["subdirectory"] == subdirectory
     # The row it will be claimed under materializes that same snapshot.
-    row = pool.record_store.require(world.q.records.item(pool.record_store.READY, mover_key))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, mover_key))
     assert row is not None and row["checkout_snapshot"] == world.snapshot
     # ...and nothing else of the producer's params was copied wholesale.
     assert "produced_output_template" not in mover["params"]
@@ -346,7 +346,7 @@ def test_a_repeat_materialization_seals_the_same_snapshot(
     assert mover1_key != mover0
     mover1 = _read_request(world.cas.root, mover1_key)
     assert mover1["params"].get("checkout_snapshot") == world.snapshot
-    row1 = pool.record_store.require(world.q.records.item(pool.record_store.READY, mover1_key))
+    row1 = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, mover1_key))
     assert row1 is not None and row1["checkout_snapshot"] == world.snapshot
 
     with world.materialize(mover1_key, mover1) as root:
@@ -422,7 +422,7 @@ def test_a_producer_without_a_snapshot_seals_the_legacy_mover(
     mover = _read_request(cas_root, str(out["mover_key"]))
     assert "checkout_snapshot" not in mover["params"]
     assert mover["params"]["cwd"] == "."
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, str(out["mover_key"])))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, str(out["mover_key"])))
     assert row is not None and row.get("checkout_root") is not None
     assert f"{KIND}@{TIER}" in row["resources"]
 

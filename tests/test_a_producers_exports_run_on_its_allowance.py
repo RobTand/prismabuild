@@ -356,7 +356,7 @@ def test_an_export_published_without_the_hint_is_funded_from_its_sealed_owner(
 
     monkeypatch.setattr(spool.queue, "publish", as_older_generation)
     export_key = _export(spool, "g0")
-    row = pool.record_store.require(spool.queue.records.item(pool.record_store.READY, export_key))
+    row = pool.record_store.value_or_raise(spool.queue.records.item(pool.record_store.READY, export_key))
     assert "dependent_of" not in row
     cpu_sampler = _running(spool, monkeypatch, psi=0.12)
 
@@ -450,7 +450,7 @@ def test_a_published_producer_that_fits_without_its_allowance_still_claims(
             "landing_s": [float(measured_slots)], "spacing_s": [1.]}}
         base = adaptive_cpu.local_state_base(queue.ledger().base)
         adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)
-        row = pool.record_store.require(queue.records.item(pool.record_store.READY, owner))
+        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, owner))
         assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
     cpu_sampler = _sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,

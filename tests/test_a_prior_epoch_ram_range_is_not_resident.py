@@ -254,7 +254,7 @@ def test_the_ready_gpu_row_room_reads_the_ram_epoch(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     _map_with_ram(queue, ram_epoch=OLD_EPOCH)
     _publish_consumer(queue)
-    item = pool.record_store.require(queue.records.item(pool.record_store.READY, CONSUMER))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, CONSUMER))
     assert item is not None
 
     def room() -> dict[str, object] | None:

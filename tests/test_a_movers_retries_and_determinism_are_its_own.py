@@ -222,7 +222,7 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
 
     claimed = _claim_mover(q, "w-restage")
     assert claimed["action_key"] == mover
-    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
     first = _execute_mover(q, cas_root, mover, tmp_path / "mover-checkout")
     assert first["complete"] is True, first
