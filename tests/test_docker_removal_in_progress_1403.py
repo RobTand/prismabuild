@@ -82,12 +82,12 @@ def test_any_other_docker_rm_failure_still_raises(docker, stderr):
 @pytest.fixture()
 def claimed(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources={"gpu": 1, "mem_gb": 8})
-    queued = pool._read_json(queue.item_path(pool.READY, KEY))
+    queued = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
     queued["container_owner"] = OWNER
-    pool._write_json_atomic(queue.item_path(pool.READY, KEY), queued)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.READY, KEY), queued)
     record = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
     assert record is not None and record["action_key"] == KEY
     marker = queue.root / "container-owners" / f"{OWNER}.used"
@@ -106,12 +106,12 @@ def test_withdrawn_finish_records_in_progress_cleanup_as_pending_then_concludes(
     withdrawal = queue.withdraw(KEY, reason="drained for a U4 window", signal_child=False)
     assert withdrawal["released"] == 0
     assert withdrawal["container_cleanup"]["deferred"] is True
-    record = pool._read_json(queue.item_path(pool.CLAIMED, KEY))
+    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
     path = queue.finish(KEY, status="withdrawn",
                         detail={"returncode": -15, "termination_reason": "withdrawn"},
                         claim_snapshot=record)
-    assert path == queue.item_path(pool.CLAIMED, KEY)
-    pending = pool._read_json(path)
+    assert path == queue.records.item_path(pool.record_store.CLAIMED, KEY)
+    pending = pool.record_store.read_queue_record(path)
     cleanup = pending["container_cleanup_pending"]
     assert cleanup["complete"] is False
     assert "error" not in cleanup, cleanup
@@ -122,11 +122,11 @@ def test_withdrawn_finish_records_in_progress_cleanup_as_pending_then_concludes(
 
     # The removal finishes; the next retry proves absence and concludes.
     docker.present = set()
-    snapshot = pool._read_json(queue.item_path(pool.CLAIMED, KEY))
+    snapshot = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
     concluded = queue._retry_own_pending_finish(KEY, snapshot)
-    assert concluded == queue.item_path(pool.WITHDRAWN, KEY)
+    assert concluded == queue.records.item_path(pool.record_store.WITHDRAWN, KEY)
     assert docker.rm_answers == []
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger().held_keys() == []
     assert not marker.exists()
 
@@ -136,7 +136,7 @@ def test_a_real_removal_failure_is_still_recorded_as_an_error(claimed, docker):
     docker.present = {BUSY}
     docker.rm_answers.append((1, "", "Error response from daemon: driver failed\n"))
     path = queue.finish(KEY, status="withdrawn", claim_snapshot=record)
-    cleanup = pool._read_json(path)["container_cleanup_pending"]
+    cleanup = pool.record_store.read_queue_record(path)["container_cleanup_pending"]
     assert cleanup["complete"] is False
     assert "docker cleanup failed (1)" in cleanup["error"]
     assert queue.ledger().held_keys() == [KEY]

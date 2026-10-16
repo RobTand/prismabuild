@@ -122,9 +122,14 @@ def test_recovery_main_result_bytes_and_nonfinite_refusal_match_main(monkeypatch
 
 def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     module = fleet_module("pbgang")
+    historical_pool = SimpleNamespace(**vars(module.pool))
+    historical_pool.PoolQueue = lambda path: SimpleNamespace(
+        item_path=lambda state, key: key,
+        residency_plan_path=lambda key: tmp_path / f"missing-{key}.json")
+    historical_pool._read_json = lambda path: {}
     old = main_definitions("tools/fleet/pbgang.py", ["main"],
                            argparse=module.argparse, secrets=module.secrets, sys=sys,
-                           subprocess=module.subprocess, pool=module.pool, _gang=module._gang,
+                           subprocess=module.subprocess, pool=historical_pool, _gang=module._gang,
                            SH=module.SH, SCHEMA=module.SCHEMA, __doc__=module.__doc__,
                            load=module._pbgang_load_manifest,
                            member_command=module.member_command, withdraw=module.withdraw)
@@ -136,9 +141,8 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs:
         SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"status": "submitted", "action_key": next(keys)})))
     monkeypatch.setattr(module.pool, "PoolQueue", lambda path:
-        SimpleNamespace(item_path=lambda state, key: key,
-                        residency_plan_path=lambda key: tmp_path / f"missing-{key}.json"))
-    monkeypatch.setattr(module.pool, "_read_json", lambda path: {})
+        SimpleNamespace(records=module.pool.record_store.RecordStore(tmp_path / "queue")))
+    monkeypatch.setattr(module.pool.record_store, '_read_json', lambda path: {})
     monkeypatch.setattr(module._gang, "publish_group", lambda *args, **kwargs:
         {"skew_s": 1.25, "priority": 7})
 

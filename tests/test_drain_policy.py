@@ -157,7 +157,7 @@ def test_real_election_write_is_preserved_by_the_following_drain_count(fleet, mo
 
     def after_election(key, **kwargs):
         assert key == waiting
-        record = json.loads(queue.passes_path(key).read_text())
+        record = json.loads(queue.records.passes_path(key).read_text())
         selected.append(record["measurement_reservation"])
         assert record.get("passes", 0) == 0
         return count(key, **kwargs)
@@ -165,7 +165,7 @@ def test_real_election_write_is_preserved_by_the_following_drain_count(fleet, mo
     monkeypatch.setattr(queue, "record_pass", after_election)
     assert claim() is None
     assert len(selected) == 1
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert record["passes"] == 1
     assert record["measurement_reservation"] == selected[0]
     assert record["measurement_drains"]["sparklina"]["measurement_until_unix"] == (
@@ -180,7 +180,7 @@ def test_real_election_write_is_preserved_by_the_following_drain_count(fleet, mo
 def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
         tmp_path, monkeypatch, phase, ordinary_left, measurement_left):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     prior = {}
     if phase == "count":
         prior["first_unix"] = 10 ** 1000
@@ -188,7 +188,7 @@ def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
         prior["blocked_unix"] = 10 ** 1000
     elif phase == "measurement":
         prior["measurement_drains"] = {"host": {"generation": GEN, "blocked_unix": 10 ** 1000}}
-    pool._write_json_atomic(queue.passes_path(KEY), prior)
+    pool._write_json_atomic(queue.records.passes_path(KEY), prior)
     queue._drain_accounting.stage(KEY, drain.OrdinaryNotes({"foreign_unix": 10.}))
     queue._drain_accounting.stage(KEY, drain.MeasurementNotes("host", GEN, {"epoch_unix": 20.}))
     write = pool._write_json_atomic
@@ -199,9 +199,9 @@ def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
     with pytest.raises((OverflowError, OSError)):
         queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
     monkeypatch.setattr(pool, "_write_json_atomic", write)
-    write(queue.passes_path(KEY), {})
+    write(queue.records.passes_path(KEY), {})
     queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
-    record = json.loads(queue.passes_path(KEY).read_text())
+    record = json.loads(queue.records.passes_path(KEY).read_text())
     assert (record.get("foreign_unix") == 10.) is ordinary_left
     assert ("measurement_drains" in record) is measurement_left
 
@@ -286,10 +286,10 @@ def test_real_election_admission_race_retains_observed_notes_until_later_count(f
     assert len(seen) == 1 and seen[0]["why"] == "draining_for_measurement"
     assert queue.passes(waiting) == 0
     assert queue.ledger().held_keys() == [holder]
-    assert queue.item_path(pool.READY, waiting).exists()
+    assert queue.records.item_path(pool.record_store.READY, waiting).exists()
     queue._drain_accounting.stage(waiting, None)
     queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     episode = record["measurement_drains"]["sparklina"]
     assert episode["measurement_until_unix"] == seen[0]["drain_until_unix"]
     assert episode["generation"] == seen[0]["drain_generation"]
@@ -297,11 +297,11 @@ def test_real_election_admission_race_retains_observed_notes_until_later_count(f
 
 def test_initial_history_coercion_failure_precedes_available_and_keeps_pending_notes(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger()
     ledger.ensure_capacity({"cpu": 4})
     queue._drain_accounting.stage(KEY, drain.OrdinaryNotes({"foreign_unix": 10.}))
-    pool._write_json_atomic(queue.passes_path(KEY), {"first_unix": 10 ** 1000})
+    pool._write_json_atomic(queue.records.passes_path(KEY), {"first_unix": 10 ** 1000})
     reads = []
     available = ledger.available
 
@@ -313,6 +313,6 @@ def test_initial_history_coercion_failure_precedes_available_and_keeps_pending_n
     with pytest.raises(OverflowError):
         queue._observe_drain(KEY, ledger=ledger, need={"cpu": 2}, mode="tokens")
     assert not reads
-    pool._write_json_atomic(queue.passes_path(KEY), {})
+    pool._write_json_atomic(queue.records.passes_path(KEY), {})
     queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
-    assert json.loads(queue.passes_path(KEY).read_text())["foreign_unix"] == 10.
+    assert json.loads(queue.records.passes_path(KEY).read_text())["foreign_unix"] == 10.

@@ -128,7 +128,7 @@ def _contain(queue, consumer: str, attempt: dict) -> None:
         "scope_empty": True, "released": True, "retired": False,
         "settled": False, "empty": True, "tickets_pending": False,
         "stopped_unix": 1789870000.0, "unix": 1789880000.0}) + "\n")
-    done = queue.dir(pool.DONE)
+    done = queue.records.dir(pool.record_store.DONE)
     done.mkdir(parents=True, exist_ok=True)
     (done / f"{consumer}.json").write_text(json.dumps({
         "action_key": consumer, "status": "executed",
@@ -154,7 +154,7 @@ def _root(queue, base: Path, name: str, tier: str, consumer: str,
     staged = stage / "model" / "shard.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x19" * SIZE)
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     _publish(residency, stage, consumer, mover, tier,
              f"/mnt/shared/{name}/shard.bin", staged)
     held = _acquire(queue, consumer, mover, tier, CONTAINED, f"{name}-gone")
@@ -174,14 +174,14 @@ def two_roots(tmp_path: Path):
     """One queue, two registered stage roots, each pinned on both attempts."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first = _root(queue, tmp_path, "stage-a", TIER_A, CONSUMER_A, MOVER_A)
     second = _root(queue, tmp_path, "stage-b", TIER_B, CONSUMER_B, MOVER_B)
     return queue, first, second
 
 
 def _pin_refs(queue, side: dict[str, object]) -> set[str]:
-    path = (queue.root / pool.RESIDENCY / reader_lease.LEASES_SUBDIR
+    path = (queue.root / pool.record_store.RESIDENCY / reader_lease.LEASES_SUBDIR
             / str(side["consumer"]) / f"{side['pin_id']}.lease.json")
     pin = json.loads(path.read_text())
     refs = pin["refs"]

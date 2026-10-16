@@ -227,7 +227,7 @@ def test_the_kept_room_reads_the_gpu_sample_branch(tmp_path):
     ledger = queue.ledger()
     ledger.ensure_capacity(CAPACITY)
     publish(queue, KEY_A, priority=-9, resources={"cpu": 6, "gpu": 1, "mem_gb": 64})
-    item = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
 
     def room_for(controller):
         return queue._ready_gpu_row_room(

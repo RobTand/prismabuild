@@ -48,13 +48,13 @@ def scratch(tmp_path):
     nonce = "1" * 32
     scope = "prismabuild-job" + hashlib.sha256((key + nonce).encode()).hexdigest()[:32] + ".slice"
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     claim = {"action_key": key, "cas_root": str(cas.root),
              "claimed_by": "fixture-host:123:worker", "claimed_host": "fixture-host",
              "claimed_unix": 123.0, "published_unix": 100.0, "attempts": 0,
              "resources": {"spool_gb": 2},
              "resource_scope": {"action_key": key, "nonce": nonce, "scope_id": scope}}
-    claim_path = queue.item_path(pool.CLAIMED, key)
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
     claim_path.write_text(json.dumps(claim))
     env = {"PRISMABUILD_ACTION_KEY": key, "PRISMABUILD_ACTION_NONCE": nonce,
            "PRISMABUILD_ACTION_SCOPE": scope,
@@ -242,7 +242,7 @@ def test_namespace_uses_existing_submission_generation_recipe(scratch):
     expected = (scratch["root"] / "prismabuild-ephemeral"
                 / pb.canonical_sha256({"host": scratch["claim"]["claimed_host"]})
                 / scratch["claim"]["action_key"]
-                / scratch["queue"].attempt_generation(scratch["claim"])
+                / scratch["queue"].records.attempt_generation(scratch["claim"])
                 / scratch["claim"]["resource_scope"]["nonce"] / "row-temp")
     assert client.ephemeral_scratch_path(declaration) == expected
 
@@ -319,7 +319,7 @@ def test_valid_sealed_underfunded_demand_refuses(scratch):
     scratch["claim"].update(action_key=key, resources={"spool_gb": 1})
     scratch["claim"]["resource_scope"].update(action_key=key, scope_id=scope)
     scratch["env"].update(PRISMABUILD_ACTION_KEY=key, PRISMABUILD_ACTION_SCOPE=scope)
-    scratch["claim_path"] = scratch["queue"].item_path(pool.CLAIMED, key)
+    scratch["claim_path"] = scratch["queue"].records.item_path(pool.record_store.CLAIMED, key)
     scratch["claim_path"].write_text(json.dumps(scratch["claim"]))
     with pytest.raises(client.LocalScratchError):
         _bind(scratch)
