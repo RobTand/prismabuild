@@ -19,6 +19,13 @@ TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
 PREFIX = "prismabuild-stage"
 
 
+def writer_dataset(name: str, prefixes: set[str]) -> bool:
+    """discover_stage selects only a pool root or its prewarm dataset."""
+    pool, separator, child = name.partition("/")
+    return any(pool.startswith(prefix) for prefix in prefixes) and (
+        not separator or child == "prewarm")
+
+
 def stamp() -> dict:
     now = time.time()
     return {"unix": now, "utc": datetime.fromtimestamp(now, timezone.utc).isoformat()}
@@ -139,12 +146,6 @@ def census(args) -> dict:
     for path in args.root:
         add_root(path, "explicit census root")
     mounts = mount_rows()
-    result["stage_mounts"] = []
-    for row in mounts:
-        if (row["mountpoint"] == "/stage" or row["mountpoint"].startswith("/stage/")
-                or PREFIX in row["source"]):
-            result["stage_mounts"].append(row)
-            add_root(row["mountpoint"], "mountinfo:" + row["source"])
     result["tier_records"] = []
     for path in sorted((Path(args.queue_root) / "tiers").glob("*.json")):
         try:
@@ -164,6 +165,15 @@ def census(args) -> dict:
                 prefixes.add(argv[n + 1])
             elif word.startswith("--stage-pool-prefix="):
                 prefixes.add(word.split("=", 1)[1])
+    result["stage_mounts"] = []
+    result["other_stage_pool_mounts"] = []
+    for row in mounts:
+        if (row["mountpoint"] == "/stage" or row["mountpoint"].startswith("/stage/")
+                or writer_dataset(row["source"], prefixes)):
+            result["stage_mounts"].append(row)
+            add_root(row["mountpoint"], "mountinfo:" + row["source"])
+        elif any(row["source"].startswith(prefix) for prefix in prefixes):
+            result["other_stage_pool_mounts"].append(row)
     zfs = shutil.which("zfs") or next(
         (p for p in ("/sbin/zfs", "/usr/sbin/zfs") if Path(p).is_file()), None)
     result["zfs"] = {"executable": zfs, "missing_tool": zfs is None}
@@ -176,7 +186,7 @@ def census(args) -> dict:
         else:
             for line in run.stdout.splitlines():
                 name, mountpoint = line.split("\t", 1)
-                if any(name.startswith(prefix) for prefix in prefixes):
+                if writer_dataset(name, prefixes):
                     add_root(mountpoint, "zfs:" + name)
     elif "zfs" in Path("/proc/filesystems").read_text():
         errors.append("ZFS is loaded but zfs root discovery tool is missing")
