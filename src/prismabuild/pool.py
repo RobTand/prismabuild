@@ -2460,17 +2460,6 @@ _write_bytes_atomic = materialize.write_bytes_atomic
 #: monkeypatching test use.
 
 
-def _read_optional_document(path: Path
-                            ) -> tuple[bool, dict[str, object] | None]:
-    """``(present, document)``; invalid JSON raises, an empty file is present/None."""
-
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return False, None
-    return True, _read_json(path)
-
-
 def _retirement_checkpoint_digest(body: Mapping[str, object]) -> str:
     """The self-consistency digest of one checkpoint body, digest field excluded."""
 
