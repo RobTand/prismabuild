@@ -1,0 +1,29 @@
+{
+  "authority": "Rob implementation brief and bridge correction 2026-10-16",
+  "b09_transition": {
+    "actual_rollback_generation": null,
+    "bridge_commit": "6fa9b780304df7b24bad5ea3bb0fde540ff95153",
+    "bridge_tree": "13979e7ffee4557fec993c39fdcc68055c878e49",
+    "bridge_updater_sha256": "1a331460abc28eddcc5c36d9a6f724872d7159e8ea157af5b6caf9828f5f2f0a",
+    "fence": "installed-or-target actual optional proof member requires optional protocol 2 and proof-member protocol 2 on both sides",
+    "pending": [
+      "publish only under separate deployment authorization",
+      "converge every live fleet role to bridge before proof leaf generation",
+      "designate actual immutable bridge directory receipt and content digest",
+      "rerun fresh live-window corpus including bridge",
+      "qualify actual G-to-bridge physical rollback"
+    ],
+    "state": "prepared source control only; not published or designated"
+  },
+  "candidate_source_base": "416a1eccebaea4ef224e0ddef8f6a1fe424756b4",
+  "gc_precondition": "every live reader and designated rollback target must understand movers-retired before receipt retirement; retained directories alone confer no support",
+  "policy": "live worker generations plus explicitly designated rollback",
+  "requires_no_proof_member": true,
+  "rollback": {
+    "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
+    "content_sha256": "dd694fdb23b193f46ab82349c81067b6a9fd68eeaaba3ec24e24bf4176767ff3",
+    "generation": "a17477b2b206-1791745175-65dffa700dfb",
+    "receipt_sha256": "5cef73692997fbd9f3d8d187c9f7aad15ee6b699912ceb1cf88fe9444082c9dd"
+  },
+  "support_is_permanent": false
+}

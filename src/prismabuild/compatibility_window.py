@@ -48,18 +48,25 @@ def require_reachable(candidate, rollback):
             "physical_rollback": "separate qualification required"}
 
 
-def require_predeploy(window, status, *, max_age_s=300, now=None):
+def require_predeploy(window, status, *, captured_unix=None, max_age_s=300, now=None):
     """Deployment must rerun this with a fresh census, never reuse capture freshness."""
     if (status.get("complete") is not True or status.get("timed_out_sections")
             or status.get("unavailable_sections")):
         raise WindowError("predeploy census is incomplete")
     now = datetime.now(timezone.utc).timestamp() if now is None else now
-    if not 0 <= now - status["captured_unix"] <= max_age_s:
+    captured = status.get("captured_unix") if captured_unix is None else captured_unix
+    if type(captured) not in (int, float) or not 0 <= now - captured <= max_age_s:
         raise WindowError("predeploy census is stale or in the future")
     live = [row for row in status["nodes"] if row.get("state") == "live"]
-    if not live or any(row.get("runtime_commit") != window["rollback"]["commit"] for row in live):
-        raise WindowError("live predeploy generation changed; re-designate and rerun the corpus")
+    supported = {row["commit"] for row in window["generations"]}
+    if not live or any(row.get("runtime_commit") not in supported for row in live):
+        raise WindowError("live window changed; recapture and rerun the corpus without relabeling rollback")
     return tuple(sorted(row["node"] for row in live))
+
+
+def content_digest(files):
+    """Identity of the complete receipt file map, after checking each actual byte."""
+    return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def require_generation(directory, designation):
@@ -68,7 +75,8 @@ def require_generation(directory, designation):
     value = json.loads(raw)
     if (directory.name != designation["generation"] or value["generation"] != designation["generation"]
             or value["commit"] != designation["commit"]
-            or hashlib.sha256(raw).hexdigest() != designation["receipt_sha256"]):
+            or hashlib.sha256(raw).hexdigest() != designation["receipt_sha256"]
+            or content_digest(value["files"]) != designation["content_sha256"]):
         raise WindowError("rollback directory, commit or receipt digest changed")
     for relative, expected in value["files"].items():
         path = Path(relative)

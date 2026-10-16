@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from prismabuild.compatibility_window import (
-    WindowError, require_generation, require_predeploy, require_reachable,
+    WindowError, content_digest, require_generation, require_predeploy, require_reachable,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +47,7 @@ def test_predeploy_requires_fresh_complete_census_and_the_designated_generation(
     with pytest.raises(WindowError, match="incomplete"):
         require_predeploy(window, {**status, "complete": False}, now=1001)
     status["nodes"][0]["runtime_commit"] = "1" * 40
-    with pytest.raises(WindowError, match="re-designate"):
+    with pytest.raises(WindowError, match="without relabeling"):
         require_predeploy(window, status, now=1001)
 
 
@@ -62,7 +62,8 @@ def generation(tmp_path):
     raw = json.dumps(receipt).encode()
     (root / "RUNTIME_VERSION.json").write_bytes(raw)
     designation = {"generation": root.name, "commit": receipt["commit"],
-                   "receipt_sha256": hashlib.sha256(raw).hexdigest()}
+                   "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+                   "content_sha256": content_digest(receipt["files"])}
     return root, source, designation
 
 
@@ -98,6 +99,7 @@ def test_window_capture_does_not_promote_retained_directories_or_offline_hosts(t
     status.write_text(json.dumps(live))
     captured = capture_window(status, root.parent, root.name, designation["commit"], tmp_path / "expanded", ROOT)
     assert len(captured["generations"]) == 2 and captured["rollback"]["generation"] == root.name
+    assert require_predeploy(captured, live, captured_unix=1000, now=1001) == ("active", "offline-wsl")
     live["complete"] = False
     status.write_text(json.dumps(live))
     with pytest.raises(ValueError, match="incomplete"):
