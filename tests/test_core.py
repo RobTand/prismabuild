@@ -6,6 +6,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import signal
@@ -1641,6 +1642,125 @@ def test_cache_hit_skips_execution_and_fully_revalidates(tmp_path: Path):
         pb.run_local_action(**arguments)
 
 
+def _run_worker_after_initial_miss(action, checkout, cas_root, barrier, connection):
+    lookup = pb.PrismaBuildCAS.lookup
+    observed = []
+
+    def controlled_lookup(cas, candidate):
+        cached = lookup(cas, candidate)
+        observed.append(None if cached is None else cached["receipt_sha256"])
+        if len(observed) == 1:
+            connection.send(("initial_lookup", os.getpid(), str(cas.root), cached))
+            barrier.wait(timeout=30)
+        return cached
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pb.PrismaBuildCAS, "lookup", controlled_lookup)
+            result = pb.run_local_action(
+                action, cas_root=cas_root, checkout_root=checkout,
+                timeout_seconds=15,
+            )
+        connection.send((result, observed))
+    finally:
+        connection.close()
+
+
+def test_two_workers_recheck_initial_misses_under_output_lock(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import os,pathlib; "
+        "fd=os.open('task-starts',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600); "
+        "os.write(fd,(str(os.getpid())+'\\n').encode()); os.close(fd); "
+        "pathlib.Path('result.bin').write_bytes(b'once')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(3)
+    channels = [context.Pipe(duplex=False) for _ in range(2)]
+    workers = [
+        context.Process(
+            target=_run_worker_after_initial_miss,
+            args=(action, checkout, cas_root, barrier, sender),
+        )
+        for _, sender in channels
+    ]
+    deadline = time.monotonic() + 60
+    reports = []
+    try:
+        for worker, (_, sender) in zip(workers, channels):
+            worker.start()
+            sender.close()
+        for receiver, _ in channels:
+            assert receiver.poll(max(0, deadline - time.monotonic()))
+            kind, pid, root, cached = receiver.recv()
+            assert kind == "initial_lookup"
+            assert pid in {worker.pid for worker in workers}
+            assert root == str(cas_root)
+            assert cached is None
+            reports.append(pid)
+        assert len(set(reports)) == 2
+        assert os.getpid() not in reports
+        assert cas.lookup(action) is None
+        assert not (checkout / "task-starts").exists()
+        assert not (checkout / "result.bin").exists()
+        barrier.wait(timeout=30)
+        outcomes = []
+        for receiver, _ in channels:
+            assert receiver.poll(max(0, deadline - time.monotonic()))
+            outcomes.append(receiver.recv())
+        for worker in workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+            assert not worker.is_alive()
+            assert worker.exitcode == 0
+    finally:
+        for worker in workers:
+            if worker.pid is not None:
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=5)
+            assert not worker.is_alive()
+        for receiver, sender in channels:
+            receiver.close()
+            sender.close()
+
+    (tmp_path / "worker-observations.json").write_text(
+        json.dumps({"worker_pids": reports, "outcomes": outcomes})
+    )
+    starts = (checkout / "task-starts").read_text().splitlines()
+    assert len(starts) == 1, starts
+    assert int(starts[0]) > 0
+    assert int(starts[0]) not in reports + [os.getpid()]
+    assert (checkout / "result.bin").read_bytes() == b"once"
+    assert sorted(result["status"] for result, _ in outcomes) == [
+        "cache_hit", "published",
+    ]
+    receipt_path = cas.receipt_path(action["action_key"])
+    assert list((cas_root / "actions" / "v3").rglob("*.json")) == [receipt_path]
+    receipt = json.loads(receipt_path.read_bytes())
+    assert cas.lookup(action) == receipt
+    assert receipt["action_key"] == action["action_key"]
+    assert receipt["receipt_sha256"] == pb.canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    execution_paths = list((cas_root / "executions" / "v1").rglob("*.json"))
+    assert len(execution_paths) == 1
+    assert json.loads(execution_paths[0].read_bytes()) == receipt
+    assert cas.lookup_execution(action, receipt["receipt_sha256"]) == receipt
+    for result, observed in outcomes:
+        assert result["receipt"] == receipt
+        assert Path(result["payload_path"]).read_bytes() == b"once"
+        assert observed == [
+            None, None if result["status"] == "published" else receipt["receipt_sha256"],
+        ]
+
+
 def test_initial_miss_rendezvous_two_hosts_publish_once_then_hit_under_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1963,17 +2083,11 @@ def test_initial_miss_rendezvous_defeats_post_wrapper_sigstop_schedule(
     assert (checkout / "task-entered").read_text(encoding="utf-8") == "entered"
 
 
-def test_unset_initial_miss_rendezvous_preserves_exact_result_shapes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_local_miss_and_hit_preserve_exact_result_shapes(tmp_path: Path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     action = _action(checkout)
 
-    def must_not_run(**_: object) -> dict[str, object]:
-        raise AssertionError("unset rendezvous path was called")
-
-    monkeypatch.setattr(pb, "_run_initial_miss_rendezvous", must_not_run)
     arguments = {
         "action": action,
         "cas_root": tmp_path / "cas",
