@@ -84,8 +84,9 @@ original failed records remain preserved; none supplies final pass credit.
 
 Real sibling-held transition histories were added in
 `test_candidate_scan_order.py`, `test_drain_boundary_order.py`,
-`test_a_refused_gpu_row_keeps_the_drain_boundary.py` and
-`test_gang_demand_fence_claims_1579.py`. This does not describe every busy-row
+and `test_a_refused_gpu_row_keeps_the_drain_boundary.py`.
+`test_gang_demand_fence_claims_1579.py` now files real bounded carry denials
+instead of patching the carry decoder. This does not describe every busy-row
 test. `test_a_gpu_refused_row_is_not_overtaken_by_gpu_rows.py` and
 `test_claim_denials.py` retain their earlier fixtures outside this C01 change.
 
