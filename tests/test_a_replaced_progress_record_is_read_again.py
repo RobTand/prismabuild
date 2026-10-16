@@ -282,7 +282,7 @@ def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
             return original_open(candidate, where=where)
         incoming.write_bytes(raw)
         held = original_open(incoming, where=where)
-        pending[held[0]] = held[1]
+        pending[held[0]] = os.fstat(held[0])
         return held
 
     def read(descriptor, count):
