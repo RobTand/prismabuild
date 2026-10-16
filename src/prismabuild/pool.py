@@ -5902,6 +5902,12 @@ class _CommittedClaim:
 
 
 @dataclass(frozen=True)
+class _FundingSeal:
+    sealed: bool
+    failed_tier: str | None
+
+
+@dataclass(frozen=True)
 class _RefusalAccounting:
     order: candidate_policy.ScanOrder
     preempted: bool
@@ -22231,6 +22237,148 @@ class PoolQueue:
             return _ClaimHandled.REFUSED
         return _CommittedClaim(tiers, moved_ready, class_verdict, filed, tier_filed, tier_wanted)
 
+    def _verify_claim_funding(self, committed: _CommittedClaim) -> bool:
+        host = committed.tiers.host
+        key = host.candidate.key
+        reservation = host.candidate.reservation
+        tier_demand = host.demand.tiers
+        moved = committed.moved.record
+        funding_verified = True
+        for funded_tier, entry in reservation.tier_funded.items():
+            pinned = (entry.get("generation")
+                      if isinstance(entry, dict) else None)
+            kinds = (entry.get("kinds")
+                     if isinstance(entry, dict) else None)
+            bound_names = (entry.get("tokens")
+                           if isinstance(entry, dict) else None)
+            variant = (str(entry.get("variant") or "window")
+                       if isinstance(entry, dict) else "window")
+            needs = tier_demand.get(funded_tier, {})
+            ok = (isinstance(kinds, dict) and bool(kinds)
+                  and isinstance(bound_names, list)
+                  and bool(bound_names))
+            if ok:
+                for kind_name, count in kinds.items():
+                    try:
+                        if variant == "output":
+                            covered, live_generation = self.output_funded_cover(
+                                funded_tier, moved, str(kind_name),
+                                int(needs.get(kind_name, 0)))
+                        else:
+                            covered, live_generation = self.funded_cover(
+                                funded_tier, moved, str(kind_name),
+                                int(needs.get(kind_name, 0)))
+                    except (OSError, PoolContractError, ValueError):
+                        ok = False
+                        break
+                    if (not covered
+                            or int(covered) < int(count)
+                            or live_generation != pinned):
+                        ok = False
+                        break
+            if ok:
+                # Exact token set: the fence the rollback keeps
+                # must be exactly what is still held -- a rotated
+                # generation's names fail closed here, never as a
+                # half-kept fence.
+                if variant == "output":
+                    live = self.read_output_funding(key, funded_tier)
+                else:
+                    live = self.read_funding(key, funded_tier)
+                live_names = (live.get("tokens")
+                              if isinstance(live, dict) else None)
+                if (not isinstance(live, dict)
+                        or live.get("state") != "transferring"
+                        or live.get("generation") != pinned
+                        or not isinstance(live_names, list)
+                        or sorted(str(name) for name in live_names)
+                        != sorted(str(name)
+                                  for name in bound_names)):
+                    ok = False
+                elif variant == "output":
+                    # R6/R7: carry the immutable requirement
+                    # through the rename: the funding record must
+                    # bind back to the CAS-filed request ref read
+                    # here for the renamed row (one read for this
+                    # phase; the begin phase read its own), the
+                    # row's projection must still agree with it,
+                    # and a filed request that declares no ref
+                    # can never gain one from the renamed row.
+                    # A direct-API row with no filed request
+                    # keeps the projection binding cover already
+                    # proved; unreadable request evidence fails
+                    # closed.
+                    try:
+                        _req_ref, _req_present = (
+                            _sealed_produced_output_batch(
+                                moved.get("cas_root"), key))
+                    except (OSError, PoolContractError, ValueError):
+                        ok = False
+                        _req_ref = None
+                        _req_present = False
+                    else:
+                        if (_req_present and _req_ref is None
+                                and "produced_output_batch"
+                                in moved):
+                            ok = False
+                        elif _req_ref is not None:
+                            if not (
+                                    self._output_projection_matches_request(
+                                        moved.get(
+                                            "produced_output_batch"),
+                                        _req_ref)):
+                                ok = False
+                            elif not (
+                                    self._output_record_matches_request(
+                                        live, _req_ref)):
+                                ok = False
+            if not ok:
+                funding_verified = False
+                break
+        return funding_verified
+
+    def _seal_claim_funding(self, committed: _CommittedClaim) -> _FundingSeal:
+        host = committed.tiers.host
+        key = host.candidate.key
+        reservation = host.candidate.reservation
+        funding_sealed = True
+        failed_tier: str | None = None
+        for funded_tier, entry in reservation.tier_funded.items():
+            pinned = (entry.get("generation")
+                      if isinstance(entry, dict) else None)
+            variant = (str(entry.get("variant") or "window")
+                       if isinstance(entry, dict) else "window")
+            # Locked spelling: the claim holds this key's
+            # transition lock from its tier acquire through here.
+            if variant == "output":
+                marked = self._advance_funding_state_locked(
+                    key, funded_tier, expect="transferring",
+                    advance_to="consumed",
+                    generation=pinned if isinstance(
+                        pinned, str) else None, binding="output")
+                if marked:
+                    continue
+                current = self.read_output_funding(
+                    key, funded_tier)
+            else:
+                marked = self._advance_funding_state_locked(
+                    key, funded_tier, expect="transferring",
+                    advance_to="consumed",
+                    generation=pinned if isinstance(
+                        pinned, str) else None)
+                if marked:
+                    continue
+                current = self.read_funding(key, funded_tier)
+            if (current is not None
+                    and current.get("state") == "consumed"
+                    and (pinned is None or current.get(
+                        "generation") == pinned)):
+                continue
+            funding_sealed = False
+            failed_tier = funded_tier
+            break
+        return _FundingSeal(funding_sealed, failed_tier)
+
     def _claim_pass(
         self,
         *,
@@ -22781,98 +22929,7 @@ class PoolQueue:
                     # the row goes back byte-identical, and the next attempt
                     # re-verifies the same binding: preserved, never freed
                     # into a stealer window, never double-spent.
-                    funding_verified = True
-                    for funded_tier, entry in reservation.tier_funded.items():
-                        pinned = (entry.get("generation")
-                                  if isinstance(entry, dict) else None)
-                        kinds = (entry.get("kinds")
-                                 if isinstance(entry, dict) else None)
-                        bound_names = (entry.get("tokens")
-                                       if isinstance(entry, dict) else None)
-                        variant = (str(entry.get("variant") or "window")
-                                   if isinstance(entry, dict) else "window")
-                        needs = tier_demand.get(funded_tier, {})
-                        ok = (isinstance(kinds, dict) and bool(kinds)
-                              and isinstance(bound_names, list)
-                              and bool(bound_names))
-                        if ok:
-                            for kind_name, count in kinds.items():
-                                try:
-                                    if variant == "output":
-                                        covered, live_generation = self.output_funded_cover(
-                                            funded_tier, moved, str(kind_name),
-                                            int(needs.get(kind_name, 0)))
-                                    else:
-                                        covered, live_generation = self.funded_cover(
-                                            funded_tier, moved, str(kind_name),
-                                            int(needs.get(kind_name, 0)))
-                                except (OSError, PoolContractError, ValueError):
-                                    ok = False
-                                    break
-                                if (not covered
-                                        or int(covered) < int(count)
-                                        or live_generation != pinned):
-                                    ok = False
-                                    break
-                        if ok:
-                            # Exact token set: the fence the rollback keeps
-                            # must be exactly what is still held -- a rotated
-                            # generation's names fail closed here, never as a
-                            # half-kept fence.
-                            if variant == "output":
-                                live = self.read_output_funding(key, funded_tier)
-                            else:
-                                live = self.read_funding(key, funded_tier)
-                            live_names = (live.get("tokens")
-                                          if isinstance(live, dict) else None)
-                            if (not isinstance(live, dict)
-                                    or live.get("state") != "transferring"
-                                    or live.get("generation") != pinned
-                                    or not isinstance(live_names, list)
-                                    or sorted(str(name) for name in live_names)
-                                    != sorted(str(name)
-                                              for name in bound_names)):
-                                ok = False
-                            elif variant == "output":
-                                # R6/R7: carry the immutable requirement
-                                # through the rename: the funding record must
-                                # bind back to the CAS-filed request ref read
-                                # here for the renamed row (one read for this
-                                # phase; the begin phase read its own), the
-                                # row's projection must still agree with it,
-                                # and a filed request that declares no ref
-                                # can never gain one from the renamed row.
-                                # A direct-API row with no filed request
-                                # keeps the projection binding cover already
-                                # proved; unreadable request evidence fails
-                                # closed.
-                                try:
-                                    _req_ref, _req_present = (
-                                        _sealed_produced_output_batch(
-                                            moved.get("cas_root"), key))
-                                except (OSError, PoolContractError, ValueError):
-                                    ok = False
-                                    _req_ref = None
-                                    _req_present = False
-                                else:
-                                    if (_req_present and _req_ref is None
-                                            and "produced_output_batch"
-                                            in moved):
-                                        ok = False
-                                    elif _req_ref is not None:
-                                        if not (
-                                                self._output_projection_matches_request(
-                                                    moved.get(
-                                                        "produced_output_batch"),
-                                                    _req_ref)):
-                                            ok = False
-                                        elif not (
-                                                self._output_record_matches_request(
-                                                    live, _req_ref)):
-                                            ok = False
-                        if not ok:
-                            funding_verified = False
-                            break
+                    funding_verified = self._verify_claim_funding(committed)
                     if not funding_verified:
                         reservation.abandon(_ClaimExit.COMMITTED_RETRY,
                                             moved=_MovedReady(src, dst, moved))
@@ -22977,42 +23034,8 @@ class PoolQueue:
                     # pre-persistence verification and these marks; only I/O
                     # can still fail, and I/O failure keeps the entitlement
                     # (records stay ``transferring``) for the next attempt.
-                    funding_sealed = True
-                    failed_tier: str | None = None
-                    for funded_tier, entry in reservation.tier_funded.items():
-                        pinned = (entry.get("generation")
-                                  if isinstance(entry, dict) else None)
-                        variant = (str(entry.get("variant") or "window")
-                                   if isinstance(entry, dict) else "window")
-                        # Locked spelling: the claim holds this key's
-                        # transition lock from its tier acquire through here.
-                        if variant == "output":
-                            marked = self._advance_funding_state_locked(
-                                key, funded_tier, expect="transferring",
-                                advance_to="consumed",
-                                generation=pinned if isinstance(
-                                    pinned, str) else None, binding="output")
-                            if marked:
-                                continue
-                            current = self.read_output_funding(
-                                key, funded_tier)
-                        else:
-                            marked = self._advance_funding_state_locked(
-                                key, funded_tier, expect="transferring",
-                                advance_to="consumed",
-                                generation=pinned if isinstance(
-                                    pinned, str) else None)
-                            if marked:
-                                continue
-                            current = self.read_funding(key, funded_tier)
-                        if (current is not None
-                                and current.get("state") == "consumed"
-                                and (pinned is None or current.get(
-                                    "generation") == pinned)):
-                            continue
-                        funding_sealed = False
-                        failed_tier = funded_tier
-                        break
+                    sealed = self._seal_claim_funding(committed)
+                    funding_sealed, failed_tier = sealed.sealed, sealed.failed_tier
                     if not funding_sealed:
                         reservation.abandon(_ClaimExit.PERSISTED_RETRY,
                                             moved=_MovedReady(src, dst, moved))
