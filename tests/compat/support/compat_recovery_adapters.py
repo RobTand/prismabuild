@@ -50,6 +50,8 @@ def operate(request, store, load):
     bundle = cas.input_path(snapshot["input"])
     subprocess.run(["git", "clone", "--bare", "--quiet", "--template=", str(bundle), str(checkout / ".git")],
                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    git(checkout, "symbolic-ref", "HEAD", "refs/heads/compat")
+    git(checkout, "update-ref", "refs/heads/compat", snapshot["commit"])
     assert git(checkout, "rev-parse", "HEAD") == snapshot["commit"]
     (checkout / "payload").write_bytes(b"retained private dirty bytes")
     archive = bank / "selected.tar"

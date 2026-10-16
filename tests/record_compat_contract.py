@@ -136,7 +136,7 @@ class RecordContract:
                 readers.append((old, manifest, "old"))
             for root, attestation, suffix in readers:
                 observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
-                                  evidence=evidence(generation + "/" + kind.name + "-unknown-" + suffix + ".json"))
+                                  evidence=evidence(generation + "/" + case.replace("/", "-") + "-unknown-" + suffix + ".json"))
                 if kind.field_policy == "closed":
                     assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
                 else:
@@ -157,7 +157,7 @@ class RecordContract:
                 readers.append((old, manifest, "old"))
             for root, attestation, suffix in readers:
                 observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
-                                  evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
+                                  evidence=evidence(generation + "/" + case.replace("/", "-") + "-foreign-" + suffix + ".json"))
                 if kind.field_policy == "presence-only":
                     accepted(observed)
                     assert observed["result"]["body_decoded"] is False
