@@ -278,7 +278,9 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # withdrawal checkpoint a covered claimed row is still a live consumer:
     # the sweep retains the lead, because live_claims still names it. This
     # fixture has no worker, so take the checkpoint the worker would take.
-    claimed_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
+    claimed_row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.CLAIMED, first),
+    )
     assert claimed_row is not None, "the withdrawn member's row already left claimed/"
     assert queue.withdrawal_covers(claimed_row) is not None
     queue.finish(first, status="withdrawn")
@@ -363,7 +365,9 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     assert gclaim("sparky") == second, denial(second, "sparky")
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     for key in (first, second):
-        claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
+        claimed = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, key),
+        )
         assert claimed["residency_verdict"]["state"] == "resident"
         environment = queue.launch_environment(claimed)
         assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(key))
@@ -548,10 +552,12 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
     # The lead is live again: a CLAIMED record under a later generation (a READY
     # one would be claimed by the very pass under test).
     live = dict(pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, lead))
-                or pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead)))
+                or pool.record_store.value_or_raise(
+                    queue.records.item(pool.record_store.FAILED, lead),
+                ))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert not _gang.terminal_mark_path(queue, group, first).exists()
@@ -572,7 +578,7 @@ def test_a_changed_ending_restarts_the_wait(gang_fleet, monkeypatch, tmp_path):
     path = queue.records.item_path(pool.record_store.FAILED, lead)
     record = dict(pool.record_store.read_document(path))
     record["published_unix"] = float(record["published_unix"]) + 7
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "the old mark must not confirm a new ending"
@@ -826,10 +832,12 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "stuck-mark-gang")
     ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead))
-    live = dict(pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead)))
+    live = dict(
+        pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead)),
+    )
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     real_clear = _gang.clear_terminal
     monkeypatch.setattr(_gang, "clear_terminal",
                         lambda queue, group, key: False)
@@ -932,7 +940,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     mark_path = _gang.terminal_mark_path(queue, group, first)
     old_mark = mark_path.read_bytes()
     real_verdict = queue.residency_verdict
-    real_write = pool._write_json_atomic
+    real_write = pool.record_store._write_json
     calls = 0
     observed_faults = []
 
@@ -959,7 +967,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     with monkeypatch.context() as fault:
         fault.setattr(queue, "residency_verdict", verdict)
         fault.setattr(_gang, "clear_terminal", fail_clear)
-        fault.setattr(pool, "_write_json_atomic", write)
+        fault.setattr(pool.record_store, '_write_json', write)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
         assert "clear-terminal" in observed_faults, "reset never reached the failed terminal clear"
@@ -992,7 +1000,7 @@ def test_a_future_terminal_timestamp_restarts_confirmation(
     path = _gang.terminal_mark_path(queue, group, first)
     mark = json.loads(path.read_text())
     mark["first_seen_unix"] = clock[0] + 10 * _gang.TERMINAL_CONFIRM_S
-    pool._write_json_atomic(path, mark)
+    pool.record_store._write_json(path, mark)
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
     clock[0] += _gang.TERMINAL_CONFIRM_S - 1
@@ -1003,7 +1011,10 @@ def test_a_future_terminal_timestamp_restarts_confirmation(
     assert _gang.teardown(queue, group) is not None
 
 
-@pytest.mark.parametrize("directory", [pool.record_store.READY, pool.record_store.DONE, pool.record_store.MOVERS])
+@pytest.mark.parametrize(
+    "directory",
+    [pool.record_store.READY, pool.record_store.DONE, pool.record_store.MOVERS],
+)
 def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
         gang_fleet, monkeypatch, tmp_path, directory):
     """The final proof cannot convert a failed refresh into terminal absence."""

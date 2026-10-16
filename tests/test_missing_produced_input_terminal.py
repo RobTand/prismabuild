@@ -40,7 +40,9 @@ def test_terminal_failed_producer_missing_input_ends_ready_mover(tmp_path):
 
     assert not world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "terminal-failed owner plus missing sealed input left the mover READY")
-    ending = json.loads(world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text())
+    ending = json.loads(
+        world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text(),
+    )
     assert ending["published_unix"] == before["published_unix"]
     assert ending["status"] == "failed"
     assert ending["detail"]["termination_reason"] == "input_dependency_failed"
@@ -210,7 +212,7 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
     def crash(*args, **kwargs):
         raise OSError("simulated write fault before the ending was filed")
 
-    monkeypatch.setattr(pool, "_write_json_atomic", crash)
+    monkeypatch.setattr(pool.record_store, '_write_json', crash)
     # The guard restores the row instead of raising out of the pass.
     assert world.q.fail_dead_input_dependency(item, world.mover) is False
     monkeypatch.undo()
@@ -282,7 +284,9 @@ def test_claim_fails_the_mover_before_any_admission(tmp_path):
     claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
     assert claimed is None, "a dead producer's missing-input mover was admitted"
     assert not world.q.records.item_path(pool.record_store.READY, world.mover).exists()
-    ending = json.loads(world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text())
+    ending = json.loads(
+        world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text(),
+    )
     assert ending["status"] == "failed"
     assert ending["detail"]["termination_reason"] == "input_dependency_failed"
     assert ending["detail"].get("action_returncode") is None  # never executed
