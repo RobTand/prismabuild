@@ -1,6 +1,7 @@
 """Real ownership controls for C05 L; run only through published PrismaBuild."""
 import errno
 import json
+import os
 from pathlib import Path
 import pytest
 from prismabuild import pool, prelaunch_group as pg, produced_output as po
@@ -16,14 +17,15 @@ import tier_loop
 
 
 def _unreadable_stat(monkeypatch, target, error):
-    real = Path.stat
+    real = os.stat
     seen = []
     def stat(path, *args, **kwargs):
-        if path == target:
-            seen.append(path)
+        if (isinstance(path, (str, bytes, os.PathLike))
+                and Path(os.fsdecode(path)) == target):
+            seen.append(Path(os.fsdecode(path)))
             raise OSError(error, 'C05 real underlying metadata failure', str(path))
         return real(path, *args, **kwargs)
-    monkeypatch.setattr(Path, 'stat', stat)
+    monkeypatch.setattr(os, 'stat', stat)
     return seen
 
 
