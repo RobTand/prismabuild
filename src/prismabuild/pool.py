@@ -548,7 +548,6 @@ RESERVATIONS = "reservations"
 #: tokens are taken by claimants on any box: a mover on dl380g10 fills a
 #: stage that a consumer on a Spark reads, and both reserve against the
 #: same ledger.
-TIER_RESERVATIONS = "tier-reservations"
 #: Where one mover's advance-credit funding record lives (window progress
 #: protection): bound to exact tier/mover/range/generation, read by the claim
 #: path only to cover pre-positioned fence tokens, never to invent capacity.
