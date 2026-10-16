@@ -177,16 +177,13 @@ def test_where_the_xattr_cannot_be_read_an_unmarked_file_is_left_alone(
     assert receipt["partials_deleted"] == 1
 
 
-def test_a_prewarm_temporary_is_left_to_the_loop_that_owns_it(fleet):
-    """``reap_temporaries`` owns those, once per process, and a live one is in use."""
-
+def test_a_retired_prewarm_temporary_name_has_no_reconcile_exemption(fleet):
     queue, stage = fleet
     temporary = _staged_file(stage, "obj.bin.pbstage@0+4096.7.1.tmp", 4096)
-    assert stage_marks.prewarm_temporary_pid(temporary.name) is not None
     receipt = stage_release.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
-    assert temporary.exists()
-    assert receipt["entries_deleted"] == 0
+    assert not temporary.exists()
+    assert receipt["entries_deleted"] == 1
 
 
 def test_a_withdrawn_movers_fragment_is_not_attribution(fleet):

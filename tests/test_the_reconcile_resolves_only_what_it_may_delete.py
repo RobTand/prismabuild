@@ -18,6 +18,7 @@ and the deletions are exactly what the old code produced.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 import shutil
 import stat as statmod
@@ -70,7 +71,7 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
                 continue
             partial = stage_release._is_mover_partial(name)
             if not partial:
-                if stage_marks.prewarm_temporary_pid(name) is not None:
+                if re.search(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$", name):
                     continue
                 marked = stage_release._marked_by_the_prewarm_stage(path)
                 if marked is None or marked:
@@ -146,7 +147,7 @@ def _fleet(root: Path) -> tuple[pool.PoolQueue, Path]:
 
 
 def _ordinary_tree(queue: pool.PoolQueue, stage: Path) -> None:
-    """Attributed, marked, unmarked, partial and temporary files, nested."""
+    """The retained attributed, marked, unmarked and partial cases, nested."""
 
     attributed = [
         _staged_file(stage, f"models/m-{index}.safetensors.pbrange/0-4096")
@@ -161,7 +162,6 @@ def _ordinary_tree(queue: pool.PoolQueue, stage: Path) -> None:
     for index in range(3):
         _staged_file(stage, f"orphans/o-{index}.pbrange/0-4096")
     _staged_file(stage, "orphans/.o-9.bin.partial")
-    _staged_file(stage, "prewarm/obj.bin.pbstage@0+4096.7.1.tmp")
     _staged_file(stage, "top-level-orphan.bin")
     os.symlink(stage / "top-level-orphan.bin", stage / "a-symlink.bin")
 

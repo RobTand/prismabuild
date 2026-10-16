@@ -109,65 +109,6 @@ the two measured states: one reader at 40% / 15 ms / 4 000 ms kept the disks at
 reader at 25% / 10 ms / 2 000 ms warmed a 63.8 GB row at 146.5 MB/s with the
 clients untouched (2026-09-11 09:13:21-09:20:36 UTC).
 
-The stage tier, and what it does not buy (#582, opt-in)
--------------------------------------------------------
-``--stage`` gives the same window read a second destination: a copy on a ZFS
-pool whose name starts with ``prismabuild-stage``.  Nothing else changes --
-the same ``Reader``, the same ``DiskPacer``, the same window arithmetic, the
-same ARC budget -- and without the flag nothing here runs at all, down to the
-fields in the receipts.
-
-The tier is rediscovered every cycle and reported in five states, one of
-which is always written even when the loop stages nothing: ``present``,
-``absent`` (no pool carries the name), ``full`` (the discovered capacity
-leaves nothing above the floor, or the budget ran out mid-cycle),
-``unreadable`` (no ``zpool``, no mounted directory, an unwritable one, or a
-health that is neither ONLINE nor DEGRADED), and ``faulted`` (a write failed
-for something other than exhaustion).  Capacity is the ``prewarm`` dataset's
-own ``available`` -- ZFS's arithmetic, which has already withheld the pool's
-slop and this dataset's quota -- and members reach a record only as
-``/dev/disk/by-id`` names: the
-``nvmeXn1`` numbers on this fleet's file server are the reverse of what the
-model names suggest, and a record naming one would name the box's root
-device.
-
-Release is delete-behind-the-accepted-phase -- the same frontier that already
-releases ARC reserve -- with two guards.  A staged object is deleted only
-when no other queued row still wants it, because the stage tree is keyed by
-path and three measured prepare manifests share 469 007 of 469 008 entries;
-and a row that leaves the queue has its band swept, because a last phase
-leaves no frontier behind it.  A cycle with several queued rows over the same
-bytes can therefore delete nothing and report ``full``.  That is the measured
-shape of total overlap, not a leak, and it is the retained-prefix behaviour
-#583's revision-2 design argues for -- arrived at, not chosen.
-
-**What this does not establish, and must not be read as establishing:** no
-consumer reads *this* tree.  Two trees live on the stage dataset and only one
-of them is read: ``stage_move`` (#583) copies a consumer's declared range,
-files a residency-map fragment for it, and the consumer opens the staged path
-once the composed map names it (#634).  This loop's own ``--stage`` objects
-are named for their byte range under :data:`STAGE_LAYOUT`, no map names them,
-and nothing opens them -- so a copy here is still a copy, and every record
-says so in its ``consumer`` block instead of reporting bytes written as bytes
-saved.  Turning it on without a consumer costs SSD writes at pool read rate
-and returns nothing, the same wear #582 counts against L2ARC.  A range
-written under a mirrored file name would be a short file, which is why an
-object here carries its byte range in its name and this tree is a
-residency-map source rather than an overlay lower layer.
-
-**``primarycache`` on the stage dataset: ``all``, since 2026-09-18 (#638).**
-The rationale that argued for ``metadata`` -- the stage's writes go through
-the ARC this loop is filling, so a staged window holds two copies of it --
-expired when a consumer began reading the stage.  It is the mover's tree the
-consumer reads, and the setting is the dataset's, so the dataset must cache
-file data or every consumer read of a staged file reaches the SSD: measured
-sparky -> dl380g10 on one 5.37 GB file, ``dd iflag=direct``, 16 x 256 MiB at
-matched concurrency, 2402 MB/s on an ARC miss against 10045 MB/s on a hit --
-4.18x, 19% of the 100 Gbps link against 80%.  The second copy this loop's own
-staged window now holds in ARC is the price of that, paid deliberately.
-``tier_loop`` announces the setting on the tier record and refuses the warm
-out loud when a rebuilt pool has inherited ``metadata`` again.
-
 What it does not do
 -------------------
 It is not a second dispatcher.  It never decides what runs, where, or next; it
@@ -191,7 +132,6 @@ budget and the outcome stays visible.
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
 import queue as queuelib
@@ -222,11 +162,6 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
-from prismabuild.stage_marks import (  # noqa: E402
-    STAGE_OBJECT_MARK, STAGE_SOURCE_FORMAT, STAGE_SOURCE_XATTR,
-    prewarm_temporary_name, prewarm_temporary_pid, source_identity,
-)
-
 #: ZFS reads a whole record either way, and the pool this was measured on uses
 #: 1 MiB records; a smaller block only costs syscalls.
 BLOCK = 1 << 20
@@ -288,64 +223,6 @@ HOLD_RELEASE_FRACTION = storage_tiers.HOLD_RELEASE_FRACTION
 #: of magnitude above the few hundred kB/s of attribute and directory traffic
 #: an idle mount produces.
 CLIENT_ACTIVE_MB_S = 2.6
-#: A ZFS pool is this fleet's stage tier when its name carries this prefix
-#: (#582).  The pool's *name* is the declaration, which is why the rule is
-#: not "any unused SSD": on dl380g10 ``nvme0n1p1`` still carries a stale
-#: ``zfs_member`` signature from a pool that no longer exists, and a rule
-#: that took unused devices would seize it before anybody approved it.
-STAGE_POOL_PREFIX = "prismabuild-stage"
-#: The only spelling a stage member reaches a record under.  Device numbers
-#: are not identity: on dl380g10 the ``nvmeXn1`` numbers are the reverse of
-#: what the model names say, so a record naming ``nvme0n1`` -- or an operator
-#: acting on one -- would name the box's root device.
-BY_ID = "/dev/disk/by-id"
-#: The dataset the stage's bytes are written to, when the pool carries one.
-#: The pool is created with ``prismabuild-stage/prewarm`` so the tier's own
-#: properties -- and, later, its export -- belong to the dataset rather than
-#: to the pool root; a pool without it is written at its own mountpoint.
-STAGE_DATASET = "prewarm"
-#: ZFS's own reserve, in ZFS's own arithmetic, for the one case where this
-#: loop cannot ask ZFS for it.  ``zfs get available`` on a dataset has
-#: already withheld the pool's slop space -- the reserve a normal write can
-#: never consume, ``spa_slop_shift`` -- so a tier sized from ``available``
-#: needs no floor of this module's invention and takes none.  Only the
-#: fallback to pool-level ``free`` needs one, and the honest value there is
-#: the reserve ZFS itself would have withheld: 1/32 of the pool, never less
-#: than 128 MiB.  A round number picked for how it looked would be a
-#: heuristic standing where an explicit exists.
-STAGE_SLOP_SHIFT = 5
-STAGE_SLOP_MINIMUM = 128 << 20
-#: Stage roots this process has already reaped.  A crash or a SIGKILL leaves
-#: one temporary per in-flight reader, and nothing else ever removes them:
-#: ``release`` unlinks by key and the sweep is driven from receipts, so they
-#: are invisible to both and only shrink the tier.  Once per process, not
-#: once per cycle -- a live temporary belongs to a copy in flight.
-_REAPED_STAGE_ROOTS: set[str] = set()
-#: Written into every stage record, because the layout *is* the consumer
-#: contract and a reader of the record must not have to guess it.
-STAGE_LAYOUT = (
-    "mirror of the manifest's mount prefix, one object per manifest entry, "
-    "named <relative path>.pbstage@<offset>+<bytes>.  A manifest entry is a "
-    "byte range, so an object is a range: this tree is a residency-map "
-    "source and deliberately not an overlay lower layer, which would serve a "
-    "staged range as a whole short file"
-)
-#: The honest half of every stage record.  Staging writes bytes; it does not
-#: make a consumer read them, and the two are separate claims (#582).
-STAGE_CONSUMER = {
-    "reads_stage": False,
-    "verified_reads": None,
-    "effect": "copy_only",
-    "reason": (
-        "no consumer reads this stage: PrismaBuild publishes no residency "
-        "map and the export is served from the pool path.  The ARC is keyed "
-        "by the on-pool block pointer, so a staged copy does not warm the "
-        "path a consumer reads.  Staged bytes are a copy, never a saved read"
-    ),
-}
-#: A write that fails for one of these has exhausted the tier rather than hit
-#: a fault, and the tier's state says so for the rest of the cycle.
-_STAGE_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT, errno.EFBIG})
 #: The fleet's own store, spelled the way ``worker_loop`` spells it.  Not
 #: ``pool.DEFAULT_POOL_ROOT``: that default was ``/mnt/shared/pb-queue`` until
 #: #976, one directory above the queue this fleet actually keeps, and a loop
@@ -433,862 +310,13 @@ class MountMap:
 # ----------------------------------------------------------------- pacing
 
 
-# ------------------------------------------------------------- stage tier
+# ------------------------------------------------------------- storage commands
 
 
 def run_tool(argv: list[str]) -> str:
     return subprocess.run(
         argv, check=True, text=True, timeout=30,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-
-
-def stage_pool_rows(prefix: str,
-                    runner: Callable[[list[str]], str] | None = None,
-                    ) -> list[dict[str, object]] | None:
-    """Every imported pool whose name carries ``prefix``, with exact bytes.
-
-    ``zpool list -Hp`` prints bytes rather than the rounded ``745G`` a human
-    sees, so capacity comes from the pool's own arithmetic and never from a
-    parsed suffix.  ``None`` means ``zpool`` could not be run at all, which is
-    a different fact from ``[]`` -- no stage pool is imported -- and the two
-    reach the record as ``unreadable`` and ``absent``.
-
-    The prefix is the device's own declaration, the way a ZFS label declares a
-    data member.  Deliberately *not* "any unused SSD": on dl380g10
-    ``nvme0n1p1`` still carries a stale ``zfs_member`` signature, and a rule
-    that claimed unused devices would seize it before anybody approved it.
-    """
-
-    try:
-        text = (runner or run_tool)([
-            storage_tiers.zpool_binary(), "list", "-Hp",
-            "-o", "name,size,allocated,free,health"])
-    except (OSError, subprocess.SubprocessError):
-        return None
-    rows: list[dict[str, object]] = []
-    for line in text.splitlines():
-        fields = line.split("\t") if "\t" in line else line.split()
-        if len(fields) < 5 or not fields[0].startswith(prefix):
-            continue
-        try:
-            size, allocated, free = (int(field) for field in fields[1:4])
-        except ValueError:
-            continue
-        rows.append({"name": fields[0], "size_bytes": size,
-                     "allocated_bytes": allocated, "free_bytes": free,
-                     "health": fields[4]})
-    return rows
-
-
-def dataset_available(name: str,
-                      runner: Callable[[list[str]], str] | None = None,
-                      ) -> int | None:
-    """Bytes ``name`` can still be written, as the dataset itself reports it.
-
-    The number that describes the thing being written to.  ``zpool list``'s
-    ``free`` is pool level and has withheld nothing: not the pool's slop
-    space, not this dataset's quota or reservation, not the metadata the
-    write itself will cost.  A budget taken from it never binds -- the loop
-    reaches the kernel's ENOSPC before it reaches its own hard stop, every
-    time the tier fills -- and a stop that never binds is not a stop.
-
-    ``None`` when the dataset cannot answer, which is a fact the caller
-    records rather than a number it substitutes.
-    """
-
-    try:
-        text = (runner or run_tool)(
-            [storage_tiers.zfs_binary(), "get", "-Hp", "-o", "value", "available", name])
-    except (OSError, subprocess.SubprocessError):
-        return None
-    try:
-        value = int(text.strip())
-    except ValueError:
-        return None
-    return value if value >= 0 else None
-
-
-def by_id_names(paths: "list[str] | tuple[str, ...]", *,
-                by_id: str | None = None) -> list[str]:
-    """``/dev/disk/by-id`` names for ``paths``, in the order given.
-
-    A stage member reaches a record under this name and no other.  Device
-    numbering is not identity: on dl380g10 the ``nvmeXn1`` numbers are the
-    reverse of what the model names suggest, and a record -- or an operator
-    acting on one -- that said ``nvme0n1`` would name the box's root device.
-    An unresolvable path contributes ``"unresolved:<basename>"`` rather than
-    a device number, so the gap is visible and still not a number.
-
-    Where several links resolve to one device the shortest model-serial name
-    wins, so a record says ``nvme-LT0800KEXVA_CVMD54710026800BGN`` rather
-    than its ``nvme-nvme.8086-...`` twin.
-    """
-
-    # Read when it is called, never bound when this module is defined: a test
-    # -- and a box with a different device tree -- must be able to repoint it.
-    by_id = by_id or BY_ID
-    resolved: dict[str, list[str]] = {}
-    try:
-        entries = sorted(os.listdir(by_id))
-    except OSError:
-        entries = []
-    for name in entries:
-        try:
-            target = os.path.realpath(os.path.join(by_id, name))
-        except OSError:
-            continue
-        resolved.setdefault(target, []).append(name)
-    names: list[str] = []
-    for path in paths:
-        try:
-            target = os.path.realpath(path)
-        except OSError:
-            target = ""
-        candidates = [n for n in resolved.get(target, [])
-                      if not n.startswith("nvme-nvme.")]
-        candidates = candidates or resolved.get(target, [])
-        names.append(min(candidates, key=len) if candidates
-                     else f"unresolved:{os.path.basename(path)}")
-    return names
-
-
-def stage_prefix_head(mount_prefix: str) -> str:
-    """``mount_prefix`` normalised once, with its separator, for a whole pass.
-
-    Every entry of a manifest shares one prefix, and normalising it per entry
-    is most of what made a release cost a core: these are 469 008-entry
-    manifests and a cycle asks about every entry of every live row.
-    """
-
-    prefix = os.path.normpath(str(mount_prefix or ""))
-    if not prefix or prefix == ".":
-        return ""
-    return prefix if prefix.endswith(os.sep) else prefix + os.sep
-
-
-def stage_entry_id(entry: Mapping[str, object],
-                   head: str) -> "tuple[str, int, int] | None":
-    """One entry's stage object as ``(relative path, offset, bytes)``.
-
-    The identity a release compares by.  It is the key's own three parts,
-    unformatted: building the string cost ``os.path.relpath``, which calls
-    ``os.getcwd`` for every entry it is given, and the comparison never
-    needed the string.  Relative to the manifest's prefix rather than
-    absolute, because two rows with different mount prefixes still meet on
-    the same object in the stage tree.
-
-    ``head`` is :func:`stage_prefix_head`'s answer, so the prefix is
-    normalised once per pass rather than once per entry.
-    """
-
-    path = str(entry.get("path", ""))
-    if not path or not head:
-        return None
-    relative: "str | None" = None
-    if path.startswith(head):
-        candidate = path[len(head):]
-        parts = candidate.split(os.sep)
-        # An already-normalised remainder is its own relative form.  Anything
-        # else -- an empty component, a ``.``, a ``..`` -- falls through to
-        # the exact arithmetic below rather than being guessed at.
-        if candidate and all(parts) and not any(
-                part in (os.curdir, os.pardir) for part in parts):
-            relative = candidate
-    if relative is None:
-        try:
-            relative = os.path.relpath(os.path.normpath(path),
-                                       os.path.normpath(head))
-        except ValueError:
-            return None
-        if (relative.startswith("..") or os.path.isabs(relative)
-                or relative == "."):
-            return None
-        if any(part == ".." for part in relative.split(os.sep)):
-            return None
-    return (relative, int(entry.get("offset", 0) or 0),
-            int(entry.get("bytes", 0) or 0))
-
-
-def stage_object_name(identity: "tuple[str, int, int]") -> str:
-    """A stage object's name, formatted from its identity.
-
-    Formatted only for an object that is about to be unlinked: a cycle that
-    compared by name paid for 469 008 strings it never used.
-    """
-
-    relative, offset, size = identity
-    return f"{relative}{STAGE_OBJECT_MARK}{offset}+{size}"
-
-
-def stage_object_key(entry: Mapping[str, object], mount_prefix: str) -> str | None:
-    """The stage's name for one manifest entry, or ``None`` if it has none.
-
-    A manifest entry is a *byte range* of a file, not a file.  Writing a range
-    under the file's own mirrored name would leave a short file that an
-    overlay would serve as the whole thing, so every stage object carries its
-    range in its name and the tree is deliberately **not** an overlay lower
-    layer.  It is the source a residency map is written from: a consumer is
-    handed ``(path, offset, bytes) -> stage object``, which is the consumer
-    contract #583's design names first.  An overlay would need a whole-file
-    manifest contract that nothing declares today.
-
-    ``None`` for a path outside the manifest's own mount prefix, or one whose
-    relative form escapes it.  The manifest is submitter-supplied, so the one
-    rule that matters here is that nothing this function returns can name a
-    path outside the stage root.
-    """
-
-    identity = stage_entry_id(entry, stage_prefix_head(mount_prefix))
-    return None if identity is None else stage_object_name(identity)
-
-
-class StageTier:
-    """A second destination for the window the reader is already reading.
-
-    The same ``Reader``, the same ``DiskPacer`` and the same window arithmetic
-    fetch the bytes; this class is where a copy of them lands on an SSD pool
-    whose name declares it a stage.  It owns three things and nothing else:
-    the tier's discovered identity, a byte budget taken from the pool's own
-    ``free``, and the delete-behind release that keeps the tier bounded.
-
-    What it does **not** own is any claim that staging helped.  No consumer
-    reads *these* objects: they are named for their byte range under
-    :data:`STAGE_LAYOUT`, no residency map names them, and nothing opens them.
-    A consumer that reads the stage reads ``stage_move``'s tree on the same
-    dataset, by the map composed from that mover's fragments (#583, #634).
-    Every record this class writes says so in ``consumer``, beside the bytes,
-    because a staged byte nobody reads is a copy and not a saved read -- and a
-    receipt that reported the copy as a win would be the #585 shape again, one
-    step further up the stack.
-
-    The dataset itself runs ``primarycache=all`` since 2026-09-18 (#638), for
-    the mover's tree rather than for this one: a stage the ARC may not cache
-    serves every consumer read off the SSD, 2402 MB/s against 10045.  So an
-    object written here now costs a second ARC copy of the window this loop is
-    warming, which is the trade that setting makes.
-    """
-
-    def __init__(self, *, state: str, reason: str, name: str = "",
-                 mountpoint: str = "", members: "list[str] | None" = None,
-                 size_bytes: int = 0, free_bytes: int = 0,
-                 allocated_bytes: int = 0, health: str = "",
-                 free_floor_bytes: int = 0, pools: "list[str] | None" = None,
-                 dataset: str = "", capacity_bytes: int | None = None,
-                 capacity_source: str = "") -> None:
-        self.state = state
-        self.reason = reason
-        self.name = name
-        self.dataset = dataset
-        self.mountpoint = mountpoint
-        self.members = list(members or [])
-        self.size_bytes = size_bytes
-        self.free_bytes = free_bytes
-        self.allocated_bytes = allocated_bytes
-        self.health = health
-        self.free_floor_bytes = free_floor_bytes
-        self.pools = list(pools or [])
-        #: What the tier may still be given, and which number that came from.
-        #: The dataset's own ``available`` when ZFS answered, the pool's
-        #: ``free`` when it did not -- and the record says which, because a
-        #: budget and the arithmetic behind it are one fact.
-        self.capacity_bytes = (free_bytes if capacity_bytes is None
-                               else int(capacity_bytes))
-        self.capacity_source = capacity_source or "unread"
-        self.budget_bytes = (max(0, self.capacity_bytes - free_floor_bytes)
-                             if mountpoint else 0)
-        self.staged_bytes = 0
-        self.staged_entries = 0
-        self.reserved_bytes = 0
-        self.released_bytes = 0
-        self.released_entries = 0
-        #: Objects this tier was asked to release and could not.  A sweep
-        #: that marked a row swept on top of one of these would be claiming
-        #: bytes are gone that are still on the disk.
-        self.release_failures = 0
-        #: Bytes written to a temporary that never earned a name, and the
-        #: objects they belong to.  ``staged_bytes`` counts only what was
-        #: committed, so on a tier that fills mid-window the work the cycle
-        #: actually did is invisible without these -- and whether the window
-        #: is sized wrong is exactly the question they answer.
-        self.aborted_bytes = 0
-        self.aborted_entries = 0
-        #: Objects committed without their source identity, because the
-        #: filesystem refused the extended attribute.  Counted rather than
-        #: fatal: identity is what makes a stale object detectable, not what
-        #: makes the copy correct.
-        self.identity_unrecorded = 0
-        #: What a previous process left behind and this one removed.
-        self.reaped_entries = 0
-        self.reaped_bytes = 0
-        #: Seconds spent inside ``write(2)`` on the stage.  The copy happens
-        #: in the reader thread's own block cycle, so with the stage on
-        #: ``per_reader_mb_s`` reads lower; this is the field that says why.
-        self.write_seconds = 0.0
-        self.errors: list[str] = []
-        self.lock = threading.Lock()
-
-    # -- state ---------------------------------------------------------
-
-    @property
-    def usable(self) -> bool:
-        return self.state == "present"
-
-    def note(self, message: str) -> None:
-        with self.lock:
-            if len(self.errors) < 20:
-                self.errors.append(message)
-
-    def mark_faulted(self, reason: str) -> None:
-        """The tier answered with something other than "no room".
-
-        EIO under ``failmode=continue``, ESTALE, EROFS: the device is there
-        and is not working.  Without a state for it every receipt in the
-        cycle still said ``present``, ``staged_bytes: 0`` and a reason that
-        described a healthy tier, while the loop reopened and refailed once
-        per manifest entry -- 469 008 times on a window of that size, into an
-        error list that stops at twenty.  The state is the fact, and it also
-        ends the retry: ``usable`` is false, so the reader stops asking.
-        """
-
-        with self.lock:
-            if self.state == "present":
-                self.state = "faulted"
-                self.reason = reason
-
-    def mark_full(self, reason: str) -> None:
-        """The tier ran out mid-cycle.  The warm continues; the stage stops.
-
-        A stage that filled is a fact about the tier, so it becomes the tier's
-        state for this cycle rather than an error buried in a list.  The read
-        itself is untouched: the ARC destination is the one the loop has
-        always had, and losing the second destination must never cost the
-        first.
-        """
-
-        with self.lock:
-            if self.state != "full":
-                self.state = "full"
-                self.reason = reason
-
-    # -- writing -------------------------------------------------------
-
-    def reserve(self, size: int) -> bool:
-        with self.lock:
-            if self.state != "present":
-                return False
-            if self.staged_bytes + self.reserved_bytes + size > self.budget_bytes:
-                return False
-            self.reserved_bytes += size
-            return True
-
-    def settle(self, reserved: int, written: int, *, committed: bool) -> None:
-        with self.lock:
-            self.reserved_bytes -= reserved
-            if committed:
-                self.staged_bytes += written
-                self.staged_entries += 1
-            else:
-                self.aborted_bytes += written
-                self.aborted_entries += 1
-
-    def note_unrecorded_identity(self) -> None:
-        with self.lock:
-            self.identity_unrecorded += 1
-
-    def add_write_seconds(self, seconds: float) -> None:
-        with self.lock:
-            self.write_seconds += max(0.0, seconds)
-
-    def object_path(self, key: str) -> Path:
-        return Path(self.mountpoint) / key
-
-    def open_object(self, key: str, declared: int) -> "StageObject | None":
-        """A temporary file for one entry, renamed into place only when whole.
-
-        ``O_EXCL`` and ``O_NOFOLLOW`` on a name carrying this process and
-        thread: two readers of the same range never share a temporary, and a
-        symlink planted under the stage root is refused rather than followed.
-        A partial object is never renamed, so nothing under the stage root is
-        ever a short file wearing a complete name.
-
-        ``declared`` is the entry's own ``bytes``, carried here so that
-        :meth:`StageObject.commit` can refuse a rename the object's content
-        does not earn.  The key already states that number; an object whose
-        content is shorter than its name would be a lie a consumer cannot
-        detect, so the number travels with the handle that has to honour it.
-        """
-
-        target = self.object_path(key)
-        temporary = target.with_name(
-            prewarm_temporary_name(
-                target.name, os.getpid(), threading.get_ident()))
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            handle = os.open(
-                str(temporary),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o644)
-        except OSError as exc:
-            self.note(f"{key}: {exc}")
-            if exc.errno in _STAGE_FULL_ERRNOS:
-                self.mark_full(f"stage pool out of space: {exc}")
-            else:
-                self.mark_faulted(f"stage pool fault: {exc}")
-            return None
-        return StageObject(self, key, handle, temporary, target,
-                           declared=int(declared))
-
-    # -- release -------------------------------------------------------
-
-    def release(self, keys: "list[str]") -> None:
-        """Delete staged objects, counting only the bytes actually removed.
-
-        A tier with no mountpoint has no objects to name: ``object_path``
-        would build a path relative to this process's working directory, and
-        an unlink there is a write somewhere nobody asked for.  Refused, and
-        counted as a failure so that nothing downstream reads the empty
-        result as "already released".
-        """
-
-        if not self.mountpoint:
-            self.note(f"release refused: the tier has no mountpoint "
-                      f"({len(keys)} objects)")
-            with self.lock:
-                self.release_failures += len(keys)
-            return
-        for key in keys:
-            path = self.object_path(key)
-            try:
-                size = path.stat().st_size
-                path.unlink()
-            except FileNotFoundError:
-                # Already gone is released: a band re-staged in a later life
-                # names objects an earlier sweep removed.
-                continue
-            except OSError as exc:
-                self.note(f"{key}: {exc}")
-                with self.lock:
-                    self.release_failures += 1
-                continue
-            with self.lock:
-                self.released_bytes += size
-                self.released_entries += 1
-
-    def reap_temporaries(self) -> None:
-        """Remove temporaries left by a process that is no longer here.
-
-        Only names this loop's own writer builds, and never this process's
-        own: a temporary carrying our pid belongs to a copy in flight.
-        """
-
-        if not self.mountpoint:
-            return
-        mine = str(os.getpid())
-        for path in Path(self.mountpoint).rglob("*.tmp"):
-            pid = prewarm_temporary_pid(path.name)
-            if pid is None or pid == mine:
-                continue
-            try:
-                size = path.stat().st_size
-                path.unlink()
-            except OSError as exc:
-                self.note(f"{path.name}: {exc}")
-                continue
-            self.reaped_entries += 1
-            self.reaped_bytes += size
-
-    # -- record --------------------------------------------------------
-
-    def record(self) -> dict[str, object]:
-        return {
-            "state": self.state,
-            "reason": self.reason,
-            "pool": self.name,
-            "dataset": self.dataset,
-            "pools_seen": self.pools,
-            "mountpoint": self.mountpoint,
-            # By-id only.  A device number never enters a record: the numbers
-            # on this box are the reverse of what the model names suggest.
-            "members": self.members,
-            "health": self.health,
-            "size_bytes": self.size_bytes,
-            "free_bytes": self.free_bytes,
-            "allocated_bytes": self.allocated_bytes,
-            "capacity_bytes": self.capacity_bytes,
-            "capacity_source": self.capacity_source,
-            "free_floor_bytes": self.free_floor_bytes,
-            "budget_bytes": self.budget_bytes,
-            "staged_bytes": self.staged_bytes,
-            "staged_entries": self.staged_entries,
-            # Written and then discarded: a refused rename, a tier that filled
-            # mid-entry, a read that stopped short.  Never folded into
-            # ``staged_bytes``, which is committed objects and nothing else.
-            "aborted_bytes": self.aborted_bytes,
-            "aborted_entries": self.aborted_entries,
-            "stage_write_seconds": round(self.write_seconds, 3),
-            "released_bytes": self.released_bytes,
-            "released_entries": self.released_entries,
-            "release_failures": self.release_failures,
-            "layout": STAGE_LAYOUT,
-            # What a validator reads to tell a staged object from a stale one.
-            "object_identity": {"xattr": STAGE_SOURCE_XATTR,
-                                "format": STAGE_SOURCE_FORMAT},
-            "identity_unrecorded": self.identity_unrecorded,
-            "reaped_tmp_entries": self.reaped_entries,
-            "reaped_tmp_bytes": self.reaped_bytes,
-            "consumer": dict(STAGE_CONSUMER),
-            "errors": list(self.errors),
-        }
-
-
-class StageObject:
-    """One entry's staged copy, in flight."""
-
-    def __init__(self, tier: StageTier, key: str, handle: int,
-                 temporary: Path, target: Path, *, declared: int = 0) -> None:
-        self.tier = tier
-        self.key = key
-        self.handle = handle
-        self.temporary = temporary
-        self.target = target
-        #: The byte count this object's own name declares.
-        self.declared = int(declared)
-        #: The source's identity, as the reader's own ``fstat`` saw it.
-        self.source: "os.stat_result | None" = None
-        self.written = 0
-        self.reserved = 0
-        self.live = True
-
-    def write(self, data: memoryview) -> bool:
-        if not self.live:
-            return False
-        size = len(data)
-        if not self.tier.reserve(size):
-            self.tier.mark_full("stage budget exhausted for this cycle")
-            self.abort()
-            return False
-        self.reserved += size
-        started = time.perf_counter()
-        moved = 0
-        try:
-            while moved < size:
-                # ``write(2)`` is allowed to transfer fewer bytes than it was
-                # given, and on a pool that runs out partway through a request
-                # it does exactly that rather than raising.  A caller that
-                # trusted the request length would count bytes the kernel
-                # never took and then rename a short object onto a name that
-                # declares the full range.  Drain the view or fail the sink.
-                taken = os.write(self.handle, data[moved:])
-                if taken <= 0:
-                    raise OSError(errno.EIO,
-                                  "stage write accepted no bytes")
-                moved += taken
-        except OSError as exc:
-            self.written += moved
-            self.tier.add_write_seconds(time.perf_counter() - started)
-            self.tier.note(f"{self.key}: {exc}")
-            if exc.errno in _STAGE_FULL_ERRNOS:
-                self.tier.mark_full(f"stage pool out of space: {exc}")
-            else:
-                self.tier.mark_faulted(f"stage pool fault: {exc}")
-            self.abort()
-            return False
-        self.tier.add_write_seconds(time.perf_counter() - started)
-        self.written += moved
-        return True
-
-    def identify(self, source: "os.stat_result") -> None:
-        """Carry the source's identity, from the ``fstat`` already taken."""
-
-        self.source = source
-
-    def _record_identity(self) -> None:
-        if self.source is None:
-            self.tier.note_unrecorded_identity()
-            return
-        value = source_identity(self.source)
-        try:
-            os.setxattr(self.handle, STAGE_SOURCE_XATTR, value.encode())
-        except OSError as exc:
-            # A filesystem without user extended attributes still stages; it
-            # stages objects a validator cannot date, and the record says how
-            # many.
-            self.tier.note(f"{self.key}: identity not recorded: {exc}")
-            self.tier.note_unrecorded_identity()
-
-    def commit(self) -> None:
-        """Rename the temporary into place; only a whole entry gets a name.
-
-        Whole is measured against the entry's declared ``bytes``, not against
-        what the reader thinks it handed over: the name states a byte range,
-        so an object whose content is shorter than its name is the one thing
-        this tree must never contain.
-        """
-
-        if not self.live:
-            return
-        self.live = False
-        if self.written != self.declared:
-            self.tier.note(f"{self.key}: wrote {self.written} B of the "
-                           f"{self.declared} B its name declares")
-            try:
-                os.close(self.handle)
-            except OSError:
-                pass
-            self._discard()
-            self.tier.settle(self.reserved, self.written, committed=False)
-            return
-        self._record_identity()
-        try:
-            os.close(self.handle)
-            os.replace(self.temporary, self.target)
-        except OSError as exc:
-            self.tier.note(f"{self.key}: {exc}")
-            self._discard()
-            self.tier.settle(self.reserved, self.written, committed=False)
-            return
-        self.tier.settle(self.reserved, self.written, committed=True)
-
-    def abort(self) -> None:
-        if not self.live:
-            return
-        self.live = False
-        try:
-            os.close(self.handle)
-        except OSError:
-            pass
-        self._discard()
-        self.tier.settle(self.reserved, self.written, committed=False)
-
-    def _discard(self) -> None:
-        try:
-            self.temporary.unlink()
-        except OSError:
-            pass
-
-
-def discover_stage(prefix: str, *,
-                   runner: Callable[[list[str]], str] | None = None,
-                   by_id: str | None = None,
-                   free_floor_bytes: int | None = None) -> StageTier:
-    """Read the stage tier off the box, every cycle, or say why there is none.
-
-    Rediscovered per cycle on purpose: a stage pool created, exported, filled
-    or lost between two polls changes the answer, and a tier remembered from
-    an earlier cycle is a claim about the box that stopped being checked.
-
-    The five states are the whole vocabulary, and one of them is always
-    recorded.  Discovery can return four of them; ``faulted`` is reached only
-    during a cycle, by a tier that was discovered ``present`` and then
-    answered a write with something other than "no room":
-
-    ``absent``
-        No imported pool carries the prefix.  This is the answer on every box
-        but the file server, and on the file server until the pool exists.
-    ``unreadable``
-        ``zpool`` could not be run, the pool has no mounted directory, that
-        directory cannot be written, or the pool's health is neither ONLINE
-        nor DEGRADED.  The tier is there and cannot be used.
-    ``full``
-        The tier is usable and its capacity leaves nothing above the floor.
-        Capacity is the ``prewarm`` dataset's own ``available`` -- which has
-        already withheld the pool's slop, this dataset's quota and its
-        reservation -- and the pool's ``free`` only when the dataset cannot
-        answer.  Never a configured size.
-    ``present``
-        Usable, with budget.  It does not mean anything was staged.
-    ``faulted``
-        A write failed for a reason that is not exhaustion -- EIO under
-        ``failmode=continue``, ESTALE, EROFS.  The tier stops being written
-        to for the rest of the cycle and the next cycle rediscovers it.
-    """
-
-    #: ``None`` means derived below, from whichever capacity number answers.
-    #: An operator who states a floor outranks the derivation.
-    stated_floor = free_floor_bytes
-    free_floor_bytes = 0 if stated_floor is None else int(stated_floor)
-    rows = stage_pool_rows(prefix, runner=runner)
-    if rows is None:
-        return StageTier(state="unreadable",
-                         reason="zpool list could not be run on this host",
-                         free_floor_bytes=free_floor_bytes)
-    if not rows:
-        return StageTier(
-            state="absent",
-            reason=f"no imported pool is named {prefix}*",
-            free_floor_bytes=free_floor_bytes)
-    rows.sort(key=lambda row: str(row["name"]))
-    chosen = rows[0]
-    names = [str(row["name"]) for row in rows]
-    name = str(chosen["name"])
-    health = str(chosen["health"])
-    common = dict(name=name, health=health, pools=names,
-                  size_bytes=int(chosen["size_bytes"]),
-                  free_bytes=int(chosen["free_bytes"]),
-                  allocated_bytes=int(chosen["allocated_bytes"]),
-                  free_floor_bytes=free_floor_bytes)
-    if health not in ("ONLINE", "DEGRADED"):
-        return StageTier(state="unreadable",
-                         reason=f"{name} health is {health}", **common)
-    dataset = f"{name}/{STAGE_DATASET}"
-    mountpoint = storage_tiers.pool_mountpoint(dataset, runner=runner or run_tool)
-    if not mountpoint:
-        dataset = name
-        mountpoint = storage_tiers.pool_mountpoint(name, runner=runner or run_tool)
-    common["dataset"] = dataset
-    if not mountpoint:
-        return StageTier(
-            state="unreadable",
-            reason=f"{name} has no mounted directory to write into", **common)
-    if not os.path.isdir(mountpoint) or not os.access(mountpoint, os.W_OK):
-        return StageTier(
-            state="unreadable",
-            reason=f"{mountpoint} is not a writable directory on this host",
-            mountpoint=mountpoint, **common)
-    leaves = storage_tiers.pool_member_paths(name, runner=runner or run_tool)
-    members = by_id_names(leaves or [], by_id=by_id)
-    # Ask the dataset what it can still take.  Falling back to the pool's
-    # ``free`` is a real answer to a different question, so it is recorded as
-    # such and carries the reserve ZFS would have withheld from it.
-    available = dataset_available(dataset, runner=runner)
-    if available is None:
-        capacity, source = int(chosen["free_bytes"]), "pool free"
-        if stated_floor is None:
-            free_floor_bytes = max(
-                int(chosen["size_bytes"]) >> STAGE_SLOP_SHIFT,
-                STAGE_SLOP_MINIMUM)
-    else:
-        capacity, source = available, "dataset available"
-    common["free_floor_bytes"] = free_floor_bytes
-    tier = StageTier(state="present", reason="stage pool discovered",
-                     mountpoint=mountpoint, members=members,
-                     capacity_bytes=capacity, capacity_source=source,
-                     **common)
-    if tier.budget_bytes <= 0:
-        tier.state = "full"
-        tier.reason = (f"{name} has {capacity} B of {source} against a "
-                       f"{free_floor_bytes} B floor")
-    return tier
-
-
-def stage_ids_between(entries: "list[dict[str, object]]", head: str,
-                      start: int, end: int) -> "list[tuple[str, int, int]]":
-    """The objects the reader has finished with in ``(start, end]``.
-
-    An entry counts as passed when its *last* byte is behind ``end``: an entry
-    straddling either edge was staged whole, because a warm reads files and
-    not byte ranges, and half of one is not releasable.
-
-    An empty band returns without walking the manifest.  This runs for every
-    window of every cycle whether or not a frontier moved, so a walk up to
-    ``end`` on a row with nothing to release was most of the cost of a poll.
-    A repeated range -- a v2 read plan may name one twice -- is one object,
-    so the band is deduplicated in read order.
-    """
-
-    if end <= start:
-        return []
-    ids: "dict[tuple[str, int, int], None]" = {}
-    position = 0
-    for entry in entries:
-        position += int(entry.get("bytes", 0) or 0)
-        if position > end:
-            break
-        if position <= start:
-            continue
-        identity = stage_entry_id(entry, head)
-        if identity:
-            ids[identity] = None
-    return list(ids)
-
-
-def stage_ids_wanted(entries: "list[dict[str, object]]", head: str,
-                     consumed: int,
-                     candidates: "set[tuple[str, int, int]]",
-                     ) -> "set[tuple[str, int, int]]":
-    """Which of ``candidates`` this row has *not* read yet.
-
-    Asked of every live row, including the row doing the releasing: a read
-    timeline may name the same range in two phases, and the later one is a
-    read that has not happened.
-
-    The stage tree is a mirror keyed by path and range, so two rows over the
-    same bytes -- which is the shape measured here: 469 007 of 469 008 entries
-    identical across three prepare manifests -- name the same objects.  A
-    release that only asked the row in front of it would delete the bytes the
-    row behind it has not reached.  Nothing reads the stage today, so nothing
-    breaks today; the predicate is path-exact now so that it is still correct
-    on the day a consumer arrives.
-    """
-
-    wanted: "set[tuple[str, int, int]]" = set()
-    position = 0
-    for entry in entries:
-        position += int(entry.get("bytes", 0) or 0)
-        if position <= consumed:
-            continue
-        identity = stage_entry_id(entry, head)
-        if identity in candidates:
-            wanted.add(identity)
-            if len(wanted) == len(candidates):
-                # Nothing of this band can survive being wanted twice, so
-                # the rest of this manifest cannot change the answer.
-                break
-    return wanted
-
-
-def release_stage_band(tier: StageTier, entries: "list[dict[str, object]]",
-                       mount_prefix: str, *, start: int, end: int,
-                       others: "Callable[[], list[tuple[list, str, int]]]",
-                       apply: bool = True) -> dict[str, object]:
-    """Delete the band another row does not still want, and say what it kept.
-
-    ``others`` is called only when there is something to delete, because it
-    loads manifests: a cycle with no advanced frontier must not pay for the
-    rows it would have asked.
-
-    ``apply=False`` is a plan: the same predicate, the same answer, nothing
-    unlinked.  A dry run reads the box and writes nothing to it, and deleting
-    a staged object is a write however little it looks like one.
-    """
-
-    head = stage_prefix_head(mount_prefix)
-    candidates = stage_ids_between(entries, head, start, end)
-    result: dict[str, object] = {
-        "candidate_entries": len(candidates), "retained_entries": 0,
-        "deletable_entries": 0, "released_entries": 0, "released_bytes": 0,
-        "failed_entries": 0,
-    }
-    if not candidates:
-        return result
-    pending = set(candidates)
-    # The releasing row is asked first, about its own band.  A v2 read plan
-    # may read a range again in a later phase -- forward [0, 1], compute,
-    # reverse [1, 0] is the documented shape -- and an object the current
-    # phase has passed is then an object the next phase reads.  Excluding the
-    # row that is releasing would delete its own revisit at the moment the
-    # revisit begins.
-    pending -= stage_ids_wanted(entries, head, end, pending)
-    for other_entries, other_prefix, other_consumed in (
-            others() if pending else ()):
-        pending -= stage_ids_wanted(other_entries,
-                                    stage_prefix_head(other_prefix),
-                                    other_consumed, pending)
-        if not pending:
-            break
-    result["retained_entries"] = len(candidates) - len(pending)
-    result["deletable_entries"] = len(pending)
-    if not apply:
-        return result
-    before_entries, before_bytes = tier.released_entries, tier.released_bytes
-    before_failures = tier.release_failures
-    # Formatted here and nowhere earlier: only the objects being unlinked
-    # ever need their names.
-    tier.release(sorted(stage_object_name(identity) for identity in pending))
-    result["released_entries"] = tier.released_entries - before_entries
-    result["released_bytes"] = tier.released_bytes - before_bytes
-    result["failed_entries"] = tier.release_failures - before_failures
-    return result
 
 
 def parse_export_stats(text: str) -> dict[str, int]:
@@ -2363,20 +1391,9 @@ class Reader:
         stop: threading.Event,
         recheck: Callable[[], int] | None = None,
         served: Mapping[str, object] | None = None,
-        stage: "StageTier | None" = None,
-        stage_prefix: str = "",
         is_live: Callable[[], bool] | None = None,
     ) -> dict[str, object]:
-        """``stage`` is the second destination for these same bytes (#582).
-
-        One window read, two places to put it: the ARC, which is what reading
-        the pool path does, and -- when a stage tier was discovered and asked
-        for -- a copy on the SSD pool.  The stage never changes what is read,
-        in what order, at what depth or under what hold: a tier that fills or
-        faults stops being written to and the warm carries on, because losing
-        the second destination must not cost the first.
-
-        ``is_live`` stops new reads for a row that went terminal, withdrawn
+        """``is_live`` stops new reads for a row that went terminal, withdrawn
         or superseded after selection (#571): consulted before every entry,
         before every block, in the admission wait and in the pacing hold, so
         a dead consumer releases the warm within one hold interval rather
@@ -2386,7 +1403,6 @@ class Reader:
         warm ran to its budget.
         """
 
-        staged_before = (stage.staged_bytes, stage.staged_entries) if stage else (0, 0)
         if self.pacer is not None:
             self.pacer.begin_row(**dict(served or {}))
         admission = Admission()
@@ -2448,22 +1464,10 @@ class Reader:
                         if len(errors) < 20:
                             errors.append(f"{os.path.basename(path)}: {exc}")
                     continue
-                sink = None
-                if stage is not None and stage.usable:
-                    key = stage_object_key(job, stage_prefix)
-                    if key is None:
-                        stage.note(f"{os.path.basename(path)}: outside the "
-                                   "manifest's mount prefix")
-                    else:
-                        sink = stage.open_object(key, want_total)
                 try:
                     source = os.fstat(fd)
                     if not statmod.S_ISREG(source.st_mode):
                         raise OSError(f"not a regular file: {path}")
-                    if sink is not None:
-                        # The identity of what is being copied, from the stat
-                        # this loop already takes.
-                        sink.identify(source)
                     if offset:
                         os.lseek(fd, offset, os.SEEK_SET)
                     remaining = want_total
@@ -2503,10 +1507,6 @@ class Reader:
                             state["bytes"] += chunk
                         if not chunk:
                             break
-                        if sink is not None and not sink.write(view[:chunk]):
-                            # The tier refused these bytes -- full, or a write
-                            # error already recorded.  The read keeps going.
-                            sink = None
                         got += chunk
                         remaining -= chunk
                         with lock:
@@ -2518,14 +1518,6 @@ class Reader:
                             errors.append(f"{os.path.basename(path)}: {exc}")
                 finally:
                     os.close(fd)
-                if sink is not None:
-                    # Only a whole entry earns its name.  A partial copy is
-                    # discarded rather than renamed, so nothing under the
-                    # stage root is ever a short file wearing a full name.
-                    if got == want_total:
-                        sink.commit()
-                    else:
-                        sink.abort()
                 with lock:
                     completed[index] = got
                     if got == want_total:
@@ -2594,13 +1586,6 @@ class Reader:
             # no new reads were issued past that verdict, and these are the
             # exact bytes the reads before it moved.
             result["stopped_by"] = state["stopped_by"]
-        if stage is not None:
-            # What this window put on the stage, never what any consumer read
-            # off it.  Absent entirely when no stage was asked for, so a
-            # receipt from the default configuration carries no stage field
-            # at all rather than a field saying nothing happened.
-            result["staged_bytes"] = stage.staged_bytes - staged_before[0]
-            result["staged_entries"] = stage.staged_entries - staged_before[1]
         return result
 
 
@@ -2801,12 +1786,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
     keys: list[str] = []
     triggers: list[dict[str, object]] = []
     windows: list[dict[str, object]] = []
-    #: Every claimed row this function saw, whatever it decided to reserve
-    #: for it.  The reserve and the window are budget questions; *live* is a
-    #: queue question, and the two skip branches below answer the first
-    #: without answering the second.  A row dropped from the reserve is still
-    #: a row that is running and still reading the bytes it was warmed.
-    live: dict[str, dict[str, object]] = {}
+    live_keys: set[str] = set()
     for path in sorted((queue.root / pool.CLAIMED).glob("*.json")):
         try:
             record = json.loads(path.read_text())
@@ -2819,11 +1799,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
             continue
         key = str(record.get("action_key", path.stem))
         root = Path(str(record.get("cas_root") or cas_root))
-        # Recorded before anything below can skip this row: a claimed row is
-        # live by definition, and a row with no window has read nothing of
-        # what it holds, which is the "wants all of it" shape.
-        live.setdefault(key, {"action_key": key, "cas_root": str(root),
-                              "consumed_bytes": 0})
+        live_keys.add(key)
         request = sealed_request(root, key)
         size = declared_manifest_bytes(request)
         if not size:
@@ -2848,7 +1824,6 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                             if not cyclic else None)
                 consumed = (manifest_layout.consumed_through(phases, reported["phase"])
                             if reported is not None else 0)
-                live[key]["consumed_bytes"] = consumed
                 windows.append({
                     "action_key": key, "cas_root": str(root),
                     "status": "partial", "manifest_sha256": str(entry["sha256"]),
@@ -2898,7 +1873,6 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         if released:
             triggers.append({"action_key": key, "phase": reported["phase"],
                              "released_bytes": released})
-        live[key]["consumed_bytes"] = consumed
         windows.append({
             "action_key": key, "cas_root": str(root),
             "status": str(warmed.get("status", "")),
@@ -2917,7 +1891,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
     return {"claimed_reserved_bytes": reserved, "claimed_reserved_keys": keys,
             "claimed_released_bytes": released_total,
             "progress_triggers": triggers, "claimed_windows": windows,
-            "claimed_live_rows": list(live.values())}
+            "claimed_live_keys": live_keys}
 
 
 def residency_state_of(record: Mapping[str, object]) -> str:
@@ -3031,105 +2005,12 @@ def warmed_reserve(queue: pool.PoolQueue, ready: list[dict]) -> dict:
 # ------------------------------------------------------------------ loop
 
 
-def sweep_orphan_stage(queue: pool.PoolQueue, stage: StageTier,
-                       live_keys: "set[str]",
-                       others_for: "Callable[[str], object]",
-                       fallback_cas_root: "Path | None",
-                       *, apply: bool = True) -> list[dict[str, object]]:
-    """Release what a row that has left the queue staged and nobody else wants.
-
-    Delete-behind follows a frontier, and a row's last phase leaves no
-    frontier behind it: the claim disappears and its tail would sit on the
-    stage until somebody noticed.  This is the backstop that makes "bounded"
-    true across a restart as well as across a cycle -- the loop keeps no
-    memory, so the band a sweep releases is read from the receipt the warm
-    wrote, not from anything held in this process.
-
-    A row whose sealed manifest can no longer be read cannot have its objects
-    named, so it is reported blocked rather than swept.  That is a leak with
-    a receipt, which is the only kind worth having.
-    """
-
-    rows: list[dict[str, object]] = []
-    try:
-        names = sorted(os.listdir(queue.root / pool.PREWARM))
-    except OSError:
-        return rows
-    for name in names:
-        if not name.endswith(".json"):
-            continue
-        key = name[: -len(".json")]
-        if key in live_keys:
-            continue
-        record = queue.prewarm(key)
-        block = record.get("stage") if isinstance(record, dict) else None
-        if not isinstance(block, dict) or block.get("swept"):
-            continue
-        through = int(block.get("staged_through_bytes", 0) or 0)
-        if through <= 0:
-            if apply:
-                update_prewarm_stage(queue, key, {"swept": True})
-            continue
-        root = Path(str(block.get("cas_root") or fallback_cas_root or ""))
-        entry = (manifest_input_of(sealed_request(root, key))
-                 if root.name else None)
-        manifest = load_manifest(root, entry) if entry is not None else None
-        if manifest is None:
-            if apply:
-                update_prewarm_stage(
-                    queue, key,
-                    {"sweep_blocked":
-                     "the sealed manifest is no longer readable"})
-            rows.append({"action_key": key, "status": "blocked",
-                         "reason": "the sealed manifest is no longer readable"})
-            continue
-        outcome = release_stage_band(
-            stage, manifest_layout.read_entries(manifest),
-            str(manifest.get("mount_prefix", "")),
-            start=0, end=through, others=lambda: others_for(key),
-            apply=apply)
-        swept = (apply and not outcome["retained_entries"]
-                 and not outcome["failed_entries"])
-        if apply:
-            update_prewarm_stage(queue, key, {
-                "swept": swept,
-                "evicted_through_bytes": through if swept else int(
-                    block.get("evicted_through_bytes", 0) or 0)})
-        rows.append({"action_key": key,
-                     "status": ("planned" if not apply else
-                                "swept" if swept else
-                                "release failed" if outcome["failed_entries"]
-                                else "retained by another row"),
-                     **outcome})
-    return rows
-
-
-def update_prewarm_stage(queue: pool.PoolQueue, action_key: str,
-                         updates: Mapping[str, object]) -> bool:
-    """Merge a stage verdict into a receipt this loop already wrote.
-
-    A release happens on a cycle that may warm nothing, so the frontier it
-    reached has to reach the receipt without one.  Nothing outside the
-    ``stage`` block is touched, and a receipt this loop did not write is left
-    alone: the storage role is the only writer of either.
-    """
-
-    record = queue.prewarm(action_key)
-    if not isinstance(record, dict):
-        return False
-    block = dict(record.get("stage") or {})
-    block.update(dict(updates))
-    record["stage"] = block
-    queue.record_prewarm(action_key, record)
-    return True
-
-
 def released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
     """Whether a claim will refuse ``key`` as a released consumer (#954).
 
     The one release check both storage loops ask: ``tier_loop.live_consumers``
     leaves such a ready row out of what it stages, and ``cycle`` leaves it out
-    of what it warms and stages (#963).  Unknown counts as released: the claim
+    of what it warms (#963).  Unknown counts as released: the claim
     denies a row whose release it cannot read, so warming or staging it would
     read bytes nothing reads.
     """
@@ -3138,17 +2019,6 @@ def released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
         return produced_output.origin_consumer_release(queue, key) is not None
     except produced_output.ProducedOutputError:
         return True
-
-
-def stage_requested(args) -> bool:
-    """Is the stage tier asked for at all?
-
-    Off is the default and the whole behaviour: an unset flag means the loop
-    runs the way it ran before #582, down to the fields in its receipts.  The
-    default flips on a measured campaign result, not on this code landing.
-    """
-
-    return bool(getattr(args, "stage", False))
 
 
 def attribution_row(action_key: str, trigger: str,
@@ -3257,12 +2127,6 @@ def summarize_cycle(event: Mapping[str, object]) -> str:
          + ")" if skipped else "skipped 0"),
         f"pruned {sum(1 for row in pruned if isinstance(row, dict) and row.get('pruned'))} receipts",
     ]
-    stage = event.get("stage")
-    if isinstance(stage, dict):
-        released = stage.get("released") if isinstance(stage.get("released"), list) else []
-        orphans = stage.get("orphans") if isinstance(stage.get("orphans"), list) else []
-        parts.append(
-            f"stage released {len(released)} bands, swept {len(orphans)} orphans")
     if stopped:
         parts.append("stopped: " + ", ".join(
             f"{reason} x{count}" for reason, count in sorted(stopped.items())))
@@ -3324,20 +2188,6 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # each drive the pool to the threshold.
     pacer = pacer if pacer is not None else pacer_from_args(args)
     room = arc_headroom(args.arc_reserve_fraction, args.arcstats)
-    # Rediscovered every cycle, never remembered: a stage pool created,
-    # exported, filled or lost between two polls changes the answer, and the
-    # record has to be a fact about this cycle (#582).
-    stage = (discover_stage(
-        getattr(args, "stage_pool_prefix", STAGE_POOL_PREFIX),
-        free_floor_bytes=getattr(args, "stage_free_floor_bytes", None))
-        if stage_requested(args) else None)
-    if (stage is not None and stage.mountpoint and not args.dry_run
-            and stage.mountpoint not in _REAPED_STAGE_ROOTS):
-        # A dry run does not do it: an unlink is a write, however little it
-        # looks like one.
-        _REAPED_STAGE_ROOTS.add(stage.mountpoint)
-        stage.reap_temporaries()
-    stage_rows: list[dict[str, object]] = []
     cas_root = Path(args.cas_root) if args.cas_root else None
     reserve = claimed_reserve(
         queue,
@@ -3345,10 +2195,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         args.claim_grace_min * 60.0,
     )
     windows = reserve.pop("claimed_windows")
-    # Popped beside the windows, and for the same reason: neither belongs in
-    # the cycle's log line, and a new key in ``reserve`` would change the
-    # record a loop without ``--stage`` writes.
-    live_rows = reserve.pop("claimed_live_rows")
+    claimed_keys = reserve.pop("claimed_live_keys")
     reserve.update(warmed_reserve(queue, ready))
     protected = (reserve["claimed_reserved_bytes"]
                  + reserve["warmed_reserved_bytes"])
@@ -3427,9 +2274,6 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 stop=stop,
                 served=served,
                 is_live=watch,
-                # The second destination for the same window read (#582).
-                stage=stage,
-                stage_prefix=str(manifest.get("mount_prefix", "")),
                 # Re-read rather than trust the cycle's opening number: the
                 # ceiling can be lowered under a running warm, and a row that
                 # started inside its budget must stop when it leaves it.
@@ -3483,41 +2327,6 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         # them at cycle end would stamp the last row's numbers on every row.
         paced_rows.append(attribution_row(
             key, trigger, record["disk_pacing"]))
-        if stage is not None:
-            prior_stage = dict((queue.prewarm(key) or {}).get("stage") or {})
-            if prior_stage.get("swept"):
-                # A swept key that is warming again is a new life, and a new
-                # life is a new ledger.  Carrying the old one forward would
-                # leave ``swept`` standing on a receipt whose band has just
-                # been re-staged: the sweep skips a swept row forever, so the
-                # new band would never be released and would never even
-                # appear among the orphans.  The frontiers go with it -- a
-                # delete-behind that started at the last life's frontier
-                # would never reach this one's early entries.
-                for stale in ("swept", "sweep_blocked",
-                              "staged_through_bytes", "evicted_through_bytes"):
-                    prior_stage.pop(stale, None)
-            record["stage"] = {
-                **prior_stage,
-                "state": stage.state,
-                "reason": stage.reason,
-                "pool": stage.name,
-                "members": stage.members,
-                # Bytes this window put on the stage, and how far into the
-                # manifest anything may have been staged -- the band a later
-                # sweep has to release when this row leaves the queue.
-                "staged_bytes": int(result.get("staged_bytes", 0) or 0),
-                "staged_entries": int(result.get("staged_entries", 0) or 0),
-                "staged_through_bytes": max(
-                    int(prior_stage.get("staged_through_bytes", 0) or 0), target),
-                "evicted_through_bytes": int(
-                    prior_stage.get("evicted_through_bytes", 0) or 0),
-                "cas_root": str(cas_root_of),
-                "layout": STAGE_LAYOUT,
-                # Staging wrote bytes.  It did not make anybody read them,
-                # and the record must not let the two be confused.
-                "consumer": dict(STAGE_CONSUMER),
-            }
         if not args.dry_run:
             queue.record_prewarm(key, record)
         # A dry run reads nothing, so ``bytes_warmed`` is 0 and the budget
@@ -3536,88 +2345,18 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # see it, and its window has to move with its read frontier or the warm
     # stops one phase in and the job goes back to the spindles.  It does not
     # spend ``--lookahead``: that window counts rows no claim has reached.
-    def other_live_rows(exclude_key: str):
-        """Every other queued row, one manifest at a time.
-
-        A generator rather than a list: these manifests are the 469 008-entry
-        kind, and holding two of them at once on the file server would cost
-        the ARC this loop exists to fill.
-
-        Driven from every claimed row, not only from the ones that earned a
-        window.  A claimed row past its grace with nothing to report is
-        dropped from the *reserve*; it is still running, still reading, and
-        deleting the bytes it was warmed because a budget stopped counting
-        them would be the sweep deciding a live row is finished.
-        """
-
-        for other in live_rows:
-            other_key = str(other["action_key"])
-            if other_key == exclude_key:
-                continue
-            other_root = Path(str(other["cas_root"]))
-            other_entry = manifest_input_of(sealed_request(other_root, other_key))
-            other_manifest = (load_manifest(other_root, other_entry)
-                              if other_entry is not None else None)
-            if other_manifest is None:
-                continue
-            yield (manifest_layout.read_entries(other_manifest),
-                   str(other_manifest.get("mount_prefix", "")),
-                   int(other["consumed_bytes"]))
-        for other_item in ready:
-            other_key = str(other_item.get("action_key", ""))
-            if not other_key or other_key == exclude_key:
-                continue
-            other_root = Path(other_item.get("cas_root") or cas_root or "")
-            if not other_root.name:
-                continue
-            other_entry = manifest_input_of(sealed_request(other_root, other_key))
-            other_manifest = (load_manifest(other_root, other_entry)
-                              if other_entry is not None else None)
-            if other_manifest is None:
-                continue
-            # A ready row has read nothing yet, so it still wants all of it.
-            yield (manifest_layout.read_entries(other_manifest),
-                   str(other_manifest.get("mount_prefix", "")), 0)
-
-    def release_window(key: str, manifest: dict, consumed: int) -> dict:
-        # A dry run plans the release and performs none of it.  Unlinking a
-        # staged object is a write, however little it looks like one, and
-        # ``--dry-run`` promises the box is only read.
-        apply = not args.dry_run
-        prior = dict((queue.prewarm(key) or {}).get("stage") or {})
-        start = int(prior.get("evicted_through_bytes", 0) or 0)
-        outcome = release_stage_band(
-            stage, manifest_layout.read_entries(manifest),
-            str(manifest.get("mount_prefix", "")),
-            start=start, end=consumed,
-            others=lambda: other_live_rows(key), apply=apply)
-        if apply and consumed > start:
-            update_prewarm_stage(queue, key,
-                                 {"evicted_through_bytes": consumed})
-        return {"action_key": key, "released_from_bytes": start,
-                "consumed_bytes": consumed, "applied": apply, **outcome}
-
     for window in windows:
         if stop.is_set():
             break
         key = str(window["action_key"])
         partial = window["status"] == "partial"
-        # Without a usable stage there is nothing to release, so a window
-        # that cannot advance is passed over exactly as it was before #582.
-        if not partial and (stage is None or not stage.mountpoint):
+        if not partial:
             continue
         root = Path(str(window["cas_root"]))
         entry = manifest_input_of(sealed_request(root, key))
         if entry is None or str(entry.get("sha256")) != window["manifest_sha256"]:
             continue
         manifest = load_manifest(root, entry)
-        if stage is not None and stage.mountpoint and manifest is not None:
-            # Delete behind the accepted phase: the frontier the action's own
-            # progress record moved is what releases the bytes behind it.
-            stage_rows.append(release_window(
-                key, manifest, int(window["consumed_bytes"])))
-        if not partial:
-            continue
         if window.get("residency_state") == "resident":
             # This consumer was admitted because its window is on the stage,
             # and it opens the staged path.  A warm of the pool path would
@@ -3674,8 +2413,7 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
     # Listed once per cycle, confirmed per listed key, exactly as
     # ``tier_loop.live_consumers`` does (#963): the claim fails a released
     # ready row with ``origin-consumer-released`` and never runs it, so a warm
-    # for it is a wasted lookahead read and a stage for it (``--stage``) is a
-    # copy for a consumer that can no longer run.  The row still counts as
+    # for it is a wasted lookahead read. The row still counts as
     # queued below -- it stays in ``ready/`` until a claim files it -- so its
     # receipt and any band it already holds retire with the row, not here.
     released_keys = queue.released_origin_consumer_keys()
@@ -3803,36 +2541,14 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         if record.get("stopped_by"):
             warmed_entry["stopped_by"] = record["stopped_by"]
         event["warmed"].append(warmed_entry)
-    # Who is still queued, for the sweep below and the prune beside it.
+    # A claimed row stays live even when the ARC budget no longer reserves it.
     live_keys = {str(item.get("action_key", "")) for item in ready}
-    live_keys |= {str(row["action_key"]) for row in live_rows}
-    if stage is not None:
-        # The non-action is written too.  A cycle that staged nothing, warmed
-        # nothing, or found no stage pool at all still says which of the four
-        # states the tier was in and why -- #585's lesson is that a correct
-        # non-action nobody recorded costs the next reader the diagnosis.
-        # A tier with no mountpoint -- ``absent`` on every box but the file
-        # server, and most ``unreadable`` ones -- has nothing to release and
-        # nowhere to release it from.  Running the release path anyway spent
-        # a manifest load per live row and then advanced a frontier as though
-        # objects had been removed.  The state is still recorded: a cycle
-        # that found no tier says so, which is the whole point of #585.
-        orphans = (sweep_orphan_stage(
-            queue, stage, live_keys, other_live_rows, cas_root,
-            apply=not args.dry_run) if stage.mountpoint else [])
-        event["stage"] = {**stage.record(), "released": stage_rows,
-                          "orphans": orphans}
+    live_keys |= claimed_keys
     # The verdict, whether it held or not (#575, #585).  A cycle that paced
     # correctly and held nothing is the common case now, and without this it
     # reads exactly like a pacer that never saw a client at all.
     event["client_attribution"] = cycle_client_attribution(
         paced_rows, pacer, ledger_mark)
-    # Prune after the sweep, staged or not (#596): the sweep may just have
-    # released a retired row's band and marked it swept, which is what makes
-    # the receipt deletable.  Terminal and withdrawn receipts are garbage the
-    # day they retire, and leaving them makes the sweep list and read every
-    # receipt the fleet ever wrote on every 10 s poll.  A dry run reads only,
-    # so it prunes nothing.
     event["pruned"] = (queue.sweep_prewarm_receipts(live_keys)
                        if not args.dry_run else [])
     # The claim denials' reason rings retire on the same live set (#991): a
@@ -4023,47 +2739,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--claim-grace-min", type=float, default=20.0,
                         help="a claim younger than this still counts its "
                              "manifest bytes against the prewarm budget")
-    parser.add_argument("--stage", action="store_true",
-                        help="also copy each window this loop reads onto a "
-                             "stage pool (#582).  OFF by default and inert "
-                             "until it is asked for: without it the loop "
-                             "behaves and reports exactly as it did before, "
-                             "no zpool is queried and no receipt carries a "
-                             "stage field.  Read this before turning it on: "
-                             "**nothing reads the stage today**.  "
-                             "PrismaBuild publishes no residency map, the "
-                             "export is served from the pool path, and the "
-                             "ARC is keyed by the on-pool block pointer, so "
-                             "a staged copy does not warm the path a "
-                             "consumer reads.  Enabled without a consumer "
-                             "this costs SSD writes at pool read rate and "
-                             "returns nothing -- the same wear #582 counted "
-                             "against L2ARC.  Every record says so in its "
-                             "'consumer' block rather than reporting the "
-                             "copy as a saving.  The default flips on a "
-                             "measured campaign result, not on this landing")
-    parser.add_argument("--stage-pool-prefix", default=STAGE_POOL_PREFIX,
-                        help="a ZFS pool whose name starts with this is the "
-                             "stage tier; its members are bound by "
-                             "/dev/disk/by-id and never by a device number.  "
-                             "The name is the declaration, so no device is "
-                             "ever taken for being idle: on this fleet's "
-                             "file server one idle NVMe still carries a "
-                             "stale zfs_member signature")
-    parser.add_argument("--stage-free-floor-bytes", type=int, default=None,
-                        help="bytes the stage keeps back, overriding what is "
-                             "derived.  Capacity is read every cycle from the "
-                             "prewarm dataset's own 'available', which has "
-                             "already withheld the pool's slop space, the "
-                             "dataset's quota and its reservation, so nothing "
-                             "further is kept back by default.  Only when the "
-                             "dataset cannot answer does capacity fall back "
-                             "to the pool's 'free', and the floor then becomes "
-                             "the reserve ZFS itself would have withheld: "
-                             "1/32 of the pool, never below 128 MiB.  The "
-                             "record says which number was used.  A tier with "
-                             "nothing above the floor records 'full' and "
-                             "stages nothing, which is a state, not an error")
     parser.add_argument("--once", action="store_true",
                         help="run one cycle and exit; return 75 if maintenance or runtime rotation defers it")
     parser.add_argument("--dry-run", action="store_true",
@@ -4104,7 +2779,7 @@ def _warm_storage(args, stop: threading.Event) -> int:
         return generation_receipt.compare(loaded, runtime_gate.published_runtime())
 
     while True:
-        # Reader threads, partial sinks and cycle accounting have completed
+        # Reader threads and cycle accounting have completed
         # before this boundary can acknowledge a stop or a drain.
         decision = runtime_decision()
         if isinstance(decision, generation_receipt.Drift):

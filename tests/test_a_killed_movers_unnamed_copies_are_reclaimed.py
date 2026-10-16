@@ -437,7 +437,11 @@ def test_every_movers_copy_names_its_writer(world, monkeypatch):
     for root, mover in ((world.stage, STAGE_MOVER), (world.ram, RAM_MOVER)):
         if root == world.ram:
             world.kill_a_promotion(monkeypatch)
-        for path in world.paths(root):
+        sources = (world.paths(world.stage) if root == world.ram else
+                   [Path(str(entry["path"])) for entry in world.body["entries"]])
+        for path, source in zip(world.paths(root), sources, strict=True):
             assert os.getxattr(path, stage_marks.STAGE_MOVER_XATTR) == (
                 mover.encode()), path
-            assert os.getxattr(path, stage_marks.STAGE_SOURCE_XATTR), path
+            seen = source.stat()
+            expected = f"{seen.st_size}:{seen.st_mtime_ns}:{seen.st_ino}".encode()
+            assert os.getxattr(path, stage_marks.STAGE_SOURCE_XATTR) == expected, path

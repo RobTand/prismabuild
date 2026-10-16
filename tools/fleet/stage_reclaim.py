@@ -33,7 +33,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
-    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, prewarm_temporary_pid,
+    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
 )
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
@@ -317,8 +317,6 @@ def _walk_source_marks(stage: Path, attributed: set[str]
                     continue
             except OSError as exc:
                 walk_errors.append(f"{entry.path}: {exc}")
-                continue
-            if prewarm_temporary_pid(entry.name) is not None:
                 continue
             kind = _source_mark_only(entry_path)
             if kind is None:

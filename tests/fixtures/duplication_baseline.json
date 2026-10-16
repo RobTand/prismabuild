@@ -525,10 +525,6 @@
    "src/prismabuild/decomposition.py",
    "src/prismabuild/residency_plan.py"
   ],
-  "by_id_names": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/prewarm_loop.py"
-  ],
   "cancel": [
    "src/prismabuild/slurm_lane.py",
    "src/prismabuild/window_credit.py"

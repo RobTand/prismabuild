@@ -117,7 +117,7 @@ does not rewrite the frozen 93424 audit or claim the other cards complete.
 | Thread | Agreed design | Implementation owed or qualified |
 | --- | --- | --- |
 | D01 | Rob authorized C16/B13 retirement on 2026-10-16, lifting the adapters' Phase 3 hold. Preserve `slurm_lane` and the historical Dagster selection over Snakemake. | The C16/B13 adapter retirement removes both modules, all four dedicated test files, the two adapter-only shared validator files, adapter cases in shared tests, optional extras, orphaned worker gate, publication modes and Dagster-only residency descriptor helpers. Retained SDK/core/lane/publication/runtime and duplication checks qualify the resulting source; evidence is retained outside the checkout. |
-| D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Rob authorized retiring `--stage` on 2026-10-16; B14 still owes the live-writer drain and retirement. |
+| D02 | `storage_tiers` owns mount discovery. B01 moved shared mark bytes and source identity into stdlib `stage_marks`, preserving both reclamation exclusions until drain. | B01 is integrated and candidate-qualified. Rob authorized B14 retirement on 2026-10-16. Admitted censuses on the three active hosts found no experimental writer or owned temporary before the B14 source removal. The experimental parser, writer, release helpers and temporary exclusions retire together; retained mover marks and established staging remain. B14 qualification is recorded separately in its evidence report, with integration and runtime rollout still owed. |
 | D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Rob authorized hook retirement on 2026-10-16; B15 still owes the controlled two-worker CAS-miss/output-lock proof and removal. The broader core/library extraction is still owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
@@ -137,8 +137,10 @@ Rob settled all three grouped decisions on 2026-10-16:
 
 1. Retire the old adapters, experimental prewarm `--stage` and initial-miss
    rendezvous after their required checks. The C16/B13 adapter retirement
-   removes the legacy adapters and their orphaned implementation. B14 still
-   owes the stage-writer drain and stage retirement; B15 still owes the
+   removes the legacy adapters and their orphaned implementation. B14's owned
+   candidate removes experimental prewarm staging after the admitted active-host
+   drain; its evidence report records qualification, and integration and rollout
+   remain owed. B15 still owes the
    controlled two-worker CAS-miss/output-lock proof and hook removal.
 2. Host upgrade and member resign must quiesce worker loops, one-shot workers,
    prewarm, tier and localtier. Metrics may continue, and supervisor and broker
