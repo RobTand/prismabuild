@@ -5858,6 +5858,38 @@ class _CensusArbitration:
     gang_api: object
 
 
+@dataclass(frozen=True)
+class _HostAccepted:
+    candidate: _QualifiedClaim
+    demand: _CandidateDemand
+    request: _HostClaimRequest | None = None
+    gang: _ClaimGang | None = None
+    arbitration: _CensusArbitration | None = None
+    adaptive: Mapping[str, object] | None = None
+    adaptive_gpu: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class _HostRefusal:
+    host: _HostAccepted
+    scratch_changed: bool
+    scratch_expired: bool
+    refused: bool
+    source: str | None
+    room_taken: Mapping[str, object] | None
+    cpu_decision: object
+    gpu_decision: object
+    free_at_refusal: Mapping[str, int] | None
+    asked: Mapping[str, int] | None
+    token_shortage: object
+
+
+@dataclass(frozen=True)
+class _RefusalAccounting:
+    order: candidate_policy.ScanOrder
+    preempted: bool
+
+
 class _ClaimScanReads:
     def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
                  tags: frozenset[str], has_gpu: bool) -> None:
@@ -21564,6 +21596,310 @@ class PoolQueue:
             measurement_suspended, census_blocked, serves_incumbent,
             gang_backfill, backfill_binding, _gang)
 
+    def _reserve_claim_host(
+        self, request: _HostClaimRequest, gang_context: _ClaimGang, census, scan, *,
+        ledger, total, copy_authority, tagset, has_gpu, placement,
+        controller, gpu_controller, cpu_tiers, held_back,
+    ) -> _HostAccepted | _HostRefusal | _ClaimHandled:
+        qualified = request.candidate
+        item, key = qualified.item, qualified.key
+        demand = qualified.demand.host
+        reservation_demand = qualified.demand.reservation
+        sealed_host_demand = qualified.demand.sealed_host
+        reservation = qualified.reservation
+        canary_exempt = qualified.canary_exempt
+        scratch_intent = qualified.scratch_intent
+        identity, allowance = request.identity, request.allowance
+        dependent_owner, contract = request.dependent_owner, request.contract
+        scratch_evidence, scratch_boundary = request.scratch_evidence, request.scratch_boundary
+        adaptive = adaptive_gpu = None
+        scratch_changed = scratch_expired = refused = False
+        refusal_source = room_taken = None
+        cpu_decision = gpu_decision = token_shortage = None
+        free_at_refusal = asked = None
+        arbitration = self._arbitrate_claim_census(
+            request, gang_context,
+            census, ledger=ledger, total=total,
+            copy_authority=copy_authority, tagset=tagset,
+            has_gpu=has_gpu, placement=placement)
+        if arbitration is _ClaimHandled.REFUSED:
+            return _ClaimHandled.REFUSED
+        if scratch_boundary is not None:
+            original, announced, generation, attempt = scratch_boundary
+            scratch_changed = local_scratch.admission_generation_changed(
+                item, scratch_evidence, generation=generation, attempt=attempt,
+                observed_generation=self.attempt_generation(item))
+            scratch_expired = not (
+                0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
+                and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
+            refused = scratch_expired or scratch_changed
+        if controller is not None and not refused:
+            adaptive = controller.decision(
+                item, demand, identity=identity, owner=dependent_owner,
+                allowance=allowance,
+                foreign_load_exempt=canary_exempt)
+            cpu_decision = getattr(controller, "last_decision", None)
+            refused = adaptive is None
+            if refused:
+                refusal_source = "adaptive_cpu_refused"
+        funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
+        if candidate_policy.unfunded_measurement_blocker(
+                arbitration.blocker, adaptive, funded=funded_claim):
+            self.record_denial(item, "deferred_for_measurement_reservation", {
+                "withheld_for": arbitration.blocker["action_key"],
+                "selection": arbitration.blocker, "candidate_release_bound": "UNKNOWN"})
+            return _ClaimHandled.REFUSED
+        if funded_claim:
+            # The funded kinds come from the producer's
+            # allowance, not ``free/`` (#985): only the
+            # remainder, if any, is taken, and only it is
+            # what the commit must file.
+            demand = candidate_policy.funded_remainder(demand, adaptive)
+            reservation_demand = dict(demand)
+        elif candidate_policy.held_back_unfunded(
+                scan, held_back=held_back, serves_incumbent=arbitration.serves_incumbent):
+            # An earlier item is withholding what this row
+            # takes.  A measurement's wait does not hold
+            # back its host's incumbents' own dependents
+            # (#1419 review); every other withhold does.  Only a dependent on its producer's
+            # allowance takes nothing that item waits for
+            # (#985); any other row is left as the withhold
+            # always left it, unevaluated: no pass, no
+            # withhold of its own.
+            refused = True
+            refusal_source = "deferred_behind_withholding"
+            adaptive = None
+        if (not refused and scan.rooms and ledger is not None
+                and (not int(reservation_demand.get("gpu", 0) or 0)
+                     or any(kept.binds_all for kept in scan.rooms))):
+            # A GPU row ahead of this one that fits the
+            # free GPU could not be decided this pass
+            # (#1169): admit this row only beside it.
+            # A room kept for a row whose withhold carry
+            # is gone binds every row, the GPU-demanding
+            # with the rest (#1217): nothing sorting
+            # behind the busy row may take the boundary
+            # it waited for.
+            demanding_gpu = bool(
+                int(reservation_demand.get("gpu", 0) or 0))
+            bound = ([kept for kept in scan.rooms
+                      if kept.binds_all]
+                     if demanding_gpu else list(scan.rooms))
+            try:
+                available = ledger.available()
+            except OSError:
+                room_taken = None
+            else:
+                room_taken = candidate_policy.room_taken(
+                    available, bound, reservation_demand)
+            if room_taken is not None:
+                refused = True
+                refusal_source = "deferred_for_ready_gpu_row"
+                adaptive = None
+        if not refused and gpu_controller is not None and demand.get("gpu"):
+            adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
+            gpu_decision = getattr(gpu_controller, "last_decision", None)
+            refused = adaptive_gpu is None
+            if refused:
+                refusal_source = "adaptive_gpu_refused"
+        if scratch_boundary is not None:
+            # Normal CPU/GPU decisions can themselves take
+            # time. Recheck again at the actual token boundary,
+            # using captured identity and ORIGINAL time only.
+            original, announced, generation, attempt = scratch_boundary
+            scratch_changed = local_scratch.admission_generation_changed(
+                item, scratch_evidence, generation=generation, attempt=attempt,
+                observed_generation=self.attempt_generation(item))
+            scratch_expired = not (
+                0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
+                and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
+            refused = refused or scratch_expired or scratch_changed
+            if not refused:
+                scratch_evidence["admission_checked_unix"] = _now()
+                scratch_evidence["reservation_demand"] = dict(reservation_demand)
+        if not refused:
+            if adaptive_gpu is not None:
+                reservation.host_handle = ledger.begin_acquire(
+                    key, reservation_demand, adaptive=adaptive,
+                    cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
+                asked = reservation_demand
+            else:
+                reservation.host_handle = (ledger.begin_acquire(key, demand) if adaptive is None else
+                          ledger.begin_acquire(key, demand, adaptive=adaptive,
+                                               cpu_tiers=cpu_tiers))
+                asked = demand
+            token_shortage = ledger.last_token_shortage
+            if reservation.host_handle is not None:
+                # A funded reservation spends its probe and borrow
+                # freshness under the same exclusion as its decision.
+                # Ordinary abandonment returns only owned credit;
+                # failure to persist rolls the reservation back.
+                if adaptive_gpu is not None:
+                    reservation.gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
+                if adaptive is not None:
+                    reservation.borrow = (adaptive, controller.admitted(adaptive))
+        if (ledger is not None
+                and int(reservation_demand.get("gpu", 0) or 0)
+                and ((refused and refusal_source in (
+                    "adaptive_gpu_refused", "adaptive_cpu_refused"))
+                     or (not refused and reservation.host_handle is None))):
+            # The free tokens the refusal was decided
+            # against, read under the same exclusion
+            # (#1240): a refused GPU row keeps its room
+            # only when they do not fit it.
+            try:
+                free_at_refusal = ledger.available()
+            except OSError:
+                free_at_refusal = None
+        demand_result = _CandidateDemand(
+            qualified.demand.sealed, sealed_host_demand, demand,
+            reservation_demand, qualified.demand.tiers)
+        host = _HostAccepted(qualified, demand_result, request, gang_context,
+                             arbitration, adaptive, adaptive_gpu)
+        if scratch_changed or scratch_expired or refused or reservation.host_handle is None:
+            return _HostRefusal(host, scratch_changed, scratch_expired, refused,
+                                refusal_source, room_taken, cpu_decision, gpu_decision,
+                                free_at_refusal, asked, token_shortage)
+        return host
+
+    def _account_host_refusal(
+        self, refusal: _HostRefusal, scan, *, preempted, ledger, total,
+        controller, gpu_controller, cpu_tiers, copy_authority, tagset, has_gpu,
+    ) -> _RefusalAccounting:
+        host = refusal.host
+        qualified, request = host.candidate, host.request
+        item, key = qualified.item, qualified.key
+        demand, reservation_demand = host.demand.host, host.demand.reservation
+        reservation = qualified.reservation
+        identity, dependent_owner = request.identity, request.dependent_owner
+        gang = host.gang.declaration
+        gang_record = host.gang.record
+        _gang = host.arbitration.gang_api
+        measurement_suspended = host.arbitration.measurement_suspended
+        scratch_changed, scratch_expired = refusal.scratch_changed, refusal.scratch_expired
+        refused, refusal_source = refusal.refused, refusal.source
+        room_taken = refusal.room_taken
+        cpu_decision, gpu_decision = refusal.cpu_decision, refusal.gpu_decision
+        free_at_refusal, asked = refusal.free_at_refusal, refusal.asked
+        token_shortage = refusal.token_shortage
+        scratch_refusal = local_scratch.admission_refusal(
+            changed=scratch_changed, expired=scratch_expired)
+        if scratch_refusal is not None:
+            self.record_denial(item, scratch_refusal)
+            return _RefusalAccounting(scan, preempted)
+        if refused:
+            # Aging is shared diagnostic/fairness bookkeeping, not
+            # capacity authority. Keep its I/O outside host admission.
+            # The per-key transition lock still protects this item.
+            decision = (gpu_decision
+                        if refusal_source == "adaptive_gpu_refused"
+                        else cpu_decision)
+            mode, foreign = drain_policy.refusal_mode(
+                refusal_source, decision, demand=demand,
+                measurement=bool(identity and identity[1]),
+                cpu_count=len(controller.cpus) if controller is not None else None)
+            observed = (self._observe_drain(
+                key, ledger=ledger, need=reservation_demand,
+                mode=mode or "exclusive", adaptive=True, foreign=foreign,
+                gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                held_cpus=(decision.get("held_cpus")  # type: ignore[union-attr]
+                           if mode == DRAIN_HELD_CPUS else None),
+                cpu_tiers=cpu_tiers,
+                measurement=bool(identity and identity[1]),
+                measurement_generation=(self.attempt_generation(item)
+                    if identity and identity[1] else None),
+                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision),
+                measurement_unmeasured=drain_policy.unmeasured_refusal(
+                    refusal_source, decision))
+                if mode is not None or foreign else None)
+            verdict = None
+            if observed is not None:
+                self._drain_accounting.stage(key, observed.notes)
+                if isinstance(observed, drain_policy.DrainFailure):
+                    raise observed.error
+                verdict = observed.verdict
+            if verdict is not None and identity and identity[1]:
+                verdict = self._canonical_measurement_verdict(
+                    item, verdict, ledger=ledger, controller=controller,
+                    cpu_decision=cpu_decision,
+                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
+            prefix = candidate_policy.prepare_adaptive_refusal(
+                refusal_source, decision, verdict, order=scan,
+                dependent_owner=dependent_owner, room_taken=room_taken)
+            if isinstance(prefix, candidate_policy.Silent):
+                return _RefusalAccounting(scan, preempted)
+            if isinstance(prefix, candidate_policy.Uncounted):
+                denial = prefix.denial
+            else:
+                self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
+                denial = candidate_policy.counted_adaptive_refusal(
+                    prefix, key=key, order=scan, demand=demand,
+                    reservation_demand=reservation_demand, mode=mode,
+                    foreign=foreign, free_at_refusal=free_at_refusal)
+            scan = denial.order_before
+            self.record_denial(item, denial.reason, denial.evidence)
+            if denial.withhold_after is not None:
+                scan = denial.withhold_after.apply(
+                    scan, identity=identity,
+                    measurement_suspended=measurement_suspended)
+            return _RefusalAccounting(scan, preempted)
+        if reservation.host_handle is None:
+            observed = self._observe_drain(
+                key, ledger=ledger, need=asked, mode="tokens",
+                gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                measurement=bool(identity and identity[1]),
+                measurement_generation=(self.attempt_generation(item)
+                    if identity and identity[1] else None),
+                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision))
+            self._drain_accounting.stage(key, observed.notes)
+            if isinstance(observed, drain_policy.DrainFailure):
+                raise observed.error
+            verdict = observed.verdict
+            if identity and identity[1]:
+                verdict = self._canonical_measurement_verdict(
+                    item, verdict, ledger=ledger, controller=controller,
+                    cpu_decision=cpu_decision,
+                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
+                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
+            denials = self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
+            if not preempted:
+                # Selection reacquires admission, while the separate
+                # handoff lock spans withdrawal/requeue as well. A
+                # stalled handoff cannot stop ordinary fitting work.
+                exclusion = None
+                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
+                    exclusion = _gang.elections(
+                        self, gang["group"], gang["size"]).get(gang["index"])
+                preempted = self._preempt_background_holder(
+                    ledger, action_key=key, demand=asked,
+                    priority=int(item.get("priority", 0)),
+                    controller=controller,
+                    **({"exclude_gang_election": exclusion}
+                       if exclusion is not None else {})) is not None
+            withholding = bool(verdict["eligible"])
+            age = self.withhold_age(key) if withholding else None
+            evidence = {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "token_shortage": token_shortage,
+                "capacity_total": total, "denials": denials,
+                "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
+                "cpu_decision": cpu_decision,
+                "gpu_decision": gpu_decision,
+                "withhold": verdict,
+            }
+            denial = candidate_policy.counted_token_refusal(
+                evidence, key=key, order=scan, eligible=withholding,
+                asked=asked, free_at_refusal=free_at_refusal)
+            scan = denial.order_before
+            self.record_denial(item, denial.reason, denial.evidence)
+            if denial.withhold_after is not None:
+                scan = denial.withhold_after.apply(
+                    scan, identity=identity,
+                    measurement_suspended=measurement_suspended)
+            return _RefusalAccounting(scan, preempted)
+        return _RefusalAccounting(scan, preempted)
+
     def _claim_pass(
         self,
         *,
@@ -21939,32 +22275,8 @@ class PoolQueue:
                         if isinstance(prepared, candidate_policy.ScanOrder):
                             scan = prepared
                             continue
-                        identity = prepared.identity
-                        allowance = prepared.allowance
                         dependent_owner = prepared.dependent_owner
-                        contract = prepared.contract
                         scratch_evidence = prepared.scratch_evidence
-                        scratch_boundary = prepared.scratch_boundary
-                        # Host admission's exclusive half, and only that half: read
-                        # the headroom, decide against it, and take the tokens out
-                        # of ``free/`` before letting go.  ``begin_acquire`` moves
-                        # them into ``held/<handle>/``, where every sibling's
-                        # ``decision`` and ``available`` already counts them, so the
-                        # headroom cannot be spent twice once this block returns.
-                        # The claim itself -- the rename that decides ownership --
-                        # is deliberately outside: it is arbitrated fleet-wide by
-                        # the rename, not by a host-local lock, and holding this one
-                        # across it is what took whole boxes out of the claiming
-                        # population when the mount was slow (#351).
-                        refused = False
-                        refusal_source = None
-                        room_taken: dict[str, object] | None = None
-                        cpu_decision = gpu_decision = token_shortage = None
-                        free_at_refusal: dict[str, int] | None = None
-                        # Gang membership (#1517, default off: only a box
-                        # offering ``_gang.TAG`` places these rows). Read from
-                        # the sealed request and the immutable group record
-                        # before host admission, as the producer link is.
                         gang_context = self._prepare_claim_gang(
                             prepared, ledger=ledger, host_gate=host_gate)
                         if gang_context is _ClaimHandled.REFUSED:
@@ -21973,7 +22285,6 @@ class PoolQueue:
                         gang_record = gang_context.record
                         gang_entry = gang_context.entry
                         from . import _measurement_reservation as measurement_reservation
-                        census_blocked = None
                         if census_refusal is not None:
                             self.record_denial(item, "measurement_census_unavailable", census_refusal)
                             continue
@@ -21984,273 +22295,27 @@ class PoolQueue:
                                 census_refusal = census
                                 self.record_denial(item, "measurement_census_unavailable", census)
                                 continue
-                            # A gang that has waited past the bound RESERVES this
-                            # host, and the reservation wins: the measurement
-                            # fence and any measurement withhold are suspended
-                            # here, so a host is never both withheld for a
-                            # waiting measurement and reserved for a gang.  The
-                            # suspended row stays READY and withholds again once
-                            # the gang has started and no election waits (#1579).
-                            # ...and only on a host that holds the protected copy of
-                            # the runtime it runs: without it nothing the gang waits on
-                            # can be told from other work, and the host keeps the fence
-                            # against strictly lower priority that it always had.
-                            arbitration = self._arbitrate_claim_census(
-                                prepared, gang_context,
-                                census, ledger=ledger, total=total,
-                                copy_authority=copy_authority, tagset=tagset,
-                                has_gpu=has_gpu, placement=placement)
-                            if arbitration is _ClaimHandled.REFUSED:
+                            host = self._reserve_claim_host(
+                                prepared, gang_context, census, scan,
+                                ledger=ledger, total=total, copy_authority=copy_authority,
+                                tagset=tagset, has_gpu=has_gpu, placement=placement,
+                                controller=controller, gpu_controller=gpu_controller,
+                                cpu_tiers=cpu_tiers, held_back=held_back)
+                            if host is _ClaimHandled.REFUSED:
                                 continue
-                            measurement_suspended = arbitration.measurement_suspended
-                            census_blocked = arbitration.blocker
-                            serves_incumbent = arbitration.serves_incumbent
-                            gang_backfill = arbitration.backfill
-                            backfill_binding = arbitration.backfill_binding
-                            _gang = arbitration.gang_api
-                            if scratch_boundary is not None:
-                                original, announced, generation, attempt = scratch_boundary
-                                scratch_changed = local_scratch.admission_generation_changed(
-                                    item, scratch_evidence, generation=generation, attempt=attempt,
-                                    observed_generation=self.attempt_generation(item))
-                                scratch_expired = not (
-                                    0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
-                                    and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
-                                refused = scratch_expired or scratch_changed
-                            if controller is not None and not refused:
-                                adaptive = controller.decision(
-                                    item, demand, identity=identity, owner=dependent_owner,
-                                    allowance=allowance,
-                                    foreign_load_exempt=canary_exempt)
-                                cpu_decision = getattr(controller, "last_decision", None)
-                                refused = adaptive is None
-                                if refused:
-                                    refusal_source = "adaptive_cpu_refused"
-                            funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
-                            if candidate_policy.unfunded_measurement_blocker(
-                                    census_blocked, adaptive, funded=funded_claim):
-                                self.record_denial(item, "deferred_for_measurement_reservation", {
-                                    "withheld_for": census_blocked["action_key"],
-                                    "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
-                                continue
-                            if funded_claim:
-                                # The funded kinds come from the producer's
-                                # allowance, not ``free/`` (#985): only the
-                                # remainder, if any, is taken, and only it is
-                                # what the commit must file.
-                                demand = candidate_policy.funded_remainder(demand, adaptive)
-                                reservation_demand = dict(demand)
-                            elif candidate_policy.held_back_unfunded(
-                                    scan, held_back=held_back, serves_incumbent=serves_incumbent):
-                                # An earlier item is withholding what this row
-                                # takes.  A measurement's wait does not hold
-                                # back its host's incumbents' own dependents
-                                # (#1419 review); every other withhold does.  Only a dependent on its producer's
-                                # allowance takes nothing that item waits for
-                                # (#985); any other row is left as the withhold
-                                # always left it, unevaluated: no pass, no
-                                # withhold of its own.
-                                refused = True
-                                refusal_source = "deferred_behind_withholding"
-                                adaptive = None
-                            if (not refused and scan.rooms and ledger is not None
-                                    and (not int(reservation_demand.get("gpu", 0) or 0)
-                                         or any(kept.binds_all for kept in scan.rooms))):
-                                # A GPU row ahead of this one that fits the
-                                # free GPU could not be decided this pass
-                                # (#1169): admit this row only beside it.
-                                # A room kept for a row whose withhold carry
-                                # is gone binds every row, the GPU-demanding
-                                # with the rest (#1217): nothing sorting
-                                # behind the busy row may take the boundary
-                                # it waited for.
-                                demanding_gpu = bool(
-                                    int(reservation_demand.get("gpu", 0) or 0))
-                                bound = ([kept for kept in scan.rooms
-                                          if kept.binds_all]
-                                         if demanding_gpu else list(scan.rooms))
-                                try:
-                                    available = ledger.available()
-                                except OSError:
-                                    room_taken = None
-                                else:
-                                    room_taken = candidate_policy.room_taken(
-                                        available, bound, reservation_demand)
-                                if room_taken is not None:
-                                    refused = True
-                                    refusal_source = "deferred_for_ready_gpu_row"
-                                    adaptive = None
-                            if not refused and gpu_controller is not None and demand.get("gpu"):
-                                adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
-                                gpu_decision = getattr(gpu_controller, "last_decision", None)
-                                refused = adaptive_gpu is None
-                                if refused:
-                                    refusal_source = "adaptive_gpu_refused"
-                            if scratch_boundary is not None:
-                                # Normal CPU/GPU decisions can themselves take
-                                # time. Recheck again at the actual token boundary,
-                                # using captured identity and ORIGINAL time only.
-                                original, announced, generation, attempt = scratch_boundary
-                                scratch_changed = local_scratch.admission_generation_changed(
-                                    item, scratch_evidence, generation=generation, attempt=attempt,
-                                    observed_generation=self.attempt_generation(item))
-                                scratch_expired = not (
-                                    0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
-                                    and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
-                                refused = refused or scratch_expired or scratch_changed
-                                if not refused:
-                                    scratch_evidence["admission_checked_unix"] = _now()
-                                    scratch_evidence["reservation_demand"] = dict(reservation_demand)
-                            if not refused:
-                                if adaptive_gpu is not None:
-                                    reservation.host_handle = ledger.begin_acquire(
-                                        key, reservation_demand, adaptive=adaptive,
-                                        cpu_tiers=cpu_tiers, adaptive_gpu=adaptive_gpu)
-                                    asked = reservation_demand
-                                else:
-                                    reservation.host_handle = (ledger.begin_acquire(key, demand) if adaptive is None else
-                                              ledger.begin_acquire(key, demand, adaptive=adaptive,
-                                                                   cpu_tiers=cpu_tiers))
-                                    asked = demand
-                                token_shortage = ledger.last_token_shortage
-                                if reservation.host_handle is not None:
-                                    # A funded reservation spends its probe and borrow
-                                    # freshness under the same exclusion as its decision.
-                                    # Ordinary abandonment returns only owned credit;
-                                    # failure to persist rolls the reservation back.
-                                    if adaptive_gpu is not None:
-                                        reservation.gpu_probe = gpu_controller.reserve_probe(adaptive_gpu)
-                                    if adaptive is not None:
-                                        reservation.borrow = (adaptive, controller.admitted(adaptive))
-                            if (ledger is not None
-                                    and int(reservation_demand.get("gpu", 0) or 0)
-                                    and ((refused and refusal_source in (
-                                        "adaptive_gpu_refused", "adaptive_cpu_refused"))
-                                         or (not refused and reservation.host_handle is None))):
-                                # The free tokens the refusal was decided
-                                # against, read under the same exclusion
-                                # (#1240): a refused GPU row keeps its room
-                                # only when they do not fit it.
-                                try:
-                                    free_at_refusal = ledger.available()
-                                except OSError:
-                                    free_at_refusal = None
-                        scratch_refusal = local_scratch.admission_refusal(
-                            changed=scratch_changed, expired=scratch_expired)
-                        if scratch_refusal is not None:
-                            self.record_denial(item, scratch_refusal)
+                        if isinstance(host, _HostRefusal):
+                            accounted = self._account_host_refusal(
+                                host, scan, preempted=preempted, ledger=ledger, total=total,
+                                controller=controller, gpu_controller=gpu_controller,
+                                cpu_tiers=cpu_tiers, copy_authority=copy_authority,
+                                tagset=tagset, has_gpu=has_gpu)
+                            scan, preempted = accounted.order, accounted.preempted
                             continue
-                        if refused:
-                            # Aging is shared diagnostic/fairness bookkeeping, not
-                            # capacity authority. Keep its I/O outside host admission.
-                            # The per-key transition lock still protects this item.
-                            decision = (gpu_decision
-                                        if refusal_source == "adaptive_gpu_refused"
-                                        else cpu_decision)
-                            mode, foreign = drain_policy.refusal_mode(
-                                refusal_source, decision, demand=demand,
-                                measurement=bool(identity and identity[1]),
-                                cpu_count=len(controller.cpus) if controller is not None else None)
-                            observed = (self._observe_drain(
-                                key, ledger=ledger, need=reservation_demand,
-                                mode=mode or "exclusive", adaptive=True, foreign=foreign,
-                                gpu_sample=_gpu_sample_for(gpu_controller, demand),
-                                held_cpus=(decision.get("held_cpus")  # type: ignore[union-attr]
-                                           if mode == DRAIN_HELD_CPUS else None),
-                                cpu_tiers=cpu_tiers,
-                                measurement=bool(identity and identity[1]),
-                                measurement_generation=(self.attempt_generation(item)
-                                    if identity and identity[1] else None),
-                                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision),
-                                measurement_unmeasured=drain_policy.unmeasured_refusal(
-                                    refusal_source, decision))
-                                if mode is not None or foreign else None)
-                            verdict = None
-                            if observed is not None:
-                                self._drain_accounting.stage(key, observed.notes)
-                                if isinstance(observed, drain_policy.DrainFailure):
-                                    raise observed.error
-                                verdict = observed.verdict
-                            if verdict is not None and identity and identity[1]:
-                                verdict = self._canonical_measurement_verdict(
-                                    item, verdict, ledger=ledger, controller=controller,
-                                    cpu_decision=cpu_decision,
-                                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
-                                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
-                            prefix = candidate_policy.prepare_adaptive_refusal(
-                                refusal_source, decision, verdict, order=scan,
-                                dependent_owner=dependent_owner, room_taken=room_taken)
-                            if isinstance(prefix, candidate_policy.Silent):
-                                continue
-                            if isinstance(prefix, candidate_policy.Uncounted):
-                                denial = prefix.denial
-                            else:
-                                self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
-                                denial = candidate_policy.counted_adaptive_refusal(
-                                    prefix, key=key, order=scan, demand=demand,
-                                    reservation_demand=reservation_demand, mode=mode,
-                                    foreign=foreign, free_at_refusal=free_at_refusal)
-                            scan = denial.order_before
-                            self.record_denial(item, denial.reason, denial.evidence)
-                            if denial.withhold_after is not None:
-                                scan = denial.withhold_after.apply(
-                                    scan, identity=identity,
-                                    measurement_suspended=measurement_suspended)
-                            continue
-                        if reservation.host_handle is None:
-                            observed = self._observe_drain(
-                                key, ledger=ledger, need=asked, mode="tokens",
-                                gpu_sample=_gpu_sample_for(gpu_controller, demand),
-                                measurement=bool(identity and identity[1]),
-                                measurement_generation=(self.attempt_generation(item)
-                                    if identity and identity[1] else None),
-                                measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision))
-                            self._drain_accounting.stage(key, observed.notes)
-                            if isinstance(observed, drain_policy.DrainFailure):
-                                raise observed.error
-                            verdict = observed.verdict
-                            if identity and identity[1]:
-                                verdict = self._canonical_measurement_verdict(
-                                    item, verdict, ledger=ledger, controller=controller,
-                                    cpu_decision=cpu_decision,
-                                    gpu_sample=_gpu_sample_for(gpu_controller, demand),
-                                    authority=copy_authority, tags=tagset, has_gpu=has_gpu)
-                            denials = self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
-                            if not preempted:
-                                # Selection reacquires admission, while the separate
-                                # handoff lock spans withdrawal/requeue as well. A
-                                # stalled handoff cannot stop ordinary fitting work.
-                                exclusion = None
-                                if gang_record is not None and not _gang.backfill_reclaiming(self, gang_record):
-                                    exclusion = _gang.elections(
-                                        self, gang["group"], gang["size"]).get(gang["index"])
-                                preempted = self._preempt_background_holder(
-                                    ledger, action_key=key, demand=asked,
-                                    priority=int(item.get("priority", 0)),
-                                    controller=controller,
-                                    **({"exclude_gang_election": exclusion}
-                                       if exclusion is not None else {})) is not None
-                            withholding = bool(verdict["eligible"])
-                            age = self.withhold_age(key) if withholding else None
-                            evidence = {
-                                "demand": demand, "reservation_demand": reservation_demand,
-                                "token_shortage": token_shortage,
-                                "capacity_total": total, "denials": denials,
-                                "withhold_age_s": age, "withhold_ceiling_s": WITHHOLD_CEILING_S,
-                                "cpu_decision": cpu_decision,
-                                "gpu_decision": gpu_decision,
-                                "withhold": verdict,
-                            }
-                            denial = candidate_policy.counted_token_refusal(
-                                evidence, key=key, order=scan, eligible=withholding,
-                                asked=asked, free_at_refusal=free_at_refusal)
-                            scan = denial.order_before
-                            self.record_denial(item, denial.reason, denial.evidence)
-                            if denial.withhold_after is not None:
-                                scan = denial.withhold_after.apply(
-                                    scan, identity=identity,
-                                    measurement_suspended=measurement_suspended)
-                            continue
+                        demand, reservation_demand = host.demand.host, host.demand.reservation
+                        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+                        gang_backfill = host.arbitration.backfill
+                        backfill_binding = host.arbitration.backfill_binding
+                        _gang = host.arbitration.gang_api
                     allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
                                   if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
                     fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
