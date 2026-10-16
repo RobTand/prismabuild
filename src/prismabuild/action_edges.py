@@ -32,6 +32,8 @@ the directories are created on first use, and no other path reads them.
 
 from __future__ import annotations
 
+from . import immutable_files
+
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
@@ -476,9 +478,8 @@ def request_wrapper(cas_root: str | Path, key: str, *, where: str) -> str:
     """
 
     request = Path(cas_root) / "requests" / key[:2] / f"{key}.json"
-    raw = pb._read_regular_file_nofollow(
-        request, where=where, require_readonly=True, max_bytes=16 * 1024 * 1024)
-    action = pb.validate_action(pb._decode_strict_json(raw, where=where))
+    raw = immutable_files.read_immutable_file(request, where=where, max_bytes=16 * 1024 * 1024)
+    action = pb.validate_action(pb.digest_primitives.decode_strict_json(raw, where=where))
     if action["action_key"] != key:
         raise ValueError(f"{where}: request does not match its address")
     if action["task"]["definition_id"] != "fleet/pbrun":
@@ -744,9 +745,10 @@ def declared_template_id(cas_root: str | Path, action_key: str) -> str | None:
     key = _hex64(action_key, where="producer key")
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="producer request")
+        raw = immutable_files.read_stable_file(request, where="producer request")
         action = pb.validate_action(
-            pb._decode_strict_json(raw, where="producer request"))
+            pb.digest_primitives.decode_strict_json(raw, where="producer request"),
+        )
     except FileNotFoundError:
         return None
     except (pb.PrismaBuildError, ValueError, OSError) as exc:

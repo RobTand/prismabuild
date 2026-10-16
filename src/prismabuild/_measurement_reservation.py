@@ -58,13 +58,12 @@ class PublicationDisappeared(CensusUnavailable):
 
 def _read(path: Path, *, optional: bool = False, limit: int = MAX_RECORD_BYTES) -> dict | None:
     try:
-        raw = core._read_regular_file_nofollow(
-            path, where=READ_SECTION, max_bytes=limit, replaced_leaf=True)
+        raw = core.immutable_files.read_replaced_record(path, where=READ_SECTION, max_bytes=limit)
     except FileNotFoundError:
         if optional:
             return None
         raise PublicationDisappeared(f"publication disappeared during census: {path}") from None
-    value = core._decode_strict_json(raw, where=READ_SECTION)
+    value = core.digest_primitives.decode_strict_json(raw, where=READ_SECTION)
     if not isinstance(value, dict):
         raise CensusUnavailable(f"non-object census record: {path}")
     return value

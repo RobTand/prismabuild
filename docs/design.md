@@ -18045,3 +18045,27 @@ publication also retain their original positions and error boundaries. These
 later protocols and the final claim-driver reduction remain unfinished C01
 work. This extraction adds no compatibility phase and changes no queue schema,
 lock scope, fairness limit or default.
+
+### Native regular-file custody
+
+`immutable_files` owns regular-file opens, stable and replace-only reads,
+streaming identity checks, leaf-only reads and descriptor-relative unlink.
+The named `read_stable_file`, `read_replaced_record`, `read_immutable_file`
+profiles keep their existing custody requirements.
+The native owner retains six would-block open attempts, three fresh stable
+reads and eight replaced-record passes. It preserves the existing errno
+causes, opening and streamed byte caps, final leaf then parent identity checks,
+read-only checks and ext4 unlink-before-name-move acceptance rule.
+Leaf-only reads retain their narrower ancestor and ActionContractError policy.
+
+Strict JSON decoding lives in `digest_primitives.decode_strict_json`.
+Only existing strict intake boundaries use it; plain queue reads keep their
+permissive JSON and missing/empty behavior. Core has no private forwarding
+reader or decoder aliases. Its public `ReplacedRecordError` is the exact
+native class object, alongside its existing canonical CAS error bindings.
+Dynamic tools with a loaded Core use that Core's native/digest module objects,
+while package modules import the native owner directly,
+so isolated, installed and retained source bundles keep their own dependency
+and exception identity. The attested member set is unchanged, and current,
+historical optional-member and retained receipt-listed proof rules remain in
+force. This ownership move does not complete the wider queue RecordStore work.

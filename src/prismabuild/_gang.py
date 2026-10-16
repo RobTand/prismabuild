@@ -96,13 +96,16 @@ def state_dir(queue, group: str) -> Path:
 
 def _gang_read(path: Path, *, optional: bool = True) -> dict | None:
     try:
-        raw = core._read_regular_file_nofollow(path, where="gang record",
-                                               max_bytes=MAX_RECORD_BYTES)
+        raw = core.immutable_files.read_stable_file(
+            path,
+            where="gang record",
+            max_bytes=MAX_RECORD_BYTES,
+        )
     except FileNotFoundError:
         if optional:
             return None
         raise
-    value = core._decode_strict_json(raw, where="gang record")
+    value = core.digest_primitives.decode_strict_json(raw, where="gang record")
     if not isinstance(value, dict):
         raise GangContractError(f"non-object gang record: {path}")
     return value
@@ -507,7 +510,6 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
         standing["backfill_preemptions"] = observations
         pool._write_json_atomic(path, standing)
         return True
-
 
 
 def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:

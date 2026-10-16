@@ -778,7 +778,6 @@ MOVE_PRICING_PACING_FIELDS = ("pool_read_bytes", storage_tiers.POOL_FILL_FIELD,
 #: component (#1319).
 
 
-
 def move_pricing_projection(record: Mapping[str, object]) -> dict[str, object]:
     """The fields of one movement receipt that pricing reads (#1044).
 
@@ -1423,12 +1422,17 @@ def _sealed_action_request(
     key = str(action_key)
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
+        raw = immutable_files.read_stable_file(
+            request,
+            where="pool action request",
+            max_bytes=max_bytes,
+        )
     except FileNotFoundError:
         return None
     try:
         action = pb.validate_action(
-            pb._decode_strict_json(raw, where="pool action request"))
+            pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+        )
     except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
             ValueError, OSError) as exc:
         raise PoolContractError(
@@ -1481,12 +1485,14 @@ def _sealed_progress_policy(
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = immutable_files.read_stable_file(request, where="pool action request")
     except FileNotFoundError:
         # Same rule as the deadline: a legacy launcher with no request declares
         # nothing, and the canonical worker refuses a missing request itself.
         return None
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     try:
@@ -1623,10 +1629,10 @@ class ProgressWatch:
 
         self.sampled_unix = self.clock.unix()
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.path, where="action progress report",
+            raw = immutable_files.read_replaced_record(
+                self.path,
+                where="action progress report",
                 max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
-                replaced_leaf=True,
             )
         except FileNotFoundError:
             # Before the first report, and after a reporter that never came.
@@ -1645,7 +1651,7 @@ class ProgressWatch:
             self._reject(f"unreadable: {type(exc).__name__}")
             return False
         try:
-            record = pb._decode_strict_json(raw, where="action progress report")
+            record = pb.digest_primitives.decode_strict_json(raw, where="action progress report")
         except (pb.ActionContractError, RecursionError):
             # A torn read is possible in principle even behind os.replace on a
             # shared filesystem; the next poll reads the whole file.
@@ -2288,16 +2294,18 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
     """One wait record: ``{field: [keys], "since_unix": t}``, or why not."""
 
     try:
-        raw = pb._read_regular_file_nofollow(
-            path, where=where,
-            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+        raw = immutable_files.read_replaced_record(
+            path,
+            where=where,
+            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+        )
     except FileNotFoundError:
         return None, ""
     except (OSError, pb.ActionContractError, pb.CASTamperError,
             pb.CASUnavailableError) as exc:
         return None, f"unreadable: {type(exc).__name__}"
     try:
-        record = pb._decode_strict_json(raw, where=where)
+        record = pb.digest_primitives.decode_strict_json(raw, where=where)
     except (pb.ActionContractError, RecursionError):
         return None, "unparsable"
     if not isinstance(record, dict):
@@ -2333,12 +2341,14 @@ def _sealed_execution_policy(
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = immutable_files.read_stable_file(request, where="pool action request")
     except FileNotFoundError:
         # Legacy/custom launchers can have no request. The canonical worker
         # independently refuses a missing request before executing any action.
         return ceiling, False
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     mode = action["params"].get("profile")
@@ -2386,10 +2396,16 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
+        raw = immutable_files.read_stable_file(
+            request,
+            where="pool action request",
+            max_bytes=max_bytes,
+        )
     except FileNotFoundError:
         return "deadline", None
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     try:
@@ -2430,9 +2446,7 @@ def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
     won = immutable_files.publish_immutable(path, raw)
     if won:
         return
-    observed = pb._read_regular_file_nofollow(
-        path, where=where, require_readonly=True
-    )
+    observed = immutable_files.read_immutable_file(path, where=where)
     if observed != raw:
         raise PoolContractError(
             f"{where} conflicts with the immutable record already filed: {path}"
@@ -2571,15 +2585,13 @@ def _read_json_bounded(
     if max_bytes is None:
         return _read_json(path)
     try:
-        raw = pb._read_regular_file_nofollow(
-            path, where="queue record", max_bytes=max_bytes,
-            replaced_leaf=True)
+        raw = immutable_files.read_replaced_record(path, where="queue record", max_bytes=max_bytes)
     except FileNotFoundError:
         return None
     if not raw:
         raise PoolContractError(f"queue record is present but empty: {path}")
     try:
-        value = pb._decode_strict_json(raw, where="queue record")
+        value = pb.digest_primitives.decode_strict_json(raw, where="queue record")
     except pb.PrismaBuildError as exc:
         raise PoolContractError(str(exc)) from exc
     if not isinstance(value, dict):
@@ -2594,9 +2606,12 @@ def _read_json_confirmed(path: Path, *, max_bytes: int | None = None) -> dict[st
         return None
     # A listed name that cannot be read is uncertain, not absent. Reopen
     # positive records too; the best-effort poll reader is not commit proof.
-    raw = pb._read_regular_file_nofollow(
-        path, where="terminal proof record", replaced_leaf=True, max_bytes=max_bytes)
-    value = pb._decode_strict_json(raw, where="terminal proof record")
+    raw = immutable_files.read_replaced_record(
+        path,
+        where="terminal proof record",
+        max_bytes=max_bytes,
+    )
+    value = pb.digest_primitives.decode_strict_json(raw, where="terminal proof record")
     if not isinstance(value, dict):
         raise PoolContractError(f"terminal proof record is not an object: {path}")
     return value
@@ -6148,15 +6163,16 @@ class PoolQueue:
             return None
         if path.name not in names:
             return None
-        raw = pb._read_regular_file_nofollow(
-            path, where="publication ending", require_readonly=True)
-        record = pb._decode_strict_json(raw, where="publication ending")
+        raw = immutable_files.read_immutable_file(path, where="publication ending")
+        record = pb.digest_primitives.decode_strict_json(raw, where="publication ending")
         return self.decode_publication_supersession(path, record)
 
     def _read_ready_publication(self, key: str) -> dict[str, object]:
-        raw = pb._read_regular_file_nofollow(
-            self.item_path(READY, key), where="successor publication", replaced_leaf=True)
-        record = pb._decode_strict_json(raw, where="successor publication")
+        raw = immutable_files.read_replaced_record(
+            self.item_path(READY, key),
+            where="successor publication",
+        )
+        record = pb.digest_primitives.decode_strict_json(raw, where="successor publication")
         if not isinstance(record, dict):
             raise PoolContractError("successor publication must be an object")
         return record
@@ -10895,9 +10911,10 @@ class PoolQueue:
             return None, ("unknown", "the owner's claim names no CAS")
         path = Path(str(cas_root)) / "requests" / export[:2] / f"{export}.json"
         try:
-            raw = pb._read_regular_file_nofollow(path, where="export action request")
+            raw = immutable_files.read_stable_file(path, where="export action request")
             request = pb.validate_action(
-                pb._decode_strict_json(raw, where="export action request"))
+                pb.digest_primitives.decode_strict_json(raw, where="export action request"),
+            )
         except FileNotFoundError:
             return None, ("not-own-export", "no sealed request in the owner's CAS")
         except (OSError, ValueError, RecursionError, pb.ActionContractError,
@@ -11205,26 +11222,32 @@ class PoolQueue:
         if not root.is_absolute() or ".." in root.parts:
             return None, "the controller state is not an absolute path"
         try:
-            state_raw = pb._read_regular_file_nofollow(
-                root / CONTROLLER_WAVE_STATE, where="controller wave state",
-                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+            state_raw = immutable_files.read_replaced_record(
+                root / CONTROLLER_WAVE_STATE,
+                where="controller wave state",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES,
+            )
         except FileNotFoundError:
             return None, f"{CONTROLLER_WAVE_STATE} is missing"
         except (OSError, pb.ActionContractError, pb.CASTamperError,
                 pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
             return None, f"{CONTROLLER_WAVE_STATE} is unreadable: {type(exc).__name__}"
         try:
-            state_value = pb._decode_strict_json(
-                state_raw, where="controller wave state")
+            state_value = pb.digest_primitives.decode_strict_json(
+                state_raw,
+                where="controller wave state",
+            )
         except (pb.ActionContractError, RecursionError):
             return None, f"{CONTROLLER_WAVE_STATE} is not JSON"
         state_members, reason = PoolQueue._awaited_wave_members(state_value)
         if state_members is None:
             return None, reason
         try:
-            journal_raw = pb._read_regular_file_nofollow(
-                root / CONTROLLER_SUB_KEYS, where="controller journal",
-                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+            journal_raw = immutable_files.read_replaced_record(
+                root / CONTROLLER_SUB_KEYS,
+                where="controller journal",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES,
+            )
         except FileNotFoundError:
             return None, f"{CONTROLLER_SUB_KEYS} is missing"
         except (OSError, pb.ActionContractError, pb.CASTamperError,
@@ -11495,9 +11518,11 @@ class PoolQueue:
         from . import movement_actions
 
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.action_progress_path(mover), where="mover progress report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                self.action_progress_path(mover),
+                where="mover progress report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
         except FileNotFoundError:
             return None
@@ -11537,9 +11562,11 @@ class PoolQueue:
         """
 
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.mover_landing_path(mover), where="mover landing report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                self.mover_landing_path(mover),
+                where="mover landing report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
         except FileNotFoundError:
             return None
@@ -12768,9 +12795,11 @@ class PoolQueue:
 
         path = self.stage_ownership_holder_path(stage_root)
         try:
-            raw = pb._read_regular_file_nofollow(
-                path, where="stage ownership holder",
-                max_bytes=MAX_STAGE_OWNERSHIP_HOLDER_BYTES)
+            raw = immutable_files.read_stable_file(
+                path,
+                where="stage ownership holder",
+                max_bytes=MAX_STAGE_OWNERSHIP_HOLDER_BYTES,
+            )
         except FileNotFoundError:
             return {"recorded": False, "live": None, "why": "no holder record"}
         except (OSError, pb.ActionContractError, pb.CASTamperError,
@@ -12778,7 +12807,7 @@ class PoolQueue:
             return {"recorded": False, "live": None,
                     "why": f"holder record unreadable: {type(exc).__name__}"}
         try:
-            record = pb._decode_strict_json(raw, where="stage ownership holder")
+            record = pb.digest_primitives.decode_strict_json(raw, where="stage ownership holder")
         except (pb.ActionContractError, RecursionError):
             record = None
         pid = record.get("pid") if isinstance(record, dict) else None
@@ -19011,8 +19040,10 @@ class PoolQueue:
     def _start_resource_scope(self, item: Mapping[str, object]) -> resource_scope.ResourceScope:
         key = str(item["action_key"])
         request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-        raw = pb._read_regular_file_nofollow(request, where="contained pool action request")
-        action = pb.validate_action(pb._decode_strict_json(raw, where="contained pool action request"))
+        raw = immutable_files.read_stable_file(request, where="contained pool action request")
+        action = pb.validate_action(
+            pb.digest_primitives.decode_strict_json(raw, where="contained pool action request"),
+        )
         demand = action["params"].get("demand")
         if action["action_key"] != key:
             raise PoolContractError("contained action request differs from claimed key")
@@ -23860,7 +23891,7 @@ class PoolQueue:
                     except (PoolContractError, FileNotFoundError, pb.CASTamperError):
                         # ``attempt_outcomes`` decides most of this by reading the
                         # record and raises ``PoolContractError``, but the link it
-                        # checks last is a *file*: ``_open_regular_nofollow``
+                        # checks last is a *file*: ``open_regular_nofollow``
                         # raises a bare ``FileNotFoundError`` when the immutable
                         # outcome is absent and ``CASTamperError`` when the entry
                         # is not a readonly regular file, and neither derives from
@@ -24795,14 +24826,12 @@ class PoolQueue:
         """
 
         try:
-            return pb._read_regular_file_nofollow(
-                path, where=where, require_readonly=True)
+            return immutable_files.read_immutable_file(path, where=where)
         except FileNotFoundError:
             if not self._attempt_path_listed(path):
                 raise
         try:
-            return pb._read_regular_file_nofollow(
-                path, where=where, require_readonly=True)
+            return immutable_files.read_immutable_file(path, where=where)
         except FileNotFoundError as exc:
             raise StaleAbsenceError(
                 errno.ENOENT,
@@ -26754,8 +26783,7 @@ class PoolQueue:
 
     def _read_withdrawal_decision(self, path: Path) -> dict[str, object]:
         try:
-            raw = pb._read_regular_file_nofollow(
-                path, where="withdrawal decision", require_readonly=True)
+            raw = immutable_files.read_immutable_file(path, where="withdrawal decision")
             decision = json.loads(raw)
             if (not isinstance(decision, dict) or decision.get("status") != "withdrawn"
                     or self.withdrawal_decision_path(decision) != path):
