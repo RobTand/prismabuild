@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import importlib.machinery
+import importlib.util
 import json
 import marshal
 import os
@@ -61,6 +63,20 @@ def attest(root, stdlib, manifest):
     if not observed:
         raise RuntimeError("adapter reached no production imports")
     return observed, standard_imports
+
+
+def load_module(root, name):
+    if name != "docker":
+        return importlib.import_module(name)
+    path = root / "tools/fleet/docker"
+    if not path.is_file():
+        path = root / "tools/docker"
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
 
 
 def private_writes_only(store):
@@ -192,7 +208,7 @@ def main():
     try:
         adapter = runpy.run_path(str(args.adapters))["operate"]
         sys.setprofile(entered)
-        output["result"] = adapter(request, args.store, importlib.import_module)
+        output["result"] = adapter(request, args.store, lambda name: load_module(root, name))
     except Exception as error:
         code = 1
         output["error"] = {"type": type(error).__name__, "message": str(error)}

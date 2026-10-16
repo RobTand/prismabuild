@@ -48,6 +48,8 @@ def reached(observed, reference):
         paths = {"src/" + module.replace(".", "/") + ".py"}
     else:
         paths = {"tools/" + module + ".py", "tools/fleet/" + module + ".py"}
+    if module == "docker":
+        paths.update({"tools/docker", "tools/fleet/docker"})
     return any(call[0] in paths and call[3] == qualified
                for call in observed.get("calls", []))
 
