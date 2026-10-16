@@ -6548,6 +6548,27 @@ under SLURM before any row is submitted.
 
 ## Storage prewarm pacing
 
+The experimental prewarm `--stage` writer is retired under Rob's 2026-10-16
+decision. `prewarm_loop.py` rejects `--stage`, `--stage-pool-prefix` and
+`--stage-free-floor-bytes` during argument parsing, before role admission or
+queue, CAS and output I/O. Pool and ARC prewarm keep their existing receipt
+fields, pacing and window behavior.
+
+Retirement follows admitted process and temporary-file censuses on dl380g10,
+sparky and sparklina, including the gx10-6b77 alias. The corrected observations
+span 2026-10-16 13:39:41Z through 13:44:20Z and report no experimental writer
+or matching temporary. WSL is explicitly offline in the roster and outside
+this active-host coverage. The census is a point-in-time observation, not a
+launch fence or a runtime deployment. Evidence and the failed initial census
+are retained under
+`/home/rob/tmp/prismabuild-resume-20261016/retire-prewarm-stage/`.
+
+Both reclamation roles now apply their ordinary ownership and source-proof
+rules to names formerly reserved for prewarm temporaries. Established
+`stage_move`, `stage_release`, `stage_reclaim`, tier discovery, residency and
+RAM promotion remain. `stage_marks` retains the source and mover xattrs and
+the source identity spelling needed by those consumers and older files.
+
 READY diagnostics expose recorded prewarm input errors, including missing
 files, with the receipt's finish time and `permanence unproven` (#1184).
 Unreadable prewarm evidence makes the diagnostic census incomplete, never a

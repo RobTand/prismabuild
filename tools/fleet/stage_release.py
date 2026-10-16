@@ -112,7 +112,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
-    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, prewarm_temporary_pid,
+    STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
 )
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402
@@ -5330,7 +5330,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
 
     The walk and every per-file rule of the reconciliation: the root's own
     markers are skipped, a symlink or non-regular file is skipped, an
-    attributed path is skipped, a prewarm temporary is skipped, a mover's
+    attributed path is skipped, a mover's
     copy that any fragment names is skipped (#1088), a file the prewarm
     stage alone marked -- or whose marks cannot be read -- is left, and a
     file that would be deleted but resolves outside the stage is skipped.
@@ -5377,9 +5377,6 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     # path lies strictly below the resolved stage.
     inside = os.path.join(str(stage_resolved), "")
     root = os.path.normpath(os.fspath(stage))
-    #: A name the prewarm loop owns: never a candidate, and decided by the
-    #: name alone, so no mark is read for it.
-    temporary = "prewarm-temporary"
     #: A name attribution covered on the last pass.  It is remembered so a
     #: reused listing still sees it when the fragment that covered it ends,
     #: and it carries no mark probe while it stays attributed.
@@ -5392,8 +5389,6 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
     def classify(name: str, path: str) -> tuple[str, str]:
         if _is_mover_partial(name):
             return "partial", ""
-        if prewarm_temporary_pid(name) is not None:
-            return temporary, ""
         return _stage_mark(path)
 
     def judge(name: str, path: str, info: os.stat_result,
@@ -5401,10 +5396,6 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
         """The per-file rules, exactly as before (#1088, #1073)."""
 
         normalized = os.path.normpath(path)
-        if kind == temporary:
-            # The prewarm loop reaps its own, once per process, and a live
-            # one belongs to a copy in flight.
-            return
         if kind == "mover_residue" and normalized in named:
             # Some fragment names this copy, wanted or not: its owner is
             # retired with that fragment and its material by the key-driven
@@ -5450,7 +5441,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
             return info, attributed_mark, "", version
         old = previous.get(name) if previous is not None else None
         if (old is not None and old[0] is not None and old[0] == version
-                and old[1] not in (temporary, "mark_unanswerable",
+                and old[1] not in ("mark_unanswerable",
                                    attributed_mark)):
             kind, mover = old[1], old[2]
             if memo is not None:
@@ -5548,7 +5539,7 @@ def _unattributed_candidates(stage: Path, stage_resolved: Path,
                     continue
                 if (version is not None
                         and current_version == version
-                        and kind not in (temporary, "mark_unanswerable")):
+                        and kind != "mark_unanswerable"):
                     if memo is not None:
                         memo.walk_reused += 1
                 else:

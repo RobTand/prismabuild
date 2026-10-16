@@ -22,7 +22,7 @@ import local_tier_loop
 import pbmetrics
 import prewarm_loop
 from prismabuild import role_session
-from prewarm_fixture import Fleet, StagePool
+from prewarm_fixture import Fleet
 
 CONTEXT = multiprocessing.get_context("fork")
 WORK_UNIT_ROLES = ("storage", "tiers", "localtier")
@@ -167,25 +167,23 @@ def test_metrics_stop_waits_for_real_handlers_before_park(
 
 
 @pytest.mark.parametrize(("once", "gate_closed"), [(True, True), (False, False)])
-def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
+def test_prewarm_sigterm_joins_reader_and_publishes_accounting(
         boundary, monkeypatch, once, gate_closed):
     fleet = Fleet(boundary.root / "fleet")
     key = fleet.action("cancelled", [fleet.file("row.pt", prewarm_loop.BLOCK * 2)])
-    stage = StagePool(boundary.root / "stage")
-    stage.install(monkeypatch)
     entered, release = CONTEXT.Event(), threading.Event()
     receiver, sender = CONTEXT.Pipe(duplex=False)
-    write = prewarm_loop.StageObject.write
+    readv = os.readv
 
-    def blocked_write(sink, data):
-        result = write(sink, data)
+    def blocked_read(fd, buffers):
+        result = readv(fd, buffers)
         entered.set()
-        assert release.wait(10), "test did not release stage writer"
+        assert release.wait(10), "test did not release pool reader"
         return result
 
-    args = fleet.args(once=once, readers=1, stage=True, stage_free_floor_bytes=0,
+    args = fleet.args(once=once, readers=1, max_readers=1,
                       log=str(boundary.root / "cycle.jsonl"))
-    monkeypatch.setattr(prewarm_loop.StageObject, "write", blocked_write)
+    monkeypatch.setattr(os, "readv", blocked_read)
     monkeypatch.setattr(prewarm_loop, "require_storage_pacing", lambda _: None)
     monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
     process = CONTEXT.Process(target=_run_role,
@@ -194,25 +192,23 @@ def test_prewarm_sigterm_aborts_partial_sink_and_publishes_accounting(
     receiver.close()
     try:
         assert entered.wait(5), (boundary.root / "prewarm.log").read_text()
-        assert len(stage.objects()) == 1, "real partial sink was not created"
         boundary.published.unlink()
         if gate_closed:
             _close_gate(boundary)
         os.kill(process.pid, signal.SIGTERM)
         process.join(0.15)
-        assert process.is_alive(), "SIGTERM unwound the reader before sink cleanup"
+        assert process.is_alive(), "SIGTERM exited before the reader joined"
         assert list(boundary.parked.iterdir()) == []
         sender.send_bytes(b"release")
         process.join(5)
         assert process.exitcode == 0, (boundary.root / "prewarm.log").read_text()
-        assert stage.objects() == [], "partial stage object survived stop"
         record = fleet.queue.prewarm(key)
         assert record["status"] == "partial"
         assert record["bytes_warmed"] == prewarm_loop.BLOCK
-        assert record["stage"]["staged_entries"] == 0
+        assert "stage" not in record
         event = json.loads((boundary.root / "cycle.jsonl").read_text())
-        assert event["stage"]["aborted_entries"] == 1
-        assert event["stage"]["aborted_bytes"] == prewarm_loop.BLOCK
+        assert event["warmed"][0]["bytes_warmed"] == prewarm_loop.BLOCK
+        assert "stage" not in event
         assert len(list(boundary.parked.iterdir())) == int(gate_closed)
     finally:
         _finish(process, sender)

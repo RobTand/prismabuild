@@ -184,7 +184,7 @@ def test_apply_moves_only_digest_equal_pairs_to_quarantine(fleet) -> None:
     assert len(manifest["entries"]) == len(NAMES)
 
 
-def test_a_prewarm_temporary_is_excluded_before_its_marks_are_read(
+def test_a_retired_prewarm_temporary_name_uses_the_ordinary_reclaim_proof(
         fleet, monkeypatch) -> None:
     _queue, stage, _mount, _quarantine, good = fleet
     temporary = stage / "alpha.bin.pbstage@0+4096.7.1.tmp"
@@ -203,9 +203,9 @@ def test_a_prewarm_temporary_is_excluded_before_its_marks_are_read(
 
     assert got["complete"] is True
     assert got["entries_moved"] == len(NAMES)
-    assert got["refused_reasons"] == {}
+    assert got["refused_reasons"] == {"unpaired_name": 1}
     assert temporary.read_bytes() == good
-    assert str(temporary) not in {os.fspath(path) for path in probed}
+    assert str(temporary) in {os.fspath(path) for path in probed}
 
 
 def test_a_crash_between_copy_and_removal_loses_no_data(
