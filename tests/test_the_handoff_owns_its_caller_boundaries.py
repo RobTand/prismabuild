@@ -54,7 +54,7 @@ import test_withdrawal_retires_the_plan_it_minted as retirement  # noqa: E402
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(retirement.TIER, {"stage_gib": 8})
     return q
 
@@ -139,7 +139,7 @@ def test_an_unstattable_current_identity_defers(
 
     plan = retirement._plan(queue, retirement.FIRST, label="first")
     retirement._publish_consumer(queue, retirement.FIRST, plan)
-    filing = residency_plan.incarnation(queue.residency_plan_path(retirement.FIRST))
+    filing = residency_plan.incarnation(queue.records.residency_plan_path(retirement.FIRST))
     assert filing is not None
     _file_marker(queue, plan, plan_incarnation=list(filing))
 
@@ -155,13 +155,13 @@ def test_a_valid_stamp_for_an_older_filing_still_proves_a_different_one(
 
     plan = retirement._plan(queue, retirement.FIRST, label="first")
     retirement._publish_consumer(queue, retirement.FIRST, plan)
-    older = residency_plan.incarnation(queue.residency_plan_path(retirement.FIRST))
+    older = residency_plan.incarnation(queue.records.residency_plan_path(retirement.FIRST))
     assert older is not None
     _file_marker(queue, plan, plan_incarnation=list(older), reason="withdrawn")
 
     # A deliberate resubmission replaces the filing with identical bytes: a
     # new filing, and the old marker covers only the one it named.
-    queue.residency_plan_path(retirement.FIRST).unlink()
+    queue.records.residency_plan_path(retirement.FIRST).unlink()
     residency_plan.freeze(queue, plan)
 
     assert residency_plan.superseded(queue, plan) is None
@@ -178,8 +178,8 @@ def test_the_window_defers_on_a_malformed_incarnation_stamp(
     events = tier_loop.residency_window(
         queue, tiers={retirement.TIER: retirement._tier(tmp_path)})
 
-    assert not queue.item_path(
-        pool.READY, retirement._hexkey("firstmover0")).exists()
+    assert not queue.records.item_path(
+        pool.record_store.READY, retirement._hexkey("firstmover0")).exists()
     assert not any(event.get("event") == "mover-published" for event in events)
     assert residency_plan.read(queue, retirement.FIRST) is not None, (
         "an unreadable marker never authorizes a replacement either")
@@ -231,10 +231,10 @@ def test_residency_stage_rows_adopts_the_filing_that_replaced_its_own(
             # advisory answer and the locked reap that is supposed to archive
             # the filing this caller decided against.  It never saw the new
             # one, and must not archive it.
-            q.residency_plan_path(consumer).unlink()
+            q.records.residency_plan_path(consumer).unlink()
             residency_plan.freeze(q, stale["plan"])
             replaced["filing"] = residency_plan.incarnation(
-                q.residency_plan_path(consumer))
+                q.records.residency_plan_path(consumer))
         return answer
 
     monkeypatch.setattr(
@@ -244,7 +244,7 @@ def test_residency_stage_rows_adopts_the_filing_that_replaced_its_own(
 
     assert result.get("reused_frozen_plan") is True, result
     assert residency_plan.incarnation(
-        queue.residency_plan_path(key)) == replaced["filing"], (
+        queue.records.residency_plan_path(key)) == replaced["filing"], (
         "the replacement filing was archived and a third seal took its place")
     assert retirement._archives(queue, key) == []
 
@@ -282,7 +282,7 @@ def test_residency_stage_rows_refuses_when_its_locked_reap_finds_live_work(
 
     assert residency_plan.read(queue, key) == stale["plan"], (
         "the old plan binding is preserved while its work is live")
-    assert queue.item_path(pool.CLAIMED, lead).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, lead).exists()
 
 
 # -- 3. the ownership boundary covers freeze -> publication ------------------
@@ -315,7 +315,7 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     assert residency_plan.superseded(queue, plan) is not None
     # The submitter publishes no mover, so the lead row this stands in for
     # concluding may simply not exist yet.
-    queue.item_path(pool.READY, lead).unlink(missing_ok=True)
+    queue.records.item_path(pool.record_store.READY, lead).unlink(missing_ok=True)
 
     entered = threading.Event()
     completed = threading.Event()
@@ -354,8 +354,8 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
                    for event in cleanup_events), cleanup_events
     assert residency_plan.read(queue, key) is not None, (
         "the freshly frozen plan was archived before its consumer row existed")
-    assert queue.item_path(pool.READY, key).exists()
-    assert not queue.item_path(pool.READY, lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "the submitter publishes no mover; the lead is the loop's to publish")
 
 
@@ -384,8 +384,8 @@ def test_the_window_does_not_publish_a_child_after_the_parent_was_withdrawn(
         queue, tiers={retirement.TIER: retirement._tier(tmp_path)})
 
     assert not any(event.get("event") == "mover-published" for event in events)
-    assert not queue.item_path(
-        pool.READY, retirement._hexkey("firstmover0")).exists(), (
+    assert not queue.records.item_path(
+        pool.record_store.READY, retirement._hexkey("firstmover0")).exists(), (
         "a child was published after its parent's window was withdrawn")
     assert any(event.get("event") == "mover-publish-deferred-stale-window"
                for event in events), events
@@ -413,8 +413,8 @@ def test_the_ram_window_does_not_promote_after_the_parent_was_withdrawn(
 
     assert not any(event.get("event") == "ram-mover-published"
                    for event in events)
-    assert not queue.item_path(
-        pool.READY, ram_window._hexkey("rampromote0")).exists(), (
+    assert not queue.records.item_path(
+        pool.record_store.READY, ram_window._hexkey("rampromote0")).exists(), (
         "a promotion was published after its parent's window was withdrawn")
     assert any(event.get("event") == "ram-mover-publish-deferred-stale-window"
                for event in events), events
@@ -438,7 +438,7 @@ def test_handoff_safe_sees_a_transition_between_its_two_state_reads(
 
     def stat_and_move(path, *args, **kwargs):
         if not moved["done"] and str(path) == str(
-                queue.item_path(pool.CLAIMED, child)):
+                queue.records.item_path(pool.record_store.CLAIMED, child)):
             moved["done"] = True
             # The atomic READY->CLAIMED transition, landing between the
             # claimed read and the ready read.
@@ -469,7 +469,7 @@ def test_handoff_safe_defers_on_an_unreadable_state(
     real_stat = os.stat
 
     def refuse_ready(path, *args, **kwargs):
-        if str(path) == str(queue.item_path(pool.READY, child)):
+        if str(path) == str(queue.records.item_path(pool.record_store.READY, child)):
             raise OSError(errno.EIO, "Input/output error")
         return real_stat(path, *args, **kwargs)
 

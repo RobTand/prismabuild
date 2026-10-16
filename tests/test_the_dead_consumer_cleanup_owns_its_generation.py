@@ -64,7 +64,7 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
     withdrawal = queue.withdraw(key, reason="stale price", by="operator")
     assert withdrawal["residency_plan_superseded"] is True
     for mover_key in residency_plan.mover_keys(first):
-        queue.item_path(pool.READY, mover_key).unlink()
+        queue.records.item_path(pool.record_store.READY, mover_key).unlink()
 
     real_read_filed = residency_plan.read_filed
     published = threading.Event()
@@ -104,9 +104,9 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
     final = residency_plan.read(queue, key)
     assert final is not None, "the live generation left no plan filed"
     new_lead = str(final["phases"][0]["mover_row"]["action_key"])
-    assert queue.item_path(pool.READY, key).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, key).exists(), (
         "the stale cleanup withdrew the resubmitted consumer")
-    assert queue.item_path(pool.READY, new_lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, new_lead).exists(), (
         "the stale cleanup cancelled the resubmitted generation's lead")
     assert lead not in queue.withdrawn_keys(), (
         "the new lead was filed as withdrawn by the stale pass")

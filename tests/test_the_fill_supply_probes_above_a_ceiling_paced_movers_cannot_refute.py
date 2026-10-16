@@ -248,7 +248,7 @@ def test_a_frozen_tier_mints_from_the_probe_offer(tmp_path):
     the next mover can admit, pace and deliver above it."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
                                          achieved=120.0, sharers=1, key="1"))
     queue.record_move("2" * 64, _receipt(unix=200.0, delivered=120.0, sealed=120,
@@ -273,7 +273,7 @@ def test_the_escaped_probe_refutes_the_ceiling_and_growth_resumes(tmp_path):
     exactly as the growth rule always has."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
                                          achieved=120.0, sharers=1, key="1"))
     _ready_mover(queue, "a", 110)
@@ -301,7 +301,7 @@ def test_a_ceiling_without_a_priced_reader_mints_the_queued_floor(tmp_path):
     names that selection rather than the absent fold."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=498.0, sealed=166,
                                          achieved=130.0, key="1"))
     queue.record_move("2" * 64, _receipt(unix=200.0, delivered=522.0, sealed=166,
@@ -324,7 +324,7 @@ def test_the_larger_of_the_fold_offer_and_the_queued_floor_is_selected(tmp_path)
     offer and the announcement carries the historical value beside it."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
                                          achieved=120.0, sharers=1, key="1"))
     _ready_mover(queue, "a", 145)
@@ -347,7 +347,7 @@ def test_the_fold_offer_stands_when_the_queued_floor_is_smaller(tmp_path):
     the queue can only add, never shrink, what the receipts measured."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=120.0, sealed=166,
                                          achieved=120.0, sharers=1, key="1"))
     queue.record_move("2" * 64, _receipt(unix=200.0, delivered=120.0, sealed=120,
@@ -437,7 +437,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
     gates still applying."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     # The tier the loop would have minted by now: 5 GiB of stage, 130 MB/s of
     # fill -- sunk far under the 400 each mover's dispatch sealed.
     queue.mint_tier_capacity(TIER, {"stage_gib": 5, FILL: 130})
@@ -451,8 +451,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
     assert not [event for event in events
                 if event["event"] == "mover-repriced-to-tier-offer"]
     for ordinal in (0, 1):
-        row = pool._read_json(queue.item_path(pool.READY,
-                                              _hexkey(f"mover{ordinal}")))
+        row = pool.record_store.require(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
         assert row["resources"][KIND] == 400
         assert row["resources"][STAGE_KIND] == 2
         assert row["resources"]["mem_gb"] == 1
@@ -480,7 +479,7 @@ def test_a_mover_priced_under_the_tier_is_republished_verbatim(tmp_path):
     already admit is published byte for byte as sealed."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5, FILL: 130})
     plan = _stale_plan(queue, fills=(100, 100))
     _claim_consumer(queue, plan)
@@ -492,8 +491,7 @@ def test_a_mover_priced_under_the_tier_is_republished_verbatim(tmp_path):
     assert not [event for event in events
                 if event["event"] == "mover-repriced-to-tier-offer"]
     for ordinal in (0, 1):
-        row = pool._read_json(queue.item_path(pool.READY,
-                                              _hexkey(f"mover{ordinal}")))
+        row = pool.record_store.require(queue.records.item(pool.record_store.READY, _hexkey(f"mover{ordinal}")))
         assert row["resources"][KIND] == 100
         assert row["resources"][STAGE_KIND] == 2
 

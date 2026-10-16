@@ -174,7 +174,7 @@ def test_the_tier_offers_one_more_mover_than_the_pool_has_carried(tmp_path):
     """Through the real cycle: measured delivery plus one queued mover's demand."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=166.0, sealed=166,
                                          achieved=166.0, key="1"))
     _ready_mover(queue, "a", 166)
@@ -191,7 +191,7 @@ def test_a_measured_ceiling_offers_the_queued_floor(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("1" * 64, _receipt(unix=100.0, delivered=498.0, sealed=166,
                                          achieved=166.0, key="1"))
     queue.record_move("2" * 64, _receipt(unix=200.0, delivered=522.0, sealed=166,
@@ -206,7 +206,7 @@ def test_a_measured_ceiling_offers_the_queued_floor(tmp_path):
 
 def test_with_nothing_measured_the_probe_rule_is_unchanged(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _ready_mover(queue, "a", 210)
     record = _cycle(queue)
     assert record["fill_source"] == "probe"
@@ -215,7 +215,7 @@ def test_with_nothing_measured_the_probe_rule_is_unchanged(tmp_path):
 
 def test_with_nothing_measured_and_nothing_asking_the_tier_offers_no_fill(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     record = _cycle(queue)
     assert record["fill_source"] == "none"
     assert FILL not in record["tokens"]
