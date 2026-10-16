@@ -92,6 +92,9 @@ def operate(request, store, load):
     if family.startswith(("resident-", "tier-")):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_resident_adapters.py")))["operate"]
         return adapter(request, store, load)
+    if family in ("plan", "shared-range", "shared-mover"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_plan_adapters.py")))["operate"]
+        return adapter(request, store, load)
     path = store / "record.json"
     if not write:
         path.write_bytes(base64.b64decode(request["raw"]))

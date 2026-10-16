@@ -141,6 +141,14 @@ KINDS = (
     RecordKind("tier-epoch", "prismabuild.ram_epoch.v1", "RAM mount .prismabuild-epoch.json", "additive",
                "prismabuild.storage_tiers:read_ram_epoch", ("prismabuild.storage_tiers:ensure_ram_epoch",), ("bootstrap",),
                ("reader accepts absent unix and host",)),
+    RecordKind("plan", "prismaquant.prismabuild.residency_plan.v1", "residency-plans/<consumer>.json", "closed",
+               "prismabuild.residency_plan:read", ("prismabuild.residency_plan:freeze",),
+               ("whole", "chunks", "ram-whole", "ram-chunks", "reader-depth", "reader-rate", "reader-both", "demand-source", "prelaunch", "combined"),
+               ("whole stage leg is accepted alongside chunked shape; optional reader/demand/RAM/prelaunch declarations may be absent",)),
+    RecordKind("shared-range", "prismaquant.prismabuild.shared_range.v1", "shared-ranges/<namespace>.json", "additive",
+               "prismabuild.residency_plan:read_shared_range", ("prismabuild.residency_plan:register_shared_range",), ("first", "stale", "withdrawn")),
+    RecordKind("shared-mover", "prismaquant.prismabuild.shared_mover.v1", "shared-ranges/movers/<mover>.json", "additive",
+               "prismabuild.residency_plan:read_shared_mover", ("prismabuild.residency_plan:register_shared_range",), ("first", "stale", "withdrawn")),
 )
 
 
