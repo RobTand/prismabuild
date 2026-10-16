@@ -643,7 +643,6 @@ CENSUS_UNREADABLE_SCHEMA_V1 = "prismabuild.ledger_census_unreadable.v1"
 #: small file per key in the queue root, beside ``passes``, written only when
 #: a host's reason for the key changes.  ``claim-denials.json`` keeps the
 #: latest verdict; this keeps the sequence that diagnoses a starvation.
-DENIAL_TRANSITIONS = "denial-transitions"
 #: How long a ring outlives a key that no state directory names any more,
 #: when no terminal or withdrawal record says why.  The same safety valve,
 #: for the same reason, as ``PREWARM_RECEIPT_RETENTION_S`` (defined below).
