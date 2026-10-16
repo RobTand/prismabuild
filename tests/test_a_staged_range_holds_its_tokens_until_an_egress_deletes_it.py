@@ -272,7 +272,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
     assert denial is not None and denial["reason"] == "residency_map_unreadable"
     verdict = denial["evidence"]["residency"]
     assert "Stale file handle" in verdict["error"]
-    assert verdict["map_path"] == str(real(queue, CONSUMER))
+    assert verdict["map_path"] == str(real(queue.records, CONSUMER))
     # ...and it is a stall, not a verdict: nothing aged, nothing taken.
     assert queue.passes(CONSUMER) == 0
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
