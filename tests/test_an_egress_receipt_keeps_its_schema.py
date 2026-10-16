@@ -82,7 +82,7 @@ def test_a_receipt_of_another_schema_is_refused(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="something.else.v1"):
         queue.record_move("a" * 64, {"schema": "something.else.v1"})
-    assert not queue.move_path("a" * 64).exists()
+    assert not queue.records.move_path("a" * 64).exists()
 
 
 def test_a_misfiled_egress_receipt_prices_neither_an_egress_nor_a_move(
@@ -96,7 +96,7 @@ def test_a_misfiled_egress_receipt_prices_neither_an_egress_nor_a_move(
     stage = tmp_path / "stage"
     legacy = {**_egress_receipt(stage), "schema": pool.POOL_MOVE_SCHEMA_V1,
               "action_key": EGRESS_KEY, "tier_id": TIER}
-    path = queue.move_path(EGRESS_KEY)
+    path = queue.records.move_path(EGRESS_KEY)
     path.parent.mkdir(parents=True, exist_ok=True)
     pool._write_json_atomic(path, legacy)
 

@@ -93,14 +93,14 @@ def fleet(tmp_path: Path):
     root = _clock_root(tmp_path)
     try:
         queue = pool.PoolQueue(root / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         queue.mint_tier_capacity(TIER, {"stage_gib": 8})
         stage = root / "stage"
         stage.mkdir()
         stage = stage.resolve()
         assert stage_release.register_stage_root(
             queue, tier_id=TIER, stage_root=stage) == "registered"
-        yield queue, stage, queue.root / pool.RESIDENCY
+        yield queue, stage, queue.root / pool.record_store.RESIDENCY
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

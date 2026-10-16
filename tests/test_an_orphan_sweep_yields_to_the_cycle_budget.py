@@ -119,12 +119,12 @@ class _Sweeps:
         return made
 
     def record(self) -> dict[str, object]:
-        return json.loads(self.queue.tier_record_path(TIER).read_text())
+        return json.loads(self.queue.records.tier_record_path(TIER).read_text())
 
     def age(self) -> float | None:
         """The tier record's age as a reader computes it; none unannounced."""
 
-        path = self.queue.tier_record_path(TIER)
+        path = self.queue.records.tier_record_path(TIER)
         if not path.exists():
             return None
         return self.clock() - float(self.record()["announced_unix"])
@@ -265,7 +265,7 @@ def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
 
     def evict(queue, mover, *args, **kwargs):
         if kwargs.get("reason") == "beyond-horizon":
-            record = json.loads(queue.tier_record_path(hz.TIER).read_text())
+            record = json.loads(queue.records.tier_record_path(hz.TIER).read_text())
             ages.append(clock() - float(record["announced_unix"]))
             clock.now += EVICT_S
         return real_evict(queue, mover, *args, **kwargs)
