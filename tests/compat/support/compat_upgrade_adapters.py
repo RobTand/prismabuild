@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import runpy
 
 EPOCH = "7" * 32
 
@@ -41,6 +42,8 @@ def marker(module, declared, variant):
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family in ("upgrade-intent", "upgrade-attestation", "upgrade-rollout"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_rollout_adapters.py")))["operate"](request, store, load)
     module = load("upgrade_client")
     write = request["op"] == "write"
     declared = intent(module)

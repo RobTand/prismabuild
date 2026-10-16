@@ -26,6 +26,16 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("upgrade-intent", "prismabuild.rollout_barrier.intent.v1", "private rollout/epochs/<epoch>/intent.json", "closed",
+               "upgrade_client:validate_intent", ("publish_runtime:_arm_barrier",), ("armed",),
+               ("private fixture stops after intent publication; no service, broker drain or fleet transition",)),
+    RecordKind("upgrade-attestation", "prismabuild.rollout_barrier.agent.v1", "private rollout/agents/<host>.<updater-sha>.json", "additive",
+               "publish_runtime:_attested_agents", ("upgrade_client:Upgrader.attest",), ("first", "repeated"),
+               ("historical bootstrap attestation does not prove the installed version or current participation",)),
+    RecordKind("upgrade-rollout", "prismabuild.rollout_barrier.export.v1", "unprivileged updater rollout export pipe", "closed",
+               "upgrade_client:decode_rollout", ("upgrade_client:encode_rollout",),
+               ("none", "armed", "drained", "forward", "rollback", "completed-forward", "completed-rollback"),
+               ("private marker graph exercises actual hash and quorum readers; no physical rollout",)),
     RecordKind("state-reclaim-manifest", "prismabuild.stage-source-mark-reclaim.v1", "private reclaim run/manifest.json", "additive",
                "stage_reclaim:read_manifest", ("stage_reclaim:write_manifest",), ("empty", "entry"),
                ("fixtures supply recorded move metadata; no reclaim or restore operation runs",)),
