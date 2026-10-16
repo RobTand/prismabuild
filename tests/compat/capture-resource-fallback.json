@@ -1,0 +1,26 @@
+{
+  "capture_name": "resource-fallback-capture-02",
+  "capture_report_sha256": "9a96c00a40b04990e69bc509e43f40d66fb11e61cc3dd0fc198293a12f3a5df6",
+  "excluded_cases": [],
+  "files": {
+    "goldens-resource-fallback.jsonl": "a429f9af3e166dc6285b0854296a060bab8691128d88510be68551ccaa9580fd",
+    "historical-resource-fallback.jsonl": "807510a92deb82fe248796d9fb7b9d5aea2e35104c34b7c65e7045ea3352e84b"
+  },
+  "finished_at": "2026-10-16T23:25:47.505675+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "resource-profile/unavailable"
+  ],
+  "source_git": {
+    "parents": [
+      "082e1abf28c8e24a6c43c045b5df851deffffc2e"
+    ],
+    "snapshot": "0db57acaf4a04d395b2935c0d84d96990812d90a",
+    "tree": "75b56e5cbd26af8981f4cc7fa5564034a4f8e13f"
+  },
+  "started_at": "2026-10-16T23:25:33.171374+00:00"
+}

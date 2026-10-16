@@ -36,5 +36,6 @@ def operate(request, store, load):
     request["_consumer_boundary"]()
     after = queue.ready_items()
     assert after == before and not accessed
+    assert all(queue._ready_record_usable(row, row["action_key"]) for row in after)
     assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(raw).digest()
     return {"ready_keys": [row["action_key"] for row in after], "ending_codec_credit": False}
