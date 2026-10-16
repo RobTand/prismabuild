@@ -294,6 +294,8 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     # worker's scratch filesystem (Btrfs subvolume devices can be unknown).
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
+    if filesystem is None:
+        validated_resume_trust(monkeypatch, [fragment, material], 'zfs')
     fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
     monkeypatch.setattr(kept_reads, '_filesystem_type', lambda _device: filesystem)
     monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: fence)
@@ -779,3 +781,63 @@ def test_an_all_adopted_resume_keeps_the_material_generation(
             b"b" * SIZES[1]).hexdigest()}},
         residency_root=Path(args.residency_root))
     assert again.get("ok") is True and again.get("duplicate") is True, again
+
+
+def validated_resume_trust(monkeypatch, paths, filesystem):
+    infos = [path.stat() for path in paths]
+    assert infos and len({info.st_dev for info in infos}) == 1
+    info = infos[0]
+    fence = max(item.st_ctime_ns for item in infos) + 1
+    descriptor = os.open(paths[0], os.O_PATH | os.O_CLOEXEC)
+    try:
+        current = os.fstat(descriptor)
+        assert kept_reads.metadata_version(current) == kept_reads.metadata_version(info)
+        with open(f'/proc/self/fdinfo/{descriptor}') as stream:
+            fdinfo = stream.read(65537)
+        assert len(fdinfo) <= 65536 and fdinfo.endswith('\n')
+        mounts = [line.split(':', 1)[1].strip() for line in fdinfo.splitlines()
+                  if line.startswith('mnt_id:')]
+        assert len(mounts) == 1 and mounts[0].isdigit()
+        mount_id = int(mounts[0])
+    finally:
+        os.close(descriptor)
+    native_proc = kept_reads._proc_mount_text
+    original = native_proc(kept_reads._MOUNTINFO, kept_reads._MOUNTINFO_MAX_BYTES)
+    rows = [line.split() for line in original.splitlines()]
+    assert any(int(row[0]) == mount_id for row in rows)
+    devices = {row[2] for row in rows}
+    actual = f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
+    unused_minor = 1
+    while f'0:{unused_minor}' in devices or f'0:{unused_minor}' == actual:
+        unused_minor += 1
+    unused = f'0:{unused_minor}'
+    target_type = filesystem if filesystem is not None else 'btrfs'
+    for row in rows:
+        suffix = len(row) - 4
+        assert row[suffix] == '-'
+        if int(row[0]) == mount_id or row[2] == actual:
+            row[2] = unused if filesystem is None else actual
+            row[suffix + 1] = target_type
+    table = '\n'.join(' '.join(row) for row in rows) + '\n'
+    def proc_text(path, limit):
+        if path == kept_reads._MOUNTINFO:
+            assert len(table.encode()) <= limit
+            return table
+        return native_proc(path, limit)
+    # Supply raw mount-table bytes and isolate the derived cache. The real
+    # parser must validate that table before the public operation can prove
+    # the actual descriptor/mount-ID/namespace/watch/final-path identity.
+    monkeypatch.setattr(kept_reads, '_proc_mount_text', proc_text)
+    monkeypatch.setattr(kept_reads, '_filesystem_types', {})
+    class MatureNativeTrust(kept_reads.LinuxFilesystemTrust):
+        def file_fence(self):
+            return fence
+    trust = MatureNativeTrust()
+    for path, observed in zip(paths, infos):
+        version = trust.file_version(observed, fence, path=path)
+        assert version == (None if filesystem == 'nfs4'
+                           else kept_reads.metadata_version(observed))
+    assert kept_reads._filesystem_types.get(kept_reads._MOUNT_TABLE_KEY) == 'validated'
+    assert (info.st_dev not in kept_reads._filesystem_types) == (filesystem is None)
+    return trust
+
