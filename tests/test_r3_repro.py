@@ -27,9 +27,9 @@ def _queue(tmp_path: Path, gib: int) -> pool.PoolQueue:
 def test_repro_unknown_ready_preserved(tmp_path: Path) -> None:
     q = _queue(tmp_path, 3)
     tiers = {TIER: {"tier_id": TIER}}
-    ready_dir = q.dir(pool.READY)
+    ready_dir = q.records.dir(pool.record_store.READY)
     ready_dir.mkdir(parents=True, exist_ok=True)
-    (q.dir(pool.CLAIMED)).mkdir(parents=True, exist_ok=True)
+    (q.records.dir(pool.record_store.CLAIMED)).mkdir(parents=True, exist_ok=True)
     ready_dir.chmod(0o000)
     try:
         out = tier_loop._protect_tier_advances(
@@ -57,7 +57,7 @@ def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
     assert q.advance_funding_state(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True
-    done = q.item_path(pool.DONE, mover)
+    done = q.records.item_path(pool.record_store.DONE, mover)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text("{torn-json")
     tier_loop._settle_terminal_fence(

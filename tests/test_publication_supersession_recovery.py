@@ -42,7 +42,7 @@ def test_death_converges_without_losing_original_or_successor_authority(
 ) -> None:
     original, successor_generation = _collision(queue, clock)
     generation = original["published_unix"]
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     ready_bytes = ready.read_bytes()
     pid = os.fork()
     if pid == 0:
@@ -73,7 +73,7 @@ def test_death_converges_without_losing_original_or_successor_authority(
 
                 def stop_at_unlink(path, *args, **kwargs):
                     if path.name.startswith(f"{KEY}.") and path.name.endswith(
-                            pool.TOMBSTONE_SUFFIX):
+                            pool.record_store.TOMBSTONE_SUFFIX):
                         os._exit(91)
                     return real_unlink(path, *args, **kwargs)
 
@@ -84,10 +84,10 @@ def test_death_converges_without_losing_original_or_successor_authority(
         os._exit(98)
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 91
-    tombstones = list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
+    tombstones = list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
     assert len(tombstones) == 1
     assert json.loads(tombstones[0].read_bytes())["published_unix"] == generation
-    attempt = queue.attempt_path(original, 1)
+    attempt = queue.records.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
     if boundary == "ready_collision":
         assert pbrun.outcome_poll(queue, KEY, generation) == (None, generation)
@@ -99,9 +99,9 @@ def test_death_converges_without_losing_original_or_successor_authority(
 
     _assert_superseded(queue, generation, successor_generation)
     assert ready.read_bytes() == ready_bytes
-    assert not list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
     assert attempt.read_bytes() == attempt_bytes
-    assert not queue.attempt_path(original, 2).exists()
+    assert not queue.records.attempt_path(original, 2).exists()
     assert queue.ledger().held() == {}
 
 
@@ -131,11 +131,11 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
             assert exc.errno == errno.EIO
             refused = True
     assert refused, "the immutable publication decision was never attempted"
-    retained = [*queue.dir(pool.CLAIMED).glob(f"{KEY}.json"),
-                *queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}")]
+    retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
+                *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
     assert len(retained) == 1
     assert json.loads(retained[0].read_bytes())["published_unix"] == generation
-    attempt = queue.attempt_path(original, 1)
+    attempt = queue.records.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
     if effect == "persist_then_error":
         _assert_superseded(queue, generation, first_successor)
@@ -148,7 +148,7 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
     _publish(queue)
     later_successor = _ready(queue)["published_unix"]
     assert later_successor == first_successor + 1
-    later_bytes = queue.item_path(pool.READY, KEY).read_bytes()
+    later_bytes = queue.records.item_path(pool.record_store.READY, KEY).read_bytes()
     _recover(queue, clock)
     _recover(queue, clock)
 
@@ -156,9 +156,9 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
     _assert_superseded(queue, generation, expected)
     if effect == "persist_then_error":
         assert decision.read_bytes() == first_decision_bytes
-    assert queue.item_path(pool.READY, KEY).read_bytes() == later_bytes
+    assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == later_bytes
     assert attempt.read_bytes() == attempt_bytes
-    assert not queue.attempt_path(original, 2).exists()
+    assert not queue.records.attempt_path(original, 2).exists()
 
 
 @pytest.mark.parametrize("damage", ["malformed", "wrong_original", "wrong_successor"])

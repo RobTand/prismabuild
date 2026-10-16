@@ -17,7 +17,7 @@ from test_pool_requeue_preserves_newer_generation import (
 
 
 def _ready(queue: pool.PoolQueue) -> dict:
-    return json.loads(queue.item_path(pool.READY, KEY).read_bytes())
+    return json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())
 
 
 def _assert_superseded(
@@ -52,7 +52,7 @@ def _assert_superseded(
 def _decision_path(queue: pool.PoolQueue, generation: float):
     identity = {"action_key": KEY, "published_unix": generation}
     return (queue.root / "publication-endings" / KEY
-            / f"{queue.attempt_generation(identity)}.json")
+            / f"{queue.records.attempt_generation(identity)}.json")
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -168,9 +168,9 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
     legacy = queue.claim(owner="legacy", capacity=DEMAND)
     assert legacy is not None
     queue.finish(KEY, status="executed", claim_snapshot=legacy)
-    attempt = queue.attempt_path(legacy, 1)
+    attempt = queue.records.attempt_path(legacy, 1)
     attempt_bytes = attempt.read_bytes()
-    path = queue.item_path(pool.DONE, KEY)
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     retained = json.loads(path.read_bytes())
     legacy_record = {name: retained[name] for name in (
         "schema", "action_key", "status", "finished_unix", "finished_host",
@@ -232,7 +232,7 @@ def test_uncertain_successor_does_not_make_an_exact_wait_follow_another_row(
         elif damage == "bad_resources":
             candidate["resources"] = "unreadable demand"
         raw = json.dumps(candidate).encode()
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     if damage == "symlink":
         target = queue.root / "successor-target.json"
         target.write_bytes(raw)
@@ -248,10 +248,10 @@ def test_uncertain_successor_does_not_make_an_exact_wait_follow_another_row(
 
     assert pbrun.outcome_poll(queue, KEY, generation) == (None, generation)
     assert not _decision_path(queue, generation).exists()
-    assert queue.item_path(pool.READY, KEY).read_bytes() == raw
+    assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == raw
     if damage != "same_generation":
-        retained = [*queue.dir(pool.CLAIMED).glob(f"{KEY}.json"),
-                    *queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}")]
+        retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
+                    *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
         assert len(retained) == 1
         assert json.loads(retained[0].read_bytes())["published_unix"] == generation
 

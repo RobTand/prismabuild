@@ -39,7 +39,7 @@ def _campaign(tmp_path, monkeypatch, clock, successor_state):
                 patch.setattr(queue, "_release_reservation", unavailable_release)
                 with pytest.raises(OSError, match="release interrupted"):
                     queue.finish(KEY, status="executed", claim_snapshot=successor)
-            assert list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))
+            assert list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
         elif successor_state == "drained":
             queue.finish(KEY, status="executed", claim_snapshot=successor)
     submitted = []
@@ -66,8 +66,8 @@ def test_supersession_stops_suffix_and_preserves_actual_work_or_cleanup(
     queue, manifest, submitted = _campaign(tmp_path, monkeypatch, clock, successor_state)
     before = {
         path: path.read_bytes()
-        for state in (pool.READY, pool.CLAIMED)
-        for path in queue.dir(state).iterdir() if path.is_file()
+        for state in (pool.record_store.READY, pool.record_store.CLAIMED)
+        for path in queue.records.dir(state).iterdir() if path.is_file()
     }
     held = queue.ledger().held()
 
@@ -89,7 +89,7 @@ def test_unknown_occupancy_reports_io_error_and_never_submits_the_suffix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: list[float],
 ) -> None:
     queue, manifest, submitted = _campaign(tmp_path, monkeypatch, clock, "ready")
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     raw = ready.read_bytes()
     real_lstat = Path.lstat
 
