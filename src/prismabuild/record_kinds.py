@@ -16,6 +16,7 @@ class RecordKind:
     legacy: tuple[str, ...] = ()
     closed_sets: tuple[str, ...] = ()
     negative_field: str = "schema"
+    legacy_writers: tuple[str, ...] = ()
 
 
 KINDS = (
@@ -81,7 +82,7 @@ KINDS = (
                ("retained reader is named validate_plan",)),
     RecordKind("dc-publication", "prismabuild.decomposition_publication.v1", "cas/decompositions/<xx>/<parent>/publication.json", "closed",
                "prismabuild.decomposition:_validate_publication_index", ("prismabuild.decomposition:publish_children",), ("children",),
-               ("retained reader is named validate_publication_index",)),
+               ("retained reader is named validate_publication_index",), legacy_writers=("pbcampaign:publish_index",)),
     RecordKind("dc-child-result", "prismabuild.child_result_manifest.v1", "child declared result manifest", "closed",
                "prismabuild.decomposition:_validate_child_result_manifest", ("prismabuild.decomposition:write_document",), ("cover",),
                ("retained reader is named validate_child_result_manifest",)),
@@ -99,6 +100,16 @@ KINDS = (
     RecordKind("q-denial-transitions", "prismabuild.denial_transitions.v1", "denial-transitions/<key>.json", "additive",
                "prismabuild.pool:PoolQueue.denial_transitions", ("prismabuild.pool:PoolQueue.record_denial",),
                ("first", "repeat"), ("reader treats wrapper schema as diagnostic, not authority",), negative_field="transitions"),
+    RecordKind("core-action", "prismaquant.prismabuild.action.v2", "cas/requests/<xx>/<key>.json", "closed",
+               "prismabuild.core:PrismaBuildCAS.read_action_request", ("prismabuild.core:PrismaBuildCAS.publish_action_request",),
+               ("portable",), ("action.v1 is retired and rejected",)),
+    RecordKind("core-closure", "prismaquant.prismabuild.code_closure.v1", "action.code_closure", "closed",
+               "prismabuild.core:verify_code_closure", ("prismabuild.core:build_code_closure",), ("single", "multiple")),
+    RecordKind("core-manifest-v1", "prismaquant.prismabuild.data_manifest.v1", "declared CAS data-manifest input", "closed",
+               "prismabuild.core:validate_data_manifest", ("prismabuild.core:PrismaBuildCAS.ingest_bytes",), ("unphased", "phased"),
+               ("v1 phase annotations may be absent",)),
+    RecordKind("core-manifest-v2", "prismaquant.prismabuild.data_manifest.v2", "declared CAS data-manifest input", "closed",
+               "prismabuild.core:validate_data_manifest", ("prismabuild.core:PrismaBuildCAS.ingest_bytes",), ("read-plan",)),
 )
 
 

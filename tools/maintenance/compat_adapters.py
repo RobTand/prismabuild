@@ -82,6 +82,9 @@ def operate(request, store, load):
     if family.startswith("q-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_queue_adapters.py")))["operate"]
         return adapter(request, store, load)
+    if family.startswith("core-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["operate"]
+        return adapter(request, store, load)
     path = store / "record.json"
     if not write:
         path.write_bytes(base64.b64decode(request["raw"]))
