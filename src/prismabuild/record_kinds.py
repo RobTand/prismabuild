@@ -28,6 +28,17 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("dc-envelope", "prismabuild.task_batch.v1", "CAS input prismabuild.task-batch", "additive",
+               "prismabuild.decomposition:task_data_manifest", ("prismabuild.decomposition:batch_envelope",), ("data",),
+               ("the real task-data consumer reads task entries; envelope schema is a producer label",), negative_field="tasks", negative_value=None),
+    RecordKind("dc-membership", "prismabuild.logical_batch.v1", "sealed child params.logical_batch", "additive",
+               "prismabuild.decomposition:read_child_request", ("prismabuild.decomposition:logical_batch_param",), ("ordinal",),
+               ("consumer binds ordinal, parent, plan and ordered task IDs against the actual sealed CAS request",),
+               negative_field="ordered_task_ids", negative_value=None, legacy_readers=("prismabuild.pool:PoolQueue._queued_child_link",)),
+    RecordKind("dc-group", "prismabuild.group_receipt.v1", "CAS decomposition/<parent>/group.json", "closed",
+               "prismabuild.decomposition:_publish_group_receipt", ("prismabuild.decomposition:verify_exact_cover",), ("initial", "replay"),
+               ("the existing publisher rereads the immutable group and refuses bytes differing from the freshly proven exact cover",),
+               legacy_readers=("pbcampaign:publish_group_receipt",)),
     RecordKind("slurm-cache", "prismaquant.prismabuild.slurm_cache_hit.v1", "private SLURM lane/cache-hit marker", "additive",
                "prismabuild.slurm_lane:read_cache_hit", ("prismabuild.slurm_lane:write_cache_hit",),
                ("empty-digest", "digest"), ("missing, unreadable or foreign marker is not a cache hit",)),

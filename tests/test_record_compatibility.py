@@ -61,7 +61,8 @@ def test_supported_consumers_read_exact_production_writes_or_immutable_source_in
     current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"))
     assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
     kind = next(kind for kind in KINDS if kind.name == case.split("/")[0])
-    reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
+    readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
+               for reference in (kind.reader,) + kind.legacy_readers}
     for generation, old, manifest in generations:
         if not has_historical_participant(case, generation, old, manifest):
             accepted(invoke(ROOT, case, tmp_path / generation / "current-input", raw=current))
@@ -76,7 +77,7 @@ def test_supported_consumers_read_exact_production_writes_or_immutable_source_in
             observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + label + "-" + direction + ".json"))
             accepted(observed)
-            assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
+            assert any(call[1].lstrip("_") in readers for call in observed["calls"]), observed
 
 
 @pytest.mark.parametrize("kind", KINDS, ids=lambda kind: kind.name)
@@ -118,8 +119,9 @@ def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations,
             observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
-            reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
-            assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
+            readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
+                       for reference in (kind.reader,) + kind.legacy_readers}
+            assert any(call[1].lstrip("_") in readers for call in observed["calls"]), observed
 
 
 @pytest.mark.parametrize("case,member", [("fragment/ssd", "entry"), ("map/ssd", "entry"),
