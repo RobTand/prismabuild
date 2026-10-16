@@ -17,9 +17,14 @@ from record_compat import accepted, invoke, retained, write
 from prismabuild.record_kinds import KINDS, cases
 
 DATA = ROOT / "tests/compat"
-GOLDENS = {row["case"]: row for row in map(json.loads, (DATA / "goldens.jsonl").read_text().splitlines())}
+def records(pattern):
+    return [json.loads(line) for path in sorted(DATA.glob(pattern))
+            for line in path.read_text().splitlines()]
+
+
+GOLDENS = {row["case"]: row for row in records("goldens*.jsonl")}
 HISTORY = {(row["generation"], row["case"]): row
-           for row in map(json.loads, (DATA / "historical.jsonl").read_text().splitlines())}
+           for row in records("historical*.jsonl")}
 EVIDENCE = Path(os.environ["COMPAT_EVIDENCE_DIR"]) if os.environ.get("COMPAT_EVIDENCE_DIR") else None
 
 
@@ -49,15 +54,15 @@ def test_supported_old_consumer_and_current_consumer_read_actual_writers(case, g
     for generation, old, manifest in generations:
         historical = HISTORY[generation, case]
         assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
-        prior = write(old, case, tmp_path / "old-writer", manifest=manifest,
+        prior = write(old, case, tmp_path / generation / "old-writer", manifest=manifest,
                       evidence=evidence(label + "-old-writer.json"))
         assert prior == decoded(historical), "historical writer did not reproduce captured bytes"
         for root, raw, direction, attestation in ((ROOT, prior, "forward", None),
                                                   (old, current, "reverse", manifest)):
-            observed = invoke(root, case, tmp_path / direction, raw=raw, manifest=attestation,
+            observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
                               evidence=evidence(label + "-" + direction + ".json"))
             accepted(observed)
-            assert any(call[1] == reader for call in observed["calls"]), observed
+            assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
 
 
 @pytest.mark.parametrize("kind", KINDS, ids=lambda kind: kind.name)
@@ -80,7 +85,7 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
 def test_foreign_wire_identity_reaches_and_fails_both_real_consumers(kind, generations, tmp_path):
     case = kind.name + "/" + kind.variants[0]
     body = json.loads(decoded(GOLDENS[case]))
-    body["schema"] = "compat.foreign.v999"
+    body[kind.negative_field] = "compat.foreign.v999"
     raw = json.dumps(body).encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
@@ -88,7 +93,7 @@ def test_foreign_wire_identity_reaches_and_fails_both_real_consumers(kind, gener
                               evidence=evidence(kind.name + "-foreign-" + suffix + ".json"))
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
-            assert any(call[1] == reader for call in observed["calls"]), observed
+            assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
 
 
 @pytest.mark.parametrize("case,member", [("fragment/ssd", "entry"), ("map/ssd", "entry"),

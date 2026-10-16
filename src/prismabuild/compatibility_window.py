@@ -30,14 +30,16 @@ def client_protocol(root):
     optional = values.get("OPTIONAL_MEMBERS")
     if not isinstance(optional, dict):
         raise WindowError("updater optional-member contract is unknown")
-    return {"optional": sorted(optional), "optional_protocol": values.get("CLIENT_UPGRADE_PROTOCOL"),
+    present = sorted(name for name, relative in optional.items() if (root / relative).is_file())
+    return {"optional": sorted(optional), "present": present,
+            "optional_protocol": values.get("CLIENT_UPGRADE_PROTOCOL"),
             "proof_protocol": values.get("CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL"),
             "updater_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def require_reachable(candidate, rollback):
     forward, target = client_protocol(candidate), client_protocol(rollback)
-    union = set(forward["optional"]) | set(target["optional"])
+    union = set(forward["present"]) | set(target["present"])
     if union and any(row["optional_protocol"] != 2 for row in (forward, target)):
         raise WindowError("optional member transition requires dependency-aware protocol 2")
     if "park_proof.py" in union and any(row["proof_protocol"] != 2 for row in (forward, target)):

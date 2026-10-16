@@ -28,6 +28,10 @@ def test_designated_pre_b09_rollback_is_reachable_but_proof_member_requires_brid
         code = (ROOT / "tools/fleet/upgrade_client.py").read_text()
         code = code.replace("OPTIONAL_MEMBERS = {", "OPTIONAL_MEMBERS = {'park_proof.py': 'src/prismabuild/park_proof.py', ")
         path.write_text(code + "\nCLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2\n")
+        assert require_reachable(ROOT, candidate), "a bridge with no proof source must remain reachable"
+        proof = candidate / "src/prismabuild/park_proof.py"
+        proof.parent.mkdir(parents=True)
+        proof.write_bytes((ROOT / "src/prismabuild/park_proof.py").read_bytes())
         with pytest.raises(WindowError, match="bridge rollback target"):
             require_reachable(candidate, old)
 

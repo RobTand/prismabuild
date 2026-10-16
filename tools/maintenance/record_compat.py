@@ -64,7 +64,9 @@ def retained(directory=CAPTURE):
         row["generation"] for row in window["generations"]}
     with tempfile.TemporaryDirectory(prefix="compat-closure-") as tmp:
         result = []
-        for generation in window["generations"]:
+        prepared = directory / "prepared.json"
+        sources = window["generations"] + (json.loads(prepared.read_bytes()) if prepared.exists() else [])
+        for generation in sources:
             name = generation["generation"]
             manifest_path = directory / (name + ".json")
             manifest = json.loads(manifest_path.read_bytes())
@@ -73,7 +75,8 @@ def retained(directory=CAPTURE):
             destination = Path(tmp) / name
             destination.mkdir()
             with tarfile.open(archive) as tar:
-                expected = set(manifest["files"]) | {"RUNTIME_VERSION.json"}
+                provenance_file = generation.get("provenance_file", "RUNTIME_VERSION.json")
+                expected = set(manifest["files"]) | {provenance_file}
                 assert len(tar.getmembers()) == len(expected)
                 assert {member.name for member in tar.getmembers()} == expected
                 for member in tar.getmembers():
@@ -83,7 +86,7 @@ def retained(directory=CAPTURE):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(content)
                     path.chmod(0o444)
-            receipt = (destination / "RUNTIME_VERSION.json").read_bytes()
+            receipt = (destination / provenance_file).read_bytes()
             assert sha(receipt) == generation["receipt_sha256"] == manifest["receipt_sha256"]
             version = json.loads(receipt)
             assert version["generation"] == name and version["commit"] == generation["commit"] == manifest["commit"]
@@ -105,11 +108,12 @@ def generate(output):
             goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode()})
             for generation, old, manifest in generations:
                 prefix = output / "attestations" / generation
-                prior = write(old, case, Path(tmp) / (label + "-old"), manifest=manifest,
+                stores = Path(tmp) / generation
+                prior = write(old, case, stores / (label + "-old"), manifest=manifest,
                               evidence=prefix / (label + "-old-writer.json"))
-                accepted(invoke(ROOT, case, Path(tmp) / (label + "-forward"), raw=prior,
+                accepted(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
                                 evidence=prefix / (label + "-forward.json")))
-                accepted(invoke(old, case, Path(tmp) / (label + "-reverse"), raw=raw, manifest=manifest,
+                accepted(invoke(old, case, stores / (label + "-reverse"), raw=raw, manifest=manifest,
                                 evidence=prefix / (label + "-reverse.json")))
                 historical.append({"case": case, "generation": generation,
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
