@@ -3769,7 +3769,7 @@ class ResourceLedger:
                 raise
             # Path.glob's tolerant behavior varies by interpreter. Preserve
             # it on errors; a failed cache read never becomes a remembered empty.
-            return _glob(directory, pattern)
+            return immutable_files.match_optional(directory, pattern)
 
     def _census_scan(self, directory: Path, *, optional: bool = False):
         """Authoritative-or-tolerant directory listing by ledger kind."""
