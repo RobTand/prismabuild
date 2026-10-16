@@ -110,6 +110,23 @@ KINDS = (
                ("v1 phase annotations may be absent",)),
     RecordKind("core-manifest-v2", "prismaquant.prismabuild.data_manifest.v2", "declared CAS data-manifest input", "closed",
                "prismabuild.core:validate_data_manifest", ("prismabuild.core:PrismaBuildCAS.ingest_bytes",), ("read-plan",)),
+    RecordKind("edge-deferred", "prismabuild.deferred_submission.v1", "deferred/<pending>.json", "closed",
+               "prismabuild.action_edges:read_deferred", ("prismabuild.action_edges:file_deferred",), ("plain", "optional"),
+               ("optional publication options may be absent",)),
+    RecordKind("edge-release", "prismabuild.deferred_release.v1", "deferred-releases/<pending>.json", "additive",
+               "prismabuild.action_edges:read_release", ("prismabuild.action_edges:file_release",), ("pinned",)),
+    RecordKind("edge-published", "prismabuild.deferred_release_published.v1", "deferred-releases/<pending>.published.json", "additive",
+               "prismabuild.action_edges:read_published", ("prismabuild.action_edges:file_published",), ("published",)),
+    RecordKind("edge-supersession", "prismabuild.supersession.v1", "supersessions/<old>.json", "additive",
+               "prismabuild.action_edges:read_supersession", ("prismabuild.action_edges:file_supersession",), ("key", "pending")),
+    RecordKind("out-template", "prismaquant.prismabuild.produced_output_template.v1", "produced-output/templates/<id>.json", "closed",
+               "prismabuild.produced_output:validate_template", ("prismabuild.produced_output:declare_template",),
+               ("read-back", "read-back-rate", "write-only", "write-only-rate"),
+               ("write_only absent means false; export_rate_family may be absent",)),
+    RecordKind("out-instance", "prismaquant.prismabuild.produced_output_instance.v1", "produced-output/<owner>/<template>/<nonce>/instance.json", "closed",
+               "prismabuild.produced_output:validate_instance", ("prismabuild.produced_output:declare_instance",), ("bound",)),
+    RecordKind("out-declaration", "prismabuild.produced_output_declaration.v1", "action.params.produced_output_template", "closed",
+               "prismabuild.core:validate_produced_output_declaration", ("prismabuild.produced_output:build_declaration",), ("sealed",)),
 )
 
 
