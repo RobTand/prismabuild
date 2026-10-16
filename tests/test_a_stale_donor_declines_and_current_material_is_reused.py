@@ -175,7 +175,7 @@ def _publish_donor_record(queue: pool.PoolQueue, *, mover: str, consumer: str,
     destination = stage / RELATIVE
     identity = reader_lease.stat_identity(str(destination))
     assert identity is not None
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
@@ -222,7 +222,7 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     held = {key: gib for key, gib in
             ((key, ledger.holder_tokens(key).get("stage_gib", 0))
              for key in ledger.held_keys()) if gib}
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     accounted: dict[str, int] = {}
     hexdigits = set("0123456789abcdef")
     # Only consumer directories -- the material sidecars and pin files live
@@ -272,7 +272,7 @@ def _read_like_the_consumer(queue: pool.PoolQueue, *, consumer: str,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": STAGE_GIB})
     return q
 
@@ -341,9 +341,9 @@ def test_the_current_incarnation_is_adopted_and_read(
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == DONOR_B
     assert receipt["bytes_copied"] == 0
     # No copy was queued for the successor.
-    assert not queue.item_path(pool.READY, third_mover).exists()
+    assert not queue.records.item_path(pool.record_store.READY, third_mover).exists()
     # The successor's material dates the incarnation that is there now...
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     material = reader_lease.read_material(root, THIRD, third_mover)
     assert isinstance(material, dict)
     assert material["entries"][MAP_KEY]["file_id"] == history["live"], (
@@ -373,7 +373,7 @@ def test_a_donor_whose_file_went_stale_publishes_no_successor(
     _replace_destination_with_identical_bytes(stage)
     _publish_consumer(queue, THIRD, _plan(queue, THIRD, label="third"))
     third_mover = _hexkey("thirdmover0")
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
 
     _cycle(queue, stage)
 
@@ -416,7 +416,7 @@ def _publisher(queue: pool.PoolQueue, stage: Path, mover: str
                ) -> stage_move._StagedPublisher:
     return stage_move._StagedPublisher(
         queue=queue, stage_root=stage,
-        residency_root=queue.residency_fragment_root(),
+        residency_root=queue.records.residency_fragment_root(),
         mover_action_key=mover, manifest_sha256=MANIFEST,
         tier_id=TIER, cas_root=str(queue.root / "cas"))
 
@@ -462,7 +462,7 @@ def test_the_mover_adopts_the_current_incarnation_despite_a_stale_record(
     # mover's own dated material.
     assert reader_lease.stat_identity(str(destination)) == before
     assert copier.sidecar[MAP_KEY]["file_id"] == before
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": FOURTH, "mover_action_key": fourth_mover,

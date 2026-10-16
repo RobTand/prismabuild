@@ -38,13 +38,13 @@ def held_mover(tmp_path: Path):
     """A complete mover still holding its tokens, whose plan no longer names it."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     shard = stage / "model-00007-of-00120.safetensors"
     shard.write_bytes(b"\0" * 8192)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),

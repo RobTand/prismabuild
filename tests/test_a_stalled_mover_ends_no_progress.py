@@ -88,7 +88,7 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     manifest_path.write_text(json.dumps(manifest))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     queue = pool.PoolQueue(tmp_path / "seal-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     announced = list(MEMBERS if members is None else members)
 
     def discover(**_kwargs):
@@ -825,7 +825,7 @@ def test_a_pool_the_worker_cannot_read_is_credited_and_says_so(
 def _only_key(queue: pool.PoolQueue) -> str:
     """The one action key this queue has filed an outcome for."""
 
-    names = [name for name in os.listdir(queue.root / pool.RESIDENCY_EVENTS)]
+    names = [name for name in os.listdir(queue.root / pool.record_store.RESIDENCY_EVENTS)]
     assert len(names) == 1, names
     return names[0]
 
@@ -941,7 +941,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
     manifest_path.write_text(json.dumps(window))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -956,7 +956,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
         "--consumer-action-key", CONSUMER, "--tier-id", TIER,
         "--stage-root", str(stage), "--manifest-sha256", digest,
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--range-start-bytes", "0", "--range-end-bytes", str(total),
         "--readers", "2", "--max-readers", "2", "--warm-after-copy", "never",
         "--unpaced", "--progress-interval-s", "0.01"])
@@ -1081,7 +1081,7 @@ def _landing_fixture(tmp_path: Path):
     claimed and reporting 11 GB landed; the tier record."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     size = 22 * 10 ** 9
     manifest = "d" * 64
     consumer = _hexkey("landing-consumer")
@@ -1108,13 +1108,13 @@ def _landing_fixture(tmp_path: Path):
     for phase in plan["phases"]:                         # type: ignore[union-attr]
         queue.publish(**dict(phase["mover_row"]))
     claimed = movers[0]
-    source = queue.item_path(pool.READY, claimed)
+    source = queue.records.item_path(pool.record_store.READY, claimed)
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": 1000.0, "claimed_by": "copy-fixture",
                    "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, claimed).write_text(json.dumps(record))
-    queue.action_progress_path(claimed).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, claimed).write_text(json.dumps(record))
+    queue.records.action_progress_path(claimed).write_text(json.dumps({
         "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "t" * 32,
         "phase": "copy", "units_completed": 11 * 10 ** 9,
         "reported_unix": 1100.0, "unit": "bytes landed"}))
@@ -1134,11 +1134,11 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
 
     events = tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
 
     assert events == []
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     live = rows[claimed]
     assert live["state"] == "claimed" and live["basis"] == "reported"
@@ -1148,12 +1148,12 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
     queued = rows[movers[1]]
     assert queued["state"] == "ready" and queued["basis"] == "queue"
     # Without its report the same copy is priced from its claim time.
-    queue.action_progress_path(claimed).unlink()
+    queue.records.action_progress_path(claimed).unlink()
     tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     assert rows[claimed]["basis"] == "claim"
     assert rows[claimed]["expected_landing_unix"] == pytest.approx(
@@ -1171,11 +1171,11 @@ def test_a_ready_range_names_the_movers_queued_ahead_of_it(tmp_path: Path) -> No
 
     events = tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
 
     assert events == []
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     assert rows[movers[1]]["state"] == "ready"
     assert rows[movers[1]].get("movers_ahead") == [claimed], rows[movers[1]]

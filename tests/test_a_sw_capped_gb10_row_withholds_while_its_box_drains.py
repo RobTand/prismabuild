@@ -101,7 +101,7 @@ def box(tmp_path: Path, monkeypatch):
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
     gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -171,7 +171,7 @@ def test_a_row_refused_for_broker_jobs_withholds_the_whole_box(box) -> None:
     withhold = denial["evidence"]["withhold"]
     assert withhold["mode"] == "exclusive" and withhold["why"] == "drains_soon"
     assert "withheld_kinds" not in denial["evidence"], "a broker-job drain is the whole box"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
     # The shard leaves; the host is empty and the exception admits the row.
     queue.finish(shard, status="executed", detail={})
@@ -226,8 +226,8 @@ def test_a_row_refused_for_a_gpu_holder_withholds_gpu_rows_then_the_box(box) -> 
     assert exception["exception_reason"] == "broker_jobs_present"
     withhold = denial["evidence"]["withhold"]
     assert withhold["mode"] == "exclusive" and withhold["why"] == "drains_soon"
-    assert queue.item_path(pool.READY, late).exists()
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, late).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
 
     queue.finish(cpu_row, status="executed", detail={})
     tick()

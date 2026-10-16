@@ -117,7 +117,7 @@ class _Loop:
     def __init__(self, tmp_path: Path,
                  shape: argparse.Namespace | None = None) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.counts = bench.build_queue(self.queue, self.stage,
@@ -199,10 +199,10 @@ def loop(tmp_path: Path) -> _Loop:
     root = _clock_root(tmp_path)
     try:
         built = _Loop(root)
-        assert built.counts[pool.DONE] == 30000
+        assert built.counts[pool.record_store.DONE] == 30000
         assert built.counts["receipts"] == 6000
         namespaces = [entry for entry in os.scandir(
-            built.queue.residency_fragment_root()) if entry.is_dir()
+            built.queue.records.residency_fragment_root()) if entry.is_dir()
             and len(entry.name) == 64]
         assert len(namespaces) >= 400, len(namespaces)
         assert _filesystem_type(root) in LOCAL_CLOCK, (
@@ -218,8 +218,8 @@ def test_a_steady_cycle_reads_only_what_changed(
     loop.cycle()          # what the cold cycle itself filed is read once
     queue = loop.queue
     terminal = _listings(monkeypatch, [
-        queue.dir(pool.DONE), queue.dir(pool.FAILED),
-        queue.dir(pool.WITHDRAWN)])
+        queue.records.dir(pool.record_store.DONE), queue.records.dir(pool.record_store.FAILED),
+        queue.records.dir(pool.record_store.WITHDRAWN)])
     started = time.process_time()
     loop.cycle()
     cpu = time.process_time() - started
@@ -250,7 +250,7 @@ def test_a_steady_cycle_does_not_list_ledger_directories(
     loop.cycle()
     ledger = loop.queue.tier_ledger(bench.TIER)
     directories = [ledger.free_dir, ledger.held_dir, ledger.minted_dir,
-                   ledger.minted_dir / "dead", *pool._scan(ledger.held_dir)]
+                   ledger.minted_dir / "dead", *pool.immutable_files.scan_optional(ledger.held_dir)]
     listings = _listings(monkeypatch, directories)
     loop.cycle()
     reads = tier_loop.LAST_CYCLE["reads"]
@@ -270,7 +270,7 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
     late = bench._key("late-fragment")
     queue.record_move(mover, {"tier_id": bench.TIER, "unix": time.time(),
                               "complete": True})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     namespace = sorted(entry.name for entry in os.scandir(root)
                        if entry.is_dir() and len(entry.name) == 64)[0]
     residency_map.write_fragment(root, {
@@ -296,7 +296,7 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
 
 
 def _write_late_fragment(loop: _Loop, name: str) -> None:
-    root = loop.queue.residency_fragment_root()
+    root = loop.queue.records.residency_fragment_root()
     namespace = sorted(entry.name for entry in os.scandir(root)
                        if entry.is_dir() and len(entry.name) == 64)[0]
     residency_map.write_fragment(root, {
@@ -346,7 +346,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
     kept = loop.receipts.records._captures._slots[str(receipts)].value
     assert len(kept) >= 6000, len(kept)
     for name, (_version, record) in kept.items():
-        assert record == pool._read_json(receipts / name), name
+        assert record == pool.record_store.read_queue_record(receipts / name), name
 
 
 def test_an_unreadable_receipt_directory_is_skipped_and_named(
@@ -354,7 +354,7 @@ def test_an_unreadable_receipt_directory_is_skipped_and_named(
     if os.geteuid() == 0:
         pytest.skip("root reads a directory whatever its mode")
     small = _Loop(tmp_path, _small_shape())
-    prewarm = small.queue.root / pool.PREWARM
+    prewarm = small.queue.root / pool.record_store.PREWARM
     prewarm.mkdir(parents=True, exist_ok=True)
     small.cycle()
     assert tier_loop.LAST_CYCLE["completed"] is True
