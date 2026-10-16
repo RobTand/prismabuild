@@ -50,7 +50,6 @@ def test_raw_oserror_propagates(tmp_path, monkeypatch):
     assert pb.CASUnavailableError is immutable_files.CASUnavailableError
     assert pb.CASTamperError is immutable_files.CASTamperError
     assert pb.ReplacedRecordError.__bases__ == (immutable_files.CASTamperError,)
-    assert pb._FileLinkCountError.__bases__ == (immutable_files.CASTamperError,)
 
 
 def test_prelink_verify_fires_and_refusals_propagate(tmp_path):

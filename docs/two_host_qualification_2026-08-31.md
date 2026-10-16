@@ -1,5 +1,9 @@
 # PrismaBuild V4 two-host CPU qualification — 2026-08-31
 
+Retirement note, 2026-10-16: the initial-miss rendezvous protocol has been
+removed. This record preserves the historical source qualification; current
+local concurrency coverage is described in [the design](design.md#controlled-initial-miss-concurrency-qualification-b15-2026-10-16).
+
 ## Result
 
 The opt-in PrismaBuild initial-miss rendezvous passed its exact configured

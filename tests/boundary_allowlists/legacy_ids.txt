@@ -15,11 +15,6 @@ prismaquant.prismabuild.data_manifest.v1
 prismaquant.prismabuild.data_manifest.v2
 prismaquant.prismabuild.fleet_membership.v1
 prismaquant.prismabuild.generation_drift.v1
-prismaquant.prismabuild.initial_miss_rendezvous_arrival.v1
-prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1
-prismaquant.prismabuild.initial_miss_rendezvous_process.v1
-prismaquant.prismabuild.initial_miss_rendezvous_ready.v1
-prismaquant.prismabuild.initial_miss_rendezvous_receipt.v1
 prismaquant.prismabuild.local_result_claim.v1
 prismaquant.prismabuild.mount_latency.v1
 prismaquant.prismabuild.pbmcp.v1
