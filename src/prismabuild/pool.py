@@ -655,7 +655,6 @@ MAX_ENDING_DEPENDENTS = MAX_DENIAL_VALUE_ITEMS
 #: ``residency-events/<consumer>/<host>.jsonl``, one file per writing host so
 #: every file has one writer (the host's tier-loop singleton) and no append
 #: crosses the NFS client boundary.
-RESIDENCY_EVENTS = "residency-events"
 #: Lines one host's event file keeps.  The writer rewrites the file to its
 #: newest ``MAX_CONSUMER_EVENT_LINES`` once it holds twice that, so a file
 #: never exceeds ``2 * MAX_CONSUMER_EVENT_LINES`` lines.  At one verdict per
