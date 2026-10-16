@@ -551,7 +551,6 @@ RESERVATIONS = "reservations"
 #: Where one mover's advance-credit funding record lives (window progress
 #: protection): bound to exact tier/mover/range/generation, read by the claim
 #: path only to cover pre-positioned fence tokens, never to invent capacity.
-TIER_FUNDING = "tier-funding"
 TIER_FUNDING_SCHEMA_V1 = "prismabuild.tier_funding.v1"
 #: The funding state machine.  ``reserved`` (fence held under the grant) ->
 #: ``transferring`` (fence moved under the mover, awaiting its claim) ->
