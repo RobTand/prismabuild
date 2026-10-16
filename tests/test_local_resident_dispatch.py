@@ -33,7 +33,7 @@ def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monke
 def test_local_role_announces_own_interpreter_and_tools(tmp_path):
     import local_tier_loop
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     root = tmp_path / "local"
     spec = {"root": str(root), "maximum_gib": 0, "floor_fraction": .05, "docker_allowance_gib": 0}
     local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
@@ -60,6 +60,6 @@ def test_published_pairs_queue_only_copy_and_retain_egress_for_owner(tmp_path, m
     rows = local_resident.publish_actions(template, store, record["set_id"], [tier], policy_path="/policy.json")
     queue = pool.PoolQueue(store.queue_root)
     copy = rows["test-host"]["copy"]
-    assert queue.item_path(pool.READY, copy["action_key"]).exists()
-    assert not queue.item_path(pool.READY, rows["test-host"]["evict"]["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, copy["action_key"]).exists()
+    assert not queue.records.item_path(pool.record_store.READY, rows["test-host"]["evict"]["action_key"]).exists()
     assert store.read_movements(record["set_id"], "test-host") == rows["test-host"]

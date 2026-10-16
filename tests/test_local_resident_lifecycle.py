@@ -25,7 +25,7 @@ def test_until_live_rows_and_hard_max_are_one_lease_rule(tmp_path):
     store, record, spec = resident(tmp_path)
     assert local_resident.lease_active(store, record["set_id"], now=149)
     assert not local_resident.lease_active(store, record["set_id"], now=151)
-    ready = store.queue_root / pool.READY
+    ready = store.queue_root / pool.record_store.READY
     ready.mkdir(exist_ok=True)
     (ready / ("a" * 64 + ".json")).write_text(json.dumps({"resident_set": record["set_id"]}))
     assert local_resident.lease_active(store, record["set_id"], now=151)
@@ -130,7 +130,7 @@ def test_remote_egress_uses_retained_host_pinned_action(tmp_path, monkeypatch):
     result = local_resident.request_eviction(store, record["set_id"], "test-host", spec,
                                            caller_host="elsewhere", now=201)
     assert result["state"] == "queued"
-    assert pool.PoolQueue(store.queue_root).item_path(pool.READY, "e" * 64).exists()
+    assert pool.PoolQueue(store.queue_root).records.item_path(pool.record_store.READY, "e" * 64).exists()
 
 
 def test_busy_mover_is_not_deleted(tmp_path):

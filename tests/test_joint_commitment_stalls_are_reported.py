@@ -121,7 +121,7 @@ def test_a_newcomer_behind_a_waiting_window_is_named_with_it(
     assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
     _reader(queue, stage)
     first = Consumer(queue, stage, "n")
-    item = queue.item_path(pool.READY, first.key)
+    item = queue.records.item_path(pool.record_store.READY, first.key)
     body = json.loads(item.read_text())
     body["priority"] = 5
     item.write_text(json.dumps(body))

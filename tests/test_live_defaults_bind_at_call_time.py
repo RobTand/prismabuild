@@ -91,5 +91,5 @@ def test_submit_without_a_queue_root_lands_under_the_repointed_root(
 
     key = str(action["action_key"])
     assert submission.transport == "pool"
-    assert (root / "pb-queue" / pool.READY / f"{key}.json").is_file()
+    assert (root / "pb-queue" / pool.record_store.READY / f"{key}.json").is_file()
     assert Path(submission.where).is_relative_to(root)
