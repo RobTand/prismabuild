@@ -725,8 +725,6 @@ MOVER_RETIREMENT_STATE_SCHEMA_V1 = "prismabuild.mover_retirement_state.v1"
 #: A directory of its own, not a file in ``movers/``: the tier loop, pbmcp,
 #: pbmetrics and the visibility qualifier all list ``movers/*.json`` and
 #: parse what they find.
-MOVERS_PRICING = "movers-pricing"
-MOVERS_PRICING_LOG = "receipts.jsonl"
 MOVERS_PRICING_LOCK = "receipts.lock"
 #: The first field of every log line.  A line with any other tag is not
 #: read, so changing :data:`MOVE_PRICING_FIELDS` means changing this tag:
