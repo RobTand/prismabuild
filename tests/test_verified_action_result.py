@@ -1051,7 +1051,7 @@ def test_native_runtime_rechecks_the_immutable_owner_after_its_first_read(
     from prismabuild import action_result
 
     action, queue, record, receipt, _proof = _native_fixture(tmp_path, monkeypatch)
-    source = Path(receipt["producer"]["runtime"]["immutable_files"]["path"])
+    source = Path(receipt["producer"]["runtime"]["core"]["path"]).with_name("immutable_files.py")
     original = action_result._read_bounded
     reads = []
 
