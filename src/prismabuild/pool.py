@@ -5835,6 +5835,8 @@ class _HostClaimRequest:
 
 
 class _ClaimHandled(Enum):
+    """This protocol already published the refusal, unlike CandidateDenial."""
+
     REFUSED = "refused"
 
 
@@ -21396,7 +21398,7 @@ class PoolQueue:
     def _arbitrate_claim_census(
         self, request: _HostClaimRequest, gang_context: _ClaimGang, census, *,
         ledger: ResourceLedger, total, copy_authority, tagset, has_gpu,
-        placement, measurement_reservation,
+        placement,
     ) -> _CensusArbitration | _ClaimHandled:
         item = request.candidate.item
         dependent_owner = request.dependent_owner
@@ -21408,7 +21410,7 @@ class PoolQueue:
         gang_backfill = []
         backfill_binding = None
         backfill_eligible = None
-        from . import movement_actions
+        from . import movement_actions, _measurement_reservation as measurement_reservation
         reservation_now = _now()
         reservation_authority = (
             copy_authority and measurement_reservation.movement_drained(
@@ -21997,8 +21999,7 @@ class PoolQueue:
                                 prepared, gang_context,
                                 census, ledger=ledger, total=total,
                                 copy_authority=copy_authority, tagset=tagset,
-                                has_gpu=has_gpu, placement=placement,
-                                measurement_reservation=measurement_reservation)
+                                has_gpu=has_gpu, placement=placement)
                             if arbitration is _ClaimHandled.REFUSED:
                                 continue
                             measurement_suspended = arbitration.measurement_suspended
@@ -22009,11 +22010,9 @@ class PoolQueue:
                             _gang = arbitration.gang_api
                             if scratch_boundary is not None:
                                 original, announced, generation, attempt = scratch_boundary
-                                scratch_changed = (
-                                    generation != self.attempt_generation(item)
-                                    or attempt != item.get("attempts", 0)
-                                    or generation != scratch_evidence["generation"]
-                                    or attempt != scratch_evidence["attempts"])
+                                scratch_changed = local_scratch.admission_generation_changed(
+                                    item, scratch_evidence, generation=generation, attempt=attempt,
+                                    observed_generation=self.attempt_generation(item))
                                 scratch_expired = not (
                                     0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                                     and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
@@ -22028,8 +22027,8 @@ class PoolQueue:
                                 if refused:
                                     refusal_source = "adaptive_cpu_refused"
                             funded_claim = adaptive is not None and bool(adaptive.get("funded_by"))
-                            if census_blocked is not None and not (
-                                    funded_claim and adaptive.get("funded_by") == census_blocked["action_key"]):
+                            if candidate_policy.unfunded_measurement_blocker(
+                                    census_blocked, adaptive, funded=funded_claim):
                                 self.record_denial(item, "deferred_for_measurement_reservation", {
                                     "withheld_for": census_blocked["action_key"],
                                     "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
@@ -22041,8 +22040,8 @@ class PoolQueue:
                                 # what the commit must file.
                                 demand = candidate_policy.funded_remainder(demand, adaptive)
                                 reservation_demand = dict(demand)
-                            elif held_back and not (serves_incumbent
-                                                    and scan.withheld_for in scan.measurement_withholds):
+                            elif candidate_policy.held_back_unfunded(
+                                    scan, held_back=held_back, serves_incumbent=serves_incumbent):
                                 # An earlier item is withholding what this row
                                 # takes.  A measurement's wait does not hold
                                 # back its host's incumbents' own dependents
@@ -22092,11 +22091,9 @@ class PoolQueue:
                                 # time. Recheck again at the actual token boundary,
                                 # using captured identity and ORIGINAL time only.
                                 original, announced, generation, attempt = scratch_boundary
-                                scratch_changed = (
-                                    generation != self.attempt_generation(item)
-                                    or attempt != item.get("attempts", 0)
-                                    or generation != scratch_evidence["generation"]
-                                    or attempt != scratch_evidence["attempts"])
+                                scratch_changed = local_scratch.admission_generation_changed(
+                                    item, scratch_evidence, generation=generation, attempt=attempt,
+                                    observed_generation=self.attempt_generation(item))
                                 scratch_expired = not (
                                     0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                                     and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
@@ -22138,11 +22135,10 @@ class PoolQueue:
                                     free_at_refusal = ledger.available()
                                 except OSError:
                                     free_at_refusal = None
-                        if scratch_changed:
-                            self.record_denial(item, "local_scratch_io_generation_changed")
-                            continue
-                        if scratch_expired:
-                            self.record_denial(item, "local_scratch_io_profile_expired")
+                        scratch_refusal = local_scratch.admission_refusal(
+                            changed=scratch_changed, expired=scratch_expired)
+                        if scratch_refusal is not None:
+                            self.record_denial(item, scratch_refusal)
                             continue
                         if refused:
                             # Aging is shared diagnostic/fairness bookkeeping, not

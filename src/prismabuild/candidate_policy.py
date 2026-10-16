@@ -69,6 +69,16 @@ def funded_remainder(
               if int(need) - covered.get(kind, 0) > 0}
 
 
+def unfunded_measurement_blocker(blocker, adaptive, *, funded: bool) -> bool:
+    return blocker is not None and not (
+        funded and adaptive.get("funded_by") == blocker["action_key"])
+
+
+def held_back_unfunded(order, *, held_back: bool, serves_incumbent: bool) -> bool:
+    return held_back and not (
+        serves_incumbent and order.withheld_for in order.measurement_withholds)
+
+
 WITHHOLD_KINDS: dict[str, frozenset[str]] = {"gpu": frozenset({"gpu"})}
 
 
