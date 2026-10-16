@@ -189,7 +189,13 @@ def main():
             identity = (filename, actual.co_qualname, actual.co_firstlineno, actual)
             if identity not in checked_codes:
                 if filename not in source_codes:
-                    compiled = compile(Path(filename).read_bytes(), filename, "exec", dont_inherit=True,
+                    source_raw = Path(filename).read_bytes()
+                    relative = filename[len(production_prefix):]
+                    if manifest is not None and manifest["files"].get(relative) != hashlib.sha256(source_raw).hexdigest():
+                        message = "unattested retained import or executed source: " + relative
+                        code_errors.append(message)
+                        raise RuntimeError(message)
+                    compiled = compile(source_raw, filename, "exec", dont_inherit=True,
                                        optimize=sys.flags.optimize)
                     pending, candidates = [compiled], {}
                     while pending:
