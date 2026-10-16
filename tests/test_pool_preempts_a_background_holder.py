@@ -60,7 +60,7 @@ def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
 
 
 def _decisions(q: pool.PoolQueue, key: str) -> list[dict]:
-    return [decision for _, decision in q.withdrawal_decisions(key)]
+    return [decision for _, decision in q.records.withdrawal_decisions(key)]
 
 
 def test_a_foreground_denial_preempts_the_background_holder_and_requeues_it(

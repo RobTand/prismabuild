@@ -88,7 +88,7 @@ def test_stalled_handoff_allows_fitting_claim_without_second_preemption(rig, mon
         assert winner is not None, "stalled preemption handoff held host admission"
         assert winner["action_key"] == SMALL
         decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
-                     for _, d in sibling.withdrawal_decisions(key)]
+                     for _, d in sibling.records.withdrawal_decisions(key)]
         assert len(decisions) == (1 if stage == "publish" else 0), (
             "a second denial preempted work during an outstanding handoff")
         assert sibling.ledger().held() == {"cpu": 3, "mem_gb": 5}
@@ -99,7 +99,7 @@ def test_stalled_handoff_allows_fitting_claim_without_second_preemption(rig, mon
     assert "error" not in outcome, outcome
     assert outcome["item"] is None
     decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
-                 for _, d in rig.withdrawal_decisions(key)]
+                 for _, d in rig.records.withdrawal_decisions(key)]
     assert len(decisions) == 1
     victim = decisions[0]["action_key"]
     retry = json.loads(rig.records.item_path(pool.record_store.READY, victim).read_text())
@@ -126,19 +126,19 @@ def test_handoff_exclusion_survives_contention_and_releases_after_owner_crash(ri
     try:
         assert parent.poll(20) and parent.recv() is True
         assert claim(rig) is None
-        assert not rig.withdrawal_decisions(BACKGROUND)
-        assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+        assert not rig.records.withdrawal_decisions(BACKGROUND)
+        assert not rig.records.withdrawal_decisions(OTHER_BACKGROUND)
         # A refused acquisition must not release the peer's lock.
         assert claim(pool.PoolQueue(rig.root)) is None
-        assert not rig.withdrawal_decisions(BACKGROUND)
-        assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+        assert not rig.records.withdrawal_decisions(BACKGROUND)
+        assert not rig.records.withdrawal_decisions(OTHER_BACKGROUND)
         parent.send("crash")
         process.join(20)
         assert process.exitcode == 23
         # Fresh selection after kernel release, with exactly one charged retry.
         assert claim(rig) is None
         decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
-                     for _, d in rig.withdrawal_decisions(key)]
+                     for _, d in rig.records.withdrawal_decisions(key)]
         assert len(decisions) == 1
         assert rig.ledger().held() == {"cpu": 2, "mem_gb": 4}
     finally:
@@ -182,7 +182,7 @@ def test_stalled_preemption_eligibility_proof_does_not_hold_host_admission(rig, 
     assert not stalled.is_alive() and "error" not in outcome, outcome
     assert outcome["item"] is None
     decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
-                 for _, d in rig.withdrawal_decisions(key)]
+                 for _, d in rig.records.withdrawal_decisions(key)]
     assert len(decisions) == 1
 
 
@@ -224,8 +224,8 @@ def test_changed_claim_cannot_use_a_stale_preemption_eligibility_proof(
 
     monkeypatch.setattr(rig, "_preemption_eligibility_proofs", stale)
     assert claim(rig) is None
-    assert not rig.withdrawal_decisions(BACKGROUND)
-    assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+    assert not rig.records.withdrawal_decisions(BACKGROUND)
+    assert not rig.records.withdrawal_decisions(OTHER_BACKGROUND)
     assert rig.ledger().held() == {"cpu": 2, "mem_gb": 4}
 
 
@@ -236,8 +236,8 @@ def test_nonfinite_retry_budget_is_ineligible_before_proof_preparation(rig):
         record["max_attempts"] = float("nan")
         path.write_text(json.dumps(record))
     assert claim(rig) is None
-    assert not rig.withdrawal_decisions(BACKGROUND)
-    assert not rig.withdrawal_decisions(OTHER_BACKGROUND)
+    assert not rig.records.withdrawal_decisions(BACKGROUND)
+    assert not rig.records.withdrawal_decisions(OTHER_BACKGROUND)
     assert rig.ledger().held() == {"cpu": 2, "mem_gb": 4}
 
 
@@ -255,7 +255,7 @@ def test_handoff_error_releases_exclusion_without_returning_live_tokens(rig, mon
     monkeypatch.setattr(rig, stage, original)
     assert claim(rig) is None
     decisions = [d for key in (BACKGROUND, OTHER_BACKGROUND)
-                 for _, d in rig.withdrawal_decisions(key)]
+                 for _, d in rig.records.withdrawal_decisions(key)]
     assert len(decisions) == 1
 
 

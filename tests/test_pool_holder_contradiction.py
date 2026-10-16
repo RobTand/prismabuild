@@ -126,7 +126,7 @@ def test_withdraw_refuses_before_recording_a_contradictory_holder(tmp_path):
     assert queue.records.lease_path(KEY).exists()
     assert ledger.held() == {"cpu": 1}
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY).exists()
-    assert queue.withdrawal_decisions(KEY) == []
+    assert queue.records.withdrawal_decisions(KEY) == []
 
 
 def test_recorded_host_remains_the_no_ledger_legacy_fallback(tmp_path):

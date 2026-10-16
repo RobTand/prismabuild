@@ -162,7 +162,7 @@ def test_canary_waits_for_existing_gpu_holder_then_wins_next_boundary(gpu_box, t
 
     tick()
     assert claim() is None
-    assert q.withdrawal_decisions(holder) == []
+    assert q.records.withdrawal_decisions(holder) == []
     assert q.records.item_path(pool.record_store.CLAIMED, holder).exists()
     ordinary = publish("foreground-after-holder", {"cpu": 2, "gpu": 1, "mem_gb": 16},
                        priority=10)
