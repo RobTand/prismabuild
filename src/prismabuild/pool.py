@@ -769,7 +769,6 @@ MOVE_PRICING_FIELDS = (
 #: ``usable_mover_receipts`` count a writer among the readers.  History
 #: survives beside the newest: older receipts stay listed for diagnosis,
 #: and a degenerate newest prices nothing without erasing them.
-EXPORTS = "exports"
 #: The schema of one filed export receipt: the export's pacing record with
 #: the identity a next seal needs -- action key, unix, tier, owner.
 #:
