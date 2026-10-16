@@ -41,20 +41,20 @@ def build_and_poll(checkout: Path, work: Path, ready: int, claimed: int,
     from worker_loop import private_claim_parameters
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for index in range(ready):
         key = f"{index + 1:064x}"
         queue.publish(action_key=key, cas_root=queue.root / "cas",
                       checkout_root=queue.root / "co",
                       worker_script=queue.root / "worker.py",
                       resources={"cpu": 1}, tags=["elsewhere"])
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     for index in range(claimed):
         key = f"{0xc0000 + index:064x}"
         (claimed_dir / f"{key}.json").write_text(json.dumps(
             {"action_key": key, "claimed_by": "another-box",
              "claimed_unix": 1.0}))
-    passes_dir = queue.root / pool.PASSES
+    passes_dir = queue.root / pool.record_store.PASSES
     passes_dir.mkdir(parents=True, exist_ok=True)
     for index in range(passes):
         key = f"{index + 1:064x}" if index < ready else f"{0xa0000 + index:064x}"

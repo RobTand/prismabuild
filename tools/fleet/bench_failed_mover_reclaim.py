@@ -129,7 +129,7 @@ class _Reclaim:
         self.movers = [_key("mover0"), _key("mover1")]
         self.egresses = [_key("egress0"), _key("egress1")]
         self.queue = pool.PoolQueue(root / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = root / "stage"
         self.stage.mkdir()
         if stage_release.register_stage_root(
@@ -236,7 +236,7 @@ class _Reclaim:
             "--manifest-sha256", self.digest,
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(start + self.entries * self.size),
-            "--residency-root", str(self.queue.residency_fragment_root()),
+            "--residency-root", str(self.queue.records.residency_fragment_root()),
             "--readers", "1", "--max-readers", "1", "--unpaced"])
         seconds = time.monotonic() - began
         receipt = self.queue.move_record(mover)
@@ -247,14 +247,14 @@ class _Reclaim:
         return {**receipt, "_wall_s": seconds}
 
     def claim_reader(self, phase: str) -> None:
-        source = self.queue.item_path(pool.READY, self.consumer)
+        source = self.queue.records.item_path(pool.record_store.READY, self.consumer)
         item = json.loads(source.read_text())
         source.unlink()
         now = time.time()
         item.update({"action_key": self.consumer, "claimed_unix": now - 60.0,
                      "claimed_by": "bench-reader",
                      "claimed_host": "sparklina"})
-        self.queue.item_path(pool.CLAIMED, self.consumer).write_text(
+        self.queue.records.item_path(pool.record_store.CLAIMED, self.consumer).write_text(
             json.dumps(item))
         self.queue.write_lease(
             self.consumer, owner="bench-reader", claim_snapshot=item,
@@ -264,7 +264,7 @@ class _Reclaim:
                                   "reported_unix": now - 9.0}})
 
     def read(self, indices, token: str) -> dict:
-        residence = self.queue.residency_fragment_root()
+        residence = self.queue.records.residency_fragment_root()
         reader_lease.clear_cover_docs_cache()
         found = reader_lease.covers_for_keys(
             residence, self.consumer, [self.keys[index] for index in indices],
@@ -288,14 +288,14 @@ class _Reclaim:
         events = tier_loop.reclaim_failed_mover_partials(
             self.queue, consumers, pressure={TIER: 1})
         for ordinal, egress in enumerate(self.egresses):
-            if not self.queue.item_path(pool.READY, egress).exists():
+            if not self.queue.records.item_path(pool.record_store.READY, egress).exists():
                 continue
             claimed = self._claim(egress)
             stage_release.evict(
                 self.queue, self.movers[ordinal],
                 consumer_action_key=self.consumer,
                 stage_root=str(self.stage),
-                residency_root=self.queue.residency_fragment_root())
+                residency_root=self.queue.records.residency_fragment_root())
             self.queue.finish(egress, status="executed",
                               detail={"returncode": 0},
                               claim_snapshot=claimed)
@@ -376,7 +376,7 @@ def reclaim_scenario(root: Path, *, entries: int, landed: int,
 def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
                        fragment_s: float) -> dict:
     queue = pool.PoolQueue(root / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = root / "stage"
     stage.mkdir()
     cas = root / "cas"
@@ -425,12 +425,12 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
         path = cas / "requests" / movers[ordinal][:2] / f"{movers[ordinal]}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(request))
-        queue.item_path(pool.CLAIMED, movers[ordinal]).write_text(json.dumps({
+        queue.records.item_path(pool.record_store.CLAIMED, movers[ordinal]).write_text(json.dumps({
             "action_key": movers[ordinal], "cas_root": str(cas),
             "resources": {"cpu": 2, "mem_gb": 1, STAGE_KIND: 1}}))
 
     def conclude(ordinal: int) -> None:
-        queue.item_path(pool.CLAIMED, movers[ordinal]).unlink(missing_ok=True)
+        queue.records.item_path(pool.record_store.CLAIMED, movers[ordinal]).unlink(missing_ok=True)
 
     def move(ordinal: int) -> dict:
         start, end = spans[ordinal]
@@ -443,7 +443,7 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end),
             "--manifest", str(manifest),
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
             "--block", "4096", "--readers", "1", "--max-readers", "1",
             "--unpaced"])
         began = time.monotonic()

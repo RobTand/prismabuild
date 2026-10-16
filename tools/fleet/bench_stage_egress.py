@@ -84,7 +84,7 @@ LANDED_MANIFEST = _key("landed-manifest")
 def land_range(queue: pool.PoolQueue, stage: Path, entries_wanted: int) -> None:
     """A complete mover's range: files, fragment, material, and its tier token."""
 
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     entries: dict[str, dict[str, object]] = {}
     material: dict[str, dict[str, object]] = {}
     for number in range(entries_wanted):
@@ -156,7 +156,7 @@ def run_publisher(args) -> int:
     stage = Path(args.stage_root)
     publisher = stage_move._StagedPublisher(
         queue=queue, stage_root=stage,
-        residency_root=queue.root / pool.RESIDENCY,
+        residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=_key(f"publisher-{args.index}"),
         manifest_sha256=_key(f"publisher-manifest-{args.index}"), tier_id=TIER,
         cas_root=queue.root.parent / "cas",
@@ -344,7 +344,7 @@ def run_bench(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 8})
     stage = work / "stage"
     stage.mkdir()
