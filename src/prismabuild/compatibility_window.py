@@ -58,9 +58,18 @@ def require_predeploy(window, status, *, captured_unix=None, max_age_s=300, now=
     if type(captured) not in (int, float) or not 0 <= now - captured <= max_age_s:
         raise WindowError("predeploy census is stale or in the future")
     live = [row for row in status["nodes"] if row.get("state") == "live"]
-    supported = {row["commit"] for row in window["generations"]}
-    if not live or any(row.get("runtime_commit") not in supported for row in live):
+    sources = window["generations"]
+    rollback = window["rollback"]
+    supported = {row["commit"] for row in sources}
+    observed = {row.get("runtime_commit") for row in live}
+    identities = {(row["generation"], row["commit"]) for row in sources}
+    if (window.get("complete") is not True or len(identities) != len(sources)
+            or (rollback["generation"], rollback["commit"]) not in identities):
+        raise WindowError("window does not contain its exact designated rollback identity")
+    if not live or not observed <= supported:
         raise WindowError("live window changed; recapture and rerun the corpus without relabeling rollback")
+    if supported != observed | {rollback["commit"]}:
+        raise WindowError("retained directories outside live-plus-rollback are not supported window members")
     return tuple(sorted(row["node"] for row in live))
 
 
@@ -71,6 +80,8 @@ def content_digest(files):
 
 def require_generation(directory, designation):
     directory = Path(directory)
+    if directory.is_symlink():
+        raise WindowError("rollback generation must be an immutable directory, not a symlink")
     raw = (directory / "RUNTIME_VERSION.json").read_bytes()
     value = json.loads(raw)
     if (directory.name != designation["generation"] or value["generation"] != designation["generation"]
@@ -80,7 +91,8 @@ def require_generation(directory, designation):
         raise WindowError("rollback directory, commit or receipt digest changed")
     for relative, expected in value["files"].items():
         path = Path(relative)
-        if path.is_absolute() or ".." in path.parts or (directory / path).is_symlink():
+        if (path.is_absolute() or ".." in path.parts
+                or any((directory / parent).is_symlink() for parent in (path, *path.parents))):
             raise WindowError("unsafe rollback source path")
         if hashlib.sha256((directory / path).read_bytes()).hexdigest() != expected:
             raise WindowError(f"rollback source content changed: {relative}")

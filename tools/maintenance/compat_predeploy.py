@@ -67,6 +67,21 @@ def validate(args):
     if any(window["rollback"][key] != rollback[key] for key in ("generation", "commit")):
         raise WindowError("captured window relabeled the operator's rollback target")
     hosts = require_predeploy(window, status, captured_unix=envelope["captured_unix"])
+    live_commits = {node["runtime_commit"] for node in status["nodes"] if node.get("state") == "live"}
+    if designation.get("must_be_live_at_predeploy") and rollback["commit"] not in live_commits:
+        raise WindowError("designated target is no longer a live predeploy generation; operator redesignation required")
+    # Published status reports full commits, not immutable generation names.
+    # A second same-commit generation makes that evidence ambiguous, even when
+    # an earlier census was unambiguous. Never silently pick one retained dir.
+    observed = {commit: [] for commit in live_commits}
+    for receipt in args.generations.glob("*/RUNTIME_VERSION.json"):
+        value = json.loads(receipt.read_bytes())
+        if value.get("commit") in observed:
+            observed[value["commit"]].append(receipt.parent.name)
+    for commit, names in observed.items():
+        expected = [row["generation"] for row in window["generations"] if row["commit"] == commit]
+        if len(names) != 1 or names != expected:
+            raise WindowError("live generation identity changed or became ambiguous; recapture and rerun")
     target = args.generations / rollback["generation"]
     require_generation(target, rollback)
     facts = require_reachable(args.candidate, target)

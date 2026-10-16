@@ -19,6 +19,7 @@
   "gc_precondition": "every live reader and designated rollback target must understand movers-retired before receipt retirement; retained directories alone confer no support",
   "policy": "live worker generations plus explicitly designated rollback",
   "requires_no_proof_member": true,
+  "must_be_live_at_predeploy": true,
   "rollback": {
     "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
     "content_sha256": "dd694fdb23b193f46ab82349c81067b6a9fd68eeaaba3ec24e24bf4176767ff3",

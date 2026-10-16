@@ -236,6 +236,7 @@ def capture_window(status_path, generations, rollback, rollback_commit, out, git
                for name in sorted(supported)]
     captured = datetime.now(timezone.utc).isoformat()
     window = {"policy": "live worker generations plus designated rollback target",
+              "live_identity_basis": "full live commit plus unique immutable generation receipt; ambiguity refuses",
               "captured_at": captured, "status_mtime_unix": status_path.stat().st_mtime,
               "status_sha256": digest(status_raw), "complete": True,
               "rollback": {"generation": rollback, "commit": rollback_commit,

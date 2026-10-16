@@ -49,6 +49,12 @@ def test_predeploy_requires_fresh_complete_census_and_the_designated_generation(
     status["nodes"][0]["runtime_commit"] = "1" * 40
     with pytest.raises(WindowError, match="without relabeling"):
         require_predeploy(window, status, now=1001)
+    status["nodes"][0]["runtime_commit"] = window["rollback"]["commit"]
+    extra = {**window, "generations": [*window["generations"], {"generation": "unrelated", "commit": "2" * 40}]}
+    with pytest.raises(WindowError, match="outside live-plus-rollback"):
+        require_predeploy(extra, status, now=1001)
+    with pytest.raises(WindowError, match="exact designated"):
+        require_predeploy({**window, "rollback": {"generation": "other", "commit": "3" * 40}}, status, now=1001)
 
 
 def generation(tmp_path):
@@ -75,6 +81,12 @@ def test_rollback_identity_checks_directory_receipt_commit_and_actual_content(tm
         require_generation(root, designation)
     with pytest.raises(WindowError, match="commit or receipt"):
         require_generation(root, {**designation, "commit": "2" * 40})
+    source.write_bytes(b"value = 42\n")
+    moved = root / "private-reader.py"
+    source.rename(moved)
+    source.symlink_to(moved)
+    with pytest.raises(WindowError, match="unsafe rollback"):
+        require_generation(root, designation)
 
 
 def test_window_capture_does_not_promote_retained_directories_or_offline_hosts(tmp_path):
@@ -100,6 +112,13 @@ def test_window_capture_does_not_promote_retained_directories_or_offline_hosts(t
     captured = capture_window(status, root.parent, root.name, designation["commit"], tmp_path / "expanded", ROOT)
     assert len(captured["generations"]) == 2 and captured["rollback"]["generation"] == root.name
     assert require_predeploy(captured, live, captured_unix=1000, now=1001) == ("active", "offline-wsl")
+    # The status protocol reports commits only. Another immutable directory at
+    # the same commit must refuse capture rather than guess which one is live.
+    duplicate = root.parent / "same-commit-other-generation"
+    duplicate.mkdir()
+    (duplicate / "RUNTIME_VERSION.json").write_bytes((root / "RUNTIME_VERSION.json").read_bytes())
+    with pytest.raises(ValueError, match="unambiguous generation"):
+        capture_window(status, root.parent, root.name, designation["commit"], tmp_path / "ambiguous", ROOT)
     live["complete"] = False
     status.write_text(json.dumps(live))
     with pytest.raises(ValueError, match="incomplete"):
