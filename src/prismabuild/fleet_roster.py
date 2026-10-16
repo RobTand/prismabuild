@@ -65,9 +65,14 @@ class Roster:
     document: dict
 
     @classmethod
-    def read(cls, path: str | Path, *, expected_sha256: str | None = None) -> Roster:
+    def read(cls, path: str | Path, *, expected_sha256: str | None = None,
+             max_bytes: int | None = None) -> Roster:
         path = Path(path)
-        return cls.capture(path.read_bytes(), path=path, expected_sha256=expected_sha256)
+        with path.open("rb") as stream:
+            raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        if max_bytes is not None and len(raw) > max_bytes:
+            raise ValueError("oversized fleet roster")
+        return cls.capture(raw, path=path, expected_sha256=expected_sha256)
 
     @classmethod
     def capture(cls, raw: bytes, *, path: Path = Path("<roster>"),
@@ -121,12 +126,16 @@ class Roster:
         raise FileNotFoundError(f"no readable fleet roster under {root}")
 
     @classmethod
-    def qualified(cls, root: str | Path, files: Mapping[str, str]) -> Roster:
+    def qualified(cls, root: str | Path, files: Mapping[str, str], *,
+                  max_bytes: int | None = None) -> Roster:
         root = Path(root)
         for path in cls.paths(root):
             member = path.relative_to(root).as_posix()
             if member in files:
-                return cls.read(path, expected_sha256=files[member])
+                digest = files[member]
+                if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                    raise ValueError("invalid qualified roster manifest digest")
+                return cls.read(path, expected_sha256=digest, max_bytes=max_bytes)
         raise ValueError("roster is not a qualified generation manifest member")
 
     @classmethod

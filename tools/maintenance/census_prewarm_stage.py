@@ -154,8 +154,9 @@ def collect_prewarm_stage_census(args) -> dict:
     result["published_runtime"]["commit"] = json.loads(
         (runtime / "RUNTIME_VERSION.json").read_bytes()).get("commit")
     roster = fleet_roster.Roster.at(runtime)
-    result["roster"] = {"path": str(roster.path), "bytes": len(roster.raw),
-                        "sha256": roster.sha256}
+    result["roster"] = file_identity(roster.path)
+    result["roster"]["sha256"] = roster.sha256
+    result["roster"]["bytes"] = len(roster.raw)
     result["roster_hosts"] = [
         {"key": key, "alias": box.get("_alias"), "status": box.get("status"),
          "storage_argv": box.get("roles", {}).get("storage")}
