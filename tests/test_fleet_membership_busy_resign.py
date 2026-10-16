@@ -229,7 +229,7 @@ def test_withdrawn_retry_safe_row_requeues_with_preserved_budget(
     # Publishing the successor retires the live withdrawal marker into
     # withdrawn/superseded/; the original attempt's terminal was proven
     # in-round (resigned requires it) before the publish.
-    decisions = queue.withdrawal_decisions(key)
+    decisions = queue.records.withdrawal_decisions(key)
     assert decisions, "withdrawal lineage must survive the handoff"
     ready = queue.ready_items()
     requeued = [item for item in ready if item.get("action_key") == key]

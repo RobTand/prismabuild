@@ -1039,7 +1039,7 @@ def test_local_token_shortage_still_reaches_real_background_preemption(fleet, op
     fleet.publish(opted_in=opted_in)
     assert fleet.queue.ledger(SLOW).available()["mem_gb"] == 3
     assert fleet.claim(SLOW) is None               # preemption never releases the holder's tokens
-    decisions = [d for _, d in fleet.queue.withdrawal_decisions(holder)]
+    decisions = [d for _, d in fleet.queue.records.withdrawal_decisions(holder)]
     assert decisions, "scratch local prefit bypassed the real priority/token-shortage gate"
     assert decisions[-1]["status"] == "withdrawn" and decisions[-1]["preempted_by"] == fleet.key
     assert fleet.queue.ledger(SLOW).held()["mem_gb"] == 29

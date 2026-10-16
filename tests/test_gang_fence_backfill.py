@@ -34,9 +34,9 @@ def test_idle_fenced_host_admits_restartable_minus_ten(gang_fleet):
     assert held["gang_backfill"][0]["group"] == group
     assert queue.ledger("sparklina").held_keys() == [key]
     assert queue.records.item_path(pool.record_store.READY, keys[0]).exists()
-    assert not queue.withdrawal_decisions(key)
+    assert not queue.records.withdrawal_decisions(key)
     assert claim("sparklina") is None
-    assert not queue.withdrawal_decisions(key), "backfill stopped while partner still blocked"
+    assert not queue.records.withdrawal_decisions(key), "backfill stopped while partner still blocked"
 
 
 def test_an_equal_priority_reservation_shortfall_never_becomes_a_backfill_loan(gang_fleet):
@@ -111,7 +111,7 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
     assert claim("sparky") is None
     requested = clock[0]
     assert claim("sparklina") is None
-    decisions = queue.withdrawal_decisions(key)
+    decisions = queue.records.withdrawal_decisions(key)
     assert len(decisions) == 1, "token-gate trap never requested gang backfill preemption"
     decision = decisions[0][1]
     assert decision["preempted_by"] == keys[0]
@@ -125,7 +125,7 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
     election = _gang.elections(queue, group, 2)[0]
     assert election["backfill_preemptions"][0]["tokens_returned_unix"] is None
     assert claim("sparklina") is None
-    assert len(queue.withdrawal_decisions(key)) == 1
+    assert len(queue.records.withdrawal_decisions(key)) == 1
     # Explicitly settle the private holder. No assumed kill timeout returns
     # capacity. Once settled, each member commits in at most two claim passes.
     finish(key, "sparklina")
@@ -148,7 +148,7 @@ def test_failed_cleanup_is_visible_and_never_grants_capacity(gang_fleet, monkeyp
     finish(incumbent, "sparky")
     assert claim("sparky") is None
     assert claim("sparklina") is None
-    assert queue.withdrawal_decisions(key), "no readiness-triggered preemption"
+    assert queue.records.withdrawal_decisions(key), "no readiness-triggered preemption"
     monkeypatch.setattr(queue, "cleanup_action_containers", lambda *a, **k:
                         {"complete": False, "error": "GPU/container settlement unproved"})
     queue.finish(key, status="withdrawn")
@@ -166,7 +166,7 @@ def test_teardown_releases_fence_without_requiring_preemption(gang_fleet):
     key = publish("ordinary-after-teardown", priority=0, mem_gb=24,
                   tags=["sparklina"])
     assert claim("sparklina") == key
-    assert not queue.withdrawal_decisions(key)
+    assert not queue.records.withdrawal_decisions(key)
 
 
 
@@ -185,7 +185,7 @@ def test_backfill_on_both_hosts_reclaims_without_any_fresh_ready_mark(gang_fleet
     clock[0] += _gang.READY_FRESH_S + 1
     for host, key in zip(("sparklina", "sparky"), holders):
         assert claim(host) is None
-        assert queue.withdrawal_decisions(key), "two token-blocked members deadlocked each other"
+        assert queue.records.withdrawal_decisions(key), "two token-blocked members deadlocked each other"
     for host, key in zip(("sparklina", "sparky"), holders):
         finish(key, host)
     assert claim("sparklina") is None
@@ -251,7 +251,7 @@ def test_a_startable_gang_never_lends_its_fresh_ready_host(
         "backfill borrowed a fresh-ready host after the whole gang could start")
     assert denial(key, "sparklina")["reason"] == "deferred_for_gang_reservation"
     assert queue.ledger("sparklina").held_keys() == []
-    assert not queue.withdrawal_decisions(key)
+    assert not queue.records.withdrawal_decisions(key)
     assert claim("sparklina") == keys[0]
     if peer_state == "ready":
         assert claim("sparky") == keys[1]
@@ -296,7 +296,7 @@ def test_a_token_short_gang_member_preempts_an_unmarked_incumbent(
     assert "gang_backfill" not in pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, holder))
     group, keys = members("ordinary-preemption", priority=10, mem_gb=104)
     assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) is None
-    decisions = queue.withdrawal_decisions(holder)
+    decisions = queue.records.withdrawal_decisions(holder)
     assert len(decisions) == 1, "gang token denial lost ordinary preemption of unmarked work"
     assert decisions[0][1]["preempted_by"] == keys[0]
     assert queue.records.item_path(pool.record_store.READY, holder).exists()
@@ -312,7 +312,7 @@ def test_ordinary_token_preemption_protects_the_members_own_lent_backfill(
     assert claim("sparklina") == holder
     assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) is None
     assert not _gang.backfill_reclaiming(queue, _gang.read_group(queue, group))
-    assert not queue.withdrawal_decisions(holder), "ordinary token denial stopped an untriggered loan"
+    assert not queue.records.withdrawal_decisions(holder), "ordinary token denial stopped an untriggered loan"
     assert queue.ledger("sparklina").held_keys() == [holder]
 
 
@@ -327,7 +327,7 @@ def test_both_token_short_members_preempt_their_unmarked_incumbents(
     group, keys = members("both-unmarked", priority=10, mem_gb=104)
     for host, holder, member in zip(hosts, holders, keys):
         assert token_gang_claim(queue, host, fleet[5], monkeypatch) is None
-        decisions = queue.withdrawal_decisions(holder)
+        decisions = queue.records.withdrawal_decisions(holder)
         assert len(decisions) == 1, "two unmarked token holders prevented ordinary gang preemption"
         assert decisions[0][1]["preempted_by"] == member
         assert queue.records.item_path(pool.record_store.READY, holder).exists()

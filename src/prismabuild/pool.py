@@ -19984,7 +19984,7 @@ class PoolQueue:
             if type(generation) not in (int, float) or not math.isfinite(generation):
                 return False
             try:
-                decisions = self.withdrawal_decisions(
+                decisions = self.records.withdrawal_decisions(
                     str(record["action_key"]), generation=float(generation))
             except PoolContractError:
                 return False
@@ -24393,16 +24393,9 @@ class PoolQueue:
         path names that actual immutable source, not an overwritten summary.
         Older attempts without handoff context supply no inferred successor.
         """
-        identity = {"action_key": action_key,
-                    "published_unix": generation if generation is not None else 0.0}
-        generation_name = self.records.attempt_generation(identity)  # validates key and timestamp
-        base = self.root / ATTEMPTS / action_key
-        if generation is not None:
-            base /= generation_name
-        pattern = "*.json" if generation is not None else "*/*.json"
+        candidates = self.records.attempt_documents(action_key, generation=generation)
         found = []
-        for path in immutable_files.match_optional(base, pattern):
-            value = record_store.read_document(path)
+        for path, value in candidates:
             if value is None or "preemption_context" not in value:
                 continue
             if value.get("disposition") not in {DONE, FAILED}:
@@ -26047,20 +26040,6 @@ class PoolQueue:
         return self.records.withdrawal_decision(path)
 
 
-    def withdrawal_decisions(
-        self, key: str, *, generation: float | None = None,
-    ) -> list[tuple[Path, dict[str, object]]]:
-        """Immutable cancellations for this key, optionally one generation."""
-
-        directory = self.records.dir(WITHDRAWN) / "decisions" / key
-        if generation is None:
-            paths = immutable_files.match_optional(directory, "*.json")
-        else:
-            path = self.records.withdrawal_decision_path({
-                "action_key": key, "published_unix": generation,
-            })
-            paths = [] if path is None else immutable_files.match_optional(directory, path.name)
-        return [(path, self.records.withdrawal_decision(path)) for path in paths]
 
     def _withdraw_ready(self, key: str) -> dict[str, object] | None:
         """Examine captured READY bytes without losing an uncancelled successor."""
@@ -26462,7 +26441,7 @@ class PoolQueue:
                         "path": str(self.records.item_path(state, key)),
                         "reason": "",
                     }
-            decisions = self.withdrawal_decisions(key)
+            decisions = self.records.withdrawal_decisions(key)
             if decisions:
                 existing = max(decisions, key=lambda entry: float(entry[1]["published_unix"]))[1]
             else:

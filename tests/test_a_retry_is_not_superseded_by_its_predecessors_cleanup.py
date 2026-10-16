@@ -237,7 +237,7 @@ def test_a_same_key_retry_reusing_its_plan_is_not_superseded_by_a_stale_cancella
     assert plan == stale, "the resubmission must reuse its frozen plan"
     assert queue.live_withdrawal(lead) is None, (
         "the resubmission reused a plan whose lead carries a live cancellation")
-    assert queue.withdrawal_decisions(lead), (
+    assert queue.records.withdrawal_decisions(lead), (
         "the cancellation's decision is evidence, not something renewal erases")
     submission._tier_cycle(queue, tmp_path / "stage")
     assert residency_plan.superseded(queue, plan) is None, (
@@ -307,7 +307,7 @@ def test_a_pass_just_before_the_retrys_freeze_is_renewed_by_its_seal(
     retry = submission._detach_key(capsys)
     assert ran and any(event.get("event") == "dead-consumer-mover-withdrawn"
                        and event.get("mover") == lead for event in ran[0]), ran
-    assert queue.withdrawal_decisions(lead), "the pass's decision is evidence"
+    assert queue.records.withdrawal_decisions(lead), "the pass's decision is evidence"
 
     _assert_retry_survives(queue, tmp_path, retry, lead)
 

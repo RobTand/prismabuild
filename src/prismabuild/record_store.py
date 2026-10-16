@@ -1115,6 +1115,40 @@ class RecordStore:
         return present
 
 
+    def withdrawal_decisions(
+        self, key: str, *, generation: float | None = None,
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Immutable cancellations for this key, optionally one generation."""
+
+        directory = self.dir(WITHDRAWN) / "decisions" / key
+        if generation is None:
+            paths = immutable_files.match_optional(directory, "*.json")
+        else:
+            path = self.withdrawal_decision_path({
+                "action_key": key, "published_unix": generation,
+            })
+            paths = [] if path is None else immutable_files.match_optional(directory, path.name)
+        return [(path, self.withdrawal_decision(path)) for path in paths]
+
+
+    def attempt_documents(self, action_key: str, *, generation: float | None = None):
+        """Read an optional history namespace in its original file order.
+
+        Documents are yielded as read, so a caller's refusal still stops
+        before touching the next record.
+        """
+        identity = {"action_key": action_key,
+                    "published_unix": generation if generation is not None else 0.0}
+        generation_name = self.attempt_generation(identity)
+        base = self.root / ATTEMPTS / action_key
+        if generation is not None:
+            base /= generation_name
+        pattern = "*.json" if generation is not None else "*/*.json"
+        for path in immutable_files.match_optional(base, pattern):
+            yield path, read_document(path)
+
+
+
 def read_document(path: Path) -> dict[str, object] | None:
     """Read a permissive JSON object; missing/empty is absent and errors escape."""
     return _read_json(path)
