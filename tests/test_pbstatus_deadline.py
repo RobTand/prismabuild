@@ -47,7 +47,7 @@ def blocked_queue_root(tmp_path, monkeypatch):
     """A queue root whose pool census never returns inside a deadline."""
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def never(*args, **kwargs):
         time.sleep(BLOCKED_S)
@@ -212,7 +212,7 @@ def test_timeout_zero_restores_the_unbounded_in_process_read(tmp_path, monkeypat
     """
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ran: list[str] = []
 
     def census(*args, **kwargs):
@@ -235,7 +235,7 @@ def test_a_healthy_run_is_complete_and_exits_zero(tmp_path, monkeypatch, capsys)
     """The added keys do not change the verdict on a queue that answers."""
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     code = pbstatus.main(["--json", "--recent", "0", "--queue-root", str(queue.root)])
     assert code == 0
     result = json.loads(capsys.readouterr().out)
@@ -261,7 +261,7 @@ def test_a_prompt_error_is_not_a_complete_read(tmp_path, monkeypatch, capsys):
     """
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def refuse(root):
         raise PermissionError("queue unavailable")
@@ -287,7 +287,7 @@ def test_an_ending_read_that_raises_is_not_a_complete_read(
     """The same rule for the other required section of the queue root."""
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def refuse(root, limit):
         raise PermissionError("done/ unavailable")
@@ -311,8 +311,8 @@ def test_a_pool_census_missing_a_record_is_not_complete(
     """
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    (queue.dir(pool.READY) / f"{'a' * 64}.json").write_text("{ truncated")
+    queue.records.ensure_layout()
+    (queue.records.dir(pool.record_store.READY) / f"{'a' * 64}.json").write_text("{ truncated")
 
     code = pbstatus.main(["--json", "--recent", "0",
                           "--queue-root", str(queue.root)])
@@ -336,11 +336,11 @@ def test_a_stale_worker_offer_does_not_spend_the_incomplete_signal(
     """
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="cpu-box", tags=["cpu-box"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8},
                    observed_capacity={"cpu": 4, "mem_gb": 8})
-    offer = queue.root / pool.WORKERS / "cpu-box.json"
+    offer = queue.root / pool.record_store.WORKERS / "cpu-box.json"
     record = json.loads(offer.read_text())
     record["announced_unix"] = time.time() - pool.OFFER_TIMEOUT_S - 1
     offer.write_text(json.dumps(record))
@@ -461,7 +461,7 @@ def test_wedged_peers_are_warned_about_on_stderr_without_refusing_to_run(
     """The count is the signal; the refusal would hide the fleet."""
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     monkeypatch.setattr(pbstatus, "wedged_peers",
                         lambda **kw: {"peers": [{"pid": 3427158, "age_s": 2961.0}],
                                       "scanned": 3, "truncated": False, "note": None})
@@ -485,7 +485,7 @@ def test_a_truncated_peer_scan_says_its_count_is_a_floor(
     """
     monkeypatch.setenv("PRISMABUILD_TRANSPORT", "pool")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     monkeypatch.setattr(pbstatus, "wedged_peers",
                         lambda **kw: {"peers": [{"pid": 3427158, "age_s": 2961.0}],
                                       "scanned": 5, "truncated": True, "note": None})

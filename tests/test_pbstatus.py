@@ -414,7 +414,7 @@ def _slurm_ending(fleet: dict, key: str, *, status: str, state: str) -> None:
 
 
 def _pool_ending(fleet: dict, key: str) -> None:
-    directory = fleet["queue"] / pool.DONE
+    directory = fleet["queue"] / pool.record_store.DONE
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{key}.json").write_text(json.dumps({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -466,8 +466,8 @@ def test_a_withdrawal_is_an_ending_and_is_listed_from_withdrawn(fleet, capsys):
     assert ending["status"] == "withdrawn"
     assert ending["transport"] == "slurm"
     assert ending["slurm_state"] == "CANCELLED"
-    assert ending["path"].endswith(f"/{pool.WITHDRAWN}/{'f6' * 32}.json")
-    assert not (fleet["queue"] / pool.FAILED / f"{'f6' * 32}.json").exists()
+    assert ending["path"].endswith(f"/{pool.record_store.WITHDRAWN}/{'f6' * 32}.json")
+    assert not (fleet["queue"] / pool.record_store.FAILED / f"{'f6' * 32}.json").exists()
 
 
 def test_an_ending_names_the_actions_own_status_in_its_own_column(fleet, capsys):
@@ -498,10 +498,10 @@ def test_a_receipt_puts_the_ending_under_done(fleet, capsys):
     ending = _run_json(fleet, capsys)["endings"][0]
     assert ending["status"] == "executed"
     assert ending["receipt_published"] is True
-    assert ending["path"].endswith(f"/{pool.DONE}/{'e5' * 32}.json")
+    assert ending["path"].endswith(f"/{pool.record_store.DONE}/{'e5' * 32}.json")
 
 
-def _truncated_ending(fleet: dict, key: str, state: str = pool.FAILED) -> Path:
+def _truncated_ending(fleet: dict, key: str, state: str = pool.record_store.FAILED) -> Path:
     """A terminal record that stopped mid-write, the way a full disk leaves one."""
 
     directory = fleet["queue"] / state
@@ -540,7 +540,7 @@ def test_an_oversized_ending_is_reported_without_reading_its_payload(
     """A log-sized terminal record cannot make a status reader log-sized."""
 
     key = "b4" * 32
-    path = fleet["queue"] / pool.DONE / f"{key}.json"
+    path = fleet["queue"] / pool.record_store.DONE / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -564,7 +564,7 @@ def test_an_unreadable_record_says_which_way_it_is_unreadable(fleet, capsys):
     if os.geteuid() == 0:
         pytest.skip("root reads a 000 file, so the two arms cannot differ")
     _pool_ending(fleet, "d4" * 32)
-    unreadable = fleet["queue"] / pool.DONE / f"{'d4' * 32}.json"
+    unreadable = fleet["queue"] / pool.record_store.DONE / f"{'d4' * 32}.json"
     unreadable.chmod(0o000)
     try:
         endings = _run_json(fleet, capsys, expected_code=3)["endings"]

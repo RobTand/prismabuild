@@ -27,18 +27,17 @@ class _Queue:
 
     def __init__(self, root: Path):
         self.root = root
+        self.records = pbrun.pool.record_store.RecordStore(root)
         for name in ("ready", "claimed", "done", "failed"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
 
     def withdrawal_decisions(self, key: str) -> list:
         return []
 
 
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:
-    queue.item_path(state, key).write_text(json.dumps(payload), encoding="utf-8")
+    queue.records.item_path(state, key).write_text(json.dumps(payload), encoding="utf-8")
 
 
 OUTCOME = {
