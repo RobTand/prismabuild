@@ -67,8 +67,8 @@ def test_a_prelaunch_gang_with_a_dead_member_is_torn_down(
     assert torn is not None and "residency_lead_terminal" in str(torn.get("reason")), torn
     queue.sweep_gangs()
     for key in keys:
-        assert queue.item_path(pool.WITHDRAWN, key).exists(), key
-        assert not queue.item_path(pool.READY, key).exists(), key
+        assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists(), key
+        assert not queue.records.item_path(pool.record_store.READY, key).exists(), key
 
 
 def test_a_shape_refused_member_is_never_a_terminal_reading(
@@ -89,5 +89,5 @@ def test_a_shape_refused_member_is_never_a_terminal_reading(
         clock[0] += _gang.TERMINAL_CONFIRM_S
     assert _gang.teardown(queue, group) is None
     queue.sweep_gangs()
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()

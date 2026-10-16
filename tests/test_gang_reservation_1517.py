@@ -136,7 +136,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
                           max_attempts=1,
                           **({} if residency is None or (index and not residency_all)
                              else {"residency": residency}))
-            rows.append(pool._read_json(queue.item_path(pool.READY, key)))
+            rows.append(pool.record_store.require(queue.records.item(pool.record_store.READY, key)))
         if file_group:
             _gang.publish_group(queue, group, rows, skew_s=skew_s)
         return group, [row["action_key"] for row in rows]
@@ -171,11 +171,11 @@ def test_both_hosts_busy_fences_each_host_and_starts_nothing(gang_fleet):
         # The member's own token-shortage withhold may hold the box first.
         assert denial(refill, host)["reason"] in (
             "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(refill, host)
-        assert queue.item_path(pool.READY, refill).exists()
+        assert queue.records.item_path(pool.record_store.READY, refill).exists()
         assert queue.ledger(host).held_keys() == [incumbents[host]]
     for key in keys:
-        assert queue.item_path(pool.READY, key).exists()
-        assert not queue.item_path(pool.CLAIMED, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
+        assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
 
 def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
@@ -192,7 +192,7 @@ def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
     assert waiting["evidence"]["waiting"][0]["index"] == 1
     # Ready holds nothing: the freed host carries no member tokens.
     assert queue.ledger("sparklina").held_keys() == []
-    assert queue.item_path(pool.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
     # The gang fence also holds back host-pinned CPU work on the freed host.
     refill = publish("refill-freed", priority=-10, timeout_s=None,
                      cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
@@ -204,7 +204,7 @@ def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     assert queue.ledger("sparklina").held_keys() == [first]
     assert queue.ledger("sparky").held_keys() == [second]
-    assert queue.item_path(pool.READY, refill).exists()
+    assert queue.records.item_path(pool.record_store.READY, refill).exists()
 
 
 def test_a_stale_ready_mark_does_not_commit_the_peer(gang_fleet):

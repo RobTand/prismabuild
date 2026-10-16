@@ -100,7 +100,7 @@ def _stage_lead(queue, clock, monkeypatch, lead: str, consumer: str, stage: Path
 
 def _compose_map(monkeypatch, queue, key: str, leads: list[str]) -> None:
     """The tier loop's composed map, as ``read_map`` answers it."""
-    path = queue.residency_map_path(key)
+    path = queue.records.residency_map_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{}\n")
     monkeypatch.setattr(residency_map, "read_map",
@@ -157,11 +157,11 @@ def test_pending_leads_refuse_the_member_before_its_gang_code(gang_fleet,
     assert gclaim("sparky") is None
     assert denial(drained, "sparky")["reason"] in (
         "deferred_for_gang_reservation", "deferred_behind_withheld_row")
-    assert queue.item_path(pool.READY, drained).exists()
+    assert queue.records.item_path(pool.record_store.READY, drained).exists()
     # Nobody holds tokens while the gang waits, and nobody has committed.
     assert queue.ledger("sparky").held_keys() == []
-    assert not queue.item_path(pool.CLAIMED, first).exists()
-    assert not queue.item_path(pool.CLAIMED, second).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, first).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, second).exists()
 
     # The movers land; the member passes the same gate and the gang commits
     # whole, in rank order, both hosts.
@@ -194,14 +194,14 @@ def test_a_resident_member_claims_with_its_verdict_and_map(gang_fleet,
     assert gclaim("sparky") == second, denial(second, "sparky")
     assert gclaim("sparklina") == first, denial(first, "sparklina")
 
-    claimed = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed["residency_verdict"] == {
         "state": "resident", "leads": [lead],
-        "map_path": str(queue.residency_map_path(first))}
+        "map_path": str(queue.records.residency_map_path(first))}
     environment = queue.launch_environment(claimed)
-    assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(first))
+    assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(first))
     assert environment[pb.QUEUE_ROOT_ENV] == str(queue.root)
-    plain = pool._read_json(queue.item_path(pool.CLAIMED, second))
+    plain = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, second))
     assert pb.RESIDENCY_MAP_ENV not in queue.launch_environment(plain)
     # The start barrier releases a whole claimed gang: nobody waits in it.
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
@@ -268,17 +268,17 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     assert torn is not None and second[:12] in torn["reason"], torn
     # The residency member went through the ordinary withdrawal, which marks
     # its plan superseded -- the window can never be republished at its price.
-    assert queue.item_path(pool.WITHDRAWN, first).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, first).exists()
     assert residency_plan.superseded(queue, plan) is not None
     # The lead is nobody's gang member: the teardown neither withdraws it nor
     # releases its pins. The tokens stand for bytes still on the stage.
-    assert not queue.item_path(pool.WITHDRAWN, lead).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, lead).exists()
     assert ledger.holder_tokens(lead) == {"stage_gib": 2}
     # The withdrawn member's row is covered, and until its worker reaches the
     # withdrawal checkpoint a covered claimed row is still a live consumer:
     # the sweep retains the lead, because live_claims still names it. This
     # fixture has no worker, so take the checkpoint the worker would take.
-    claimed_row = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    claimed_row = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed_row is not None, "the withdrawn member's row already left claimed/"
     assert queue.withdrawal_covers(claimed_row) is not None
     queue.finish(first, status="withdrawn")
@@ -318,8 +318,8 @@ def test_a_withdrawn_member_tears_down_the_same_way(gang_fleet, monkeypatch, tmp
     verdict = queue.withdraw(first, reason="operator cancelled the window")
     assert verdict["residency_plan_superseded"] is True, verdict
     assert _gang.teardown(queue, group) is not None
-    assert queue.item_path(pool.WITHDRAWN, second).exists()
-    assert not queue.item_path(pool.WITHDRAWN, lead).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, second).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, lead).exists()
     assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
 
 
@@ -344,7 +344,7 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     lead = _hexkey("shared-lead")
     group, (first, second) = members("shared", residency=_consumer_block([lead]),
                                      residency_all=True)
-    rows = {key: json.loads(queue.item_path(pool.READY, key).read_text())
+    rows = {key: json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
             for key in (first, second)}
     assert rows[first]["residency"]["leads"] == [lead]
     assert rows[second]["residency"]["leads"] == [lead]
@@ -354,7 +354,7 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
     assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
     for key in (first, second):
-        item = json.loads(queue.item_path(pool.READY, key).read_text())
+        item = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
         assert queue.residency_verdict(item)["state"] == "map_not_composed", (key,)
 
     for key in (first, second):
@@ -363,11 +363,11 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     assert gclaim("sparky") == second, denial(second, "sparky")
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     for key in (first, second):
-        claimed = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
         assert claimed["residency_verdict"]["state"] == "resident"
         environment = queue.launch_environment(claimed)
-        assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(key))
-    assert queue.residency_map_path(first) != queue.residency_map_path(second)
+        assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(key))
+    assert queue.records.residency_map_path(first) != queue.records.residency_map_path(second)
 
 
 # ------------------------------------------------ Q4: the planner's gang row
@@ -394,7 +394,7 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     assert leads
 
     # The bare row is gated by the filed plan, verdict for verdict.
-    item = json.loads(queue.item_path(pool.READY, first).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, first).read_text())
     assert "residency" not in item
     explicit = {**item,
                 "residency": residency_plan.consumer_residency(queue, item)[0]}
@@ -439,10 +439,10 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     assert gclaim("sparky") == second, denial(second, "sparky")
     # The map reaches the planner's member through the declared-manifest
     # branch: the row carries no residency block at all.
-    claimed = pool._read_json(queue.item_path(pool.CLAIMED, first))
+    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed["residency_verdict"]["state"] == "resident"
     environment = queue.launch_environment(claimed)
-    assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.residency_map_path(first))
+    assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(first))
 
 
 def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
@@ -495,8 +495,8 @@ def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
     # The sweep withdraws the READY members and the fence is gone.
     queue.sweep_gangs()
     for key in (first, second):
-        assert queue.item_path(pool.WITHDRAWN, key).exists(), key
-        assert not queue.item_path(pool.READY, key).exists(), key
+        assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists(), key
+        assert not queue.records.item_path(pool.record_store.READY, key).exists(), key
     assert gclaim("sparky") == drained, denial(drained, "sparky")
 
 
@@ -511,8 +511,8 @@ def test_a_member_whose_leads_are_merely_pending_does_not_tear_the_gang_down(
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert _gang.teardown(queue, group) is None
     queue.sweep_gangs()
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()
 
 
 def _fail_lead_and_mark(gang_fleet, monkeypatch, tmp_path, name):
@@ -544,20 +544,20 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "requeue-gang")
-    ended = pool._read_json(queue.item_path(pool.FAILED, lead))
+    ended = pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead))
     # The lead is live again: a CLAIMED record under a later generation (a READY
     # one would be claimed by the very pass under test).
-    live = dict(pool._read_json(queue.item_path(pool.DONE, lead))
-                or pool._read_json(queue.item_path(pool.FAILED, lead)))
+    live = dict(pool.record_store.require(queue.records.item(pool.record_store.DONE, lead))
+                or pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead)))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, lead), live)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert not _gang.terminal_mark_path(queue, group, first).exists()
 
     # It ends again long after: a terminal reading that is new, not confirmed.
-    queue.item_path(pool.CLAIMED, lead).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, lead).unlink()
     clock[0] += 10 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
@@ -569,8 +569,8 @@ def test_a_changed_ending_restarts_the_wait(gang_fleet, monkeypatch, tmp_path):
     """A lead requeued and ended again between two passes is a new reading."""
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "regen-gang")
-    path = queue.item_path(pool.FAILED, lead)
-    record = dict(pool._read_json(path))
+    path = queue.records.item_path(pool.record_store.FAILED, lead)
+    record = dict(pool.record_store.read_queue_record(path))
     record["published_unix"] = float(record["published_unix"]) + 7
     pool._write_json_atomic(path, record)
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
@@ -638,8 +638,8 @@ def test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown(
     assert confirming == [state], "the pass never reached the confirming read"
     assert _gang.teardown(queue, group) is None
     assert not _gang.terminal_mark_path(queue, group, first).exists()
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()
 
 
 @pytest.mark.parametrize("refusal", [
@@ -678,8 +678,8 @@ def test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown(
     assert confirming == [False, True], confirming
     assert _gang.teardown(queue, group) is None
     assert not _gang.terminal_mark_path(queue, group, first).exists()
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()
 
 
 def test_a_requeue_that_wins_before_the_proof_blocks_the_teardown(
@@ -703,8 +703,8 @@ def test_a_requeue_that_wins_before_the_proof_blocks_the_teardown(
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert _gang.teardown(queue, group) is None
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()
 
 
 def test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait(
@@ -825,18 +825,18 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "stuck-mark-gang")
-    ended = pool._read_json(queue.item_path(pool.FAILED, lead))
-    live = dict(pool._read_json(queue.item_path(pool.FAILED, lead)))
+    ended = pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead))
+    live = dict(pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead)))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, lead), live)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     real_clear = _gang.clear_terminal
     monkeypatch.setattr(_gang, "clear_terminal",
                         lambda queue, group, key: False)
     assert gclaim("sparklina") is None
     monkeypatch.setattr(_gang, "clear_terminal", real_clear)
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
-    queue.item_path(pool.CLAIMED, lead).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, lead).unlink()
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
@@ -846,7 +846,7 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     assert _gang.teardown(queue, group) is not None
 
 
-@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED])
+@pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED])
 @pytest.mark.parametrize("refresh_fails", [False, True])
 def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
         gang_fleet, monkeypatch, tmp_path, state, refresh_fails):
@@ -863,11 +863,11 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
                   residency={**_consumer_block([]),
                              "range_start_bytes": 0, "range_end_bytes": 2 * GIB},
                   max_attempts=1, retry_safe=False, tags=["elsewhere"])
-    if state == pool.CLAIMED:
+    if state == pool.record_store.CLAIMED:
         claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["elsewhere"])
         assert claimed is not None and claimed["action_key"] == lead
-    live_path = queue.item_path(state, lead)
-    real_read = pool._read_json
+    live_path = queue.records.item_path(state, lead)
+    real_read = pool.record_store.read_queue_record
     real_open = os.open
     real_listdir = os.listdir
     real_confirm = queue._gang_terminal_confirmed
@@ -898,15 +898,15 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
 
     with monkeypatch.context() as fault:
         fault.setattr(queue, "_gang_terminal_confirmed", confirm)
-        fault.setattr(pool, "_read_json", cached_read)
+        fault.setattr(pool.record_store, '_read_json', cached_read)
         fault.setattr(os, "open", open_directory)
         fault.setattr(os, "listdir", list_directory)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None, "uncertain absence must not end the gang"
-        assert queue.item_path(pool.READY, first).exists()
-        assert queue.item_path(pool.READY, second).exists()
+        assert queue.records.item_path(pool.record_store.READY, first).exists()
+        assert queue.records.item_path(pool.record_store.READY, second).exists()
 
-    if state == pool.READY:
+    if state == pool.record_store.READY:
         claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["elsewhere"])
         assert claimed is not None and claimed["action_key"] == lead
     queue.record_move(lead, {
@@ -980,8 +980,8 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
     queue.sweep_gangs()
-    assert queue.item_path(pool.WITHDRAWN, first).exists()
-    assert queue.item_path(pool.WITHDRAWN, second).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, first).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, second).exists()
 
 
 def test_a_future_terminal_timestamp_restarts_confirmation(
@@ -1003,7 +1003,7 @@ def test_a_future_terminal_timestamp_restarts_confirmation(
     assert _gang.teardown(queue, group) is not None
 
 
-@pytest.mark.parametrize("directory", [pool.READY, pool.DONE, pool.MOVERS])
+@pytest.mark.parametrize("directory", [pool.record_store.READY, pool.record_store.DONE, pool.record_store.MOVERS])
 def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
         gang_fleet, monkeypatch, tmp_path, directory):
     """The final proof cannot convert a failed refresh into terminal absence."""
@@ -1084,7 +1084,7 @@ def test_fresh_pin_proof_preserves_a_resident_gang(
         clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
         real_listdir = os.listdir
         target = (queue.tier_ledger(TIER).held_dir if fault_directory == "holder"
-                  else queue.move_path(lead).parent if fault_directory == "receipt"
+                  else queue.records.move_path(lead).parent if fault_directory == "receipt"
                   else None)
 
         def list_directory(path):
@@ -1095,8 +1095,8 @@ def test_fresh_pin_proof_preserves_a_resident_gang(
         stale.setattr(os, "listdir", list_directory)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
-        assert queue.item_path(pool.READY, first).exists()
-        assert queue.item_path(pool.READY, second).exists()
+        assert queue.records.item_path(pool.record_store.READY, first).exists()
+        assert queue.records.item_path(pool.record_store.READY, second).exists()
     assert gclaim("sparky") is None
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     assert gclaim("sparky") == second, denial(second, "sparky")

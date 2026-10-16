@@ -101,7 +101,7 @@ def test_ready_gpu_keeps_portable_cpu_back_without_taking_its_lock(fleet, monkey
     assert claim() is None
     assert acquired_keys == [GPU_KEY]
     assert reason_transitions == []  # no unlocked reason-ring writer either
-    assert not queue.passes_path(CPU_KEY).exists()
+    assert not queue.records.passes_path(CPU_KEY).exists()
     assert not queue.ledger().held_keys()
 
 
@@ -115,7 +115,7 @@ def test_spark_pinned_cpu_is_unaffected(fleet, pin):
     publish(GPU_KEY, gpu=True)
     claimed = claim()
     assert claimed and claimed["action_key"] == CPU_KEY
-    assert queue.item_path(pool.READY, GPU_KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
 @pytest.mark.parametrize("ineligible", [
@@ -145,7 +145,7 @@ def test_ineligible_ready_gpu_does_not_starve_cpu(fleet, ineligible, tmp_path):
         claimed = claim()
         assert claimed and claimed["action_key"] == key
         queue.finish(key, status="executed")
-        assert queue.item_path(pool.READY, GPU_KEY).exists()
+        assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
 def test_non_gpu_host_is_unaffected(fleet, monkeypatch):
