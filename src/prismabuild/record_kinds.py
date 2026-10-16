@@ -21,9 +21,22 @@ class RecordKind:
     stable_paths: bool = False
     variant_writers: tuple[tuple[str, str], ...] = ()
     negative_value: object = "invalid"
+    fixture_source: tuple[str, ...] = ()
 
 
 KINDS = (
+    RecordKind("config-local-tier", "prismabuild.local_tier_policy.v1", "tools/fleet/local_tier_policy.json", "closed",
+               "prismabuild.resident_sets:read_policy", (), ("source",),
+               ("renewal_ceiling_s may be absent and defaults through the real reader",),
+               fixture_source=("tools/fleet/local_tier_policy.json", "tools/local_tier_policy.json")),
+    RecordKind("config-ram-tier", "prismabuild.ram_tier_policy.v1", "tools/fleet/ram_tier_policy.json", "closed",
+               "prismabuild.storage_tiers:read_ram_policy", (), ("source",),
+               ("promotion_chunk_gib may be absent or null",),
+               fixture_source=("tools/fleet/ram_tier_policy.json", "tools/ram_tier_policy.json")),
+    RecordKind("config-fleet", "prismaquant.prismabuild.fleet_boxes.v1", "tools/fleet/fleet_boxes.json", "additive",
+               "fleet_membership:roster_entry", (), ("source",),
+               ("the roster reader resolves aliases and does not use schema as its discriminator",), negative_field=None,
+               fixture_source=("tools/fleet/fleet_boxes.json", "tools/fleet_boxes.json")),
     RecordKind("q-item", "prismaquant.prismabuild.pool_item.v1", "ready/<key>.json", "additive",
                "prismabuild.pool:PoolQueue._ready_record_usable", ("prismabuild.pool:PoolQueue.publish",),
                ("plain", "retry-safe", "tagged", "repository"), negative_field="action_key", stable_paths=True),

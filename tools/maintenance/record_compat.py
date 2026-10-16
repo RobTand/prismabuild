@@ -75,7 +75,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
     if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
         result["returncode"] = 2
         result["attestation_error"] = "private namespace did not preserve PB CPU affinity"
-    if raw is None:
+    if raw is None and not kind.fixture_source:
         writer = dict(kind.variant_writers).get(case.split("/", 1)[1])
         if writer is None:
             if len(kind.writers) != 1:
@@ -84,10 +84,21 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
         references = (writer,) + kind.legacy_writers
     else:
         references = (kind.reader,) + kind.legacy_readers
+    result["catalogued_operation"] = "source-reader" if raw is None and kind.fixture_source else request["op"]
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
         result["returncode"] = 3
         result["entry_error"] = "adapter did not reach its catalogued production entry"
+    if raw is None and kind.fixture_source and result["returncode"] == 0:
+        captured = result["result"]
+        source = Path(captured["source_file"]).relative_to(
+            Path("/opt/prismabuild-compat/generation") if kind.stable_paths else root)
+        digest = sha(base64.b64decode(captured["raw"]))
+        if (str(source) not in kind.fixture_source or digest != captured["source_sha256"]
+                or sha((root / source).read_bytes()) != digest
+                or manifest and json.loads(manifest.read_bytes())["files"].get(str(source)) != digest):
+            result["returncode"] = 2
+            result["attestation_error"] = "configuration bytes do not match their immutable source provenance"
     if evidence:
         evidence.parent.mkdir(parents=True, exist_ok=True)
         with evidence.open("x") as stream:
@@ -166,20 +177,23 @@ def generate(output, selected=None):
 
     with retained() as generations, tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
         for case in (cases() if selected is None else selected):
+            kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
+            phase = "source" if kind.fixture_source else "writer"
             label = case.replace("/", "-")
             before = len(failures)
             result = invoke(ROOT, case, Path(tmp) / (label + "-new"),
-                            evidence=output / "attestations" / (label + "-new-writer.json"))
-            if not check(result, case, "candidate", "writer"):
+                            evidence=output / "attestations" / (label + "-new-" + phase + ".json"))
+            if not check(result, case, "candidate", phase):
                 continue
             raw = base64.b64decode(result["result"]["raw"])
-            goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode()})
+            origin = {"origin": "immutable configuration; no runtime writer"} if kind.fixture_source else {}
+            goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode(), **origin})
             for generation, old, manifest in generations:
                 prefix = output / "attestations" / generation
                 stores = Path(tmp) / generation
                 result = invoke(old, case, stores / (label + "-old"), manifest=manifest,
-                                evidence=prefix / (label + "-old-writer.json"))
-                if not check(result, case, generation, "writer"):
+                                evidence=prefix / (label + "-old-" + phase + ".json"))
+                if not check(result, case, generation, phase):
                     continue
                 prior = base64.b64decode(result["result"]["raw"])
                 check(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
@@ -188,7 +202,7 @@ def generate(output, selected=None):
                              evidence=prefix / (label + "-reverse.json")), case, generation, "reverse")
                 historical.append({"case": case, "generation": generation,
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
-                                   "sha256": sha(prior), "raw": base64.b64encode(prior).decode()})
+                                   "sha256": sha(prior), "raw": base64.b64encode(prior).decode(), **origin})
             print(case, "both directions accepted" if len(failures) == before else "RED; evidence retained", flush=True)
     for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical)):
         path = output / name
@@ -198,6 +212,7 @@ def generate(output, selected=None):
         path.chmod(0o444)
     path = output / "qualification.json"
     path.write_text(json.dumps({"current_captures": len(goldens), "historical_captures": len(historical),
+                                "configuration_captures": sum("origin" in row for row in goldens),
                                 "failures": failures, "passed": not failures}, sort_keys=True, indent=2) + "\n")
     path.chmod(0o444)
     if failures:

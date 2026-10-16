@@ -45,7 +45,7 @@ def generations():
 
 
 @pytest.mark.parametrize("case", cases())
-def test_supported_old_consumer_and_current_consumer_read_actual_writers(case, generations, tmp_path):
+def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(case, generations, tmp_path):
     label = case.replace("/", "-")
     current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"))
     assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
@@ -177,6 +177,21 @@ def test_empty_legacy_teardown_stops_the_actual_start_barrier(generations, tmp_p
                                      raw=b"{}\n", manifest=attestation,
                                      evidence=evidence(generation + "/empty-teardown-" + label + ".json")))
             assert result["termination_reason"] == "gang_torn_down"
+
+
+@pytest.mark.parametrize("case,member,value", [("config-local-tier/source", "renewal_ceiling_s", "absent"),
+                                              ("config-ram-tier/source", "promotion_chunk_gib", "absent"),
+                                              ("config-ram-tier/source", "promotion_chunk_gib", None)])
+def test_legacy_configuration_defaults_reach_both_policy_readers(case, member, value, generations, tmp_path):
+    body = json.loads(decoded(GOLDENS[case]))
+    if value == "absent":
+        body.pop(member, None)
+    else:
+        body[member] = value
+    for generation, old, manifest in generations:
+        for root, attestation, label in ((ROOT, None, "new"), (old, manifest, "old")):
+            accepted(invoke(root, case, tmp_path / generation / label,
+                            raw=json.dumps(body).encode(), manifest=attestation))
 
 
 @pytest.mark.parametrize("stamp", [None, "legacy", "absent"])
