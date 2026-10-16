@@ -173,7 +173,7 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
         action = sealed(spool)
         assert unpaced(action), "unexpected success must expose the unresolved-price downgrade"
         assert "--pace-tier" not in action["params"]["command"]
-        row = pool.record_store.require(spool.queue.records.item(pool.record_store.READY, handle["export_key"]))
+        row = pool.record_store.value_or_raise(spool.queue.records.item(pool.record_store.READY, handle["export_key"]))
         assert isinstance(row, dict)
         assert row["resources"] == {"cpu": 1, "mem_gb": 1}
         assert row["dependent_of"] == spool.owner
@@ -254,7 +254,7 @@ def test_new_explicit_paced_export_cannot_guess_an_unresolved_price(tmp_path, da
         file_price_receipt(spool, key="2" * 64, unix=2000.0, measured=False)
         assert len(spool.queue.export_records(spool.owner, fx.TIER)) == 2
     else:
-        record = pool.record_store.read_queue_record(path)
+        record = pool.record_store.read_document(path)
         assert isinstance(record, dict)
         values = {"zero": 0, "negative": -1, "bool": True, "string": "7", "float": 7.0}
         record["tokens"] = [] if damage == "tokens-shape" else {FILL: values[damage]}
@@ -299,7 +299,7 @@ def test_a_sealed_export_replays_after_its_price_disappears(tmp_path, original_p
     manifest = (spool._group("b1") / "manifest.json").read_bytes()
     cas_before = tree_snapshot(Path(spool.cas_root))
     path = spool.queue.root / "tiers" / f"{fx.TIER}.json"
-    tier = pool.record_store.read_queue_record(path)
+    tier = pool.record_store.read_document(path)
     assert isinstance(tier, dict)
     tier.pop("tokens", None)
     pool._write_json_atomic(path, tier)

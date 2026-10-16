@@ -424,7 +424,7 @@ def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
         queue.mint_tier_capacity(TIER, {KIND: 1})
     assert sick.available() == {"cpu": 1, "mem_gb": 4}
     assert well.available() == {"cpu": 1, "mem_gb": 4}
-    report = pool.record_store.read_queue_record(sick.census_report_path)
+    report = pool.record_store.read_document(sick.census_report_path)
     assert report["kinds_asked"] == ["cpu"]
     assert report["retired"] == {"cpu": 4}
     assert report["unreadable"] == [_eio(sick.held_dir / key)]

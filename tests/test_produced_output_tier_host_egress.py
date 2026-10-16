@@ -119,7 +119,7 @@ def _run_on_the_tier_host(world, action_key: str, worker: str, *,
     claimed = world.q.claim(owner=worker, tags=[host])
     assert claimed is not None, "the row must be claimable on the tier host"
     assert claimed["action_key"] == action_key, claimed["action_key"]
-    row = pool.record_store.require(world.q.records.item(pool.record_store.CLAIMED, action_key))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.CLAIMED, action_key))
     assert isinstance(row, dict)
     return world.q.execute(row, timeout_s=240)
 
@@ -177,7 +177,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         # The row `pbrun` publishes for a consumer's egress: on the tier host,
         # one CPU and one GiB, no tier demand, no residency, no batch
         # reference, and marked so a republished key runs again.
-        row = pool.record_store.require(world.q.records.item(pool.record_store.READY, egress0))
+        row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, egress0))
         assert isinstance(row, dict)
         assert row["tags"] == [ELSEWHERE]
         assert row["resources"]["cpu"] == 1 and row["resources"]["mem_gb"] == 1
@@ -369,7 +369,7 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
     with _NoFleetTools():
         egress = _assert_own_egress_deferral(world.retire("b1"))
     assert staged.read_bytes() == payload
-    row = pool.record_store.require(world.q.records.item(pool.record_store.READY, egress))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, egress))
     assert isinstance(row, dict) and row["tags"] == [here], row
     outcome = _run_on_the_tier_host(world, egress, "w-tier-here", host=here)
     assert outcome.get("returncode") == 0, outcome
