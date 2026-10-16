@@ -354,7 +354,6 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 #: so a suffix that is neither is invisible to all of them, which is the point.
 # Old sweepers must ignore exact-attempt cleanup beside a newer live claim;
 # they retire ordinary tombstones in that situation without scope cleanup.
-LATE_FINISH_SUFFIX = ".late-finish"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 #: The slice a container was created inside.  The owner label is the action's
