@@ -42,11 +42,13 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     ledger = queue.tier_ledger(TIER)
     before = ledger.holder_tokens(mover)
     assert before == {'stage_gib': 2}
+    funding_before = queue.read_funding(mover, TIER)
+    assert funding_before['state'] == 'transferring'
     seen = _unreadable_stat(monkeypatch, queue.records.item_path(pool.record_store.CLAIMED, mover), error)
     events = pg.release_unit(queue, TIER, unit, holder, [mover], terminal=True)
     assert seen, 'the underlying native metadata failure was never exercised'
     assert ledger.holder_tokens(mover) == before, 'unknown claimed evidence released the actual chunk tokens'
-    assert queue.read_funding(mover, TIER)['state'] == 'reserved'
+    assert queue.read_funding(mover, TIER) == funding_before
     assert 'prelaunch-unknown-evidence' in events
 
 
