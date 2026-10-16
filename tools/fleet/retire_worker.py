@@ -99,7 +99,7 @@ def _announced(record: dict | None) -> float | None:
 def claim_holding(queue, host: str) -> str | None:
     """The action key of a claimed item that names ``host``, if any."""
 
-    directory = queue.dir(pool.CLAIMED)
+    directory = queue.records.dir(pool.record_store.CLAIMED)
     if not directory.is_dir():
         return None
     for path in sorted(directory.glob("*.json")):
@@ -169,7 +169,7 @@ def _archive_existing(destination: Path) -> Path | None:
 def retire(queue, host: str, *, now: float) -> tuple[int, str]:
     """Move the record aside, and put it back if the checks went stale."""
 
-    source = queue.root / pool.WORKERS / f"{host}.json"
+    source = queue.root / pool.record_store.WORKERS / f"{host}.json"
     record = _read(source)
     if record is None:
         return 1, f"no worker record for {host}"
@@ -201,7 +201,7 @@ def retire(queue, host: str, *, now: float) -> tuple[int, str]:
 
 def restore(queue, host: str) -> tuple[int, str]:
     source = queue.root / RETIRED / f"{host}.json"
-    destination = queue.root / pool.WORKERS / f"{host}.json"
+    destination = queue.root / pool.record_store.WORKERS / f"{host}.json"
     if not source.exists():
         return 1, f"no retired record for {host}"
     if destination.exists():
@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         print(message)
         return code
 
-    source = queue.root / pool.WORKERS / f"{args.host}.json"
+    source = queue.root / pool.record_store.WORKERS / f"{args.host}.json"
     record = _read(source)
     if record is None:
         print(f"no worker record for {args.host}")

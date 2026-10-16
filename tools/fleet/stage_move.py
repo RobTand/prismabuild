@@ -755,7 +755,7 @@ STAGED_DESTINATION_UNPROVEN = "staged_destination_unproven"
 UNPROVEN_ENDING_RUNS = 3
 
 #: The least time the counted runs must span before the refusal is terminal:
-#: twice the queue mount's ``acdirmin`` (30 s, ``pool._read_json_fresh``), so
+#: twice the queue mount's ``acdirmin`` (30 s, ``pool.record_store._read_json_fresh``), so
 #: a record that was only not yet visible to the first refusal is visible to
 #: the last.  Runs republished faster than this keep counting and wait.
 UNPROVEN_ENDING_MIN_SPAN_S = 60.0
@@ -1783,9 +1783,9 @@ class _StagedPublisher:
 
         consumer, mover = pair
         for key in ((mover,) if consumer == self.consumer else pair):
-            for state in (pool.READY, pool.CLAIMED):
+            for state in (pool.record_store.READY, pool.record_store.CLAIMED):
                 try:
-                    self.queue.item_path(state, key).stat()
+                    self.queue.records.item_path(state, key).stat()
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
@@ -1881,9 +1881,9 @@ class _StagedPublisher:
         if consumer != self.consumer:
             why = unended(self.queue, consumer)
             if why:
-                for state in (pool.CLAIMED, pool.READY):
+                for state in (pool.record_store.CLAIMED, pool.record_store.READY):
                     try:
-                        self.queue.item_path(state, consumer).stat()
+                        self.queue.records.item_path(state, consumer).stat()
                     except FileNotFoundError:
                         continue
                     except OSError as exc:
@@ -3016,7 +3016,7 @@ class _ReaderPlan:
             return
         self._asked_at = now
         try:
-            path = self.queue.tier_record_path(self.tier_id)
+            path = self.queue.records.tier_record_path(self.tier_id)
             status = os.stat(path)
         except (OSError, pool.PoolContractError, ValueError):
             self._stamp, self._announced = None, None
@@ -3046,7 +3046,7 @@ class _ReaderPlan:
             str(row.get("mover_action_key") or "") for row in rows)
         self._reading = frozenset(
             str(row.get("mover_action_key") or "") for row in rows
-            if row.get("state") == pool.CLAIMED)
+            if row.get("state") == pool.record_store.CLAIMED)
         for key in sorted(self._declared):
             if key not in self.declared_seen and len(self.declared_seen) < 20:
                 self.declared_seen.append(key)
@@ -3785,7 +3785,7 @@ class _LandingReport:
     landed -- had none: on 2026-09-24 a claimed copy promised in 8 s landed
     497 s later, and its receipt read ``channel: false, reports: 0``.  This
     report needs no channel.  Every ``interval_s`` a thread of its own files
-    ``pool.PoolQueue.mover_landing_path``: the bytes read so far, landed or
+    ``pool.record_store.RecordStore.mover_landing_path``: the bytes read so far, landed or
     not (``copied_bytes``), the bytes landed (``landed_bytes``) and when the
     copy started, so the tier loop prices the claimed copy's landing from
     its own rate (``residency_plan.expected_landings``, ``reported``).
@@ -3800,7 +3800,7 @@ class _LandingReport:
     def __init__(self, copier: "_Copier", queue: pool.PoolQueue, mover: str, *,
                  interval_s: float, range_bytes: int) -> None:
         self.copier = copier
-        self.path = queue.mover_landing_path(mover)
+        self.path = queue.records.mover_landing_path(mover)
         self.mover = str(mover)
         self.interval_s = max(0.001, float(interval_s))
         self.range_bytes = int(range_bytes)
@@ -4048,8 +4048,7 @@ def served_for(args) -> dict[str, object]:
         return _served_for_sharers(args, shared)
     try:
         queue = pool.PoolQueue(Path(args.pool_root))
-        claim = pool._read_json(
-            queue.item_path(pool.CLAIMED, str(args.consumer_action_key)))
+        claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, str(args.consumer_action_key)))
     except (OSError, pool.PoolContractError):
         claim = None
     if not isinstance(claim, dict):
@@ -4105,7 +4104,7 @@ def _served_for_sharers(args, consumers: Sequence[str]) -> dict[str, object]:
     reasons: list[str] = []
     for consumer in consumers:
         try:
-            claim = pool._read_json(queue.item_path(pool.CLAIMED, consumer))
+            claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, consumer))
         except (OSError, pool.PoolContractError):
             claim = None
         if not isinstance(claim, dict):
@@ -5244,7 +5243,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.action_key = own_action_key(args.action_key)
     if args.residency_root is None:
-        args.residency_root = str(Path(args.pool_root) / pool.RESIDENCY)
+        args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 
     receipt = move(args)
     queue = pool.PoolQueue(Path(args.pool_root))

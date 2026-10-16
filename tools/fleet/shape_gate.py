@@ -879,7 +879,7 @@ class ShapeGate:
         return dict(got)
 
     def _report(self, phase: str, units: int) -> None:
-        claimed = pool._read_json(self.queue.item_path(pool.CLAIMED, self.consumer))
+        claimed = pool.record_store.require(self.queue.records.item(pool.record_store.CLAIMED, self.consumer))
         self.queue.write_lease(
             self.consumer, owner=self.reader_owner,
             claim_snapshot=claimed if isinstance(claimed, dict) else None,
@@ -897,7 +897,7 @@ class ShapeGate:
 
         try:
             mapping = residency_map.read_map(
-                self.queue.residency_map_path(self.consumer))
+                self.queue.records.residency_map_path(self.consumer))
         except (OSError, ValueError):
             return None
         if mapping.get("ram_tier_id") != self.ram_tier_id:
@@ -913,7 +913,7 @@ class ShapeGate:
         """Read one phase strictly: map, cover, pin, open, hash, release."""
 
         epoch = str(mapping.get("ram_epoch") or "")
-        root = self.queue.root / pool.RESIDENCY
+        root = self.queue.root / pool.record_store.RESIDENCY
         indices = list(self.phases[phase_index]["entry_indices"])
         entries = [self.manifest["entries"][index] for index in indices]  # type: ignore[index]
         keys = [residency_map.residency_map_key(str(entry["path"]), int(entry["offset"]))
@@ -1021,7 +1021,7 @@ class ShapeGate:
         for directory in (self.stage_dir, self.ram_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self._host_facts()
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         # What the storage host's worker loops offer.  The tier loop reads
         # this record for the RAM admission's worker demand, and the claim
         # reads it for placement.
@@ -1311,7 +1311,7 @@ def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
     import pbtest_outcomes
 
     key, terminal = resolve_action_key(queue_root, action_key)
-    done = pool._read_json(terminal)
+    done = pool.record_store.read_queue_record(terminal)
     detail = done.get("detail") if isinstance(done, dict) else None
     if (not isinstance(done, dict) or done.get("status") != "executed"
             or not isinstance(detail, dict) or detail.get("returncode") != 0):

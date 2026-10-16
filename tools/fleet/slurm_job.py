@@ -133,7 +133,7 @@ def _worker_environment(
     return {
         **environment,
         core.ACTION_STATUS_PATH_ENV: str(
-            slurm_lane.action_status_path(lane_dir, job_id)
+            slurm_lane.records.action_status_path(lane_dir, job_id)
         ),
     }
 
