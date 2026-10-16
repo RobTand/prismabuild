@@ -2718,7 +2718,7 @@ def held_names_visible(ledger, key: str) -> set[str]:
     try:
         paths = (ledger._glob_names(ledger.held_dir / key, "*-*", strict=True)
                  if isinstance(ledger, ResourceLedger)
-                 else _glob_visible(ledger.held_dir / key, "*-*"))
+                 else immutable_files.match_required(ledger.held_dir / key, "*-*"))
         return {path.name for path in paths}
     except (FileNotFoundError, NotADirectoryError):
         return set()
