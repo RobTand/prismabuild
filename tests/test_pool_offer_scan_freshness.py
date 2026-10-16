@@ -37,7 +37,7 @@ def test_offers_expire_at_scan_completion(tmp_path, monkeypatch, stall_at):
     clock[0] = 1000.0
 
     original_glob = Path.glob
-    original_read = pool.record_store.read_queue_record
+    original_read = pool.record_store._read_json
 
     def stalled_glob(directory, pattern):
         paths = list(original_glob(directory, pattern))

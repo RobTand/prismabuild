@@ -28,7 +28,7 @@ def _conflicting_claim(queue, tmp_path):
     )
     queue.records.item_path(pool.record_store.READY, KEY).replace(queue.records.item_path(pool.record_store.CLAIMED, KEY))
     ledger = _reservation(queue)
-    claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
+    claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     claim.update({
         "claimed_by": "owner",
         "claimed_unix": pool._now() - 10_000,

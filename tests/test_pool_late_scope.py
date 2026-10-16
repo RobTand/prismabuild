@@ -147,7 +147,7 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
     key = first["action_key"]
     claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
     lease_path = queue.records.lease_path(key)
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     request = resource_scope.ResourceScope._request
 
     if phase == "after_create":
@@ -199,7 +199,7 @@ def test_stale_create_recovery_preserves_successor_before_lease_refusal(
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
     claim_path = queue.records.item_path(pool.record_store.CLAIMED, first["action_key"])
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     request = resource_scope.ResourceScope._request
 
     def broker(scope, op, **extra):
@@ -349,7 +349,7 @@ def test_same_host_stale_claim_cannot_clean_up_or_replace_successor(
         # timestamp must distinguish them even when owner and host agree.
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
 
     def stale_claim(path):
@@ -374,7 +374,7 @@ def test_stale_heartbeat_cannot_erase_successor_lease_evidence(
     if reused_owner:
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
 
     def stale_claim(path):

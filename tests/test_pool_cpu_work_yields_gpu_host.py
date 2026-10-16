@@ -53,7 +53,7 @@ def fleet(tmp_path):
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                       checkout_root=str(tmp_path), worker_script='worker.py',
                       resources=resources, **({'tags': tags} if tags else {}))
-        return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+        return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
     def claim(has_gpu=True):
         return queue.claim(tags=['gb10'], has_gpu=has_gpu, capacity=CAPACITY,

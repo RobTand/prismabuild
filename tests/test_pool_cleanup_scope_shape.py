@@ -17,7 +17,7 @@ def test_cached_cleanup_with_invalid_scope_preserves_finish(tmp_path, control):
     pool._write_json_atomic(path, record)
     detail = {"returncode": 0, "stdout": "completed payload"}
     assert queue.finish(key, status="executed", detail=detail, claim_snapshot=record) == path
-    pending = pool.record_store.read_queue_record(path)
+    pending = pool.record_store.read_document(path)
     assert pending["finish_pending"] == {"status": "executed", "detail": detail}
     assert pending["container_cleanup_pending"]["complete"] is False
     assert queue.ledger().held() == {"cpu": 1}
