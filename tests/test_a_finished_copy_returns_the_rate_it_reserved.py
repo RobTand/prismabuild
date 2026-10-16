@@ -33,7 +33,7 @@ MANIFEST = "9" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 8, storage_tiers.FILL_KIND: 200})
     return q
 

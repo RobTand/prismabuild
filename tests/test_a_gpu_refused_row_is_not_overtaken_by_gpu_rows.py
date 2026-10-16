@@ -114,7 +114,7 @@ def box(tmp_path: Path, monkeypatch):
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
     gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -210,7 +210,7 @@ def test_a_gpu_refused_big_row_withholds_later_gpu_rows_but_not_pinned_cpu_rows(
     assert waited["reason"] == "deferred_behind_withheld_row"
     assert waited["evidence"]["withheld_for"] == big
     assert waited["evidence"]["withheld_kinds"] == ["gpu"]
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
     assert queue.passes(gpu_row) == 0, "a deferred row earned a pass it was not refused"
 
     tick()
@@ -247,7 +247,7 @@ def test_the_gpu_withhold_is_bounded_by_its_holders(box, contract, refusal: str)
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == holder[:12] and named["bound"] == "long"
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
 
 
 def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) -> None:
@@ -268,7 +268,7 @@ def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) ->
     assert busy["reason"] == "transition_busy"
     assert busy["evidence"]["withhold_carried"]["mode"] == "gpu"
     assert _denial(queue, gpu_row)["reason"] == "deferred_behind_withheld_row"
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
 
 
 # -- path 2: a busy lock does not end a live withhold -------------------------
@@ -290,7 +290,7 @@ def _withholding_gpu_action(tmp_path: Path, clock):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 4, "gpu": 1}
 
     def publish(name, resources):
@@ -326,7 +326,7 @@ def test_a_busy_lock_keeps_this_hosts_live_withhold_for_the_pass(
     assert busy["reason"] == "transition_busy"
     carried = busy["evidence"]["withhold_carried"]
     assert carried["reason"] == "reservation_unavailable_withholding"
-    assert queue.item_path(pool.READY, small).exists()
+    assert queue.records.item_path(pool.record_store.READY, small).exists()
     # A second busy pass in a row still reads the withhold it carried.
     ledger_clock[0] += 10
     assert claim() is None, "a second busy pass forgot the withhold"

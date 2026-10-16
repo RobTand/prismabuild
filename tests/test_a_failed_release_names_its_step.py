@@ -69,14 +69,14 @@ def _no_waiting(monkeypatch):
 @pytest.fixture()
 def world(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     staged = stage / "model" / "w.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x01" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
@@ -419,7 +419,7 @@ def test_the_failure_file_keeps_its_newest_lines(world, monkeypatch) -> None:
     for _ in range(5):
         assert not reader_lease.release(world.queue, mine["pin_id"],
                                         mine["ref_id"], **kwargs)
-    files = sorted(world.queue.consumer_events_dir(CONSUMER).iterdir())
+    files = sorted(world.queue.records.consumer_events_dir(CONSUMER).iterdir())
     assert [item.name for item in files] == [
         f"{socket.gethostname()}{reader_lease.RELEASE_EVENTS_SUFFIX}"]
     lines = files[0].read_text().splitlines()

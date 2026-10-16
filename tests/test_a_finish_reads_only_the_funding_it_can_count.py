@@ -53,14 +53,14 @@ def _record(*, owner=OWNER, mover=MOVER, tier=STAGE, state="consumed",
 
 
 def _file(queue: pool.PoolQueue, record: dict) -> Path:
-    path = queue.funding_output_path(record["mover_action_key"], record["tier_id"])
+    path = queue.records.funding_output_path(record["mover_action_key"], record["tier_id"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record))
     return path
 
 
 def _row(queue: pool.PoolQueue, state: str, key: str) -> None:
-    path = queue.item_path(state, key)
+    path = queue.records.item_path(state, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"action_key": key}))
 
@@ -72,14 +72,14 @@ def _held(queue: pool.PoolQueue, tier: str, key: str) -> list[str]:
 
 def _count_funding_reads(monkeypatch, queue: pool.PoolQueue) -> list[str]:
     reads: list[str] = []
-    original = pool._read_json
-    funding = str(queue.root / pool.TIER_FUNDING)
+    original = pool.record_store.read_queue_record
+    funding = str(queue.root / pool.record_store.TIER_FUNDING)
 
     def counted(path, *args, **kwargs):
         if str(path).startswith(funding):
             reads.append(str(path))
         return original(path, *args, **kwargs)
-    monkeypatch.setattr(pool, "_read_json", counted)
+    monkeypatch.setattr(pool.record_store, '_read_json', counted)
     return reads
 
 
@@ -117,7 +117,7 @@ def test_an_unknown_census_still_retains_a_holders_tokens(tmp_path):
     queue = _queue(tmp_path)
     assert queue.tier_ledger(STAGE).acquire(OWNER, {"stage_gib": 1})
     held = _held(queue, STAGE, OWNER)
-    corrupt = queue.funding_output_path(MOVER, STAGE)
+    corrupt = queue.records.funding_output_path(MOVER, STAGE)
     corrupt.parent.mkdir(parents=True, exist_ok=True)
     corrupt.write_text("{not json")
     queue._release_reservation(OWNER, host=None)
@@ -128,7 +128,7 @@ def _terminal_world(tmp_path):
     queue = _queue(tmp_path)
     record = _record()
     path = _file(queue, record)
-    _row(queue, pool.DONE, MOVER)
+    _row(queue, pool.record_store.DONE, MOVER)
     return queue, record, path
 
 
@@ -138,7 +138,7 @@ def test_a_terminal_record_leaves_the_census_and_reads_as_before(tmp_path, monke
     counts = queue.retire_terminal_output_funding()
     assert counts["retired"] == 1 and counts["scanned"] == 1
     assert not path.exists()
-    assert queue.funding_output_retired_path(MOVER, STAGE).exists()
+    assert queue.records.funding_output_retired_path(MOVER, STAGE).exists()
     assert queue.output_funding_file_state(MOVER, STAGE) == (record, "ok")
     assert queue.read_output_funding(MOVER, STAGE) == record
     assert queue._output_funding_unretired(MOVER)
@@ -159,14 +159,14 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
     if fact in ("transferring", "reserved"):
         _file(queue, _record(state=fact))
     elif fact == "claimed":
-        _row(queue, pool.CLAIMED, MOVER)
+        _row(queue, pool.record_store.CLAIMED, MOVER)
     elif fact == "ready":
-        _row(queue, pool.READY, MOVER)
+        _row(queue, pool.record_store.READY, MOVER)
     elif fact == "not-terminal":
-        os.unlink(queue.item_path(pool.DONE, MOVER))
+        os.unlink(queue.records.item_path(pool.record_store.DONE, MOVER))
     elif fact == "lease":
-        queue.lease_path(MOVER).parent.mkdir(parents=True, exist_ok=True)
-        queue.lease_path(MOVER).write_text("{}")
+        queue.records.lease_path(MOVER).parent.mkdir(parents=True, exist_ok=True)
+        queue.records.lease_path(MOVER).write_text("{}")
     elif fact == "holds-a-token":
         assert queue.tier_ledger(STAGE).acquire(MOVER, {"stage_gib": 1})
     elif fact == "corrupt":
@@ -174,7 +174,7 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
     counts = queue.retire_terminal_output_funding()
     assert counts["retired"] == 0 and counts["kept"] == 1
     assert path.exists()
-    assert not queue.funding_output_retired_path(MOVER, STAGE).exists()
+    assert not queue.records.funding_output_retired_path(MOVER, STAGE).exists()
 
 
 def _retired_written_record(tmp_path):
@@ -183,7 +183,7 @@ def _retired_written_record(tmp_path):
     path = queue.write_output_funding(record)
     record = dict(record, state="released")
     queue.write_output_funding(record, expect_generation=record["generation"])
-    _row(queue, pool.DONE, MOVER)
+    _row(queue, pool.record_store.DONE, MOVER)
     assert queue.retire_terminal_output_funding()["retired"] == 1
     assert not path.exists()
     return queue, record, path
@@ -238,7 +238,7 @@ def test_unreadable_live_funding_does_not_read_retired(
 def test_output_funding_readers_preserve_their_json_encoding_policies(
         tmp_path, encoding):
     queue, record, _ = _retired_written_record(tmp_path)
-    retired = queue.funding_output_retired_path(MOVER, STAGE)
+    retired = queue.records.funding_output_retired_path(MOVER, STAGE)
     retired.write_bytes(retired.read_text().encode(encoding))
     assert queue.read_output_funding(MOVER, STAGE) == record
     assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
@@ -247,7 +247,7 @@ def test_output_funding_readers_preserve_their_json_encoding_policies(
 
 def test_output_funding_readers_preserve_their_byte_budgets(tmp_path):
     queue, record, _ = _retired_written_record(tmp_path)
-    retired = queue.funding_output_retired_path(MOVER, STAGE)
+    retired = queue.records.funding_output_retired_path(MOVER, STAGE)
     raw = retired.read_bytes()
     retired.write_bytes(raw + b" " * (1024 * 1024 + 1 - len(raw)))
     assert queue.read_output_funding(MOVER, STAGE) == record

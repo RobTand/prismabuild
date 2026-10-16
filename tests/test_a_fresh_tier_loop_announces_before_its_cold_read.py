@@ -137,7 +137,7 @@ class _Consumer(threading.Thread):
 
 
 class _Slow:
-    """``pool._read_json``, with every cold receipt's read costing ``READ_S``."""
+    """``pool.record_store.read_queue_record``, with every cold receipt's read costing ``READ_S``."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *,
                  read_s: float = READ_S) -> None:
@@ -148,7 +148,7 @@ class _Slow:
         self.hang_name: str | None = None
         self.hung = threading.Event()
         self.release = threading.Event()
-        real = pool._read_json
+        real = pool.record_store.read_queue_record
 
         def read(path, *args, **kwargs):
             name = Path(path).name
@@ -161,7 +161,7 @@ class _Slow:
                 time.sleep(self.read_s)
             return real(path, *args, **kwargs)
 
-        monkeypatch.setattr(pool, "_read_json", read)
+        monkeypatch.setattr(pool.record_store, '_read_json', read)
 
 
 def _file_cold_receipts(queue: pool.PoolQueue, count: int = COLD_RECEIPTS) -> None:
@@ -169,7 +169,7 @@ def _file_cold_receipts(queue: pool.PoolQueue, count: int = COLD_RECEIPTS) -> No
 
     for index in range(count):
         directory = queue.root / (
-            pool.PREWARM if index % 2 else tier_loop.MOVER_RECEIPTS)
+            pool.record_store.PREWARM if index % 2 else tier_loop.MOVER_RECEIPTS)
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{PREFIX}{index:04d}.json").write_text(json.dumps(
             {"schema": "pb.test-1153-noise.v1", "unix": time.time()}))
@@ -283,7 +283,7 @@ def test_parallel_reads_alone_keep_the_consumer_waiting(
 
 def _announced(queue: pool.PoolQueue, record: dict[str, object], *,
                age_s: float) -> dict[str, object]:
-    path = queue.tier_record_path(str(record["tier_id"]))
+    path = queue.records.tier_record_path(str(record["tier_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     written = dict(record, announced_unix=time.time() - age_s)
     path.write_text(json.dumps(written))
@@ -301,13 +301,13 @@ def test_a_live_record_is_adopted_and_re_announced_at_once(tmp_path, scaled):
     refreshed = dict(minted, liveness_refresh={
         "after": "receipts:movers", "minted_unix": minted["announced_unix"] - 30,
         "refreshes": 4})
-    queue.tier_record_path(TIER).write_text(json.dumps(refreshed))
+    queue.records.tier_record_path(TIER).write_text(json.dumps(refreshed))
 
     liveness = tier_loop.Liveness(interval_s=INTERVAL_S)
     before = time.time()
     assert liveness.adopt(queue, host=HOST) == [TIER]
 
-    written = json.loads(queue.tier_record_path(TIER).read_text())
+    written = json.loads(queue.records.tier_record_path(TIER).read_text())
     assert written["announced_unix"] >= before
     content = {key: value for key, value in written.items()
                if key not in ("announced_unix", "liveness_refresh")}
@@ -340,7 +340,7 @@ def test_a_record_a_reader_would_not_accept_is_not_adopted(
         record = _stage_record(stage, schema="prismabuild.storage_tier.v0")
     elif case == "stem-mismatch":
         record = _stage_record(stage, tier_id="ram:dl380g10")
-    path = queue.tier_record_path(tier_id)
+    path = queue.records.tier_record_path(tier_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     if case == "not-json":
         path.write_text("{\"tier_id\": ")
@@ -370,7 +370,7 @@ def test_an_adopted_record_is_dropped_by_a_first_cycle_that_mints_nothing(
     assert liveness.adopt(queue, host=HOST) == [TIER]
     liveness.begin_cycle()
     liveness.end_cycle(completed=False)
-    path = queue.tier_record_path(TIER)
+    path = queue.records.tier_record_path(TIER)
     before = path.read_bytes()
 
     liveness.checkpoint("receipts:movers", ahead_s=10 * BOUND_S)
@@ -520,14 +520,14 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
         records = kept_reads.DirectoryRecords()
         with pytest.raises(Exception) as caught:
             records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool._read_json, readers=readers)
+                         parse=pool.record_store.read_queue_record, readers=readers)
         raised[readers] = (type(caught.value), str(caught.value),
                            records.generation(directory), records.parsed)
         # The directory is not remembered: the next read lists it again.
         (directory / "r-012.json").write_text(json.dumps({"i": 12}))
         with pytest.raises(IsADirectoryError):
             records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool._read_json, readers=readers)
+                         parse=pool.record_store.read_queue_record, readers=readers)
         (directory / "r-012.json").write_text("{\"schema\": ")
     assert raised[1] == raised[2] == raised[8], raised
     assert raised[1][0] is pool.PoolContractError
