@@ -77,7 +77,7 @@ def host(clock, monkeypatch):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -189,14 +189,14 @@ def test_a_gpu_row_refused_on_held_cpus_withholds_until_they_drain(
     assert verdict["why"] == "drains_soon"
     assert verdict["gpu_first"] is True
     assert queue.passes(gpu_row) == 1
-    assert queue.item_path(pool.READY, cpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_row).exists()
     assert queue.holder_bound(shards[-1])["bound"] == "transient"
 
     # While the shard on its CPUs runs, the row keeps withholding.
     clock[0] += 30
     assert _claim(queue, cpu_sampler=cpu_sampler) is None
     assert _denial(queue, gpu_row)["reason"] == "adaptive_cpu_refused_withholding"
-    assert queue.item_path(pool.READY, cpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_row).exists()
 
     # The shard on the row's CPUs drains, and the row claims.
     clock[0] += 30

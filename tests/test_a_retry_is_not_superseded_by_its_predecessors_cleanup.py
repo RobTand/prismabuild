@@ -58,10 +58,10 @@ PASS_JOIN_S = 30.0
 def _fail(queue: pool.PoolQueue, consumer: str) -> None:
     """End a queued consumer the way a failed attempt does."""
 
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     source.unlink()
 
 
@@ -96,7 +96,7 @@ def _failed_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
     assert residency_plan.share_namespace_of(queue, lead) is not None, (
         "precondition: the lead is a shared range's mover (#1026)")
     submission._tier_cycle(queue, tmp_path / "stage")
-    assert queue.item_path(pool.READY, lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "precondition: the window published the failed attempt's lead")
     _fail(queue, failed)
     return queue, failed, lead
@@ -117,9 +117,9 @@ def _assert_retry_survives(queue: pool.PoolQueue, tmp_path: Path, retry: str,
         f"(the lead's withdrawal: {withdrawn!r})")
     assert withdrawn is None, (
         "the failed attempt's cleanup withdrew a mover the retry's plan names")
-    assert queue.item_path(pool.READY, retry).exists(), "the retry is not queued"
-    assert (queue.item_path(pool.READY, lead).exists()
-            or queue.item_path(pool.CLAIMED, lead).exists()), (
+    assert queue.records.item_path(pool.record_store.READY, retry).exists(), "the retry is not queued"
+    assert (queue.records.item_path(pool.record_store.READY, lead).exists()
+            or queue.records.item_path(pool.record_store.CLAIMED, lead).exists()), (
         "the retry's lead is no longer queued")
 
 
@@ -220,12 +220,12 @@ def test_a_same_key_retry_reusing_its_plan_is_not_superseded_by_a_stale_cancella
     # A pass for another sharer that died too: the same marker the tier loop
     # files, with no live interest left at that moment.
     queue.withdraw(lead, reason="consumer-failed", by="tier-loop")
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
     stale = residency_plan.read(queue, failed)
     assert stale is not None
     still_live = [child for child in residency_plan.child_keys(stale)
-                  if queue.item_path(pool.READY, child).exists()
-                  or queue.item_path(pool.CLAIMED, child).exists()]
+                  if queue.records.item_path(pool.record_store.READY, child).exists()
+                  or queue.records.item_path(pool.record_store.CLAIMED, child).exists()]
     for child in still_live:
         # The old window's other live rows end first: the case where the
         # renewal has a handoff to prove, not a refusal to give.
@@ -242,7 +242,7 @@ def test_a_same_key_retry_reusing_its_plan_is_not_superseded_by_a_stale_cancella
     submission._tier_cycle(queue, tmp_path / "stage")
     assert residency_plan.superseded(queue, plan) is None, (
         "the resubmitted plan was superseded by a predecessor's cancellation")
-    assert queue.item_path(pool.READY, lead).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), (
         "the resubmitted window did not publish its lead again")
 
 
@@ -262,12 +262,12 @@ def test_a_same_key_retry_refuses_by_name_while_the_old_window_is_live(
     # filed and the claimed attempt has not concluded.
     submission._claim(queue, lead)
     queue.withdraw(lead, reason="consumer-failed", by="tier-loop")
-    assert queue.item_path(pool.CLAIMED, lead).exists(), "precondition: live"
+    assert queue.records.item_path(pool.record_store.CLAIMED, lead).exists(), "precondition: live"
 
     with pytest.raises(SystemExit, match="still owns live work"):
         pbrun.main()
 
-    assert not queue.item_path(pool.READY, failed).exists()
+    assert not queue.records.item_path(pool.record_store.READY, failed).exists()
     assert residency_plan.superseded(queue, stale) is None
     assert residency_plan.read(queue, failed) == stale, (
         "a refused renewal must not remove a plan it did not file")
@@ -362,7 +362,7 @@ def test_a_plan_this_reader_refuses_still_counts_by_the_keys_it_names(
     assert pbrun.main() == 0
     retry = submission._detach_key(capsys)
 
-    path = queue.residency_plan_path(retry)
+    path = queue.records.residency_plan_path(retry)
     body = json.loads(path.read_text())
     body["a_key_from_a_newer_generation"] = True
     # A frozen plan is read-only; a newer sealer's file is a new inode.
@@ -373,7 +373,7 @@ def test_a_plan_this_reader_refuses_still_counts_by_the_keys_it_names(
 
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, lead).exists(), events
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), events
     assert queue.live_withdrawal(lead) is None, events
     assert any(event.get("event") == "dead-consumer-mover-kept"
                and event.get("mover") == lead
@@ -386,12 +386,12 @@ def test_an_unreadable_plan_keeps_the_mover_as_unknown(
 
     queue, failed, lead = _failed_attempt(tmp_path, monkeypatch, capsys)
     other = "e" * 64
-    path = queue.residency_plan_path(other)
+    path = queue.records.residency_plan_path(other)
     path.mkdir()                       # present, and unreadable as a plan
 
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, lead).exists(), events
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), events
     assert any(event.get("event") == "dead-consumer-mover-kept"
                and other in event.get("unknown", []) for event in events), events
 
