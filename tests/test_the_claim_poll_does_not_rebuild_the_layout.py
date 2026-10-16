@@ -48,7 +48,7 @@ def test_polling_claims_issues_no_layout_mkdirs(
 
     monkeypatch.setattr(Path, "mkdir", counting)
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    assert q._layout_ensured is False
+    assert q.records._layout_ensured is False
     q.publish(
         action_key=KEY_A,
         cas_root=q.root / "cas",
@@ -77,11 +77,11 @@ def test_a_fresh_queue_re_ensures_after_a_hand_deletion(tmp_path: Path) -> None:
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    assert q._layout_ensured is True
+    assert q.records._layout_ensured is True
     q.records.dir(pool.record_store.READY).rmdir()
     assert not q.records.dir(pool.record_store.READY).exists()
 
     restarted = pool.PoolQueue(tmp_path / "pb-queue")
-    assert restarted._layout_ensured is False
+    assert restarted.records._layout_ensured is False
     restarted.records.ensure_layout()
     assert q.records.dir(pool.record_store.READY).is_dir()

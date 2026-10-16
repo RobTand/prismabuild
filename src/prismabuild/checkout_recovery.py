@@ -234,8 +234,10 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
     terminal = dict(state=ending['state'], path=str(ending['path']),
                     generation=ending['generation'], attempt=record['attempts'],
                     snapshot=snapshot, record_sha256=_checkout_recovery_digest(record),
-                    queue_records={state: _checkout_recovery_digest(value[1])
-                                   for state, value in sorted(readable.items())})
+                    queue_records={
+                        row.address.state: _checkout_recovery_digest(row.result.value)
+                        for row in sorted(capture.candidates, key=lambda row: row.address.state)
+                        if isinstance(row.result, pool.record_store.Present)})
     return terminal, lifetime
 
 
