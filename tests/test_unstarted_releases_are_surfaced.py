@@ -62,7 +62,7 @@ def released(tmp_path, monkeypatch):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host=BOX, tags=[BOX], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8},
                    observed_capacity={"cpu": 4, "mem_gb": 8})
@@ -73,11 +73,11 @@ def released(tmp_path, monkeypatch):
                       resources={"cpu": 1})
     assert queue.claim(tags=[BOX], has_gpu=False,
                        owner=f"{BOX}:43944:a4bcd411") is not None
-    claimed = [path.stem for path in queue.dir(pool.CLAIMED).glob("*.json")]
+    claimed = [path.stem for path in queue.records.dir(pool.record_store.CLAIMED).glob("*.json")]
     assert claimed == [BOUNCING], "the fixture claimed the wrong action"
     # The claimant blocked between the rename and ``write_lease``.  This is
     # the measured shape of issue #222, not a synthesized record.
-    queue.lease_path(BOUNCING).unlink()
+    queue.records.lease_path(BOUNCING).unlink()
 
     later = pool._now() + pool.LEASE_TIMEOUT_S
     # The box that reaps is not the box that claimed: any box may notice a
@@ -88,7 +88,7 @@ def released(tmp_path, monkeypatch):
     with mock.patch.object(pool, "_now", lambda: later):
         assert queue.reap_stale(timeout_s=pool.LEASE_TIMEOUT_S) == [BOUNCING]
 
-    item = json.loads(queue.item_path(pool.READY, BOUNCING).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, BOUNCING).read_text())
     assert item["unstarted_releases"] == 1, "the fixture did not produce a release"
     return queue, later
 
@@ -172,7 +172,7 @@ def test_a_fleet_that_never_released_a_claim_reports_zero(tmp_path, monkeypatch)
 
     monkeypatch.setattr(pool.socket, "gethostname", lambda: BOX)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     text = pbmetrics.collect_metrics(queue.root, now=pool._now())
     assert _samples(text, "prismabuild_unstarted_release_events") == []
     assert "prismabuild_unstarted_release_events_complete 1" in text

@@ -20,9 +20,9 @@ def _legacy_slot(queue, clock, damage):
     executed = queue.claim(owner="executed", capacity=DEMAND)
     assert executed is not None
     queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=executed)
-    attempt = queue.attempt_path(executed, 1)
+    attempt = queue.records.attempt_path(executed, 1)
     attempt_bytes = attempt.read_bytes()
-    slot = queue.item_path(pool.DONE, KEY)
+    slot = queue.records.item_path(pool.record_store.DONE, KEY)
     retained = json.loads(slot.read_bytes())
     legacy = {name: retained[name] for name in (
         "schema", "action_key", "status", "finished_unix", "finished_host",
@@ -35,7 +35,7 @@ def _legacy_slot(queue, clock, damage):
     slot.write_text(json.dumps(legacy))
     clock[0] += 1
     _publish(queue)
-    watched = json.loads(queue.item_path(pool.READY, KEY).read_bytes())["published_unix"]
+    watched = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())["published_unix"]
     return executed, watched, attempt, attempt_bytes
 
 
@@ -104,7 +104,7 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
     assert original is not None
     clock[0] += 1
     _publish(queue)
-    successor = json.loads(queue.item_path(pool.READY, KEY).read_bytes())
+    successor = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())
     _end_claim(queue, original, "finish_retry", clock)
     decision = queue.publication_ending(KEY, generation=original["published_unix"])
     assert decision is not None
@@ -133,7 +133,7 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
 @pytest.mark.parametrize("renderer", ["summary", "bounded", "pbwait"])
 def test_direct_execution_renderers_reject_a_publication_marker(queue, clock, renderer):
     _, _, attempt, attempt_bytes = _legacy_slot(queue, clock, "both")
-    slot = queue.item_path(pool.DONE, KEY)
+    slot = queue.records.item_path(pool.record_store.DONE, KEY)
     record = json.loads(slot.read_bytes())
 
     with pytest.raises(pbrun.OutcomeReadUnavailable):

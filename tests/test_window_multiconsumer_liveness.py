@@ -97,7 +97,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
 
 def _queue(tmp_path: Path, *, capacity_gib: int = 5) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": capacity_gib})
     return q
 

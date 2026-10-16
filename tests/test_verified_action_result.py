@@ -107,14 +107,14 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
         }
         stdout = json.dumps(announcement) + "\n"
     queue = pool.PoolQueue(base / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=key, cas_root=base / "cas",
                   checkout_root=base / "checkout",
                   worker_script=worker_script or base / "worker.py",
                   tags=["x86"], resources={"cpu": 1, "mem_gb": 1})
     queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
     if native is not None:
-        claimed_path = queue.item_path(pool.CLAIMED, key)
+        claimed_path = queue.records.item_path(pool.record_store.CLAIMED, key)
         claimed = json.loads(claimed_path.read_text())
         claimed.update(native["claim"])
         claimed_path.write_bytes(pb._canonical_file_bytes(claimed))
@@ -123,7 +123,7 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
                          "stdout": stdout, "stderr": "",
                          **(native["detail"] if native is not None else {})})
     fx.settle_publishers()
-    record = json.loads(queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+    record = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     return queue, record
 
 
@@ -148,7 +148,7 @@ def test_reads_the_verified_payload_request_and_receipt(tmp_path: Path):
     assert result["request"] == action
     assert result["attempt"] == 1
     assert result["published_unix"] == float(record["published_unix"])
-    assert result["generation"] == queue.attempt_generation(record)
+    assert result["generation"] == queue.records.attempt_generation(record)
     assert result["inputs"] == []
     assert result["input_payloads"] == {}
     assert isinstance(result["worker_id"], str)
@@ -198,7 +198,7 @@ def test_a_newer_failed_generation_refuses(tmp_path: Path):
               "status": "failed",
               "published_unix": float(record["published_unix"]) + 5,
               "finished_unix": 1.0, "finished_host": "box", "detail": {}}
-    immutable_files.publish_immutable(queue.item_path(pool.FAILED, key),
+    immutable_files.publish_immutable(queue.records.item_path(pool.record_store.FAILED, key),
                        pb._canonical_file_bytes(failed))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -214,7 +214,7 @@ def test_a_newer_withdrawn_or_contested_ending_refuses(tmp_path: Path):
                  "status": "withdrawn", "published_unix": generation,
                  "withdrawn_unix": generation + 5, "finished_host": "box",
                  "detail": {}}
-    immutable_files.publish_immutable(queue.item_path(pool.WITHDRAWN, key),
+    immutable_files.publish_immutable(queue.records.item_path(pool.record_store.WITHDRAWN, key),
                        pb._canonical_file_bytes(withdrawn))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -222,12 +222,12 @@ def test_a_newer_withdrawn_or_contested_ending_refuses(tmp_path: Path):
             max_result_bytes=64, max_evidence_bytes=1 << 20)
     # A tie at the newest generation is contested: a failed row beside the
     # success cannot be ordered, so the reader must refuse rather than pick.
-    queue.item_path(pool.WITHDRAWN, key).unlink()
+    queue.records.item_path(pool.record_store.WITHDRAWN, key).unlink()
     contested = {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
                  "status": "failed", "published_unix": generation,
                  "finished_unix": generation + 1, "finished_host": "box",
                  "detail": {}}
-    immutable_files.publish_immutable(queue.item_path(pool.FAILED, key),
+    immutable_files.publish_immutable(queue.records.item_path(pool.record_store.FAILED, key),
                        pb._canonical_file_bytes(contested))
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
@@ -252,7 +252,7 @@ def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
         action, output, attestation=attestation, return_execution_receipt=True)
     key = str(action["action_key"])
     queue = pool.PoolQueue(base / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=key, cas_root=base / "cas",
                   checkout_root=base / "checkout",
                   worker_script=base / "worker.py", tags=["x86"],
@@ -273,9 +273,9 @@ def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
         "returncode": 0, "status": "executed", "stdout": announcement,
         "stderr": ""})
     fx.settle_publishers()
-    record = json.loads(queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+    record = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     assert record["attempts"] == 2
-    first = json.loads(queue.attempt_path(record, 1).read_text(encoding="utf-8"))
+    first = json.loads(queue.records.attempt_path(record, 1).read_text(encoding="utf-8"))
     first_log = queue.root / str(first["logs"]["stdout"]["path"])
     seen: list[Path] = []
     original = pb.immutable_files._read_file
@@ -319,7 +319,7 @@ def test_a_payload_over_its_cap_refuses_before_the_blob_is_opened(
 def test_a_writable_selected_log_refuses(tmp_path: Path):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
     key = str(action["action_key"])
-    attempt = json.loads(queue.attempt_path(record, 1).read_text(encoding="utf-8"))
+    attempt = json.loads(queue.records.attempt_path(record, 1).read_text(encoding="utf-8"))
     log = queue.root / str(attempt["logs"]["stdout"]["path"])
     log.chmod(0o644)
     with pytest.raises(client.ActionResultError):
@@ -333,7 +333,7 @@ def test_only_the_selected_attempt_and_log_are_opened(tmp_path: Path, monkeypatc
     # An unrelated, poisoned file beside the immutable attempt must never be
     # opened: the reader follows the selected link; it does not list or expand
     # history.
-    poison = queue.attempt_path(record, 1).parent / "poison.log"
+    poison = queue.records.attempt_path(record, 1).parent / "poison.log"
     poison.write_text("not a result\n", encoding="utf-8")
     seen: list[Path] = []
     original = pb.immutable_files._read_file
@@ -476,7 +476,7 @@ def test_an_oversized_execution_receipt_refuses_under_the_evidence_cap(
 def test_an_attempt_changed_during_the_read_refuses(tmp_path: Path, monkeypatch):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
     key = str(action["action_key"])
-    attempt_path = queue.attempt_path(record, 1)
+    attempt_path = queue.records.attempt_path(record, 1)
     original = pb.immutable_files._read_file
     tampered = []
 
@@ -501,7 +501,7 @@ def test_an_attempt_changed_during_the_read_refuses(tmp_path: Path, monkeypatch)
 
 def test_a_boolean_attempt_number_refuses(tmp_path: Path):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
-    attempt_path = queue.attempt_path(record, 1)
+    attempt_path = queue.records.attempt_path(record, 1)
     value = json.loads(attempt_path.read_text(encoding="utf-8"))
     value["attempt"] = True  # JSON true, equal to 1 under ``==``
     _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
@@ -514,7 +514,7 @@ def test_a_boolean_attempt_number_refuses(tmp_path: Path):
 
 def test_a_huge_attempt_generation_refuses(tmp_path: Path):
     action, queue, record, _receipt, _payload = _fixture(tmp_path)
-    attempt_path = queue.attempt_path(record, 1)
+    attempt_path = queue.records.attempt_path(record, 1)
     value = json.loads(attempt_path.read_text(encoding="utf-8"))
     value["published_unix"] = 10 ** 400  # finite to no binary64 reader
     _rewrite_readonly(attempt_path, pb._canonical_file_bytes(value))
@@ -542,7 +542,8 @@ def test_a_huge_terminal_generation_is_unorderable_not_an_overflow(tmp_path: Pat
     # census rule must read it as unorderable, never raise OverflowError.
     row = dict(record)
     row["published_unix"] = 10 ** 400
-    ending = queue.resolve_ending({pool.DONE: (queue.item_path(pool.DONE, key), row)}, [])
+    queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps(row))
+    ending = queue.resolve_ending(queue.records.terminal_candidates(key))
     assert ending["generation"] is None
     assert pool._finite_generation(10 ** 400) is None
     assert pool._finite_generation(float("inf")) is None
@@ -576,7 +577,7 @@ def test_a_deeply_nested_record_refuses_in_the_action_result_vocabulary(
     key = str(action["action_key"])
     row = (b'{"schema": "control", "action_key": "' + key.encode()
            + b'", "detail": ' + nested + b"}")
-    queue.item_path(pool.DONE, key).write_bytes(row)
+    queue.records.item_path(pool.record_store.DONE, key).write_bytes(row)
     with pytest.raises(client.ActionResultError):
         client.read_verified_action_result(
             queue, key, published_unix=float(record["published_unix"]),
@@ -588,7 +589,7 @@ def test_an_empty_terminal_leaf_never_reads_as_absent(tmp_path: Path):
     key = str(action["action_key"])
     # A newer generation's failed row, present but unreadable (empty).  The
     # bounded census must not skip it and answer the older success.
-    failed = queue.item_path(pool.FAILED, key)
+    failed = queue.records.item_path(pool.record_store.FAILED, key)
     failed.parent.mkdir(parents=True, exist_ok=True)
     failed.write_bytes(b"")
     with pytest.raises(client.ActionResultError):
@@ -599,24 +600,24 @@ def test_an_empty_terminal_leaf_never_reads_as_absent(tmp_path: Path):
 
 def test_the_bounded_row_reader_is_strict_and_refuses_empty(tmp_path: Path):
     absent = tmp_path / "absent.json"
-    assert pool._read_json_bounded(absent, max_bytes=1 << 20) is None
+    assert pool.record_store.read_bounded_document(absent, max_bytes=1 << 20) is None
     empty = tmp_path / "empty.json"
     empty.write_bytes(b"")
     with pytest.raises(pool.PoolContractError):
-        pool._read_json_bounded(empty, max_bytes=1 << 20)
+        pool.record_store.read_bounded_document(empty, max_bytes=1 << 20)
     duplicate = tmp_path / "duplicate.json"
     duplicate.write_text('{"a": 1, "a": 2}\n', encoding="utf-8")
     with pytest.raises(pool.PoolContractError):
-        pool._read_json_bounded(duplicate, max_bytes=1 << 20)
+        pool.record_store.read_bounded_document(duplicate, max_bytes=1 << 20)
     nonfinite = tmp_path / "nonfinite.json"
     nonfinite.write_text('{"a": NaN}\n', encoding="utf-8")
     with pytest.raises(pool.PoolContractError):
-        pool._read_json_bounded(nonfinite, max_bytes=1 << 20)
+        pool.record_store.read_bounded_document(nonfinite, max_bytes=1 << 20)
 
 
 def test_a_duplicate_key_announcement_does_not_bind(tmp_path: Path):
     action, queue, record, receipt, _payload = _fixture(tmp_path)
-    attempt_path = queue.attempt_path(record, 1)
+    attempt_path = queue.records.attempt_path(record, 1)
     value = json.loads(attempt_path.read_text(encoding="utf-8"))
     # Two identical ``receipt`` keys in one line: permissive ``json.loads``
     # keeps the last and would bind the authentic receipt; strict decoding
@@ -624,7 +625,7 @@ def test_a_duplicate_key_announcement_does_not_bind(tmp_path: Path):
     line = ('{"receipt": ' + json.dumps(receipt) + ', '
             '"receipt": ' + json.dumps(receipt) + "}\n").encode("utf-8")
     digest = pb.raw_sha256(line)
-    log_path = queue.attempt_log_path(record, 1, "stdout", digest)
+    log_path = queue.records.attempt_log_path(record, 1, "stdout", digest)
     _rewrite_readonly(log_path, line)
     value["logs"]["stdout"]["sha256"] = digest
     value["logs"]["stdout"]["bytes"] = len(line)
@@ -830,7 +831,7 @@ def test_selected_native_context_is_owned_and_truthfully_bound(tmp_path, monkeyp
 def test_selected_native_claim_metadata_refuses(tmp_path, monkeypatch, field, value):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
     row = {**record, field: value}
-    queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
     with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)
 
@@ -856,7 +857,7 @@ def test_selected_native_scope_proof_refuses(tmp_path, monkeypatch, field, value
 ])
 def test_selected_immutable_native_telemetry_refuses(tmp_path, monkeypatch, field, value):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
-    path = queue.attempt_path(record, 1)
+    path = queue.records.attempt_path(record, 1)
     attempt = json.loads(path.read_text())
     attempt["detail"]["resource_telemetry"][field] = value
     _rewrite_readonly(path, pb._canonical_file_bytes(attempt))
@@ -968,9 +969,9 @@ def test_selected_native_ending_extra_fields_are_rechecked(tmp_path, monkeypatch
         raw = original(path, **kwargs)
         if kwargs["where"] == "native producer scope attestation" and not changed:
             changed = True
-            row = json.loads(queue.item_path(pool.DONE, action["action_key"]).read_text())
+            row = json.loads(queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text())
             row["resources"]["cpu"] = 2
-            queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+            queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
         return raw
     monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
     with pytest.raises(client.ActionResultError, match="selected native ending changed"):
@@ -999,11 +1000,11 @@ def test_native_last_proof_read_cannot_return_before_terminal_recheck(
                         "published_unix": record["published_unix"],
                         "withdrawn_unix": record["published_unix"] + 5,
                         "finished_host": "box", "detail": {}}
-                    immutable_files.publish_immutable(queue.item_path(pool.WITHDRAWN, key),
+                    immutable_files.publish_immutable(queue.records.item_path(pool.record_store.WITHDRAWN, key),
                                        pb._canonical_file_bytes(withdrawn))
                 else:
                     replacement = {**record, "published_unix": record["published_unix"] + 5}
-                    queue.item_path(pool.DONE, key).write_bytes(pb._canonical_file_bytes(replacement))
+                    queue.records.item_path(pool.record_store.DONE, key).write_bytes(pb._canonical_file_bytes(replacement))
         return raw
     monkeypatch.setattr(action_result, "_read_bounded", read_and_change_terminal)
     with pytest.raises(client.ActionResultError):
@@ -1020,12 +1021,12 @@ def test_native_full_broker_control_must_join_immutable_launch(
     tmp_path, monkeypatch, field, value
 ):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
-    row = json.loads(queue.item_path(pool.DONE, action["action_key"]).read_text())
+    row = json.loads(queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text())
     if value is None:
         row["resource_scope"].pop(field)
     else:
         row["resource_scope"][field] = value
-    queue.item_path(pool.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
     with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)
 
@@ -1035,7 +1036,7 @@ def test_native_immutable_argv_binds_proxy_scope_secret_affinity_launcher_reques
     tmp_path, monkeypatch, position
 ):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
-    path = queue.attempt_path(record, 1)
+    path = queue.records.attempt_path(record, 1)
     attempt = json.loads(path.read_text())
     if position is None:
         attempt["detail"].pop("argv")
