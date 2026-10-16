@@ -630,7 +630,7 @@ def _held_spool(ledger) -> int:
     """
 
     try:
-        holders = pool._scan_visible(ledger.held_dir)
+        holders = pool.immutable_files.scan_required(ledger.held_dir)
     except FileNotFoundError:
         return 0
     return sum(1 for holder in holders
@@ -1148,7 +1148,7 @@ def _ready_backlog() -> bool | None:
     signal and must not duplicate that NFS work.
     """
 
-    ready = _queue_root() / pool.READY
+    ready = _queue_root() / pool.record_store.READY
     try:
         with os.scandir(ready) as entries:
             return any(entry.name.endswith(".json") for entry in entries)

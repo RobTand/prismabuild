@@ -707,7 +707,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                 manifests(item, own_cas)
 
     def record(path):
-        value = pool._read_json_bounded(path, max_bytes=128 << 20)
+        value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
         if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
             raise ValueError(f"{path}: reference record is unreadable")
         direct(value)
@@ -732,17 +732,17 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                     raise ValueError(f"{path}: reference is not a regular file")
                 yield path
 
-    for root in (queue.root / pool.MOVERS, queue.root / pool.MOVERS_RETIRED,
-                 queue.root / pool.RESIDENCY_PLANS):
+    for root in (queue.root / pool.record_store.MOVERS, queue.root / pool.record_store.MOVERS_RETIRED,
+                 queue.root / pool.record_store.RESIDENCY_PLANS):
         for path in tree(root):
             record(path)
-    for path in tree(Path(residency_root or queue.root / pool.RESIDENCY)):
-        value = pool._read_json_bounded(path, max_bytes=128 << 20)
+    for path in tree(Path(residency_root or queue.root / pool.record_store.RESIDENCY)):
+        value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
         if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
             raise ValueError(f"{path}: reference record is unreadable")
         direct(value)
-    for state in (pool.READY, pool.CLAIMED):
-        for path in tree(queue.dir(state)):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        for path in tree(queue.records.dir(state)):
             value, own_cas = record(path)
             key = value.get("action_key")
             if not isinstance(key, str):
@@ -756,7 +756,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
     for key in ledger.held_keys():
         if not ledger.holder_tokens(key).get("stage_gib", 0):
             continue
-        receipt = pool._read_json_bounded(queue.move_path(key), max_bytes=128 << 20)
+        receipt = pool.record_store.read_bounded_document(queue.records.move_path(key), max_bytes=128 << 20)
         if isinstance(receipt, dict):
             direct(receipt)
             manifests(receipt, str(cas_root or queue.root.parent / "cas"))

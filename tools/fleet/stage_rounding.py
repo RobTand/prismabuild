@@ -19,7 +19,7 @@ def declared_range_index(queue) -> dict[str, int] | None:
     from prismabuild import residency_plan as plan_mod
 
     try:
-        plans_dir = queue.root / pool_mod.RESIDENCY_PLANS
+        plans_dir = queue.root / pool_mod.record_store.RESIDENCY_PLANS
         names = sorted(
             path.stem for path in pool_mod._scan(plans_dir)
             if path.suffix == ".json" and len(path.stem) == 64

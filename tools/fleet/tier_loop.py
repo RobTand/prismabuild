@@ -76,7 +76,7 @@ import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
-MOVER_RECEIPTS = pool.MOVERS
+MOVER_RECEIPTS = pool.record_store.MOVERS
 
 #: Seconds between cycles; ``_serve`` sets it from ``--interval-s``.  A
 #: window's refill horizon counts one cycle of latency (#903), and a caller
@@ -230,7 +230,7 @@ def _append_consumer_event(queue: pool.PoolQueue, host: str, consumer: str,
     """
 
     try:
-        directory = queue.consumer_events_dir(consumer)
+        directory = queue.records.consumer_events_dir(consumer)
     except pool.PoolContractError:
         return
     path = directory / f"{host}.jsonl"
@@ -254,7 +254,7 @@ def _append_host_event(queue: pool.PoolQueue, host: str,
     idiom and bound as :func:`_append_consumer_event`; best-effort the same way.
     """
 
-    path = queue.host_events_dir() / f"{host}.jsonl"
+    path = queue.records.host_events_dir() / f"{host}.jsonl"
     try:
         _append_bounded_event(path, record)
     except OSError as exc:
@@ -342,7 +342,7 @@ def _emit(queue: pool.PoolQueue, host: str, event: Mapping[str, object], *,
     if record.get("event") == "residency-plan-reaped":
         if isinstance(consumer, str):
             try:
-                directory = queue.consumer_events_dir(consumer)
+                directory = queue.records.consumer_events_dir(consumer)
             except pool.PoolContractError:
                 return
             for name in list(_EVENT_LINES):
@@ -411,8 +411,8 @@ def _receipt_name(entry: os.DirEntry) -> bool:
 def _retirement_document(entry: os.DirEntry) -> bool:
     """The retirement checkpoint and its state marker, and nothing else."""
 
-    return entry.name in (pool.MOVERS_RETIREMENT_CHECKPOINT,
-                          pool.MOVERS_RETIREMENT_STATE)
+    return entry.name in (pool.record_store.MOVERS_RETIREMENT_CHECKPOINT,
+                          pool.record_store.MOVERS_RETIREMENT_STATE)
 
 
 #: How many receipts the tier loop reads at once while a receipt directory
@@ -565,7 +565,7 @@ class ReceiptCache:
                     liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = self.records.read(
-                    directory, select=_receipt_name, parse=pool._read_json,
+                    directory, select=_receipt_name, parse=pool.record_store.read_queue_record,
                     readers=RECEIPT_READERS,
                     **({} if checkpoint is None
                        else {"checkpoint": checkpoint}))
@@ -582,7 +582,7 @@ class ReceiptCache:
         generation: int | None = None
         error: str | None = None
         if owner is not None:
-            retired_dir = owner.root / pool.MOVERS_RETIRED
+            retired_dir = owner.root / pool.record_store.MOVERS_RETIRED
             try:
                 # Through this cache's own DirectoryRecords, so the retirement
                 # documents carry the same trusted-version discipline as every
@@ -591,10 +591,10 @@ class ReceiptCache:
                 documents = {
                     path.name: record for path, record in self.records.read(
                         retired_dir, select=_retirement_document,
-                        parse=pool._read_json)}
+                        parse=pool.record_store.read_queue_record)}
                 generation = self.records.generation(retired_dir)
-                checkpoint = documents.get(pool.MOVERS_RETIREMENT_CHECKPOINT)
-                state = documents.get(pool.MOVERS_RETIREMENT_STATE)
+                checkpoint = documents.get(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT)
+                state = documents.get(pool.record_store.MOVERS_RETIREMENT_STATE)
                 memo = self._retired_memo
                 if (memo is not None and checkpoint is not None
                         and memo[0] == generation):
@@ -607,10 +607,10 @@ class ReceiptCache:
                     _entries, incomplete = memo[1], memo[2]
                 else:
                     _entries, incomplete = pool._validate_mover_retirements(
-                        pool.MOVERS_RETIREMENT_CHECKPOINT in documents,
+                        pool.record_store.MOVERS_RETIREMENT_CHECKPOINT in documents,
                         checkpoint,
-                        pool.MOVERS_RETIREMENT_STATE in documents, state,
-                        archive_root=owner.root / pool.MOVERS_ARCHIVE)
+                        pool.record_store.MOVERS_RETIREMENT_STATE in documents, state,
+                        archive_root=owner.root / pool.record_store.MOVERS_ARCHIVE)
                     # A missing checkpoint's answer depends on the archive
                     # directory, which this cache does not track: keep only
                     # the checkpointed (and expensive) case.
@@ -627,7 +627,7 @@ class ReceiptCache:
         merged: list[dict[str, object]] = []
         for directory in read:
             records = by_directory.get(str(directory), [])
-            if directory.name == pool.MOVERS and retired:
+            if directory.name == pool.record_store.MOVERS and retired:
                 union: dict[str, dict[str, object]] = {
                     str(key): record for key, record in retired.items()}
                 for record in records:
@@ -745,7 +745,7 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     seen: set[str] = set()
     released = queue.released_origin_consumer_keys()
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         # Inside a cycle, the listing and the bytes are the loop's own read,
         # shared with the sweep's and the reconciliation's (#992); each record
         # is still parsed fresh for this caller.
@@ -762,14 +762,14 @@ def live_consumers(queue: pool.PoolQueue) -> list[dict[str, object]]:
             if not isinstance(key, str):
                 continue
             seen.add(key)
-            if (state == pool.READY and key in released
+            if (state == pool.record_store.READY and key in released
                     and prewarm_loop.released_origin_consumer(queue, key)):
                 continue
             accepted = None
             reported = None
             claimed_unix = None
             reported_unix = None
-            if state == pool.CLAIMED:
+            if state == pool.record_store.CLAIMED:
                 claimed_unix = item.get("claimed_unix")
                 if isinstance(claimed_unix, (int, float)):
                     observation = prewarm_loop.progress_phase(
@@ -832,8 +832,8 @@ def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
             staged.add(key)
-        if (queue.item_path(pool.READY, key).exists()
-                or queue.item_path(pool.CLAIMED, key).exists()
+        if (queue.records.item_path(pool.record_store.READY, key).exists()
+                or queue.records.item_path(pool.record_store.CLAIMED, key).exists()
                 or pinned):
             published.add(key)
     return published, staged
@@ -859,8 +859,8 @@ def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
         pinned = bool(ledger.holder_tokens(key))
         if pinned:
             staged.add(key)
-        if (queue.item_path(pool.READY, key).exists()
-                or queue.item_path(pool.CLAIMED, key).exists()
+        if (queue.records.item_path(pool.record_store.READY, key).exists()
+                or queue.records.item_path(pool.record_store.CLAIMED, key).exists()
                 or pinned):
             published.add(key)
     return published, staged
@@ -919,7 +919,7 @@ def _cycle_withdrawn_keys(queue: pool.PoolQueue, receipts) -> frozenset[str]:
     records = getattr(receipts, "records", None)
     if not isinstance(records, kept_reads.DirectoryRecords):
         return queue.withdrawn_keys()
-    names = records.names(queue.dir(pool.WITHDRAWN),
+    names = records.names(queue.records.dir(pool.record_store.WITHDRAWN),
                           select=lambda name: name.endswith(".json"))
     return frozenset(name[: -len(".json")] for name in names)
 
@@ -947,7 +947,7 @@ def _operator_withdrawal(queue: pool.PoolQueue, key: str) -> bool:
     """
 
     try:
-        marker = pool._read_json(queue.item_path(pool.WITHDRAWN, key))
+        marker = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
     except (OSError, pool.PoolContractError):
         return False      # unreadable: not a decision this cycle acts on
     if not isinstance(marker, Mapping) or marker.get("preempted_by"):
@@ -968,7 +968,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
         prefix = holder[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
         if len(prefix) != 16 or any(c not in "0123456789abcdef" for c in prefix):
             return "none", "malformed blind-grant name"
-        candidates = [p.stem for p in pool._scan(queue.root / pool.RESIDENCY_PLANS)
+        candidates = [p.stem for p in pool.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
                       if p.suffix == ".json" and len(p.stem) == 64
                       and p.stem.startswith(prefix)]
         if len(candidates) > 1:
@@ -1008,12 +1008,12 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             "none", "plan superseded")
     if not current_epoch:
         return "none", "RAM tier has no current epoch"
-    item = pool._read_json(queue.item_path(live, consumer))
+    item = pool.record_store.require(queue.records.item(live, consumer))
     if not isinstance(item, dict) or item.get("action_key") != consumer:
         return "unknown", "live consumer row unreadable or divergent"
     if blind:
         accepted = None
-        if live == pool.CLAIMED:
+        if live == pool.record_store.CLAIMED:
             observed = prewarm_loop.progress_phase(queue, consumer, float(item["claimed_unix"]))
             if observed is None:
                 # The tolerant progress reader also returns None for a
@@ -1024,7 +1024,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                 queue, item, str(observed["phase"]))
         already, held = _ram_mover_state(queue, plan, tier_id)
         rowed = [key for key in residency_plan.ram_mover_keys(plan)
-                 if queue.item_path(pool.READY, key).exists()]
+                 if queue.records.item_path(pool.record_store.READY, key).exists()]
         needs = residency_plan.advance_needs(
             plan, accepted, published=sorted(already), staged=sorted(held),
             rowed=rowed, mover_role="ram_mover_row")
@@ -1067,13 +1067,13 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             or (record["range_start_bytes"], record["range_end_bytes"]) != (
                 leg["start_bytes"], leg["end_bytes"])):
         return "none", "funding range differs from frozen leg"
-    row = pool._read_json(queue.item_path(pool.READY, mover))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, mover))
     if not isinstance(row, dict):
         return "unknown", "funded mover publication unavailable"
     if row.get("published_unix") != record["published_unix"]:
         return "none", "funding publication is stale"
     if blind:
-        names = {p.name for p in pool._glob(
+        names = {p.name for p in pool.immutable_files.match_optional(
             queue.tier_ledger(tier_id).held_dir / holder, "*-*")}
         if (record["state"] == "reserved" and len(record["tokens"]) == demand
                 and all(name.startswith("ram_gib-") and name in names
@@ -1153,7 +1153,7 @@ def drop_prior_ram_epochs(
         for tier_id, record in tiers.items()
         if record.get("tier") == "ram"}
     events: list[dict[str, object]] = []
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     reader = reader if reader is not None else kept_reads.DirectoryRecords()
     try:
         consumers = [path.name for path, _ in reader.read(
@@ -1192,7 +1192,7 @@ def drop_prior_ram_epochs(
         for key in held:
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if queue.item_path(pool.CLAIMED, key).exists():
+            if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
                 # A promotion claimed right now holds tokens for a copy that
                 # is running; its receipt will date it, and the next cycle
                 # judges it then.
@@ -1225,7 +1225,7 @@ def drop_prior_ram_epochs(
                                        "tier_id": tier_id, "holder": key,
                                        "reason": reason})
                     continue
-                if queue.item_path(pool.CLAIMED, key).exists():
+                if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
                     continue
                 receipt = queue.move_record(key)
                 epoch = (str(receipt.get("epoch") or "")
@@ -1315,8 +1315,8 @@ def release_incomplete_ram_promotions(
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
             if key.startswith(prelaunch_group.HOLDER_PREFIX):
                 continue      # a group holder belongs to the prelaunch pass
-            if (queue.item_path(pool.READY, key).exists()
-                    or queue.item_path(pool.CLAIMED, key).exists()):
+            if (queue.records.item_path(pool.record_store.READY, key).exists()
+                    or queue.records.item_path(pool.record_store.CLAIMED, key).exists()):
                 # Queued or running: the window or the copy owns this key, and
                 # a receipt read now would race the mover filing it.
                 continue
@@ -1798,8 +1798,8 @@ def ram_residency_window(
                 continue
             row = dict(egress_row)
             egress_key = str(row["action_key"])
-            if (queue.item_path(pool.READY, egress_key).exists()
-                    or queue.item_path(pool.CLAIMED, egress_key).exists()):
+            if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
+                    or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             try:
                 # And the same question again under the queue's lock, so the
@@ -1853,7 +1853,7 @@ def _compose_fingerprint(queue: pool.PoolQueue, consumer_action_key: str,
     cannot be read: that is "compose, not skip".
     """
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     try:
         names = sorted(entry.name for entry in os.scandir(
             root / consumer_action_key)
@@ -1944,8 +1944,8 @@ def compose_map(queue: pool.PoolQueue, consumer_action_key: str, *,
     so the claim's residency gate keeps reading ``map_not_composed``.
     """
 
-    root = queue.residency_fragment_root()
-    path = queue.residency_map_path(consumer_action_key)
+    root = queue.records.residency_fragment_root()
+    path = queue.records.residency_map_path(consumer_action_key)
     cache_key = (str(queue.root), consumer_action_key)
     fingerprint = _compose_fingerprint(queue, consumer_action_key, ram_tiers)
     if fingerprint is not None:
@@ -2163,7 +2163,7 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
     readers_of = _shared_readers(queue, consumers)
     if not readers_of:
         return events
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     for mover, (namespace, readers) in sorted(readers_of.items()):
         source_path = residency_map.fragment_path(root, namespace, mover)
         material_path = reader_lease.material_path(root, namespace, mover)
@@ -2306,7 +2306,7 @@ def _supersession_marker_keys(queue: pool.PoolQueue,
     marker written after this snapshot is seen by the next sweep.
     """
 
-    directory = (Path(queue.root) / pool.RESIDENCY_PLANS
+    directory = (Path(queue.root) / pool.record_store.RESIDENCY_PLANS
                  / residency_plan.SUPERSEDED)
     reader = stage_release.queue_records_reader()
     try:
@@ -2389,7 +2389,7 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     # under the consumer lock before withdrawing or reaping anything. A plan
     # filed after this observation is conservatively deferred to the next pass.
     try:
-        filed_keys = {path.stem for path in pool._scan(queue.root / pool.RESIDENCY_PLANS)
+        filed_keys = {path.stem for path in pool.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
                       if path.suffix == ".json" and len(path.stem) == 64}
     except OSError:
         return events
@@ -2400,9 +2400,9 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     # finished (38,000 names on 2026-09-23) and only a filed plan's key can
     # be a candidate.  A terminal directory that cannot be read skips its
     # state for this pass, as the listing's failure did.
-    for state in (pool.FAILED, pool.WITHDRAWN, pool.DONE):
+    for state in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, pool.record_store.DONE):
         for key in sorted(filed_keys):
-            path = queue.item_path(state, key)
+            path = queue.records.item_path(state, key)
             try:
                 os.lstat(path)
             except FileNotFoundError:
@@ -2470,7 +2470,7 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
                                marker_keys: frozenset[str] | None = None) -> None:
     """:func:`_sweep_dead_consumer`'s body, with the consumer's lock held."""
 
-    item = pool._read_json(path)
+    item = pool.record_store.read_queue_record(path)
     if not isinstance(item, dict):
         return
     live, _why = residency_plan.live_state(queue, key)
@@ -2479,7 +2479,7 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         # A queue that cannot be read is uncertainty, not absence, and
         # defers the sweep exactly as it defers a handoff.
         return
-    if (state == pool.DONE and marker_keys is not None
+    if (state == pool.record_store.DONE and marker_keys is not None
             and key not in marker_keys):
         # The snapshot names no marker for this consumer, so no marker can
         # cover this filing and the plan body decides nothing.  A marker
@@ -2488,7 +2488,7 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
     plan, incarnation = residency_plan.read_filed(queue, key)
     if plan is None:
         return      # not a staged consumer, or an unreadable plan
-    if (state == pool.DONE
+    if (state == pool.record_store.DONE
             and residency_plan.superseded(queue, plan) is None):
         # A finished consumer that was never superseded keeps its
         # frozen plan: a retry republishes the same children.
@@ -2499,10 +2499,10 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         if (isinstance(receipt, Mapping)
                 and receipt.get("complete") is True):
             continue  # a resident range: adoption's, not withdrawal's
-        if queue.item_path(pool.READY, mover_key).exists():
-            origin = pool.READY
-        elif queue.item_path(pool.CLAIMED, mover_key).exists():
-            origin = pool.CLAIMED
+        if queue.records.item_path(pool.record_store.READY, mover_key).exists():
+            origin = pool.record_store.READY
+        elif queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists():
+            origin = pool.record_store.CLAIMED
         else:
             continue  # finished or never published: nothing to stop
         # Withdrawal is per interest (#1026, #1114).  A mover key is a
@@ -2574,7 +2574,7 @@ def _sweep_dead_consumer_owned(queue: pool.PoolQueue, *, key: str, state: str,
         # The landing record describes a window nobody reads any more
         # (#989); it goes with the plan, as the event file does.
         residency_map.landing_path(
-            queue.residency_fragment_root(), key).unlink(missing_ok=True)
+            queue.records.residency_fragment_root(), key).unlink(missing_ok=True)
         _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
         events.append({
             "event": "residency-plan-reaped", "consumer": key,
@@ -2936,7 +2936,7 @@ def adopt_resident_ranges(
     cancelled = _withdrawn_keys(queue, withdrawn)
     wanted, owners = stage_release.live_claims(queue)
     reserved = set(wanted) | set(owners)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     index_by_tier: dict[str, dict[tuple, list[str]]] = {}
     if consumers is None:
         unknown = []
@@ -2964,7 +2964,7 @@ def adopt_resident_ranges(
                            "reason": "residency-evidence-unreadable", "error": str(exc)})
             continue
         prefix_blocked = False
-        admission_asked = consumer.get("state") != pool.READY
+        admission_asked = consumer.get("state") != pool.record_store.READY
         for phase in residency_plan.remaining(plan, accepted):  # type: ignore[arg-type]
             if prefix_blocked:
                 break
@@ -3009,8 +3009,8 @@ def adopt_resident_ranges(
                 if ledger.holder_tokens(new_key):
                     prefix_blocked = True
                     break         # booked room is not qualified residency
-                if (queue.item_path(pool.READY, new_key).exists()
-                        or queue.item_path(pool.CLAIMED, new_key).exists()):
+                if (queue.records.item_path(pool.record_store.READY, new_key).exists()
+                        or queue.records.item_path(pool.record_store.CLAIMED, new_key).exists()):
                     prefix_blocked = True
                     break         # let its own copy finish before adopting ahead
                 if not admission_asked:
@@ -3115,7 +3115,7 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
 
     cache_key = (str(queue.root), str(mover_action_key))
     try:
-        status = os.stat(queue.move_path(str(mover_action_key)))
+        status = os.stat(queue.records.move_path(str(mover_action_key)))
     except (OSError, pool.PoolContractError, ValueError):
         status = None
     identity = ((int(status.st_ino), int(status.st_mtime_ns),
@@ -3300,7 +3300,7 @@ def _consumer_horizon(queue: pool.PoolQueue, consumer: Mapping[str, object],
     own landing rate alone, not at the stage copy plus the promotion.
     """
 
-    if consumer.get("state") != pool.CLAIMED:
+    if consumer.get("state") != pool.record_store.CLAIMED:
         return None
     accepted = consumer.get("accepted_phase")
     if not residency_plan.accepted(plan, accepted):              # type: ignore[arg-type]
@@ -3404,8 +3404,8 @@ def _landed_past(queue: pool.PoolQueue, key: str,
         try:
             held = int(ledger.holder_tokens(mover).get(kind, 0))
             busy = any(
-                queue.item_path(state, name).exists()
-                for state in (pool.READY, pool.CLAIMED)
+                queue.records.item_path(state, name).exists()
+                for state in (pool.record_store.READY, pool.record_store.CLAIMED)
                 for name in (mover, egress_key) if name)
         except (OSError, pool.PoolContractError, ValueError):
             continue
@@ -3599,7 +3599,7 @@ def _is_newcomer(consumer: Mapping[str, object], needs: Mapping[str, object],
     running capture ``a92f62783e8f`` for 60 cycles after its ``head`` egress.
     """
 
-    if consumer.get("state") == pool.CLAIMED:
+    if consumer.get("state") == pool.record_store.CLAIMED:
         return False
     return _unpublished_lead(needs, published)
 
@@ -3832,7 +3832,7 @@ def _footprint_consumption(queue: pool.PoolQueue,
     claimed = consumer.get("claimed_unix")
     reported = consumer.get("reported_unix")
     accepted = consumer.get("accepted_phase")
-    if (consumer.get("state") == pool.CLAIMED
+    if (consumer.get("state") == pool.record_store.CLAIMED
             and residency_plan.accepted(plan, accepted)      # type: ignore[arg-type]
             and isinstance(claimed, (int, float)) and not isinstance(claimed, bool)
             and isinstance(reported, (int, float)) and not isinstance(reported, bool)
@@ -4383,9 +4383,9 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
 
     if not key:
         return ""
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            item = json.loads(queue.item_path(state, key).read_text())
+            item = json.loads(queue.records.item_path(state, key).read_text())
         except FileNotFoundError:
             continue
         except (OSError, ValueError, pool.PoolContractError):
@@ -4395,7 +4395,7 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
         tier_id = residency.get("tier_id") if isinstance(residency, dict) else None
         if not isinstance(tier_id, str) or not tier_id:
             return ""
-        if state == pool.CLAIMED:
+        if state == pool.record_store.CLAIMED:
             return tier_id
         leads = residency.get("leads")                     # type: ignore[union-attr]
         if not isinstance(leads, list):
@@ -4404,8 +4404,8 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
             ledger = queue.tier_ledger(tier_id)
             for lead in leads:
                 lead = str(lead)
-                if (queue.item_path(pool.READY, lead).exists()
-                        or queue.item_path(pool.CLAIMED, lead).exists()
+                if (queue.records.item_path(pool.record_store.READY, lead).exists()
+                        or queue.records.item_path(pool.record_store.CLAIMED, lead).exists()
                         or ledger.holder_tokens(lead)):
                     return tier_id
         except (OSError, ValueError, pool.PoolContractError):
@@ -4843,7 +4843,7 @@ def _staged_wait(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
         return memo[cache_key]
     try:
         record = pool.staged_wait_declared(Path(pb_progress.staged_wait_path(
-            str(queue.action_progress_path(key)))))
+            str(queue.records.action_progress_path(key)))))
     except (OSError, ValueError, pool.PoolContractError):
         record = None
     if memo is not None:
@@ -4919,7 +4919,7 @@ def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
         row["since_unix"] = min(float(row["since_unix"]), since)  # type: ignore[arg-type]
 
     try:
-        claimed = stage_release.queue_records(queue, pool.CLAIMED)
+        claimed = stage_release.queue_records(queue, pool.record_store.CLAIMED)
     except (OSError, pool.PoolContractError):
         return []
     for _path, item in claimed:
@@ -4954,7 +4954,7 @@ def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
                 continue
             waited(str(mover), key, since, ready=False)
     try:
-        ready = stage_release.queue_records(queue, pool.READY)
+        ready = stage_release.queue_records(queue, pool.record_store.READY)
     except (OSError, pool.PoolContractError):
         ready = []
     released: frozenset[str] | None = None
@@ -5015,7 +5015,7 @@ def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
         if (not isinstance(residency, Mapping)
                 or str(residency.get("tier_id") or "") != str(tier_id)):
             continue
-        if state == pool.CLAIMED and queue.copy_filed_complete(mover):
+        if state == pool.record_store.CLAIMED and queue.copy_filed_complete(mover):
             continue
         row["state"] = state
         row["consumers"] = sorted(set(row["consumers"]))        # type: ignore[arg-type]
@@ -5030,7 +5030,7 @@ def declared_wait_movers(queue: pool.PoolQueue, tier_id: str, *,
             and cap_movers >= 1):
         room = max(0, cap_movers - len(claimed_waits))
         ready_waits = sorted(ready_waits, key=lambda row: (
-            row["state"] != pool.CLAIMED, float(row["since_unix"]),  # type: ignore[arg-type]
+            row["state"] != pool.record_store.CLAIMED, float(row["since_unix"]),  # type: ignore[arg-type]
             str(row["mover_action_key"])))[:room]
     return sorted(claimed_waits + ready_waits,
                   key=lambda row: (float(row["since_unix"]),    # type: ignore[arg-type]
@@ -5427,8 +5427,8 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
                           if isinstance(egress, Mapping) else "")
             try:
                 held = int(ledger.holder_tokens(mover).get(kind, 0))
-                busy = any(queue.item_path(state, name).exists()
-                           for state in (pool.READY, pool.CLAIMED)
+                busy = any(queue.records.item_path(state, name).exists()
+                           for state in (pool.record_store.READY, pool.record_store.CLAIMED)
                            for name in (mover, egress_key) if name)
             except (OSError, pool.PoolContractError, ValueError):
                 continue
@@ -5773,7 +5773,7 @@ def window_pressure(
                        tier_id=str(tier_id), reason="superseded")
             continue
         already, staged = _mover_state(queue, plan, tier_id)
-        if (consumer.get("state") == pool.READY and _key not in cancelled
+        if (consumer.get("state") == pool.record_store.READY and _key not in cancelled
                 and set(residency_plan.leads_for(plan)) <= staged):
             # A ready consumer whose leads hold their tokens is past the
             # claim's residency gate, which refuses before any token is
@@ -5836,7 +5836,7 @@ def window_pressure(
         # A claimed window on an over-committed stage tier is ranked for
         # the tier's room (#1011) on the need this walk already asks.
         ranked = (tier_id in over_committed and _key not in cancelled
-                  and consumer.get("state") == pool.CLAIMED)
+                  and consumer.get("state") == pool.record_store.CLAIMED)
         stage_needs = residency_plan.advance_needs(
             plan, accepted, published=sorted(already), staged=sorted(staged),
             horizon_end_bytes=horizon_end)
@@ -6193,7 +6193,7 @@ def _legs_a_reader_can_reach(consumers: list) -> dict[str, list[str]]:
     reach: dict[str, list[str]] = {}
     for consumer_key, consumer, plan, _tier_id in consumers:
         if not isinstance(consumer, Mapping) or consumer.get(
-                "state") != pool.CLAIMED:
+                "state") != pool.record_store.CLAIMED:
             continue
         ahead = residency_plan.remaining(
             plan, consumer.get("accepted_phase"))  # type: ignore[arg-type]
@@ -6257,7 +6257,7 @@ def reclaim_failed_mover_partials(
     """
 
     events: list[dict[str, object]] = []
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     shared = _shared_movers(queue) or frozenset()
     asked: set[str] = set()
     # Over every consumer, not only the ones this cycle's budget reads: a
@@ -6305,8 +6305,8 @@ def reclaim_failed_mover_partials(
                     continue
                 if pinned:
                     continue
-                if (queue.item_path(pool.READY, mover_key).exists()
-                        or queue.item_path(pool.CLAIMED, mover_key).exists()):
+                if (queue.records.item_path(pool.record_store.READY, mover_key).exists()
+                        or queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists()):
                     continue      # its own recopy is queued or running; let it finish
                 receipt = queue.move_record(mover_key)
                 if receipt is not None and (
@@ -6331,13 +6331,13 @@ def reclaim_failed_mover_partials(
                     continue      # names nothing readable: nothing to evict
                 if not fragment["entries"]:
                     continue
-                if (queue.item_path(pool.READY, egress_key).exists()
-                        or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
+                        or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
                     asked.add(mover_key)
                     continue      # already asked; asking again would double the row
-                if (queue.item_path(pool.DONE, egress_key).exists()
-                        or queue.item_path(pool.FAILED, egress_key).exists()
-                        or queue.item_path(pool.WITHDRAWN, egress_key).exists()):
+                if (queue.records.item_path(pool.record_store.DONE, egress_key).exists()
+                        or queue.records.item_path(pool.record_store.FAILED, egress_key).exists()
+                        or queue.records.item_path(pool.record_store.WITHDRAWN, egress_key).exists()):
                     continue      # concluded and the fragment is still there:
                                   # it refused rather than raced; do not spin
                 reading = readers.get(mover_key)
@@ -6435,7 +6435,7 @@ def _advance_wants(queue: pool.PoolQueue,
                          if mover_role == "ram_mover_row"
                          else residency_plan.stage_mover_keys(plan))
             rowed = [key for key in role_keys
-                     if queue.item_path(pool.READY, str(key)).exists()]
+                     if queue.records.item_path(pool.record_store.READY, str(key)).exists()]
         except (OSError, pool.PoolContractError, ValueError) as exc:
             unknown.append({
                 "consumer": key, "tier_id": tier_id, "leg": mover_role,
@@ -6486,8 +6486,7 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
         plan_digest = residency_plan.plan_sha256(plan)
         start = int(leg["start_bytes"])
         stop = int(leg["end_bytes"])
-        row = pool._read_json(queue.item_path(
-            pool.READY, str(leg["mover_action_key"])))
+        row = pool.record_store.require(queue.records.item(pool.record_store.READY, str(leg["mover_action_key"])))
         published_unix = float((row or {}).get("published_unix"))  # type: ignore[arg-type]
     except (ValueError, OSError, KeyError, TypeError, pool.PoolContractError):
         return False
@@ -6756,7 +6755,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             # (its original lead retiring no longer re-gates it), so the
             # state check here is a second statement of that rule.
             return (bool(want["newcomer"])
-                    and want["consumer"].get("state") == pool.READY)
+                    and want["consumer"].get("state") == pool.record_store.READY)
 
         # Already-admitted windows keep their advancement authority before
         # new work. Among newcomers, honour priority before spending fresh
@@ -6827,7 +6826,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                          if unit.tier_id == tier_id]
         for want in tier_wants:
             unit = want.get("declared_unit")
-            if unit is not None and want["consumer"].get("state") != pool.CLAIMED:
+            if unit is not None and want["consumer"].get("state") != pool.record_store.CLAIMED:
                 want["newcomer"] = not prelaunch_tier.is_admitted(
                     unit, held, kind, want["already"])
         oblig_totals, oblig_detail = prelaunch_tier.obligations(
@@ -6943,7 +6942,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
             ranked_order, ranked = _claim_order_entry(claim_order, tier_id, key)
             claim_permit: str | None = None
             if (ranked_order is not None and not want["newcomer"]
-                    and want["consumer"].get("state") == pool.CLAIMED):
+                    and want["consumer"].get("state") == pool.record_store.CLAIMED):
                 standing = (str(ranked.get("standing")) if ranked is not None
                             else None)
                 head_waits = (
@@ -7190,7 +7189,7 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                             "reserved", "transferring")):
                     target_fence_live = True
             try:
-                mover_rowed = queue.item_path(pool.READY, mover).exists()
+                mover_rowed = queue.records.item_path(pool.record_store.READY, mover).exists()
             except (OSError, pool.PoolContractError) as exc:
                 unknown_consumers.add((key, tier_id))
                 events.append({"event": "advance-deferred-unknown-evidence",
@@ -7396,8 +7395,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
                 if str(leg["mover_action_key"]) in want["staged"]:
                     continue
                 try:
-                    if queue.item_path(
-                            pool.DONE, str(leg["egress_action_key"])).exists():
+                    if queue.records.item_path(
+                            pool.record_store.DONE, str(leg["egress_action_key"])).exists():
                         continue
                 except (OSError, pool.PoolContractError) as exc:
                     prior_unknown = exc
@@ -7755,8 +7754,8 @@ def _protect_tier_advances(queue: pool.PoolQueue,
 def _settle_live_row(queue: pool.PoolQueue,
                      mover: str) -> dict[str, object] | None:
     """One live ready or claimed row, or None when the key has none."""
-    for state in (pool.READY, pool.CLAIMED):
-        row = pool.read_queue_record(queue.item_path(state, mover))
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        row = pool.read_queue_record(queue.records.item_path(state, mover))
         if isinstance(row, Mapping):
             return dict(row)
     return None
@@ -7777,9 +7776,9 @@ def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
     except (TypeError, ValueError):
         return None
     seen = False
-    for state in (pool.DONE, pool.FAILED):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED):
         try:
-            ended = pool._read_json(queue.item_path(state, mover))
+            ended = pool.record_store.require(queue.records.item(state, mover))
         except (OSError, pool.PoolContractError):
             return None
         if ended is None:
@@ -7842,10 +7841,10 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 return events
             try:
                 live_row = _settle_live_row(queue, mover)
-                terminal = (queue.item_path(pool.DONE, mover).exists()
-                            or queue.item_path(pool.FAILED, mover).exists()
-                            or queue.item_path(
-                                pool.WITHDRAWN, mover).exists())
+                terminal = (queue.records.item_path(pool.record_store.DONE, mover).exists()
+                            or queue.records.item_path(pool.record_store.FAILED, mover).exists()
+                            or queue.records.item_path(
+                                pool.record_store.WITHDRAWN, mover).exists())
             except (OSError, pool.PoolContractError) as exc:
                 events.append({"event": "advance-deferred-unknown-evidence",
                                "consumer": consumer, "tier_id": str(tier_id),
@@ -7873,14 +7872,14 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 bound_to_attempt = False
                 proof_unknown: Exception | None = None
                 proof_reason: str | None = None
-                for _state in (pool.DONE, pool.FAILED):
+                for _state in (pool.record_store.DONE, pool.record_store.FAILED):
                     try:
-                        ended = pool._read_json(queue.item_path(_state, mover))
+                        ended = pool.record_store.require(queue.records.item(_state, mover))
                     except (OSError, pool.PoolContractError) as exc:
                         # A terminal file that exists but cannot be read
                         # may bind this fence: defer, do not free.
                         try:
-                            if queue.item_path(_state, mover).exists():
+                            if queue.records.item_path(_state, mover).exists():
                                 proof_unknown = exc
                                 break
                         except (OSError, pool.PoolContractError) as exc2:
@@ -7894,10 +7893,10 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                         # unproved -- it may be this attempt's own torn
                         # binding, so it defers like any unreadable one.
                         try:
-                            if queue.item_path(_state, mover).exists():
+                            if queue.records.item_path(_state, mover).exists():
                                 proof_reason = (
                                     f"terminal proof present but empty: "
-                                    f"{queue.item_path(_state, mover)}")
+                                    f"{queue.records.item_path(_state, mover)}")
                                 break
                         except (OSError, pool.PoolContractError) as exc2:
                             proof_unknown = exc2
@@ -7993,7 +7992,7 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
             or not batch_id or not owner_scope):
         return ("unknown", owner)
     try:
-        residency = queue.root / pool.RESIDENCY
+        residency = queue.root / pool.record_store.RESIDENCY
         scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
         instance = _po.validate_instance(
@@ -8045,7 +8044,7 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
             or not batch_id or not tier_id or not owner_scope):
         return (False, "funding binding unreadable")
     try:
-        residency = queue.root / pool.RESIDENCY
+        residency = queue.root / pool.record_store.RESIDENCY
         scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
         instance = _po.validate_instance(
@@ -8143,12 +8142,10 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
         return events
 
     try:
-        for state in (_pool_mod.READY, _pool_mod.CLAIMED):
-            if _pool_mod._read_json(
-                    queue.item_path(state, mover_name)) is not None:
+        for state in (_pool_mod.record_store.READY, _pool_mod.record_store.CLAIMED):
+            if _pool_mod.record_store.require(queue.records.item(state, mover_name)) is not None:
                 return events
-        withdrawn = _pool_mod._read_json(
-            queue.item_path(_pool_mod.WITHDRAWN, mover_name))
+        withdrawn = _pool_mod.record_store.require(queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name))
         if withdrawn is None:
             return events
     except (OSError, _pool_mod.PoolContractError, ValueError) as exc:
@@ -8265,12 +8262,12 @@ def _settle_protected(queue: pool.PoolQueue,
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
                 try:
-                    terminal = (queue.item_path(pool.DONE, mover).exists()
-                                or queue.item_path(pool.FAILED, mover).exists()
-                                or queue.item_path(
-                                    pool.WITHDRAWN, mover).exists())
-                    rowed = (queue.item_path(pool.READY, mover).exists()
-                             or queue.item_path(pool.CLAIMED, mover).exists())
+                    terminal = (queue.records.item_path(pool.record_store.DONE, mover).exists()
+                                or queue.records.item_path(pool.record_store.FAILED, mover).exists()
+                                or queue.records.item_path(
+                                    pool.record_store.WITHDRAWN, mover).exists())
+                    rowed = (queue.records.item_path(pool.record_store.READY, mover).exists()
+                             or queue.records.item_path(pool.record_store.CLAIMED, mover).exists())
                 except (OSError, pool.PoolContractError):
                     continue
                 bound = (record.get("tokens") if isinstance(record, dict)
@@ -8332,7 +8329,7 @@ def _settle_protected(queue: pool.PoolQueue,
                         and record.get("state") == "reserved"):
                     try:
                         mover_names = {
-                            path.name for path in pool._glob(
+                            path.name for path in pool.immutable_files.match_optional(
                                 ledger.held_dir / mover, "*-*")}
                     except (OSError, pool.PoolContractError, ValueError):
                         mover_names = set()
@@ -8353,7 +8350,7 @@ def _settle_protected(queue: pool.PoolQueue,
         if isinstance(_entry, dict) and isinstance(_entry.get("mover"), str):
             handled.add(str(_entry["mover"]))
     try:
-        funding_dir = queue.root / pool.TIER_FUNDING
+        funding_dir = queue.root / pool.record_store.TIER_FUNDING
         funding_files = sorted(funding_dir.glob("*.funding.json"))
         funding_files += sorted(funding_dir.glob("*.output-funding.json"))
     except (OSError, pool.PoolContractError, ValueError):
@@ -8585,8 +8582,8 @@ def _queued_mover(queue: pool.PoolQueue, mover: str
                   ) -> tuple[str, dict[str, object]] | None:
     """``(state, record)`` for a ready or claimed mover, else ``None``."""
 
-    for state in (pool.CLAIMED, pool.READY):
-        path = queue.item_path(state, mover)
+    for state in (pool.record_store.CLAIMED, pool.record_store.READY):
+        path = queue.records.item_path(state, mover)
         try:
             record = json.loads(path.read_text())
         except FileNotFoundError:
@@ -8594,7 +8591,7 @@ def _queued_mover(queue: pool.PoolQueue, mover: str
         except (OSError, ValueError):
             return state, {}
         if isinstance(record, dict):
-            if state == pool.READY:
+            if state == pool.record_store.READY:
                 record["passes"] = queue.passes(mover)
             return state, record
         return state, {}
@@ -8754,7 +8751,7 @@ def publish_landing_expectations(
     moment = time.time() if now is None else float(now)
     began = time.monotonic()
     events: list[dict[str, object]] = []
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     per_tier: dict[str, list[tuple[str, Mapping[str, object],
                                    dict[str, object]]]] = {}
     for consumer in consumers:
@@ -8769,7 +8766,7 @@ def publish_landing_expectations(
         if (tier_id not in tiers or storage_tiers.capacity_kind_of(tier_id)
                 != storage_tiers.STAGE_CAPACITY_KIND):
             continue
-        if consumer.get("state") != pool.CLAIMED:
+        if consumer.get("state") != pool.record_store.CLAIMED:
             residency_map.landing_path(root, key).unlink(missing_ok=True)
             _LANDING_FINGERPRINTS.pop((str(queue.root), key), None)
             continue
@@ -8797,7 +8794,7 @@ def publish_landing_expectations(
                 entry = {"mover_action_key": mover, "state": state,
                          "range_bytes": int(leg["end_bytes"]) - int(leg["start_bytes"]),
                          "claimed_unix": record.get("claimed_unix")}
-                if state == pool.CLAIMED:
+                if state == pool.record_store.CLAIMED:
                     # Two bounded reads per claimed mover per pass (#1010,
                     # #1090): its own report and its channel's.
                     report = _mover_report(
@@ -8863,8 +8860,8 @@ def publish_landing_expectations(
                                 "claimed_unix": next(
                                     (entry["claimed_unix"] for entry in order
                                      if entry["mover_action_key"] == mover), None)
-                                if state == pool.CLAIMED else None})
-                    if state == pool.READY:
+                                if state == pool.record_store.CLAIMED else None})
+                    if state == pool.record_store.READY:
                         # What ``bytes_ahead`` counts, by name: the verdict
                         # reads their leases while a hold freezes the bytes
                         # (#1022 review round 2).  The queue print below
@@ -8884,8 +8881,8 @@ def publish_landing_expectations(
                 # Error-visible: a holder this cannot list falls through to
                 # the plain unpublished label rather than a guess.
                 finished: str | None = None
-                if state is None and not superseded and queue.item_path(
-                        pool.DONE, mover).exists():
+                if state is None and not superseded and queue.records.item_path(
+                        pool.record_store.DONE, mover).exists():
                     try:
                         finished = ("done-not-resident" if pool.held_names_visible(
                             queue.tier_ledger(tier_id), mover) else "evicted")
@@ -8964,7 +8961,7 @@ def publish_landing_expectations(
                         row["deferred_by"] = deferred
                     ranges.append(row)
                     continue
-                failed = queue.item_path(pool.FAILED, mover).exists()
+                failed = queue.records.item_path(pool.record_store.FAILED, mover).exists()
                 if superseded:
                     row.update({"state": "terminal-no-receipt",
                                 "waiting_for": "nothing: the plan is superseded, "
@@ -9083,7 +9080,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # it too and defers every publication.  No sharer is known.
             consumers = []
     readers_of = _shared_readers(queue, consumers)
-    fragment_root = queue.residency_fragment_root()
+    fragment_root = queue.records.residency_fragment_root()
 
     def horizon_of(consumer, plan, tier_id):
         # One horizon per window for the gate and the publication alike
@@ -9264,7 +9261,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # On a ranked tier the walk, not the free remainder, says how much
         # this window may take (#1011): the one leg its standing is about.
         _order, ranked = _claim_order_entry(claim_order, tier_id, key)
-        if ranked is not None and consumer.get("state") == pool.CLAIMED:
+        if ranked is not None and consumer.get("state") == pool.record_store.CLAIMED:
             free = min(int(free), int(ranked.get("publish_gib") or 0))  # type: ignore[call-overload]
         # The minted total, not the free remainder: the run-ahead bound of a
         # rolling window is a fraction of the tier, and a bound read off what
@@ -9453,8 +9450,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                 entry.get("chunk_index"))
             if isinstance(egress_row, Mapping):
                 egress_key = str(egress_row["action_key"])  # type: ignore[index]
-                if (queue.item_path(pool.READY, egress_key).exists()
-                        or queue.item_path(pool.CLAIMED, egress_key).exists()):
+                if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
+                        or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
                     # A reclaim published this leg's egress and it has not
                     # run yet (#627).  The egress frees device bytes, not
                     # ledger tokens, so the window would otherwise republish
@@ -9575,8 +9572,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         for entry in decision["evict"]:
             row = dict(entry["egress_row"])                  # type: ignore[arg-type]
             egress_key = str(row["action_key"])
-            if (queue.item_path(pool.READY, egress_key).exists()
-                    or queue.item_path(pool.CLAIMED, egress_key).exists()):
+            if (queue.records.item_path(pool.record_store.READY, egress_key).exists()
+                    or queue.records.item_path(pool.record_store.CLAIMED, egress_key).exists()):
                 continue      # already asked; asking again would double the row
             sharers = readers_of.get(str(entry["mover_action_key"]))
             if (sharers is not None and set(sharers[1]) - {key}
@@ -9604,7 +9601,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             compose_map(queue, key, ram_tiers={
                 tier_id: record for tier_id, record in tiers.items()
                 if record.get("tier") == "ram"},
-                running=consumer.get("state") == pool.CLAIMED)
+                running=consumer.get("state") == pool.record_store.CLAIMED)
         except (residency_map.ResidencyMapError, OSError) as exc:
             # A map that cannot be composed leaves the previous one in place
             # and the consumer on the pool: slower, never wrong.
@@ -9662,7 +9659,7 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
             continue
         for key in sorted(keys):
             try:
-                if queue.item_path(pool.CLAIMED, key).exists():
+                if queue.records.item_path(pool.record_store.CLAIMED, key).exists():
                     continue
                 rates = {kind: count
                          for kind, count in ledger.holder_tokens(key).items()
@@ -10572,12 +10569,12 @@ class Liveness:
         now = self._now()
         suffix = f":{host}"
         adopted: list[str] = []
-        for path in pool._glob(queue.root / pool.TIERS, "*.json"):
+        for path in pool.immutable_files.match_optional(queue.root / pool.record_store.TIERS, "*.json"):
             tier_id = path.stem
             if not tier_id.endswith(suffix):
                 continue
             try:
-                record = pool._read_json(path)
+                record = pool.record_store.read_queue_record(path)
             except (OSError, pool.PoolContractError, ValueError):
                 continue           # an unreadable record is a dead one
             if (not isinstance(record, dict)
@@ -10947,7 +10944,7 @@ def _cycle(
     # Checkpointed inside, per entry listed and read (#1148): the read can
     # outlast the liveness bound on a loaded pool.
     fill_records = receipts.read(
-        [queue.root / pool.PREWARM, queue.root / MOVER_RECEIPTS],
+        [queue.root / pool.record_store.PREWARM, queue.root / MOVER_RECEIPTS],
         queue=queue,
         **({} if phases.liveness is None else {"liveness": phases.liveness}))
     phases.lap("receipts")
@@ -11652,7 +11649,7 @@ def _serve_cycles(args, stop: Event) -> int:
             if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
                     or runtime_gate.read_maintenance_gate() is not None):
                 continue
-            candidate.ensure_layout()
+            candidate.records.ensure_layout()
             if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
                     or runtime_gate.read_maintenance_gate() is not None):
                 continue

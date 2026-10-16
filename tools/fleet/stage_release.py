@@ -494,7 +494,7 @@ def _queue_record_bytes(path: Path) -> bytes | None:
 
 def _queue_record_from_bytes(path: Path, raw: bytes | None,
                              ) -> dict[str, object] | None:
-    """``pool._read_json``'s answer for bytes already read: same checks."""
+    """``pool.record_store.read_queue_record``'s answer for bytes already read: same checks."""
 
     if not raw:
         return None
@@ -512,7 +512,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
                   ) -> list[tuple[Path, dict[str, object] | None]]:
     """Every entry of one queue state directory with its record, name order.
 
-    ``pool._scan`` then ``pool._read_json`` per entry, with the same answers
+    ``pool.immutable_files.scan_optional`` then ``pool.record_store.read_queue_record`` per entry, with the same answers
     and the same raises.  Inside a tier-loop cycle
     (:func:`queue_records_from`) the directory is listed only when it changed
     and a record read only when its file did; each caller still gets its own
@@ -521,9 +521,9 @@ def queue_records(queue: pool.PoolQueue, state: str,
 
     reader = _QUEUE_RECORDS.get()
     if reader is None:
-        return [(path, pool._read_json(path))
-                for path in pool._scan(queue.dir(state))]
-    return reader.read(queue.dir(state), select=lambda _entry: True,
+        return [(path, pool.record_store.read_queue_record(path))
+                for path in pool.immutable_files.scan_optional(queue.records.dir(state))]
+    return reader.read(queue.records.dir(state), select=lambda _entry: True,
                        parse=_queue_record_bytes,
                        thaw=_queue_record_from_bytes)  # type: ignore[return-value]
 
@@ -1096,13 +1096,13 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pool._scan(queue.dir(pool.CLAIMED)))
+                      for path in pool.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
     except OSError as exc:
         return paths, [f"claimed: {exc}"], own_paths
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool._read_json(queue.item_path(pool.CLAIMED, key))
+            item = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -1160,7 +1160,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
             (own_paths if own_claim else paths).update(remembered)
             continue
         try:
-            request = pool._read_json(
+            request = pool.record_store.read_queue_record(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
@@ -1297,7 +1297,7 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
 
     interested: list[str] = []
     unknown: list[str] = []
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for path, item in queue_records(queue, state):
             if not isinstance(item, dict):
                 continue
@@ -1320,7 +1320,7 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
             if leg is None or leg.get("mover_role") != "mover_row":
                 continue
             accepted = None
-            if state == pool.CLAIMED:
+            if state == pool.record_store.CLAIMED:
                 claimed_unix = item.get("claimed_unix")
                 if (isinstance(claimed_unix, bool)
                         or not isinstance(claimed_unix, (int, float))):
@@ -1342,8 +1342,8 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
 def _range_live_or_landed(queue: pool.PoolQueue, mover_action_key: str) -> bool:
     """Whether a mover is queued, running, or filed a complete receipt."""
 
-    if (queue.item_path(pool.READY, mover_action_key).exists()
-            or queue.item_path(pool.CLAIMED, mover_action_key).exists()):
+    if (queue.records.item_path(pool.record_store.READY, mover_action_key).exists()
+            or queue.records.item_path(pool.record_store.CLAIMED, mover_action_key).exists()):
         return True
     receipt = queue.move_record(mover_action_key)
     return isinstance(receipt, Mapping) and receipt.get("complete") is True
@@ -1541,7 +1541,7 @@ def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     """
 
     root = Path(residency_root if residency_root is not None
-                else queue.root / pool.RESIDENCY)
+                else queue.root / pool.record_store.RESIDENCY)
     if (consumer_action_key != namespace and not range_wide
             and _range_live_or_landed(queue, mover_action_key)):
         try:
@@ -1705,7 +1705,7 @@ def _evict_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                                 consumer_action_key=consumer_action_key,
                                 reason=reason)
     root = Path(residency_root if residency_root is not None
-                else queue.root / pool.RESIDENCY)
+                else queue.root / pool.record_store.RESIDENCY)
     fragment_path = residency_map.fragment_path(
         root, consumer_action_key, mover_action_key)
     entries: dict[str, object] = {}
@@ -1950,13 +1950,13 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pool._scan(queue.dir(pool.CLAIMED)))
+                      for path in pool.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
     except OSError as exc:
         return paths, [f"claimed: {exc}"]
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool._read_json(queue.item_path(pool.CLAIMED, key))
+            item = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -1990,7 +1990,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
             paths.update(remembered)
             continue
         try:
-            request = pool._read_json(
+            request = pool.record_store.read_queue_record(
                 Path(own_cas) / "requests" / key[:2] / f"{key}.json")
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
@@ -3489,7 +3489,7 @@ def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
 
     wanted: set[str] = set()
     owners: dict[str, str] = {}
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for path, item in queue_records(queue, state):
             if not isinstance(item, dict):
                 continue
@@ -3545,13 +3545,13 @@ def _metadata_absent(path: Path) -> bool:
 def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     """Read a regular, identity-bound queue outcome; filenames are not proof."""
     record = json.loads(
-        pb.immutable_files.read_stable_file(queue.item_path(state, key), where="dead-owner outcome"),
+        pb.immutable_files.read_stable_file(queue.records.item_path(state, key), where="dead-owner outcome"),
     )
     if (not isinstance(record, dict)
             or record.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1
             or record.get("action_key") != key):
         raise pool.PoolContractError("dead-owner outcome identity mismatch")
-    queue.attempt_generation(record)  # validates a finite generation and key
+    queue.records.attempt_generation(record)  # validates a finite generation and key
     return record
 
 
@@ -3564,7 +3564,7 @@ def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
     remains exact and arbitrary extra fields still refuse.
     """
 
-    marker = _owner_record(queue, pool.WITHDRAWN, key)
+    marker = _owner_record(queue, pool.record_store.WITHDRAWN, key)
     decisions = queue.withdrawal_decisions(key, generation=marker["published_unix"])
     if (marker.get("status") != "withdrawn" or len(decisions) != 1
             or queue.withdrawal_covers(marker, action_key=key) != decisions[0][1]):
@@ -3578,7 +3578,7 @@ def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
                    ("action_key", "published_unix", "max_attempts", "retry_safe"))):
         raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
     ending = queue.adopted_attempt_summary(retained)
-    if ending["status"] != pool.WITHDRAWN or ending["disposition"] != pool.WITHDRAWN:
+    if ending["status"] != pool.record_store.WITHDRAWN or ending["disposition"] != pool.record_store.WITHDRAWN:
         raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
     expected = {**decision, "withdrawn_attempt": retained}
     for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup", "container_cleanup"):
@@ -3601,7 +3601,7 @@ def _partial_done_receipt_matches(queue, consumer: str, mover: str,
     A complete or unknown copy is outside this narrow recovery contract.
     """
     record = json.loads(
-        pb.immutable_files.read_stable_file(queue.move_path(mover), where="partial DONE move receipt"),
+        pb.immutable_files.read_stable_file(queue.records.move_path(mover), where="partial DONE move receipt"),
     )
     if not isinstance(record, dict):
         raise pool.PoolContractError("partial DONE receipt is not an object")
@@ -3644,17 +3644,17 @@ class _TerminalNames:
     def __init__(self, queue: pool.PoolQueue) -> None:
         self._queue = queue
         self._seen: dict[tuple[str, str], bool] = {}
-        for state in (pool.FAILED, pool.WITHDRAWN, pool.DONE):
-            if not statmod.S_ISDIR(os.stat(queue.dir(state)).st_mode):
+        for state in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, pool.record_store.DONE):
+            if not statmod.S_ISDIR(os.stat(queue.records.dir(state)).st_mode):
                 raise NotADirectoryError(
                     errno.ENOTDIR, "terminal directory is not a directory",
-                    str(queue.dir(state)))
+                    str(queue.records.dir(state)))
 
     def has(self, state: str, key: str) -> bool:
         found = self._seen.get((state, key))
         if found is None:
             try:
-                os.lstat(self._queue.item_path(state, key))
+                os.lstat(self._queue.records.item_path(state, key))
                 found = True
             except FileNotFoundError:
                 found = False
@@ -3760,8 +3760,8 @@ def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
                 live, why = residency_plan.live_state(queue, key)
                 if live or why:
                     return None
-            if (not _metadata_absent(queue.lease_path(consumer))
-                    or not _metadata_absent(queue.residency_plan_path(consumer))):
+            if (not _metadata_absent(queue.records.lease_path(consumer))
+                    or not _metadata_absent(queue.records.residency_plan_path(consumer))):
                 return None
             with queue.mover_transition_lock(mover):
                 if not _metadata_absent(
@@ -3894,7 +3894,7 @@ def sweep_dead_owner_fragments(
     whole discovery above, before any unit runs.
     """
     root = Path(residency_root if residency_root is not None
-                else queue.root / pool.RESIDENCY)
+                else queue.root / pool.record_store.RESIDENCY)
     if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
         if uncharged is not None:
             uncharged.known = False
@@ -3955,10 +3955,10 @@ def sweep_dead_owner_fragments(
             tier = fragment.get("tier_id")
             if (direct and _namespace_shaped(consumer)
                     and tier in held_by_tier
-                    and (named.has(pool.FAILED, consumer)
-                         or named.has(pool.WITHDRAWN, consumer))
-                    and (named.has(pool.WITHDRAWN, mover)
-                         or named.has(pool.DONE, mover))):
+                    and (named.has(pool.record_store.FAILED, consumer)
+                         or named.has(pool.record_store.WITHDRAWN, consumer))
+                    and (named.has(pool.record_store.WITHDRAWN, mover)
+                         or named.has(pool.record_store.DONE, mover))):
                 # The charge is not a discovery filter: a charged,
                 # material-bearing DONE owner is the #853 shape the material
                 # branch prunes.  The zero-charge gates of #839/#866 stay in
@@ -4022,26 +4022,26 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                 return
             # Exactly one terminal record: failed or withdrawn.  Two is
             # not a death but a question, and done is not a death at all.
-            if not _metadata_absent(queue.item_path(pool.DONE, consumer)):
+            if not _metadata_absent(queue.records.item_path(pool.record_store.DONE, consumer)):
                 return
             consumer_failed = not _metadata_absent(
-                queue.item_path(pool.FAILED, consumer))
+                queue.records.item_path(pool.record_store.FAILED, consumer))
             consumer_withdrawn = not _metadata_absent(
-                queue.item_path(pool.WITHDRAWN, consumer))
+                queue.records.item_path(pool.record_store.WITHDRAWN, consumer))
             if consumer_failed == consumer_withdrawn:
                 return
-            if (not _metadata_absent(queue.lease_path(consumer))
-                    or not _metadata_absent(queue.residency_plan_path(consumer))):
+            if (not _metadata_absent(queue.records.lease_path(consumer))
+                    or not _metadata_absent(queue.records.residency_plan_path(consumer))):
                 return
             if consumer_failed:
-                failed = _owner_record(queue, pool.FAILED, consumer)
+                failed = _owner_record(queue, pool.record_store.FAILED, consumer)
                 # Reuse the queue's canonical history/generation/log
                 # checks; no whole-model hashing, and only once for this
                 # consumer.
                 ending = queue.adopted_attempt_summary(failed)
                 if (failed.get("status") != "failed"
                         or ending["status"] != "failed"
-                        or ending["disposition"] != pool.FAILED):
+                        or ending["disposition"] != pool.record_store.FAILED):
                     return
             else:
                 # A withdrawn consumer is as dead as a failed one when its
@@ -4057,22 +4057,22 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                             refuse(f"ownership uncertain: {why}", consumer, mover)
                         if live or why:
                             continue
-                        if not _metadata_absent(queue.item_path(pool.FAILED, mover)):
+                        if not _metadata_absent(queue.records.item_path(pool.record_store.FAILED, mover)):
                             continue
-                        done = not _metadata_absent(queue.item_path(pool.DONE, mover))
+                        done = not _metadata_absent(queue.records.item_path(pool.record_store.DONE, mover))
                         if done:
-                            if not _metadata_absent(queue.item_path(pool.WITHDRAWN, mover)):
+                            if not _metadata_absent(queue.records.item_path(pool.record_store.WITHDRAWN, mover)):
                                 continue
-                            terminal = _owner_record(queue, pool.DONE, mover)
+                            terminal = _owner_record(queue, pool.record_store.DONE, mover)
                             ending = queue.adopted_attempt_summary(terminal)
                             if (terminal.get("status") != "executed"
                                     or ending["status"] != "executed"
-                                    or ending["disposition"] != pool.DONE):
+                                    or ending["disposition"] != pool.record_store.DONE):
                                 continue
                         else:
                             _require_exact_withdrawal(queue, mover)
                         tier = str(observed["tier_id"])
-                        if not _metadata_absent(queue.lease_path(mover)):
+                        if not _metadata_absent(queue.records.lease_path(mover)):
                             continue
                         material_present = not _metadata_absent(
                             reader_lease.material_path(root, consumer, mover))
@@ -4121,7 +4121,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                         if not _metadata_absent(
                                 queue.tier_ledger(tier).held_dir / mover):
                             continue
-                        if not done and not _metadata_absent(queue.move_path(mover)):
+                        if not done and not _metadata_absent(queue.records.move_path(mover)):
                             continue
                         current = residency_map.validate_fragment(
                             json.loads(pb.immutable_files.read_stable_file(residency_map.fragment_path(root, consumer, mover), where="dead-owner fragment")),
@@ -4318,7 +4318,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                         stage_root=stage_root,
                         residency_root=Path(
                             residency_root if residency_root is not None
-                            else queue.root / pool.RESIDENCY))
+                            else queue.root / pool.record_store.RESIDENCY))
                     if outcome["complete"]:
                         swept.append(outcome)
                     else:
@@ -4337,7 +4337,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                 if fragment_owners is None:
                     fragment_owners = _held_mover_fragment_owners(
                         Path(residency_root if residency_root is not None
-                             else queue.root / pool.RESIDENCY), index)
+                             else queue.root / pool.record_store.RESIDENCY), index)
                 consumer, why = _receiptless_owner(fragment_owners, key)
                 if consumer:
                     why = _unended_owner(queue, consumer)
@@ -4542,14 +4542,14 @@ def _unended_owner(queue: pool.PoolQueue, consumer: str) -> str:
             return f"its consumer's queue state is uncertain: {why}"
         if live:
             return f"its consumer {consumer[:12]} is still queued ({live})"
-        ended = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-                 if not _metadata_absent(queue.item_path(state, consumer))]
+        ended = [state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
+                 if not _metadata_absent(queue.records.item_path(state, consumer))]
         if not ended:
             return f"its consumer {consumer[:12]} has no outcome record"
         if len(ended) > 1:
             return (f"its consumer {consumer[:12]} has {len(ended)} outcome "
                     f"records: {', '.join(ended)}")
-        if ended[0] == pool.WITHDRAWN:
+        if ended[0] == pool.record_store.WITHDRAWN:
             _require_exact_withdrawal(queue, consumer)
         else:
             _owner_record(queue, ended[0], consumer)
@@ -4625,8 +4625,8 @@ def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
     if not _is_action_key(key):
         return False
     try:
-        return any(not _metadata_absent(queue.item_path(state, key))
-                   for state in (pool.READY, pool.CLAIMED))
+        return any(not _metadata_absent(queue.records.item_path(state, key))
+                   for state in (pool.record_store.READY, pool.record_store.CLAIMED))
     except OSError:
         return False
 
@@ -4682,7 +4682,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
             or not _is_action_key(owner) or not nonce or not template_id
             or not batch_id):
         return unknown("its output funding record does not name this mover's batch")
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     scope = (residency / produced_output.OUTPUT_SCOPES_SUBDIR / owner
              / f"{template_id}.{nonce}")
     try:
@@ -4721,11 +4721,11 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     if producer == "live":
         return {"class": "live",
                 "why": f"its producer attempt {owner[:12]} holds its claim"}
-    if mover_state in (pool.READY, pool.CLAIMED, "moving"):
+    if mover_state in (pool.record_store.READY, pool.record_store.CLAIMED, "moving"):
         return {"class": "live", "why": f"the mover itself is {mover_state}"}
     if producer not in ("dead", "succeeded"):
         return unknown(f"its producer attempt {owner[:12]} is {producer}")
-    if mover_state not in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    if mover_state not in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         return unknown(f"the mover's own queue state is {mover_state}")
     if str(record.get("state")) not in ("consumed", "released"):
         return unknown(f"its output funding is {record.get('state')}, not a settled end")
@@ -4926,7 +4926,7 @@ def _named_census(queue: pool.PoolQueue, *, wanted: set[str] | None,
     """
 
     root = Path(residency_root if residency_root is not None
-                else queue.root / pool.RESIDENCY)
+                else queue.root / pool.record_store.RESIDENCY)
     fragments, tainted = _fragment_census(root, memo)
     of_wanted: set[str] = set()
     of_any: set[str] = set()
@@ -5630,7 +5630,7 @@ def _move_receipt(queue: pool.PoolQueue, action_key: str, *,
     """
 
     try:
-        record = pool._read_json(queue.move_path(action_key))
+        record = pool.record_store.read_queue_record(queue.records.move_path(action_key))
     except (OSError, pool.PoolContractError) as exc:
         return None, f"{action_key[:12]}: receipt unreadable: {exc}"
     if not isinstance(record, Mapping):
@@ -6060,7 +6060,7 @@ def recover_orphaned_range(
         hint_paths = {os.path.normpath(str(stage / relative))
                       for relative in scope["names"]}
         _fragment_owners(Path(residency_root if residency_root is not None
-                              else queue.root / pool.RESIDENCY),
+                              else queue.root / pool.record_store.RESIDENCY),
                          hint_paths, memo=memo)
         reader_lease.live_for(queue, None, residency_root=residency_root,
                               memo=memo.pins)
@@ -6073,9 +6073,9 @@ def recover_orphaned_range(
         """The ownership decision and the act, under the stage lock."""
 
         for key, label in ((head_action_key, "head"), (consumer, "consumer")):
-            for state in (pool.READY, pool.CLAIMED):
+            for state in (pool.record_store.READY, pool.record_store.CLAIMED):
                 try:
-                    if queue.item_path(state, key).exists():
+                    if queue.records.item_path(state, key).exists():
                         return refuse(
                             f"{label} {key[:12]} is still {state}; recovery "
                             f"acts only on a finished request")
@@ -6105,7 +6105,7 @@ def recover_orphaned_range(
         # applies to its own fragment.  No mover is excepted, so a withdrawn
         # mover's fragment retains too -- one more kept file is a pass.
         fragment_root = Path(residency_root if residency_root is not None
-                             else queue.root / pool.RESIDENCY)
+                             else queue.root / pool.record_store.RESIDENCY)
         scope_paths = {os.path.normpath(str(stage / relative))
                        for relative in names}
         parse_counts = memo.counts()
@@ -6229,7 +6229,7 @@ def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str) -> set[str]:
     """
 
     out: set[str] = set()
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for path, item in queue_records(queue, state):
             residency = item.get("residency") if isinstance(item, dict) else None
             if not isinstance(residency, dict):
