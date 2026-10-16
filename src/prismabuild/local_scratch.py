@@ -1434,6 +1434,21 @@ def profile_cost(offer, intent, *, now):
     return result
 
 
+def admission_generation_changed(item, evidence, *, generation, attempt, observed_generation):
+    return (generation != observed_generation
+            or attempt != item.get("attempts", 0)
+            or generation != evidence["generation"]
+            or attempt != evidence["attempts"])
+
+
+def admission_refusal(*, changed: bool, expired: bool) -> str | None:
+    if changed:
+        return "local_scratch_io_generation_changed"
+    if expired:
+        return "local_scratch_io_profile_expired"
+    return None
+
+
 class ProfileInputs:
     """Configured executed CAS profiles, verified outside host admission.
 

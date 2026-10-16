@@ -80,14 +80,8 @@ def test_overflowing_generation_is_dropped_not_raised(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     writes = _writes(monkeypatch)
-
-    def scan(*, holds, **kwargs):
-        with queue._transition_locked("a" * 64):
-            queue.record_denial({"action_key": "a" * 64,
-                                 "published_unix": 10 ** 400}, "placement_mismatch")
-
-    monkeypatch.setattr(queue, "_claim_pass", scan)
-    queue._claim()  # float(10**400) overflows; dropped, not raised
+    queue.record_denial({"action_key": "a" * 64, "published_unix": 10 ** 400},
+                        "placement_mismatch")
     assert pool._CLAIM_DIAGNOSTICS.get() is None
     assert not writes or all("a" * 64 not in (row.get("action_key") or "")
                              for row in writes[-1]["records"].values())
@@ -95,76 +89,82 @@ def test_overflowing_generation_is_dropped_not_raised(tmp_path, monkeypatch):
 
 def test_exception_flushes_and_resets_context(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    item = {"action_key": "a" * 64, "published_unix": 1.0}
+    key = "a" * 64
+    publish(queue, key, resources={"cpu": 2})
     writes = _writes(monkeypatch)
+    original = queue.record_denial
 
-    def fail(*, holds, **kwargs):
-        queue.record_denial(item, "placement_mismatch")
+    def fail(item, reason, evidence=None):
+        original(item, reason, evidence)
         assert not writes
         raise LookupError("original pass failure")
 
-    monkeypatch.setattr(queue, "_claim_pass", fail)
+    monkeypatch.setattr(queue, "record_denial", fail)
     with pytest.raises(LookupError, match="original pass failure"):
-        queue._claim()
+        queue.claim(capacity={"cpu": 1})
     assert len(writes) == 1
     assert pool._CLAIM_DIAGNOSTICS.get() is None
-    queue.record_denial(item, "placement_mismatch")
-    assert len(writes) == 2  # standalone use still commits immediately
+    assert queue.item_path(pool.READY, key).is_file()
+    assert queue.ledger().held_keys() == []
+    monkeypatch.setattr(queue, "record_denial", original)
+    queue.record_denial(pool.read_queue_record(queue.item_path(pool.READY, key)), "placement_mismatch")
+    assert len(writes) == 2
 
 
 def test_failed_flush_does_not_mask_original_exception(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    key = "a" * 64
+    publish(queue, key, resources={"cpu": 2})
+    original = queue.record_denial
 
     def broken_write(*args):
         raise OSError("diagnostic disk full")
 
-    def fail(*, holds, **kwargs):
-        queue.record_denial({"action_key": "a" * 64, "published_unix": 1.0},
-                            "placement_mismatch")
+    def fail(item, reason, evidence=None):
+        original(item, reason, evidence)
         raise LookupError("original pass failure")
 
     monkeypatch.setattr(adaptive_cpu, "write_json", broken_write)
-    monkeypatch.setattr(queue, "_claim_pass", fail)
+    monkeypatch.setattr(queue, "record_denial", fail)
     with pytest.raises(LookupError, match="original pass failure"):
-        queue._claim()
+        queue.claim(capacity={"cpu": 1})
     assert pool._CLAIM_DIAGNOSTICS.get() is None
+    assert queue.item_path(pool.READY, key).is_file()
+    assert queue.ledger().held_keys() == []
 
 
 def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    item = {"action_key": "a" * 64, "published_unix": 1.0}
+    key = "a" * 64
+    publish(queue, key, resources={"cpu": 2})
     writes = _writes(monkeypatch)
+    original = queue.record_denial
 
-    def scan(*, holds, **kwargs):
-        with queue._transition_locked(item["action_key"]) as acquired:
-            assert acquired
-            queue.record_denial(item, "reservation_unavailable")
-            assert queue.denial_transitions_path(item["action_key"]).is_file()
-            assert not writes
+    def observe(item, reason, evidence=None):
+        original(item, reason, evidence)
+        assert queue.denial_transitions_path(key).is_file()
+        assert not writes
 
-    monkeypatch.setattr(queue, "_claim_pass", scan)
-    queue._claim()
+    monkeypatch.setattr(queue, "record_denial", observe)
+    assert queue.claim(capacity={"cpu": 1}) is None
     assert len(writes) == 1
 
 
 def test_other_queue_does_not_join_current_batch(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "one")
     other = pool.PoolQueue(tmp_path / "two")
-    queue.ensure_layout()
+    publish(queue, "a" * 64, resources={"cpu": 2})
     other.ensure_layout()
-    item = {"action_key": "a" * 64, "published_unix": 1.0}
+    original = queue.record_denial
 
-    def scan(*, holds, **kwargs):
-        queue.record_denial(item, "placement_mismatch")
-        other.record_denial(item, "placement_mismatch")
+    def observe(item, reason, evidence=None):
+        original(item, reason, evidence)
+        other.record_denial(item, reason, evidence)
         assert local_records(other)
         assert not local_records(queue)
 
-    monkeypatch.setattr(queue, "_claim_pass", scan)
-    queue._claim()
+    monkeypatch.setattr(queue, "record_denial", observe)
+    assert queue.claim(capacity={"cpu": 1}) is None
     assert local_records(queue)
 
 
@@ -173,55 +173,62 @@ def test_interleaved_passes_merge_and_preserve_newer_peer_verdict(tmp_path, monk
     import threading
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
     clock = threading.local()
-    first_buffered, second_flushed = threading.Event(), threading.Event()
-    same = {"action_key": "a" * 64, "published_unix": 1.0}
-    unrelated = {"action_key": "b" * 64, "published_unix": 1.0}
+    clock.value = 1.0
     monkeypatch.setattr(pool, "_now", lambda: clock.value)
+    same, unrelated = "a" * 64, "b" * 64
+    for key in (same, unrelated):
+        publish(queue, key, resources={"cpu": 1}, tags=["foreign"])
+    first_buffered, second_flushed = threading.Event(), threading.Event()
+    original = queue.record_denial
 
-    def scan(*, holds, newer, **kwargs):
-        clock.value = 200.0 if newer else 100.0
-        if newer:
-            assert first_buffered.wait(5)
-            queue.record_denial(same, "placement_mismatch", {"version": "new"})
-            queue.record_denial(unrelated, "placement_mismatch")
+    def observe(item, reason, evidence=None):
+        newer = clock.value == 200.0
+        if item["action_key"] == same:
+            if newer:
+                assert first_buffered.wait(5)
+                original(item, reason, {"version": "new"})
+            else:
+                original(item, reason, {"version": "old"})
+                first_buffered.set()
+                assert second_flushed.wait(5)
         else:
-            queue.record_denial(same, "placement_mismatch", {"version": "old"})
-            first_buffered.set()
-            assert second_flushed.wait(5)
+            original(item, reason, evidence)
 
-    def newer_pass():
+    def claim(newer):
+        clock.value = 200.0 if newer else 100.0
         try:
-            queue._claim(newer=True)
+            assert queue.claim(tags=["local"], owner="diagnostic-observer") is None
         finally:
-            second_flushed.set()
+            if newer:
+                second_flushed.set()
 
-    monkeypatch.setattr(queue, "_claim_pass", scan)
+    monkeypatch.setattr(queue, "record_denial", observe)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        old = executor.submit(queue._claim, newer=False)
-        new = executor.submit(newer_pass)
+        old = executor.submit(claim, False)
+        new = executor.submit(claim, True)
         old.result(timeout=10)
         new.result(timeout=10)
     records = list(local_records(queue).values())
     assert len(records) == 2
-    assert next(row for row in records if row["action_key"] == same["action_key"])["evidence"] == {"version": "new"}
+    assert next(row for row in records if row["action_key"] == same)["evidence"] == {"version": "new"}
+    assert all(queue.item_path(pool.READY, key).is_file() for key in (same, unrelated))
 
 
 def test_pending_diagnostics_are_bounded(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    for index in range(pool.MAX_CLAIM_DENIALS + 20):
+        publish(queue, f"{index:064x}", resources={"cpu": 1}, tags=["foreign"])
+    original = queue.record_denial
 
-    def scan(*, holds, **kwargs):
-        for index in range(pool.MAX_CLAIM_DENIALS + 20):
-            queue.record_denial({"action_key": f"{index:064x}", "published_unix": 1.0},
-                                "placement_mismatch")
-            batch = pool._CLAIM_DIAGNOSTICS.get()
-            assert batch is not None
-            assert len(batch.denials) <= pool.MAX_CLAIM_DENIALS
+    def observe(item, reason, evidence=None):
+        original(item, reason, evidence)
+        batch = pool._CLAIM_DIAGNOSTICS.get()
+        assert batch is not None
+        assert len(batch.denials) <= pool.MAX_CLAIM_DENIALS
 
-    monkeypatch.setattr(queue, "_claim_pass", scan)
-    queue._claim()
+    monkeypatch.setattr(queue, "record_denial", observe)
+    assert queue.claim(tags=["local"]) is None
     assert len(local_records(queue)) == pool.MAX_CLAIM_DENIALS
 
 

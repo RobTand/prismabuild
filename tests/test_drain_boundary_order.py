@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools/fleet")]
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from claim_transition_fixture import held_transition
 
 KEY_H, KEY_A, KEY_B = "0" * 64, "a" * 64, "b" * 64
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 104}
@@ -34,14 +35,6 @@ def local_records(queue):
 
 def _record_for(queue, key):
     return next(value for value in local_records(queue).values() if value["action_key"] == key)
-
-
-class _unheld:
-    def __enter__(self):
-        return False
-
-    def __exit__(self, *args):
-        return False
 
 
 def _age_the_withhold_episode(queue, key, seconds):
@@ -77,23 +70,17 @@ def test_a_busy_row_keeps_the_drain_boundary_when_its_episode_expired(tmp_path, 
     _age_the_withhold_episode(queue, KEY_A, pool.WITHHOLD_CEILING_S + 1.0)
     ledger.release(KEY_H)
 
-    original = queue._transition_locked
-
-    def contested(key, **kwargs):
-        return _unheld() if key == KEY_A else original(key, **kwargs)
-
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    # Another loop is deciding the head row at the boundary: this pass must
-    # not claim the lower-priority row behind it while that decision pends.
-    assert queue.claim(capacity=CAPACITY) is None
-    busy = _record_for(queue, KEY_A)
-    assert busy["reason"] == "transition_busy"
-    assert busy["evidence"]["gpu_room_kept"] == {"cpu": 6, "gpu": 1, "mem_gb": 64}
-    assert busy["evidence"]["gpu_room_binds_all"] is True
-    deferred = _record_for(queue, KEY_B)
-    assert deferred["reason"] == "deferred_for_ready_gpu_row"
-    assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
-    monkeypatch.setattr(queue, "_transition_locked", original)
+    with held_transition(queue, KEY_A):
+        # Another loop is deciding the head row at the boundary: this pass must
+        # not claim the lower-priority row behind it while that decision pends.
+        assert queue.claim(capacity=CAPACITY) is None
+        busy = _record_for(queue, KEY_A)
+        assert busy["reason"] == "transition_busy"
+        assert busy["evidence"]["gpu_room_kept"] == {"cpu": 6, "gpu": 1, "mem_gb": 64}
+        assert busy["evidence"]["gpu_room_binds_all"] is True
+        deferred = _record_for(queue, KEY_B)
+        assert deferred["reason"] == "deferred_for_ready_gpu_row"
+        assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
     # Once the sibling is done, the head row takes its boundary.
     assert queue.claim(capacity=CAPACITY)["action_key"] == KEY_A
 
@@ -117,28 +104,26 @@ def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(KEY_A)
 
-    original = queue._transition_locked
+    history = queue._host_denial_records
 
-    def contested(key, **kwargs):
-        if key == KEY_A:
-            # The quantum holder finishes while the sibling decides the row.
-            ledger.release(KEY_H)
-            return _unheld()
-        return original(key, **kwargs)
+    def release_at_denial_read():
+        records = history()
+        ledger.release(KEY_H)
+        return records
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    claimed = queue.claim(capacity=CAPACITY)
-    assert claimed is None, (
-        f"claimed {claimed and claimed['action_key'][:4]} past the busy head row "
-        "whose holder released mid-pass")
-    busy = _record_for(queue, KEY_A)
-    assert busy["reason"] == "transition_busy"
-    assert busy["evidence"]["gpu_room_kept"] == {"cpu": 6, "gpu": 1, "mem_gb": 64}
-    assert busy["evidence"]["gpu_room_binds_all"] is True
-    deferred = _record_for(queue, KEY_B)
-    assert deferred["reason"] == "deferred_for_ready_gpu_row"
-    assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
-    monkeypatch.setattr(queue, "_transition_locked", original)
+    monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)
+    with held_transition(queue, KEY_A):
+        claimed = queue.claim(capacity=CAPACITY)
+        assert claimed is None, (
+            f"claimed {claimed and claimed['action_key'][:4]} past the busy head row "
+            "whose holder released mid-pass")
+        busy = _record_for(queue, KEY_A)
+        assert busy["reason"] == "transition_busy"
+        assert busy["evidence"]["gpu_room_kept"] == {"cpu": 6, "gpu": 1, "mem_gb": 64}
+        assert busy["evidence"]["gpu_room_binds_all"] is True
+        deferred = _record_for(queue, KEY_B)
+        assert deferred["reason"] == "deferred_for_ready_gpu_row"
+        assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
     assert queue.claim(capacity=CAPACITY)["action_key"] == KEY_A
 
 
@@ -162,19 +147,19 @@ def test_a_malformed_busy_row_keeps_no_room_and_ends_no_pass(tmp_path, monkeypat
             raise pool.PoolContractError("pool item resources must be an object")
         return demand_of(item)
 
-    original = queue._transition_locked
+    history = queue._host_denial_records
 
-    def contested(key, **kwargs):
-        if key == KEY_A:
-            ledger.release(KEY_H)
-            return _unheld()
-        return original(key, **kwargs)
+    def release_at_denial_read():
+        records = history()
+        ledger.release(KEY_H)
+        return records
 
+    monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)
     monkeypatch.setattr(queue, "demand_of", malformed)
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    claimed = queue.claim(capacity=CAPACITY)
-    assert claimed is not None and claimed["action_key"] == KEY_B
-    assert "gpu_room_kept" not in _record_for(queue, KEY_A)["evidence"]
+    with held_transition(queue, KEY_A):
+        claimed = queue.claim(capacity=CAPACITY)
+        assert claimed is not None and claimed["action_key"] == KEY_B
+        assert "gpu_room_kept" not in _record_for(queue, KEY_A)["evidence"]
 
 
 def test_a_cpu_row_fills_beside_a_binds_all_room(tmp_path, monkeypatch):
@@ -191,19 +176,14 @@ def test_a_cpu_row_fills_beside_a_binds_all_room(tmp_path, monkeypatch):
     publish(queue, "c" * 64, priority=-10, resources={"cpu": 2, "mem_gb": 8})
     publish(queue, "d" * 64, priority=-11, resources={"cpu": 2, "mem_gb": 80})
 
-    original = queue._transition_locked
-
-    def contested(key, **kwargs):
-        return _unheld() if key == KEY_A else original(key, **kwargs)
-
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    # The CPU row that fits beside the room is admitted.
-    assert queue.claim(capacity=CAPACITY)["action_key"] == "c" * 64
-    # The row the room leaves no memory for is deferred, not merely short.
-    assert queue.claim(capacity=CAPACITY) is None
-    deferred = _record_for(queue, "d" * 64)
-    assert deferred["reason"] == "deferred_for_ready_gpu_row", deferred
-    assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
+    with held_transition(queue, KEY_A):
+        # The CPU row that fits beside the room is admitted.
+        assert queue.claim(capacity=CAPACITY)["action_key"] == "c" * 64
+        # The row the room leaves no memory for is deferred, not merely short.
+        assert queue.claim(capacity=CAPACITY) is None
+        deferred = _record_for(queue, "d" * 64)
+        assert deferred["reason"] == "deferred_for_ready_gpu_row", deferred
+        assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
 
 
 class _SampledGPU:
@@ -253,13 +233,7 @@ def test_a_busy_row_with_no_history_still_keeps_its_place(tmp_path, monkeypatch)
     publish(queue, KEY_A, priority=-9, resources={"cpu": 6, "gpu": 1, "mem_gb": 64})
     publish(queue, KEY_B, priority=-10, resources={"cpu": 6, "gpu": 1, "mem_gb": 69})
 
-    original = queue._transition_locked
-
-    def contested(key, **kwargs):
-        return _unheld() if key == KEY_A else original(key, **kwargs)
-
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    assert queue.claim(capacity=CAPACITY) is None
-    assert _record_for(queue, KEY_B)["reason"] == "deferred_for_ready_gpu_row"
-    monkeypatch.setattr(queue, "_transition_locked", original)
+    with held_transition(queue, KEY_A):
+        assert queue.claim(capacity=CAPACITY) is None
+        assert _record_for(queue, KEY_B)["reason"] == "deferred_for_ready_gpu_row"
     assert queue.claim(capacity=CAPACITY)["action_key"] == KEY_A
