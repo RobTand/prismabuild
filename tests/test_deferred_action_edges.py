@@ -212,7 +212,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     deferred = ae.read_deferred(queue.root, pending)
     assert deferred is not None
     assert deferred["publication"]["priority_reason"] == "producer gate"
-    assert {row.stem for row in queue.dir(pool.READY).glob("*.json")} == {
+    assert {row.stem for row in queue.records.dir(pool.record_store.READY).glob("*.json")} == {
         producer}, "nothing is queued for the consumer yet"
 
     # The producer is queued, then running: the consumer waits, quietly.
@@ -236,7 +236,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     summary = [event for event in events if event["event"] == dr.TICK_EVENT]
     assert summary[0]["released"] == 1 and summary[0]["elapsed_s"] >= 0
     assert ae.read_published(queue.root, pending)["action_key"] == key
-    assert json.loads(queue.item_path(pool.READY, key).read_text())["priority_reason"] == "producer gate"
+    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())["priority_reason"] == "producer gate"
     assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
     assert (po._consumers_dir(queue.root, instance, "b1")
@@ -269,7 +269,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     # the tier loop's next cycle copies it to each consumer that reads the
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
-    composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+    composed = rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, key))
     staged = composed["entries"][rm.residency_map_key(str(path), 0)]
     assert Path(staged["stage_path"]).read_bytes() == payload
 
@@ -613,7 +613,7 @@ def test_a_pinned_release_resumes_as_pinned_after_a_crash(
     assert resumed["resumed"] is True
     assert resumed["action_key"] == pinned["action_key"]
     assert resumed["refs"] == [committed["ref"]]
-    assert queue.item_path(pool.READY, pinned["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, pinned["action_key"]).exists()
 
 
 def test_a_release_published_before_a_crash_records_that_generation(
@@ -636,11 +636,11 @@ def test_a_release_published_before_a_crash_records_that_generation(
     monkeypatch.setattr(ae, "file_published", crash)
     dr.release_tick(queue)
     key = ae.read_release(queue.root, pending)["action_key"]
-    row = json.loads(queue.item_path(pool.READY, key).read_text())
+    row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     monkeypatch.setattr(ae, "file_published", record)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["published_unix"] == row["published_unix"]
-    assert json.loads(queue.item_path(pool.READY, key).read_text()) == row, (
+    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()) == row, (
         "the row was not published a second time")
 
 

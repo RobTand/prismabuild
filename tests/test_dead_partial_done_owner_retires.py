@@ -29,7 +29,7 @@ def dead_done_owner(fleet):
         'errors': ['interrupted partial publication']})
     queue.finish(mover, status='executed', detail={'returncode': 0})
     assert not queue.tier_ledger(base.TIER).holder_tokens(mover)
-    assert reader_lease.read_material(queue.residency_fragment_root(), consumer, mover) is None
+    assert reader_lease.read_material(queue.records.residency_fragment_root(), consumer, mover) is None
     return consumer, mover
 
 
@@ -42,7 +42,7 @@ def test_housekeeping_retires_partial_done_and_successor_copies_and_pins(fleet, 
                              computed=None, source_id=None, heal=True)[0] == 'refuse'
     receipts = base.stage_release.sweep(queue, stage_roots={base.TIER: str(stage)}, pressure={})
     assert any(r.get('action_key') == mover and r.get('complete') for r in receipts)
-    assert not base.residency_map.fragment_path(queue.residency_fragment_root(), consumer, mover).exists()
+    assert not base.residency_map.fragment_path(queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not any((stage / name).exists() for name in base.NAMES)
 
     mount = tmp_path / 'sources'
@@ -67,7 +67,7 @@ def test_housekeeping_retires_partial_done_and_successor_copies_and_pins(fleet, 
         '--consumer-action-key', successor, '--tier-id', base.TIER,
         '--stage-root', str(stage), '--manifest', str(path), '--manifest-sha256', manifest_digest,
         '--range-start-bytes', '0', '--range-end-bytes', str(len(entries) * base.SIZE),
-        '--residency-root', str(queue.residency_fragment_root()), '--readers', '1',
+        '--residency-root', str(queue.records.residency_fragment_root()), '--readers', '1',
         '--max-readers', '1', '--unpaced'])
     result = base.stage_move.move(args)
     assert result['complete'] and result['entries_staged'] == len(entries)
@@ -101,7 +101,7 @@ def test_uncertain_or_live_done_owner_retains(fleet, damage):
                        'bytes': {'bytes_staged': 1}}[damage])
         queue.record_move(mover, record)
     elif damage == 'material':
-        path = reader_lease.material_path(queue.residency_fragment_root(), consumer, mover)
+        path = reader_lease.material_path(queue.records.residency_fragment_root(), consumer, mover)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{}')
     elif damage in ('live_owner', 'live_mover'):
@@ -109,10 +109,10 @@ def test_uncertain_or_live_done_owner_retains(fleet, damage):
         queue.publish(action_key=key, cas_root='/cas', checkout_root='/co', worker_script='/w.py',
                       resources={'cpu': 1}, recompute=True)
     elif damage == 'terminal_proof':
-        terminal = json.loads(queue.item_path(base.pool.DONE, mover).read_text())
-        queue.attempt_path(terminal, terminal['attempts']).unlink()
+        terminal = json.loads(queue.records.item_path(base.pool.record_store.DONE, mover).read_text())
+        queue.records.attempt_path(terminal, terminal['attempts']).unlink()
     elif damage in ('missing_receipt', 'receipt_symlink'):
-        path = queue.move_path(mover)
+        path = queue.records.move_path(mover)
         if damage == 'receipt_symlink':
             other = path.with_suffix('.captured')
             path.rename(other)
@@ -124,7 +124,7 @@ def test_uncertain_or_live_done_owner_retains(fleet, damage):
         assert queue.tier_ledger(base.TIER).acquire(mover, {'stage_gib': 1})
     base.stage_release.sweep_dead_owner_fragments(queue, stage_roots={base.TIER: str(stage)})
     assert all((stage / name).exists() for name in base.NAMES)
-    assert base.residency_map.fragment_path(queue.residency_fragment_root(), consumer, mover).exists()
+    assert base.residency_map.fragment_path(queue.records.residency_fragment_root(), consumer, mover).exists()
 
 
 def test_done_retirement_preserves_a_live_coowners_bytes(fleet, monkeypatch):

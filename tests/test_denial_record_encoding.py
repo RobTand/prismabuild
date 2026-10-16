@@ -18,7 +18,7 @@ def queue(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "_now", lambda: 100.0)
     monkeypatch.setattr(adaptive_cpu.adaptive_snapshot, "publish", lambda *args: None)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -49,7 +49,7 @@ def test_latest_and_transition_files_keep_exact_wire_records(queue, monkeypatch)
                              "published_unix": 2.0, "count": 1, "last_unix": 40.0}]}
     assert _latest_path(queue).read_bytes() == json.dumps(
         expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    assert queue.denial_transitions_path(KEY).read_bytes() == json.dumps(
+    assert queue.records.denial_transitions_path(KEY).read_bytes() == json.dumps(
         ring, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
@@ -66,7 +66,7 @@ def test_dependency_evidence_preserves_omission_and_explicit_values(queue, item_
     record = _latest(queue)["records"][f"{KEY}:1.0"]
     assert record["evidence"] == expected
     assert record["attempts"] == 0
-    assert not queue.denial_transitions_path(KEY).exists()
+    assert not queue.records.denial_transitions_path(KEY).exists()
 
 
 def test_evidence_bounds_preserve_collisions_depth_and_sequence_order(queue):
@@ -113,7 +113,7 @@ def test_bounding_precedes_the_latest_timestamp_after_the_ring(queue, monkeypatc
 
     class Observation:
         def __repr__(self):
-            assert queue.denial_transitions_path(KEY).exists()
+            assert queue.records.denial_transitions_path(KEY).exists()
             events.append("bounded")
             return "observed"
 
@@ -141,8 +141,8 @@ def test_latest_encoding_failure_keeps_the_already_written_transition(queue):
 
 
 def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatch):
-    path = queue.denial_transitions_path(KEY)
-    original_read, original_write = pool._read_json, pool._write_json_atomic
+    path = queue.records.denial_transitions_path(KEY)
+    original_read, original_write = pool.record_store.read_queue_record, pool._write_json_atomic
     reads, writes = [], []
 
     def read(candidate):
@@ -157,7 +157,7 @@ def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatc
                 raise OSError("first write failed")
         return original_write(candidate, document)
 
-    monkeypatch.setattr(pool, "_read_json", read)
+    monkeypatch.setattr(pool.record_store, '_read_json', read)
     monkeypatch.setattr(pool, "_write_json_atomic", write)
     item = {"action_key": KEY, "published_unix": 1.0}
     queue._record_denial_transition(item, host="box", reason="fixture", decision_reason=None)
@@ -170,7 +170,7 @@ def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatc
 
 
 def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypatch):
-    path = queue.denial_transitions_path(KEY)
+    path = queue.records.denial_transitions_path(KEY)
     path.parent.mkdir(parents=True, exist_ok=True)
     original = {"transitions": [
         {"host": "box", "published_unix": 1.0, "reason": "returning", "decision_reason": None,
@@ -179,7 +179,7 @@ def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypat
          "unix": 2.0, "last_unix": 2.0, "count": 1}]}
     path.write_text(json.dumps(original))
     events = []
-    old_read = pool._read_json
+    old_read = pool.record_store.read_queue_record
 
     def read(candidate):
         if candidate == path:
@@ -190,7 +190,7 @@ def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypat
         events.append("clock")
         return 10.0
 
-    monkeypatch.setattr(pool, "_read_json", read)
+    monkeypatch.setattr(pool.record_store, '_read_json', read)
     monkeypatch.setattr(pool, "_now", clock)
     for _ in range(2):
         queue._record_denial_transition(
@@ -201,7 +201,7 @@ def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypat
 
 
 def test_corrupt_ring_is_replaced_without_losing_the_latest_record(queue):
-    path = queue.denial_transitions_path(KEY)
+    path = queue.records.denial_transitions_path(KEY)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{broken")
     queue.record_denial({"action_key": KEY, "published_unix": 1.0}, "fixture")
@@ -217,7 +217,7 @@ def test_overflow_failure_boundary_depends_on_ring_exemption(queue, reason, rais
             queue.record_denial(item, reason)
     else:
         queue.record_denial(item, reason)
-    assert not queue.denial_transitions_path(KEY).exists()
+    assert not queue.records.denial_transitions_path(KEY).exists()
     assert not _latest_path(queue).exists()
 
 

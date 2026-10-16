@@ -85,7 +85,7 @@ def test_a_progress_tag_without_its_sealed_declaration_never_reaches_ready(tmp_p
     queue, action, cas, checkout = _sealed_request(tmp_path, {})
     with pytest.raises(pool.PoolContractError, match=tag + ".*requires"):
         _publish(queue, action, cas, checkout, tags=[tag])
-    assert not queue.item_path(pool.READY, action["action_key"]).exists()
+    assert not queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 
 @pytest.mark.parametrize("extra,required", [
@@ -106,7 +106,7 @@ def test_an_alternate_publisher_derives_the_fence_from_the_sealed_request(
     assert set(row["tags"]) == required
     assert action["params"]["placement"]["required_tags"] == []
     assert queue.claim(tags=[], capacity={"cpu": 4, "mem_gb": 8}) is None
-    assert queue.item_path(pool.READY, action["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 
 @pytest.mark.parametrize("script,egress", [("stage_release.py", True),
@@ -145,7 +145,7 @@ def test_unknown_sealed_declaration_never_authorizes_a_progress_tag(tmp_path, da
         _replace_request_with_corrupt_json(request)
     with pytest.raises(pool.PoolContractError):
         _publish(queue, action, cas, checkout, tags=[contracts.PROGRESS_TAG])
-    assert not queue.item_path(pool.READY, action["action_key"]).exists()
+    assert not queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 
 def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypatch):

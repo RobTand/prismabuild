@@ -45,7 +45,7 @@ def _key() -> str:
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -74,7 +74,7 @@ def _fail_consumer(queue: pool.PoolQueue) -> tuple[str, float]:
     holder = _publish(queue, key, max_attempts=1)
     generation = float(holder["published_unix"])
     queue.finish(key, status="failed", detail={"returncode": 1})
-    assert queue.item_path(pool.FAILED, key).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, key).exists()
     return key, generation
 
 
@@ -89,7 +89,7 @@ def _withdraw_mover(queue: pool.PoolQueue, *, conclude: bool = True) -> str:
         # no receipt).
         queue.finish(key, status="withdrawn", detail={"returncode": -15},
                      claim_snapshot=holder)
-    assert queue.item_path(pool.WITHDRAWN, key).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
     return key
 
 
@@ -103,7 +103,7 @@ def _stage_marked(stage: Path, name: str) -> Path:
 
 def _write_fragment(queue: pool.PoolQueue, stage: Path, consumer: str,
                     mover: str, names: list[str]) -> Path:
-    return residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    return residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -127,7 +127,7 @@ def _dead_owner(fleet) -> tuple[str, str]:
     _write_fragment(queue, stage, consumer, mover, NAMES)
     assert queue.move_record(mover) is None, "dead mover must file no receipt"
     assert mover not in queue.tier_ledger(TIER).held_keys()
-    assert not queue.item_path(pool.CLAIMED, mover).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     return consumer, mover
 
 
@@ -135,7 +135,7 @@ def _publisher(fleet, mover: str, consumer: str) -> stage_move._StagedPublisher:
     queue, stage, cas = fleet
     return stage_move._StagedPublisher(
         queue=queue, stage_root=stage,
-        residency_root=queue.root / pool.RESIDENCY,
+        residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
         tier_id=TIER, cas_root=cas, consumer_action_key=consumer)
 
@@ -162,7 +162,7 @@ def test_dead_owner_fragment_blocks_a_same_path_mover(queue, stages, actions) ->
     assert reconciled["unowned_left"] == len(NAMES), reconciled
     assert all((stage / name).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_housekeeping_retires_the_dead_owner_and_unblocks(fleet) -> None:
@@ -181,7 +181,7 @@ def test_housekeeping_retires_the_dead_owner_and_unblocks(fleet) -> None:
     assert retired, f"dead owner {mover[:12]} was not retired: {receipts}"
     assert not any((stage / name).exists() for name in NAMES)
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_a_live_owner_is_retained(fleet) -> None:
@@ -207,7 +207,7 @@ def test_a_tainted_census_refuses_the_pass(fleet) -> None:
     """Unknown ownership retains: an unreadable fragment refuses the pass."""
     queue, stage, _cas = fleet
     consumer, mover = _dead_owner(fleet)
-    residue = queue.root / pool.RESIDENCY / consumer / "residue.json"
+    residue = queue.root / pool.record_store.RESIDENCY / consumer / "residue.json"
     residue.write_bytes(b"{not json")
     receipts = stage_release.sweep(
         queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
@@ -215,7 +215,7 @@ def test_a_tainted_census_refuses_the_pass(fleet) -> None:
                             for entry in receipts)
     assert all((stage / name).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_a_path_shared_with_a_live_owner_is_kept(fleet) -> None:
@@ -237,7 +237,7 @@ def test_a_path_shared_with_a_live_owner_is_kept(fleet) -> None:
     assert not (stage / NAMES[1]).exists()
     assert live_fragment.exists()
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_a_surviving_covered_claim_is_skipped_not_evicted(fleet) -> None:
@@ -250,7 +250,7 @@ def test_a_surviving_covered_claim_is_skipped_not_evicted(fleet) -> None:
     queue, stage, _cas = fleet
     consumer, _generation = _fail_consumer(queue)
     mover = _withdraw_mover(queue, conclude=False)
-    assert queue.item_path(pool.CLAIMED, mover).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     for name in NAMES:
         _stage_marked(stage, name)
     fragment = _write_fragment(queue, stage, consumer, mover, NAMES)
@@ -266,17 +266,17 @@ def test_a_surviving_covered_claim_is_skipped_not_evicted(fleet) -> None:
 def _assert_retained(queue, stage, consumer, mover):
     assert all((stage / name).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
-@pytest.mark.parametrize('state', [pool.FAILED, pool.WITHDRAWN])
+@pytest.mark.parametrize('state', [pool.record_store.FAILED, pool.record_store.WITHDRAWN])
 @pytest.mark.parametrize('damage', ['wrong-key', 'wrong-generation', 'wrong-schema',
                                     'malformed', 'empty', 'symlink', 'directory'])
 def test_unknown_terminal_identity_retains(fleet, state, damage):
     import json
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
-    path = queue.item_path(state, consumer if state == pool.FAILED else mover)
+    path = queue.records.item_path(state, consumer if state == pool.record_store.FAILED else mover)
     record = json.loads(path.read_bytes())
     if damage == 'wrong-key':
         record['action_key'] = _key()
@@ -309,18 +309,18 @@ def test_missing_or_unknown_authority_is_not_absence(fleet, which):
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
     if which == 'decision':
-        marker = json.loads(queue.item_path(pool.WITHDRAWN, mover).read_bytes())
-        queue.withdrawal_decision_path(marker).unlink()
+        marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, mover).read_bytes())
+        queue.records.withdrawal_decision_path(marker).unlink()
     elif which == 'attempt':
-        failed = json.loads(queue.item_path(pool.FAILED, consumer).read_bytes())
-        queue.attempt_path(failed, failed['attempts']).unlink()
+        failed = json.loads(queue.records.item_path(pool.record_store.FAILED, consumer).read_bytes())
+        queue.records.attempt_path(failed, failed['attempts']).unlink()
     else:
-        path = {'receipt': queue.move_path(mover),
-                'material': reader_lease.material_path(queue.root / pool.RESIDENCY,
+        path = {'receipt': queue.records.move_path(mover),
+                'material': reader_lease.material_path(queue.root / pool.record_store.RESIDENCY,
                                                       consumer, mover),
-                'consumer-lease': queue.lease_path(consumer),
-                'mover-lease': queue.lease_path(mover),
-                'plan': queue.residency_plan_path(consumer)}[which]
+                'consumer-lease': queue.records.lease_path(consumer),
+                'mover-lease': queue.records.lease_path(mover),
+                'plan': queue.records.residency_plan_path(consumer)}[which]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{"schema":"unknown"}')
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
@@ -347,7 +347,7 @@ def test_republication_after_census_retains_new_generation(fleet, monkeypatch, o
     monkeypatch.setattr(stage_release, '_fragment_census', census)
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     _assert_retained(queue, stage, consumer, mover)
-    assert queue.item_path(pool.READY, consumer if owner == 'consumer' else mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, consumer if owner == 'consumer' else mover).exists()
 
 
 def _probe_locks(root, keys, result):
