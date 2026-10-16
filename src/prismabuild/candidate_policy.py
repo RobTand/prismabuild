@@ -395,3 +395,50 @@ def busy_denial(
         if kept.binds_all:
             evidence["gpu_room_binds_all"] = True
     return CandidateDenial("transition_busy", evidence or None, order)
+
+
+@dataclass(frozen=True)
+class TierCompleteness:
+    wanted: int
+    incomplete: bool
+
+
+def tier_completeness(demand, funded, borrowed, waived, *, filed: int) -> TierCompleteness:
+    tier_wanted = sum(sum(needs.values()) for needs in demand.values())
+    tier_funded_total = sum(
+        sum(entry["kinds"].values())
+        for entry in funded.values()
+        if isinstance(entry, dict)
+        and isinstance(entry.get("kinds"), dict))
+    # Funded credit counts exactly once: the fence the
+    # coordinator transferred under this key now belongs to
+    # this claim, and only the remainder came from free.
+    # Fill borrowed from the producer's family (#999) takes
+    # no token of its own.
+    tier_borrowed_total = sum(
+        int(entry.get("borrowed", 0))
+        for entry in (borrowed or {}).values()
+        if isinstance(entry, dict))
+    tier_waived_total = (int(waived["waived"])  # type: ignore[call-overload]
+                         if waived else 0)
+    incomplete = (filed + tier_funded_total + tier_borrowed_total
+                  + tier_waived_total < tier_wanted)
+    return TierCompleteness(tier_wanted, incomplete)
+
+
+class MovedClaimPosition(Enum):
+    CLASS_REFUSED = "class_refused"
+    BACKFILL_REFUSED = "backfill_refused"
+    BACKFILL_BINDING = "backfill_binding"
+    PLACEMENT = "placement"
+
+
+def moved_claim_position(class_verdict, moved, backfill) -> MovedClaimPosition:
+    class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
+    if class_refused:
+        return MovedClaimPosition.CLASS_REFUSED
+    if backfill:
+        if moved.get("priority") != -10:
+            return MovedClaimPosition.BACKFILL_REFUSED
+        return MovedClaimPosition.BACKFILL_BINDING
+    return MovedClaimPosition.PLACEMENT

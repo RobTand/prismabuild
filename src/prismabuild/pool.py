@@ -22490,10 +22490,12 @@ class PoolQueue:
                         class_verdict = (image_check.evidence["container_class_verdict"]
                                          if isinstance(image_check, capability_eligibility.CapabilityRefusal)
                                          else image_check.class_verdict)
-                    class_refused = class_verdict is not None and not class_verdict["container_work_eligible"]
-                    if (class_refused
-                            or (gang_backfill and (moved.get("priority") != -10
-                                or self._preemption_proof_binding(moved) != backfill_binding))
+                    position = candidate_policy.moved_claim_position(class_verdict, moved, gang_backfill)
+                    class_refused = position is candidate_policy.MovedClaimPosition.CLASS_REFUSED
+                    if (position in (candidate_policy.MovedClaimPosition.CLASS_REFUSED,
+                                     candidate_policy.MovedClaimPosition.BACKFILL_REFUSED)
+                            or (position is candidate_policy.MovedClaimPosition.BACKFILL_BINDING
+                                and self._preemption_proof_binding(moved) != backfill_binding)
                             or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                             or self.demand_of(moved) != sealed_demand
                             or (scratch_intent is not None and (
@@ -22519,25 +22521,11 @@ class PoolQueue:
                     # and a committed tier token answers to the key, which every
                     # release path returns.
                     tier_filed = self._commit_tier_acquire(key, reservation.tier_handles)
-                    tier_wanted = sum(sum(needs.values()) for needs in tier_demand.values())
-                    tier_funded_total = sum(
-                        sum(entry["kinds"].values())
-                        for entry in reservation.tier_funded.values()
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("kinds"), dict))
-                    # Funded credit counts exactly once: the fence the
-                    # coordinator transferred under this key now belongs to
-                    # this claim, and only the remainder came from free.
-                    # Fill borrowed from the producer's family (#999) takes
-                    # no token of its own.
-                    tier_borrowed_total = sum(
-                        int(entry.get("borrowed", 0))
-                        for entry in (tier_borrowed or {}).values()
-                        if isinstance(entry, dict))
-                    tier_waived_total = (int(tier_fill_waived["waived"])  # type: ignore[call-overload]
-                                         if tier_fill_waived else 0)
-                    incomplete = (tier_filed + tier_funded_total + tier_borrowed_total
-                                  + tier_waived_total < tier_wanted)
+                    tier_completeness = candidate_policy.tier_completeness(
+                        tier_demand, reservation.tier_funded, tier_borrowed,
+                        tier_fill_waived, filed=tier_filed)
+                    tier_wanted = tier_completeness.wanted
+                    incomplete = tier_completeness.incomplete
                     filed = 0
                     if ledger is not None and reservation.host_handle is not None:
                         # Won the rename, so the reservation stops belonging to this

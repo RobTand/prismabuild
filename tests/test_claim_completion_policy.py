@@ -68,3 +68,44 @@ def test_unfunded_credit_never_looks_up_an_owner():
             raise AssertionError("unfunded owner read")
 
     assert policy.unfunded_measurement_blocker({"action_key": "head"}, Unread(), funded=False)
+
+
+@pytest.mark.parametrize("filed,funded,borrowed,waived,wanted,incomplete", [
+    (0, {}, None, None, 0, False),
+    (3, {}, None, None, 4, True),
+    (4, {}, None, None, 4, False),
+    (2, {"stage": {"kinds": {"stage_gib": 2}}}, None, None, 4, False),
+    (1, {"stage": {"kinds": {"stage_gib": 2}}}, None, None, 4, True),
+    (1, {}, {"family": {"borrowed": "2"}}, {"waived": "1"}, 4, False),
+    (3, {"unknown": None}, {"unknown": None}, None, 4, True),
+    (9, {}, None, None, 4, False),
+])
+def test_only_filed_funded_borrowed_or_waived_tier_capacity_counts(
+        filed, funded, borrowed, waived, wanted, incomplete):
+    demand = {} if wanted == 0 else {"stage": {"stage_gib": 2}, "ram": {"ram_gib": 2}}
+    verdict = policy.tier_completeness(demand, funded, borrowed, waived, filed=filed)
+    assert verdict.wanted == wanted
+    assert verdict.incomplete is incomplete
+
+
+@pytest.mark.parametrize("verdict,backfill,priority,position", [
+    (None, [], None, policy.MovedClaimPosition.PLACEMENT),
+    ({"container_work_eligible": True}, [], 7, policy.MovedClaimPosition.PLACEMENT),
+    ({"container_work_eligible": False}, ["election"], -10, policy.MovedClaimPosition.CLASS_REFUSED),
+    (None, ["election"], -9, policy.MovedClaimPosition.BACKFILL_REFUSED),
+    (None, ["election"], "-10", policy.MovedClaimPosition.BACKFILL_REFUSED),
+    (None, ["election"], -10, policy.MovedClaimPosition.BACKFILL_BINDING),
+])
+def test_moved_class_and_backfill_priority_decide_the_next_required_proof(
+        verdict, backfill, priority, position):
+    assert policy.moved_claim_position(verdict, {"priority": priority}, backfill) is position
+
+
+def test_class_refusal_and_an_ordinary_row_skip_backfill_priority():
+    class Unread(dict):
+        def get(self, *args):
+            raise AssertionError("backfill priority observed")
+
+    assert policy.moved_claim_position(
+        {"container_work_eligible": False}, Unread(), ["election"]) is policy.MovedClaimPosition.CLASS_REFUSED
+    assert policy.moved_claim_position(None, Unread(), []) is policy.MovedClaimPosition.PLACEMENT
