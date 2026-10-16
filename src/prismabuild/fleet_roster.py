@@ -30,7 +30,12 @@ keeping a second copy of the spelling.
 
 from __future__ import annotations
 
+import json
 import math
+from dataclasses import dataclass
+from pathlib import Path
+
+from .digest_primitives import raw_sha256
 import re
 from collections.abc import Mapping
 
@@ -48,6 +53,122 @@ ABSENT = (RETIRED, OFFLINE)
 
 class RosterPresenceError(ValueError):
     """A roster box whose presence cannot be established."""
+
+
+@dataclass(frozen=True)
+class Roster:
+    """One exact roster capture; layout, decoding and policy belong here."""
+
+    path: Path
+    raw: bytes
+    sha256: str
+    document: dict
+
+    @classmethod
+    def read(cls, path: str | Path, *, expected_sha256: str | None = None) -> Roster:
+        path = Path(path)
+        return cls.capture(path.read_bytes(), path=path, expected_sha256=expected_sha256)
+
+    @classmethod
+    def capture(cls, raw: bytes, *, path: Path = Path("<roster>"),
+                expected_sha256: str | None = None) -> Roster:
+        digest = raw_sha256(raw)
+        if expected_sha256 is not None and digest != expected_sha256:
+            raise ValueError("roster bytes differ from publication manifest")
+
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate roster key {key!r}")
+                result[key] = value
+            return result
+
+        def constant(value):
+            raise ValueError(f"nonfinite roster number {value}")
+
+        def finite(value):
+            number = float(value)
+            if not math.isfinite(number):
+                constant(value)
+            return number
+
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
+                              parse_constant=constant, parse_float=finite)
+        if not isinstance(document, dict):
+            raise ValueError("fleet roster must be a JSON object")
+        return cls(Path(path), raw, digest, document)
+
+    @staticmethod
+    def paths(root: str | Path, *, flat_first: bool = False) -> tuple[Path, ...]:
+        root = Path(root)
+        nested = root / "tools" / "fleet" / "fleet_boxes.json"
+        flat = root / "tools" / "fleet_boxes.json"
+        return (flat, nested) if flat_first else (nested, flat)
+
+    @classmethod
+    def at(cls, root: str | Path, *, flat_first: bool = False) -> Roster:
+        for path in cls.paths(root, flat_first=flat_first):
+            try:
+                return cls.read(path)
+            except OSError:
+                continue
+        raise FileNotFoundError(f"no readable fleet roster under {root}")
+
+    @classmethod
+    def available(cls, *, roots=(), paths=(), flat_first: bool = False):
+        """Readable boxed captures in deliberate layout/fallback order."""
+        candidates = [p for root in roots for p in cls.paths(root, flat_first=flat_first)]
+        for path in (*candidates, *paths):
+            try:
+                roster = cls.read(path)
+                roster.boxes
+            except (OSError, ValueError):
+                continue
+            yield roster
+
+    @property
+    def boxes(self) -> dict:
+        boxes = self.document.get("boxes")
+        if not isinstance(boxes, dict):
+            raise ValueError("fleet roster must declare boxes as an object")
+        return boxes
+
+    @property
+    def d38_enforce(self) -> bool:
+        value = self.document.get("d38_enforce", False)
+        if type(value) is not bool:
+            raise ValueError("d38_enforce must be a JSON boolean")
+        return value
+
+    @property
+    def gpu_interpreters(self) -> tuple[str, ...]:
+        value = self.document.get("gpu_interpreters", [])
+        if (not isinstance(value, list)
+                or any(not isinstance(p, str) or not p.startswith("/") for p in value)):
+            raise ValueError("gpu_interpreters must be an array of absolute paths")
+        return tuple(value)
+
+    def disk_floor_percent(self, entry: Mapping | None = None) -> int | None:
+        field = "local_disk_free_floor_percent"
+        value = (entry if entry is not None and field in entry else self.document).get(field)
+        if value is not None and (type(value) is not int or not 0 <= value < 100):
+            raise ValueError(f"{field} must be a whole percent from 0 to 99 (found {value!r})")
+        return value
+
+    def validate_publication(self) -> None:
+        """Reject newly published bytes before strict generation readers use them."""
+        self.d38_enforce
+        self.gpu_interpreters
+        self.disk_floor_percent()
+        if "boxes" in self.document:
+            boxes = self.boxes
+            generation_aliases(boxes)
+            for key, entry in boxes.items():
+                if not isinstance(entry, dict):
+                    raise ValueError(f"invalid roster box {key!r}")
+                box_status(key, entry)
+                self.disk_floor_percent(entry)
 
 
 def box_status(key: str, entry: object) -> tuple[str, dict[str, object]]:

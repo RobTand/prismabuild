@@ -1046,21 +1046,12 @@ def _candidate_roster(expected_sha256: str) -> dict:
     """The roster this publication would publish, or refuse."""
 
     try:
-        raw = (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_bytes()
-        if raw_sha256(raw) != expected_sha256:
-            raise ValueError("bytes differ from publication manifest")
-        document = json.loads(raw.decode("utf-8"))
+        roster = fleet_roster.Roster.read(
+            fleet_roster.Roster.paths(CHECKOUT)[0], expected_sha256=expected_sha256)
+        roster.validate_publication()
     except (OSError, ValueError) as exc:
-        raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
-    if not isinstance(document, dict):
-        raise SystemExit("cannot read the candidate roster: not a JSON object")
-    boxes = document.get("boxes")
-    if isinstance(boxes, dict):
-        try:
-            fleet_roster.generation_aliases(boxes)
-        except fleet_roster.RosterPresenceError as exc:
-            raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
-    return document
+        raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
+    return roster.document
 
 
 def _roster_option_record(args, candidate: dict | None) -> dict[str, object] | None:
