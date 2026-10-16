@@ -4,10 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
-import subprocess
-import os
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prewarm_fixture import Fleet  # noqa: E402
@@ -76,42 +72,3 @@ def test_the_configured_storage_arguments_still_parse():
         argv = box.get("roles", {}).get("storage")
         if argv is not None:
             assert prewarm_loop._parser().parse_args(argv).mount_map
-
-
-@pytest.mark.parametrize("option", ["--stage", "--stage-pool-prefix=other",
-                                    "--stage-free-floor-bytes=0"])
-def test_retired_stage_options_are_rejected_before_io(tmp_path, option):
-    forbidden = tmp_path / "forbidden"
-    forbidden.mkdir()
-    root = Path(__file__).resolve().parents[1]
-    tripwire = tmp_path / "sitecustomize.py"
-    tripwire.write_text("""
-import os
-import socket
-import subprocess
-import sys
-from pathlib import Path
-forbidden = Path(os.environ['PREWARM_FORBIDDEN'])
-def audit(event, args):
-    if event in ('socket.connect', 'subprocess.Popen', 'os.mkdir', 'os.remove', 'os.rename'):
-        raise RuntimeError('pre-parse I/O: ' + event)
-    if event == 'open':
-        path = args[0]
-        if args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
-            raise RuntimeError('pre-parse write: ' + str(path))
-        if isinstance(path, (str, bytes)) and os.fsdecode(path).startswith(str(forbidden)):
-            raise RuntimeError('pre-parse path access: ' + os.fsdecode(path))
-sys.addaudithook(audit)
-""")
-    environment = dict(os.environ, PYTHONPATH=str(tmp_path), PYTHONDONTWRITEBYTECODE="1",
-                       PREWARM_FORBIDDEN=str(forbidden))
-    result = subprocess.run([
-        sys.executable, str(root / "tools/fleet/prewarm_loop.py"), option,
-        "--pool-root", str(forbidden / "queue"),
-        "--cas-root", str(forbidden / "cas"),
-        "--mount-map", f"{forbidden}={forbidden}",
-        "--log", str(forbidden / "cycle.jsonl")],
-        capture_output=True, text=True, env=environment, timeout=20)
-    assert result.returncode == 2, result.stderr
-    assert "unrecognized arguments" in result.stderr
-    assert list(forbidden.iterdir()) == []

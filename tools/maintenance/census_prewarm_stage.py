@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
+import stat as statmod
 import subprocess
 import sys
 import time
@@ -19,7 +21,35 @@ from prismabuild import digest_primitives
 
 
 TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
+FINAL = re.compile(r"\.pbstage@\d+\+\d+$")
 PREFIX = "prismabuild-stage"
+XATTRS = ("user.pbstage.source", "user.pbstage.mover")
+
+
+def xattr_observation(path: Path, attribute: str) -> dict:
+    try:
+        return {"state": "present", "value_hex": os.getxattr(
+            path, attribute, follow_symlinks=False).hex()}
+    except OSError as exc:
+        absent = exc.errno in {errno.ENODATA, getattr(errno, "ENOATTR", errno.ENODATA)}
+        return {"state": "absent" if absent else "unavailable",
+                "errno": exc.errno, "error": str(exc)}
+
+
+def final_summary(items) -> dict:
+    summary = {"count": 0, "bytes": 0, "xattrs": {
+        name: {"present": 0, "absent": 0, "unavailable": 0, "errnos": {}}
+        for name in XATTRS}}
+    for item in items:
+        summary["count"] += 1
+        summary["bytes"] += item["bytes"]
+        for name, observation in item["xattrs"].items():
+            distribution = summary["xattrs"][name]
+            distribution[observation["state"]] += 1
+            if "errno" in observation:
+                code = str(observation["errno"])
+                distribution["errnos"][code] = distribution["errnos"].get(code, 0) + 1
+    return summary
 
 
 def writer_dataset(name: str, prefixes: set[str]) -> bool:
@@ -141,33 +171,49 @@ def collect_prewarm_stage_census(args) -> dict:
     loops = prewarm_processes(errors)
     result["prewarm_before"] = loops
     roots: dict[str, list[str]] = {}
+    result["unscannable_roots"] = []
 
     def add_root(path: str, source: str):
         if path.startswith("/"):
             roots.setdefault(path, []).append(source)
+        else:
+            result["unscannable_roots"].append({"path": path, "source": source})
+            errors.append(f"unknown writer root {path!r} from {source}")
 
     for path in args.root:
         add_root(path, "explicit census root")
+    prefixes = {PREFIX}
+    prefix_sources = [{"prefix": PREFIX, "source": "default"}]
+    argv_sources = [(loop["argv"], f"process:{loop['pid']}") for loop in loops]
+    argv_sources.extend((box["storage_argv"], "roster:" + box["key"])
+                        for box in result["roster_hosts"]
+                        if box["storage_argv"] is not None)
+    for argv, source in argv_sources:
+        for n, word in enumerate(argv):
+            if word == "--stage-pool-prefix":
+                if n + 1 == len(argv):
+                    errors.append(f"stage pool prefix missing value in {source}")
+                    continue
+                prefix = argv[n + 1]
+            elif word.startswith("--stage-pool-prefix="):
+                prefix = word.split("=", 1)[1]
+            else:
+                continue
+            prefixes.add(prefix)
+            prefix_sources.append({"prefix": prefix, "source": source})
+    result["stage_pool_prefixes"] = prefix_sources
     mounts = mount_rows()
     result["tier_records"] = []
     for path in sorted((Path(args.queue_root) / "tiers").glob("*.json")):
         try:
             record = json.loads(path.read_bytes())
-            if str(record.get("pool", "")).startswith(PREFIX) or str(
-                    record.get("tier_id", "")).startswith(PREFIX):
+            if any(str(record.get("pool", "")).startswith(prefix) or str(
+                    record.get("tier_id", "")).startswith(prefix) for prefix in prefixes):
                 result["tier_records"].append({"source": file_identity(path),
                                                 "record": record})
                 add_root(str(record.get("mountpoint", "")), "tier:" + path.name)
         except (OSError, ValueError) as exc:
             errors.append(f"tier {path}: {exc}")
-    prefixes = {PREFIX}
-    for loop in loops:
-        argv = loop["argv"]
-        for n, word in enumerate(argv):
-            if word == "--stage-pool-prefix" and n + 1 < len(argv):
-                prefixes.add(argv[n + 1])
-            elif word.startswith("--stage-pool-prefix="):
-                prefixes.add(word.split("=", 1)[1])
     result["stage_mounts"] = []
     result["other_stage_pool_mounts"] = []
     for row in mounts:
@@ -195,37 +241,50 @@ def collect_prewarm_stage_census(args) -> dict:
         errors.append("ZFS is loaded but zfs root discovery tool is missing")
     result["roots"] = []
     temporaries = {}
+    finals = {}
     for spelling, sources in sorted(roots.items()):
         root = Path(spelling)
         row = {"path": spelling, "sources": sources, "started": stamp(),
-               "directories": 0, "files": 0, "symlink_directories": []}
+               "directories": 0, "files": 0, "symlink_directories": [],
+               "errors": [], "final_objects": final_summary([])}
         result["roots"].append(row)
+
+        def root_error(message):
+            row["errors"].append(message)
+            errors.append(message)
+
         try:
-            stat = root.stat()
+            stat = root.lstat()
         except FileNotFoundError:
             row.update(state="absent", finished=stamp())
             continue
         except OSError as exc:
-            errors.append(f"root {root}: {exc}")
+            root_error(f"root {root}: {exc}")
             row.update(state="unreadable", finished=stamp())
             continue
         row.update(state="present", resolved=str(root.resolve()), device=stat.st_dev,
                    inode=stat.st_ino)
+        if not statmod.S_ISDIR(stat.st_mode):
+            root_error(f"unwalked non-directory or symlink root {root}")
+            row.update(state="unscannable", finished=stamp())
+            continue
 
         def walk_error(exc):
-            errors.append(f"walk {root}: {exc}")
+            root_error(f"walk {root}: {exc}")
 
+        root_finals = []
         for directory, dirs, files in os.walk(root, onerror=walk_error, followlinks=False):
             row["directories"] += 1
             for name in dirs:
                 path = Path(directory) / name
                 if path.is_symlink():
                     row["symlink_directories"].append(str(path))
-                    errors.append(f"unwalked symlink directory {path}")
+                    root_error(f"unwalked symlink directory {path}")
             for name in files:
                 row["files"] += 1
                 match = TEMPORARY.search(name)
-                if not match:
+                final = FINAL.search(name)
+                if not match and not final:
                     continue
                 path = Path(directory) / name
                 try:
@@ -234,7 +293,18 @@ def collect_prewarm_stage_census(args) -> dict:
                             "inode": stat.st_ino, "bytes": stat.st_size,
                             "uid": stat.st_uid, "gid": stat.st_gid,
                             "mode": stat.st_mode, "mtime_ns": stat.st_mtime_ns,
-                            "ctime_ns": stat.st_ctime_ns, "owner_pid_text": match[1]}
+                            "ctime_ns": stat.st_ctime_ns}
+                    if final:
+                        item["regular_file"] = statmod.S_ISREG(stat.st_mode)
+                        item["xattrs"] = {name: xattr_observation(path, name)
+                                          for name in XATTRS}
+                        for attribute, observation in item["xattrs"].items():
+                            if observation["state"] == "unavailable":
+                                root_error(f"final {path} xattr {attribute}: {observation}")
+                        finals[str(path)] = item
+                        root_finals.append(item)
+                        continue
+                    item["owner_pid_text"] = match[1]
                     try:
                         item["current_pid_identity"] = process(match[1])
                     except (FileNotFoundError, ProcessLookupError):
@@ -242,7 +312,7 @@ def collect_prewarm_stage_census(args) -> dict:
                     except (OSError, ValueError, IndexError, RuntimeError) as exc:
                         item["current_pid_error"] = str(exc)
                     item["xattrs"] = {}
-                    for attribute in ("user.pbstage.source", "user.pbstage.mover"):
+                    for attribute in XATTRS:
                         try:
                             item["xattrs"][attribute] = os.getxattr(path, attribute,
                                                                   follow_symlinks=False).hex()
@@ -250,9 +320,12 @@ def collect_prewarm_stage_census(args) -> dict:
                             item["xattrs"][attribute] = {"errno": exc.errno, "error": str(exc)}
                     temporaries[str(path)] = item
                 except OSError as exc:
-                    errors.append(f"temporary {path}: {exc}")
+                    root_error(f"{'final' if final else 'temporary'} {path}: {exc}")
+        row["final_objects"] = final_summary(root_finals)
         row["finished"] = stamp()
     result["temporaries"] = list(temporaries.values())
+    result["finals"] = list(finals.values())
+    result["final_objects"] = final_summary(finals.values())
     result["prewarm_after"] = prewarm_processes(errors)
     writers = {(p["pid"], p["start_ticks"]): p for p in
                loops + result["prewarm_after"] if p["stage_requested"]}
@@ -261,6 +334,8 @@ def collect_prewarm_stage_census(args) -> dict:
     result["empty_drain_observed"] = not errors and not writers and not temporaries
     result["limits"] = ["Point-in-time observation; no launch or write gate is installed.",
                         "PID text in a filename does not prove ownership after PID reuse.",
+                        "Per-root counts overlap; overall final counts deduplicate identical paths.",
+                        "Final bytes are lstat sizes; concurrent changes and hardlink aliases are not collapsed.",
                         "Offline roster hosts require an explicit relevance decision."]
     return result
 
