@@ -76,6 +76,9 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family.startswith("lease-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_lease_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family.startswith("config-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_config_adapters.py")))["operate"]
         return adapter(request, store, load)

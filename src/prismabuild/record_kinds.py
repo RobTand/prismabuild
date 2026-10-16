@@ -25,6 +25,14 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("lease-pin", "prismaquant.prismabuild.reader_pin.v1", "residency/leases/<owner>/<pin>.lease.json", "closed",
+               "prismabuild.reader_lease:_read_pin", ("prismabuild.reader_lease:_write_pin",),
+               ("single", "inherited", "ram", "separate-owner"),
+               ("serializer is shared by acquire, inherited-ref registration and release; holder fields are additive",)),
+    RecordKind("lease-attestation", "prismaquant.prismabuild.reader_scope_attestation.v1", "broker-attestations/<action>/<nonce>.json", "additive",
+               "prismabuild.reader_lease:read_scope_attestation", ("prismabuild.pool:PoolQueue._persist_reader_scope_proof",),
+               ("released", "retired", "unsettled", "unknown-tickets", "pending"),
+               ("missing tickets_pending is unknown and never proves emptiness; supplied export fixture is not physical containment evidence",)),
     RecordKind("config-local-tier", "prismabuild.local_tier_policy.v1", "tools/fleet/local_tier_policy.json", "closed",
                "prismabuild.resident_sets:read_policy", (), ("source",),
                ("renewal_ceiling_s may be absent and defaults through the real reader",),
