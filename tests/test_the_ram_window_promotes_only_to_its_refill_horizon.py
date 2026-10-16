@@ -232,7 +232,8 @@ class Box:
         tier_loop.cycle(self.queue, host="dl380g10",
                         source_pool="storage_pool",
                         receipts=tier_loop.ReceiptCache(),
-                        discover=lambda **_kwargs: records)
+                        discover=lambda **_kwargs: records,
+                        supply_reader_for=lambda *_a, **_k: None)
 
     def reader(self, *, staged, promoted) -> tuple[dict, dict]:
         """The reader, claimed inside ``phase-0``, with ranges on both tiers."""
