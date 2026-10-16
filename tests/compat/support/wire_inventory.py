@@ -51,6 +51,10 @@ def catalogue(root):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "RecordKind":
             value = {field: ast.literal_eval(arg) for field, arg in zip(fields, node.args)}
             value.update({kw.arg: ast.literal_eval(kw.value) for kw in node.keywords})
+            if value["wire_id"] is None:
+                source = next(root / path for path in value["fixture_source"] if (root / path).is_file())
+                value["wire_id"] = json.loads(source.read_bytes())["schema"]
+                value["wire_identity_owner"] = str(source.relative_to(root))
             if value["wire_id"] in result or any(row["name"] == value["name"] for row in result.values()):
                 raise ValueError("record kinds must not alias an existing name or wire ID")
             result[value["wire_id"]] = value

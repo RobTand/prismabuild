@@ -76,6 +76,12 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family.startswith("upgrade-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_upgrade_adapters.py")))["operate"]
+        return adapter(request, store, load)
+    if family.startswith("host-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_host_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family.startswith("lease-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_lease_adapters.py")))["operate"]
         return adapter(request, store, load)
@@ -92,7 +98,7 @@ def operate(request, store, load):
         adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]
         return adapter(request, store, load)
     if family.startswith("core-"):
-        filename = ("compat_receipt_adapters.py" if family in ("core-receipt", "core-attestation", "core-runtime")
+        filename = ("compat_receipt_adapters.py" if family in ("core-receipt", "core-attestation", "core-runtime", "core-claim")
                     else "compat_core_adapters.py")
         adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]
         return adapter(request, store, load)

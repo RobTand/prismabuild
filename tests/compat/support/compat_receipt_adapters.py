@@ -59,6 +59,13 @@ def operate(request, store, load):
         elif family == "core-attestation":
             result = core.validate_worker_attestation(json.loads(raw), action=action)
             assert result["action_key"] == action["action_key"]
+        elif family == "core-claim":
+            path = core._local_result_claim_path(cas, action, store)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+            path.chmod(0o444)
+            result = core._load_local_result_claim(cas, action, store)
+            assert result and result["action_key"] == action["action_key"]
         else:
             cas.ingest_bytes(b"compat", input_id="compat.result")
             path = cas.receipt_path(action["action_key"])
@@ -97,5 +104,7 @@ def operate(request, store, load):
         raw = nested_bytes(raw, ("producer",))
     elif family == "core-runtime":
         raw = nested_bytes(raw, ("producer", "runtime"))
+    elif family == "core-claim":
+        raw = core._local_result_claim_path(cas, action, store).read_bytes()
     return {"raw": base64.b64encode(raw).decode(),
             "fixture": "synthetic host facts; measured source/launcher/executable; actual shell payload"}

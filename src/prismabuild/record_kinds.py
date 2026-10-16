@@ -7,7 +7,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class RecordKind:
     name: str
-    wire_id: str
+    wire_id: str | None
     location: str
     field_policy: str
     reader: str
@@ -25,6 +25,24 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("upgrade-export", "prismabuild.client_export.v1", "updater unprivileged runtime export pipe", "additive",
+               "upgrade_client:decode_export", ("upgrade_client:encode_export",), ("required", "optional"),
+               ("optional member may be absent; fixture bytes qualify export integrity, not installed behavior",)),
+    RecordKind("upgrade-local", "prismabuild.rollout_barrier.local.v1", "private updater state/rollout-epoch.json", "closed",
+               "upgrade_client:Upgrader._local_rollout", ("upgrade_client:Upgrader._persist_rollout",), ("held", "released")),
+    RecordKind("upgrade-marker", "prismabuild.rollout_barrier.marker.v1", "rollout/epochs/<epoch>/<host-or-decision>.<phase>.json", "additive",
+               "upgrade_client:validate_marker", ("upgrade_client:make_marker",),
+               ("drained", "rotated", "rolled-back", "resumed", "failed", "activated", "rollback", "reverted",
+                "resume-forward", "resume-rollback", "terminal-forward", "terminal-rollback")),
+    RecordKind("host-origin", "prismabuild.box_origin.v1", "host box-state/<digest>.origin.json", "additive",
+               "prismabuild.adaptive_cpu:read_box_origin", ("prismabuild.adaptive_cpu:_record_box_origin_if_new",),
+               ("first", "repeated"), ("preexisting state without an origin remains legacy and unattributed",), stable_paths=True),
+    RecordKind("host-images", "prismabuild.container_image_inventory.v2", "host container-image cache/inventory.json", "additive",
+               "prismabuild.container_images:InventoryCache._snapshot", ("prismabuild.container_images:InventoryCache._refresh",),
+               ("empty", "image", "unknown"), ("supplemental image_contents/store_root may be absent; entries null means unknown",)),
+    RecordKind("core-claim", "prismaquant.prismabuild.local_result_claim.v1", "cas/local-results/v1/<xx>/<claim>.json", "closed",
+               "prismabuild.core:_load_local_result_claim", ("prismabuild.core:_ensure_local_result_claim",),
+               ("in-process", "script"), stable_paths=True),
     RecordKind("lease-pin", "prismaquant.prismabuild.reader_pin.v1", "residency/leases/<owner>/<pin>.lease.json", "closed",
                "prismabuild.reader_lease:_read_pin", ("prismabuild.reader_lease:_write_pin",),
                ("single", "inherited", "ram", "separate-owner"),
@@ -41,7 +59,7 @@ KINDS = (
                "prismabuild.storage_tiers:read_ram_policy", (), ("source",),
                ("promotion_chunk_gib may be absent or null",),
                fixture_source=("tools/fleet/ram_tier_policy.json", "tools/ram_tier_policy.json")),
-    RecordKind("config-fleet", "prismaquant.prismabuild.fleet_boxes.v1", "tools/fleet/fleet_boxes.json", "additive",
+    RecordKind("config-fleet", None, "tools/fleet/fleet_boxes.json", "additive",
                "fleet_membership:roster_entry", (), ("source",),
                ("the roster reader resolves aliases and does not use schema as its discriminator",), negative_field=None,
                fixture_source=("tools/fleet/fleet_boxes.json", "tools/fleet_boxes.json")),
@@ -260,4 +278,7 @@ def cases():
 
 
 def wire_id(name):
-    return next(kind.wire_id for kind in KINDS if kind.name == name)
+    value = next(kind.wire_id for kind in KINDS if kind.name == name)
+    if value is None:
+        raise ValueError("configuration wire identity belongs to its immutable source")
+    return value
