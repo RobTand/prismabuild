@@ -144,7 +144,7 @@ def child(args):
                                           adaptive=cpu_meta, cpu_tiers=tiers, adaptive_gpu=gpu_meta)
             assert handle, 'synthetic GPU holder could not reserve'
             ledger.commit_acquire(key, handle)
-            os.rename(queue.item_path(pool.READY, key), queue.item_path(pool.CLAIMED, key))
+            os.rename(queue.records.item_path(pool.record_store.READY, key), queue.records.item_path(pool.record_store.CLAIMED, key))
             admitted += 1
         time.sleep(adaptive_gpu.SETTLE_S + .1)
     else:

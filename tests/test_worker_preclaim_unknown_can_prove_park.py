@@ -25,11 +25,11 @@ def test_preclaim_unknown_preserves_physical_park_without_queue_work(
     parked = role_session.PARKED_ROOT
     parked.mkdir(parents=True)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     queue.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root=tmp_path,
                   worker_script="never-authorized.py", resources={"cpu": 1, "mem_gb": 1})
-    ready = queue.item_path(pool.READY, key)
+    ready = queue.records.item_path(pool.record_store.READY, key)
     original = ready.read_bytes()
     gate = {"draining": closed, "changed_unix": 202.5}
     history = []
@@ -42,7 +42,7 @@ def test_preclaim_unknown_preserves_physical_park_without_queue_work(
     def publish(announce, **options):
         result = publish_offer(announce, **options)
         assert result.status == "published", result
-        assert len(list((queue.root / pool.WORKERS).glob("*.json"))) == 1
+        assert len(list((queue.root / pool.record_store.WORKERS).glob("*.json"))) == 1
         history.append("actual-offer-published")
         role_session.RUNTIME_VERSION.unlink()
         replacement = role_session.MAINTENANCE_GATE.with_suffix(".next")
@@ -89,11 +89,11 @@ def test_preclaim_unknown_preserves_physical_park_without_queue_work(
     assert code == 75
     assert queue_io == [], "preclaim UNKNOWN touched the private queue"
     assert ready.read_bytes() == original
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
-    assert list(queue.dir(pool.DONE).iterdir()) == []
-    assert list(queue.dir(pool.FAILED).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.DONE).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.FAILED).iterdir()) == []
     assert not (queue.root / role_session.GENERATION_DRIFT_DIR).exists()
-    assert len(list((queue.root / pool.WORKERS).glob("*.json"))) == 1
+    assert len(list((queue.root / pool.record_store.WORKERS).glob("*.json"))) == 1
     if closed:
         start = Path("/proc/self/stat").read_text().rpartition(")")[2].split()[19]
         expected = fleet_membership.expected_markers([(os.getpid(), start)], gate)

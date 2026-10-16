@@ -102,7 +102,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {KIND: 4})
     return queue
 
@@ -204,8 +204,8 @@ def _exported(spool: ps.ProducedSpool, payload: bytes) -> tuple[Path, dict]:
 
 
 def _queued_rows(queue: pool.PoolQueue) -> set[str]:
-    return {path.stem for state in (pool.READY, pool.CLAIMED)
-            for path in queue.dir(state).glob("*.json")}
+    return {path.stem for state in (pool.record_store.READY, pool.record_store.CLAIMED)
+            for path in queue.records.dir(state).glob("*.json")}
 
 
 # -- admission ---------------------------------------------------------------
@@ -235,7 +235,7 @@ def test_the_producer_admission_charges_no_stage_window(tmp_path: Path) -> None:
     before = (ledger.capacity(), ledger.available())
     owner = fx._hexkey("wo-admission")
     instance = fx._bind(queue, template, owner)
-    claimed = pool._read_json(queue.item_path(pool.CLAIMED, owner))
+    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, owner))
     assert claimed["resources"] == {"cpu": 1, "mem_gb": 1}
     assert (ledger.capacity(), ledger.available()) == before
     assert ledger.available() == ledger.capacity()
@@ -349,7 +349,7 @@ def test_an_origin_only_batch_reads_as_never_staged_and_owns_its_path_until_recl
 
     assert po.retire_batch(queue, instance, template, "b1",
                            stage_root=str(tmp_path / "stage"),
-                           residency_root=queue.root / pool.RESIDENCY) == {
+                           residency_root=queue.root / pool.record_store.RESIDENCY) == {
         "ok": True, "batch_id": "b1", "origin_only": True, "staged": False}
     state = po.materialization_state(queue, instance, template, batch_id="b1")
     assert state["ok"] is True and state["stage_retired"] is True
@@ -411,7 +411,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     plan = residency_plan.read(queue, consumer)
     assert plan is not None and len(plan["phases"]) == 1
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
-    assert queue.item_path(pool.READY, lead).exists(), "the cycle published the lead"
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(), "the cycle published the lead"
     request = json.loads((tmp_path / "cas" / "requests" / lead[:2]
                           / f"{lead}.json").read_text())
     command = request["params"]["command"]
@@ -426,7 +426,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
 
-    composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, consumer))
+    composed = rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, consumer))
     staged = composed["entries"][rm.residency_map_key(str(destination), 0)]
     assert Path(staged["stage_path"]).read_bytes() == payload
     assert staged["sha256"] == hashlib.sha256(payload).hexdigest()

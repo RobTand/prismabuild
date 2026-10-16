@@ -89,7 +89,7 @@ def test_a_stopped_host_is_stopped_for_the_one_shot_too(tmp_path, draining, load
     queue, seen, stdout = exercise(tmp_path, draining=draining, loaded=loaded,
                                   live=live)
     assert seen == {}, "serve_once ran while the host was stopped"
-    assert queue.item_path(pool.READY, KEY).exists(), "the item was claimed anyway"
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists(), "the item was claimed anyway"
     assert why in json.loads(stdout)["declined"]
 
 
@@ -104,7 +104,7 @@ def test_an_admitting_host_serves_the_claim_in_front_of_the_broker(tmp_path):
 def test_maintenance_refusal_takes_priority_over_unknown_receipts(tmp_path, draining):
     queue, seen, stdout = exercise(tmp_path, draining=draining, loaded="", live="gen-b")
     assert seen == {}
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert "resource broker draining" in json.loads(stdout)["declined"]
 
 
@@ -140,4 +140,4 @@ raise SystemExit(worker.main())
     result = subprocess.run([sys.executable, str(script)], capture_output=True,
                             text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()

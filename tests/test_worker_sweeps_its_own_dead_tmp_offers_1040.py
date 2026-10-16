@@ -92,8 +92,8 @@ def test_day_old_offer_is_marked_retired_and_kept(tmp_path, monkeypatch):
     result = pbstatus.read_pool(queue.root)
     node = next(node for node in result["nodes"] if node["node"] == "gone")
     assert node["state"] == "retired"
-    assert (queue.root / pool.WORKERS / "gone.json").exists()
-    assert json.loads((queue.root / pool.WORKERS / "gone.json").read_text())["host"] == "gone"
+    assert (queue.root / pool.record_store.WORKERS / "gone.json").exists()
+    assert json.loads((queue.root / pool.record_store.WORKERS / "gone.json").read_text())["host"] == "gone"
 
 
 def test_an_hour_old_offer_is_stale_not_retired(tmp_path, monkeypatch):
