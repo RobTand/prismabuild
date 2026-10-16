@@ -43,27 +43,27 @@ def captured_records(evidence):
 def reconcile(root, inventory, records):
     observed, functions, inputs = defaultdict(set), defaultdict(set), []
     for identity, data_hash, record in records:
-            if not isinstance(record, dict) or record.get("returncode") != 0 or not record.get("isolated"):
-                continue
-            if not record.get("compiled_source_code_verified") or not record.get("catalogued_entry_verified"):
-                continue
-            actual = {}
-            for member in record.get("imports", {}).values():
-                name = member["relative"]
-                source = root / name
-                if source.is_file() and digest(source) == member["sha256"]:
-                    actual[name] = member["sha256"]
-            phase = record.get("catalogued_operation")
-            if phase != "write":
-                continue
-            inputs.append({"path": identity, "sha256": data_hash, "case": record["request"]})
-            for name, lines in record.get("executed_lines", {}).items():
-                if name in actual:
-                    for line in lines:
-                        observed[name, line].add(record["request"])
-            for name, _, _, owner in record.get("calls", []):
-                if name in actual:
-                    functions[name, owner].add(record["request"])
+        if not isinstance(record, dict) or record.get("returncode") != 0 or not record.get("isolated"):
+            continue
+        if not record.get("compiled_source_code_verified") or not record.get("catalogued_entry_verified"):
+            continue
+        actual = {}
+        for member in record.get("imports", {}).values():
+            name = member["relative"]
+            source = root / name
+            if source.is_file() and digest(source) == member["sha256"]:
+                actual[name] = member["sha256"]
+        phase = record.get("catalogued_operation")
+        if phase != "write":
+            continue
+        inputs.append({"path": identity, "sha256": data_hash, "case": record["request"]})
+        for name, lines in record.get("executed_lines", {}).items():
+            if name in actual:
+                for line in lines:
+                    observed[name, line].add(record["request"])
+        for name, _, _, owner in record.get("calls", []):
+            if name in actual:
+                functions[name, owner].add(record["request"])
     rows = []
     for line in inventory.read_text().splitlines():
         wire = json.loads(line)

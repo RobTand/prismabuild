@@ -89,7 +89,12 @@ def audit(key, fleet, repository=None, *, expect_head=None, require_clean=False)
                 assert outcomes is None, "duplicate native outcomes"
                 outcomes = json.loads(line.removeprefix("pbtest-outcomes: "))
     native = None
-    if completion is not None:
+    incomplete_failed_population = (completion is not None and detail["returncode"] != 0 and
+        (not completion["collection_complete"] or completion["collection_errors"] or not completion["collected"]))
+    if incomplete_failed_population:
+        native = {"selected": len(completion["collected"]), "qualifying_population": False,
+                  "reason": "failed before complete nonempty native collection; no test credit"}
+    elif completion is not None:
         assert completion["collection_complete"] and not completion["collect_only"]
         assert not completion["collection_errors"] and not completion["duplicate_teardown"]
         selected = set(completion["collected"])
