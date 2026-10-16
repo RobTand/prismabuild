@@ -67,9 +67,9 @@ def test_without_a_viable_alternative_the_work_is_placed_anyway(placement, reaso
     elif reason == 'stale':
         announce('other', stale=True)
     else:
-        item = pool._read_json(queue.item_path(pool.READY, key))
+        item = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
         item['tags'] = ['local']
-        pool._write_json_atomic(queue.item_path(pool.READY, key), item)
+        pool._write_json_atomic(queue.records.item_path(pool.record_store.READY, key), item)
     assert claim()
 
 

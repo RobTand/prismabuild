@@ -40,7 +40,7 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(
 
     def record(*args, **kwargs):
         original(*args, **kwargs)
-        ticks.append(json.loads(queue.lease_path(key).read_text()))
+        ticks.append(json.loads(queue.records.lease_path(key).read_text()))
         if not exit_before_observation and len(ticks) >= 3 and captured_output():
             release.touch()
 
@@ -96,14 +96,14 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
 
     def record(*args, **kwargs):
         original(*args, **kwargs)
-        ticks.append(json.loads(queue.lease_path(key).read_text()))
+        ticks.append(json.loads(queue.records.lease_path(key).read_text()))
 
     monkeypatch.setattr(queue, 'write_lease', record)
     result = queue.execute(item, heartbeat_s=0.05)
     assert result['status'] == 'executed'
     assert any(tick['execution_observation']['launcher_alive'] is False for tick in ticks)
-    assert queue.item_path(pool.CLAIMED, key).exists()
-    assert not queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def _observed_claim(tmp_path, monkeypatch):
@@ -115,7 +115,7 @@ def _observed_claim(tmp_path, monkeypatch):
     item = queue.claim(owner='worker')
     now = time.time()
     monkeypatch.setattr(pbstatus.time, 'time', lambda: now)
-    lease = json.loads(queue.lease_path(key).read_text())
+    lease = json.loads(queue.records.lease_path(key).read_text())
     lease['published_unix'] = item['published_unix']
     lease['execution_observation'] = dict(sampled_unix=now, launcher_alive=True,
                                         stdout_bytes=6, stderr_bytes=0, last_output_unix=now)
@@ -123,7 +123,7 @@ def _observed_claim(tmp_path, monkeypatch):
 
 
 def _row(queue, key, lease):
-    queue.lease_path(key).write_text(json.dumps(lease))
+    queue.records.lease_path(key).write_text(json.dumps(lease))
     return next(row for row in pbstatus.read_pool(queue.root)['jobs'] if row['action_key'] == key)
 
 

@@ -7,7 +7,7 @@ from prismabuild import pool, resource_scope
 from test_pool_resource_scope import scoped, _process
 
 
-@pytest.mark.parametrize('status,expected', [('executed', pool.DONE), ('failed', pool.READY), ('timeout', pool.READY)])
+@pytest.mark.parametrize('status,expected', [('executed', pool.record_store.DONE), ('failed', pool.record_store.READY), ('timeout', pool.record_store.READY)])
 def test_fresh_lease_cleanup_retry_preserves_finished_attempt(scoped, monkeypatch, status, expected):
     queue, item, calls = scoped
     key = item['action_key']
@@ -32,19 +32,19 @@ def test_fresh_lease_cleanup_retry_preserves_finished_attempt(scoped, monkeypatc
     assert queue.lease_age(key) < pool.LEASE_TIMEOUT_S
     assert queue.reap_stale() == []
     assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
-    assert queue.lease_path(key).exists()
+    assert queue.records.lease_path(key).exists()
 
     unavailable = False
-    assert queue.reap_stale() == ([key] if expected == pool.READY else [])
-    result = json.loads(queue.item_path(expected, key).read_text())
+    assert queue.reap_stale() == ([key] if expected == pool.record_store.READY else [])
+    result = json.loads(queue.records.item_path(expected, key).read_text())
     attempts = queue.attempt_outcomes(result)
     assert len(attempts) == 1
     assert attempts[0]['status'] == status
     assert attempts[0]['detail'] == {k: v for k, v in detail.items() if k != 'stdout'}
     assert (queue.root / attempts[0]['logs']['stdout']['path']).read_text() == detail['stdout']
     assert 'finish_pending' not in result
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    assert not queue.lease_path(key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.lease_path(key).exists()
     assert queue.ledger().held() == {}
     assert queue.reap_stale() == []
 
@@ -54,7 +54,7 @@ def test_oom_cleanup_retry_preserves_kernel_evidence(scoped, monkeypatch):
     key = item['action_key']
     _process(monkeypatch, queue, item, calls)
     item['max_attempts'] = 1
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), item)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     sample = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
                         lambda scope: {**sample(scope), 'oom_kill': 5, 'oom_local': 1, 'memory_peak_bytes': 2 * 1024**3})
@@ -66,9 +66,9 @@ def test_oom_cleanup_retry_preserves_kernel_evidence(scoped, monkeypatch):
     queue.finish(key, status=outcome['status'], detail=outcome, claim_snapshot=item)
     monkeypatch.setattr(resource_scope.ResourceScope, 'release', release)
     assert queue.reap_stale() == []
-    failed = json.loads(queue.item_path(pool.FAILED, key).read_text())
+    failed = json.loads(queue.records.item_path(pool.record_store.FAILED, key).read_text())
     assert failed['attempts'] == 1
-    assert not queue.item_path(pool.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
     attempt = queue.attempt_outcomes(failed)[0]
     assert attempt['status'] == 'failed'
     assert attempt['detail']['termination_reason'] == 'memory_limit_oom'
@@ -117,14 +117,14 @@ def test_cleanup_retry_does_not_remove_a_newly_claimed_attempt(scoped, monkeypat
 
     monkeypatch.setattr(queue, 'archive_attempt', concurrent_finish)
     assert queue.reap_stale() == []
-    live = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
     assert live['claimed_by'] == 'second-attempt'
     assert live['attempts'] == 1
     assert 'finish_pending' not in live
     assert 'resource_scope' not in live
-    assert json.loads(queue.lease_path(key).read_text())['owner'] == 'second-attempt'
+    assert json.loads(queue.records.lease_path(key).read_text())['owner'] == 'second-attempt'
     assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
-    assert not queue.item_path(pool.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_a_claim_pass_summary_never_reaches_the_fake_worker_launch(scoped, monkeypatch):

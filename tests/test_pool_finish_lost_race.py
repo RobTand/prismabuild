@@ -37,7 +37,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     value = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    value.ensure_layout()
+    value.records.ensure_layout()
     value.publish(
         action_key=KEY,
         cas_root=str(tmp_path / "cas"),
@@ -51,7 +51,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def _expire_the_lease(queue: pool.PoolQueue) -> None:
     """Age this claim's heartbeat past the reaper's timeout."""
 
-    path = queue.lease_path(KEY)
+    path = queue.records.lease_path(KEY)
     lease = json.loads(path.read_text(encoding="utf-8"))
     lease["heartbeat_unix"] = time.time() - 10_000
     path.write_text(json.dumps(lease), encoding="utf-8")
@@ -72,7 +72,7 @@ def test_a_reaper_that_already_concluded_the_claim_keeps_the_terminal(
     assert snapshot is not None
     _expire_the_lease(queue)
     assert queue.reap_stale() == [KEY]
-    assert queue.item_path(pool.FAILED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY).exists()
 
     landed = queue.finish(
         KEY,
@@ -81,13 +81,13 @@ def test_a_reaper_that_already_concluded_the_claim_keeps_the_terminal(
         claim_snapshot=snapshot,
     )
 
-    assert not queue.item_path(pool.DONE, KEY).exists()
-    assert landed == queue.item_path(pool.FAILED, KEY)
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
+    assert landed == queue.records.item_path(pool.record_store.FAILED, KEY)
 
     found = pbrun.landed_outcome(queue, KEY, wait_s=0.1)
     assert found is not None
     path, record = found
-    assert Path(path).parent.name == pool.FAILED
+    assert Path(path).parent.name == pool.record_store.FAILED
     assert record["status"] == "lease_lost_max_attempts"
 
 
@@ -106,7 +106,7 @@ def test_an_uncovered_lost_race_files_a_generation_stamped_record(
     generation = snapshot["published_unix"]
     # The claim file vanishes under the launcher, with no terminal filed: the
     # shape a reaper leaves when it concludes a claim it cannot describe.
-    queue.item_path(pool.CLAIMED, KEY).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
 
     landed = queue.finish(
         KEY,
@@ -115,7 +115,7 @@ def test_an_uncovered_lost_race_files_a_generation_stamped_record(
         claim_snapshot=snapshot,
     )
 
-    assert landed == queue.item_path(pool.FAILED, KEY)
+    assert landed == queue.records.item_path(pool.record_store.FAILED, KEY)
     record = json.loads(landed.read_text(encoding="utf-8"))
     assert record["published_unix"] == generation
     assert record["status"] == "finish_lost_race"
