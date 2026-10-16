@@ -28,6 +28,7 @@ def operate(request, store, load):
                 "origin": "immutable configuration; no runtime writer"}
     path = store / "policy.json"
     path.write_bytes(base64.b64decode(request["raw"]))
+    request["_consumer_boundary"]()
     result = reader(path)
     assert result, "configuration consumer refused its policy"
     return result

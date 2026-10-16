@@ -70,6 +70,7 @@ def operate(request, store, load):
                 "commit": "a" * 40, "files": files}))
             raw = module.encode_export({"runtime": str(generation), "generation_store": str(generation.parent)})
         else:
+            request["_consumer_boundary"]()
             version, blobs = module.decode_export(base64.b64decode(request["raw"]))
             assert version["commit"] == "a" * 40 and set(module.MEMBERS) <= set(blobs)
             assert ("gpu_capacity.py" in blobs) == (variant == "optional")
@@ -84,6 +85,7 @@ def operate(request, store, load):
         else:
             agent.rollout_state.parent.mkdir(parents=True)
             agent.rollout_state.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = agent._local_rollout()
             assert result and result["released"] == (variant == "released")
             return result
@@ -93,6 +95,7 @@ def operate(request, store, load):
             assert module.post_marker(store / "rollout", filename, module.canonical_json(value))
             raw = (store / "rollout" / filename).read_bytes()
         else:
+            request["_consumer_boundary"]()
             return module.validate_marker(filename, json.loads(base64.b64decode(request["raw"])), declared)
     else:
         raise ValueError(f"unknown updater record family: {family}")

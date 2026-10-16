@@ -54,9 +54,11 @@ def operate(request, store, load):
     if request["op"] == "read":
         raw = base64.b64decode(request["raw"])
         if family == "core-runtime":
+            request["_consumer_boundary"]()
             result = core._validate_worker_runtime(json.loads(raw))
             assert result["launch_kind"] == ("in_process" if variant == "in-process" else "script")
         elif family == "core-attestation":
+            request["_consumer_boundary"]()
             result = core.validate_worker_attestation(json.loads(raw), action=action)
             assert result["action_key"] == action["action_key"]
         elif family == "core-claim":
@@ -64,6 +66,7 @@ def operate(request, store, load):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             path.chmod(0o444)
+            request["_consumer_boundary"]()
             result = core._load_local_result_claim(cas, action, store)
             assert result and result["action_key"] == action["action_key"]
         else:
@@ -72,6 +75,7 @@ def operate(request, store, load):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             path.chmod(0o444)
+            request["_consumer_boundary"]()
             result = cas.lookup(action)
             assert result and result["result"]["bytes"] == 6, "receipt consumer refused its actual payload"
         return result

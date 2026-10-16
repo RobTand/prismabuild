@@ -42,6 +42,7 @@ def operate(request, store, load):
             if path.exists():
                 path.chmod(0o600)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             value = queue.read_mover_retirements()
             assert len(value) == (0 if variant == "bootstrap" else 1)
             return value
@@ -60,6 +61,7 @@ def operate(request, store, load):
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = canary.load(store, value, action["action_key"])
             assert result["published_unix"] == (100.0 if variant == "bound" else None)
             return result
@@ -78,6 +80,7 @@ def operate(request, store, load):
                 assert reclaim.write_memo_file(path, entries) == path
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = reclaim.read_manifest(directory) if family.endswith("manifest") else reclaim.read_memo(path)
             entries = result["entries"] if family.endswith("manifest") else result
             assert len(entries) == (0 if variant == "empty" else 1)
@@ -96,6 +99,7 @@ def operate(request, store, load):
                 assert path.read_bytes() == before
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             refusal = release.stage_root_refusal(queue, stage)
             assert refusal is None, refusal
             return {"owned": True}
@@ -111,6 +115,7 @@ def operate(request, store, load):
             state.remember_known_failure(identity, value)
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
             result = state.known_failure(identity)
             assert result and result["new"] == ["tests/compat_example.py::test_failure"]
             return result
