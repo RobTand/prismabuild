@@ -142,7 +142,7 @@ def test_latest_encoding_failure_keeps_the_already_written_transition(queue):
 
 def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatch):
     path = queue.records.denial_transitions_path(KEY)
-    original_read, original_write = pool.record_store._read_json, pool._write_json_atomic
+    original_read, original_write = pool.record_store._read_json, pool.record_store._write_json
     reads, writes = [], []
 
     def read(candidate):
@@ -158,7 +158,7 @@ def test_failed_transition_write_retries_then_memo_skips_reads(queue, monkeypatc
         return original_write(candidate, document)
 
     monkeypatch.setattr(pool.record_store, '_read_json', read)
-    monkeypatch.setattr(pool, "_write_json_atomic", write)
+    monkeypatch.setattr(pool.record_store, '_write_json', write)
     item = {"action_key": KEY, "published_unix": 1.0}
     queue._record_denial_transition(item, host="box", reason="fixture", decision_reason=None)
     assert not path.exists()

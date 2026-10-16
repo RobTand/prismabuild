@@ -12,7 +12,7 @@ def _rewrite(queue, key, **changes):
     path = queue.records.item_path(pool.record_store.READY, key)
     row = pool.read_queue_record(path)
     row.update(changes)
-    pool._write_json_atomic(path, row)
+    pool.record_store._write_json(path, row)
     return path.read_bytes()
 
 
@@ -125,7 +125,8 @@ def test_unreadable_residency_carries_a_real_measurement_drain_across_two_polls(
         assert current["evidence"]["withhold_carried"]["drain_until_unix"] == until
         assert denial(later)["reason"] == "deferred_behind_withheld_row"
         assert denial(later)["evidence"]["withheld_for"] == waiting
-        assert queue.records.item_path(pool.record_store.READY, waiting).read_bytes() == waiting_bytes
+        assert queue.records.item_path(pool.record_store.READY, waiting).read_bytes(
+        ) == waiting_bytes
         assert queue.records.item_path(pool.record_store.READY, later).read_bytes() == later_bytes
     assert queue.passes(waiting) == 1
     _assert_unclaimed(queue, later, later_bytes)

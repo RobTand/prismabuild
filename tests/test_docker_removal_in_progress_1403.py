@@ -87,7 +87,7 @@ def claimed(tmp_path: Path):
                   worker_script="/w.py", resources={"gpu": 1, "mem_gb": 8})
     queued = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     queued["container_owner"] = OWNER
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.READY, KEY), queued)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.READY, KEY), queued)
     record = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
     assert record is not None and record["action_key"] == KEY
     marker = queue.root / "container-owners" / f"{OWNER}.used"

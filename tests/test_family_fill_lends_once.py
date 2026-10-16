@@ -79,7 +79,7 @@ def test_a_report_from_before_the_lenders_claim_is_not_mid_copy(
     _landing_report(queue, fam.MOVER, started=2000.)
     # The strict census still needs the publication generation of this
     # historical tier holder; only its claim time predates the report.
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, fam.MOVER),
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, fam.MOVER),
                             {"action_key": fam.MOVER, "claimed_unix": 3000.,
                              "published_unix": 2999., "cas_root": str(spool.cas_root)})
     export_key = fam._paced_export(spool)
@@ -98,7 +98,7 @@ def _announce_fill(queue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, fam.FILL: mb_s}
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
 
 
 def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
