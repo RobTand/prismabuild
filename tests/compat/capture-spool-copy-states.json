@@ -1,0 +1,29 @@
+{
+  "capture_name": "spool-states-capture-01",
+  "capture_report_sha256": "e3d2c4666e9c2683142047a7891ab2b5c7f9250d3b6b12190c177b8ce3e8af12",
+  "excluded_cases": [],
+  "files": {
+    "goldens-spool-copy-states.jsonl": "88fadbd948d7910517fd117eb85036f3c6011a8f8ad92ac8e04bf9b9b2228963",
+    "historical-spool-copy-states.jsonl": "8f360fb294d7f7e083635593c0f40db0d25a4b6d4198e73bb217f4f3074c4415"
+  },
+  "finished_at": "2026-10-16T23:23:53.612866+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "spool-record/copy-adopted",
+    "spool-record/copy-ready",
+    "spool-record/copy-repinned",
+    "spool-record/copy-started"
+  ],
+  "source_git": {
+    "parents": [
+      "4bb90e7647108537a842e7fbeccc8b740e15bf32"
+    ],
+    "snapshot": "6005a1cdad99def31315b1308d2ad9ab41e8b5f9",
+    "tree": "28081b2c5389b0853610021fc138ed7461bf9ce0"
+  },
+  "started_at": "2026-10-16T23:22:34.912584+00:00"
+}

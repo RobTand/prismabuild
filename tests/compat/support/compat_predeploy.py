@@ -117,12 +117,19 @@ def main():
     census = commands.add_parser("capture")
     census.add_argument("--out", type=Path, required=True)
     check = commands.add_parser("validate")
-    for name in ("census", "window", "designation", "generations", "candidate", "out"):
-        check.add_argument("--" + name, type=Path, required=True)
+    fresh = commands.add_parser("qualify")
+    check.add_argument("--census", type=Path, required=True)
+    fresh.add_argument("--census-dir", type=Path, required=True)
+    for command in (check, fresh):
+        for name in ("window", "designation", "generations", "candidate", "out"):
+            command.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
     if args.command == "capture":
         capture(args.out)
     else:
+        if args.command == "qualify":
+            capture(args.census_dir)
+            args.census = args.census_dir / "capture.json"
         validate(args)
 
 
