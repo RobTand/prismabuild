@@ -631,7 +631,6 @@ _RESIDENCY_KEYS = frozenset({
     "schema", "tier_id", "manifest_sha256", "manifest_bytes",
     "range_start_bytes", "range_end_bytes", "leads",
 })
-PASSES = "passes"
 #: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
