@@ -31,6 +31,10 @@ def isolate(root):
 
 
 def attest(root, stdlib, manifest):
+    for entry in sys.path:
+        path = Path(entry).resolve()
+        if not path.is_relative_to(root) and path not in stdlib:
+            raise RuntimeError(f"search path escaped closure and stdlib: {path}")
     observed = {}
     for name, module in sorted(sys.modules.items()):
         filename = getattr(module, "__file__", None)
@@ -88,7 +92,7 @@ def private_writes_only(store):
                 return
             flags = args[2] if isinstance(args[2], int) else 0
             writing = flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
-            if writing and not path.is_relative_to(store):
+            if writing and path != Path("/dev/null") and not path.is_relative_to(store):
                 raise RuntimeError(f"compatibility writer escaped private store: {path}")
             if any(path.is_relative_to(live / name) for name in ("pb-queue", "cas")):
                 raise RuntimeError("compatibility adapter attempted a live-store read")
@@ -123,8 +127,11 @@ def main():
     stdlib = isolate(root)
     request = json.load(sys.stdin)
     args.store.mkdir(parents=True, exist_ok=True)
+    (args.store / "tmp").mkdir(exist_ok=True)
+    os.environ["TMPDIR"] = str(args.store / "tmp")
     private_writes_only(args.store)
     output = {"isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site),
+              "affinity": sorted(os.sched_getaffinity(0)),
               "sys_path": list(sys.path), "driver_sha256": sha(Path(__file__)),
               "python": sys.version, "machine": platform.machine(),
               "adapters_sha256": {p.name: sha(p) for p in sorted(args.adapters.parent.glob("compat*adapters.py"))},
@@ -152,6 +159,7 @@ def main():
     except Exception as error:
         code = 2
         output["attestation_error"] = str(error)
+    output["sys_path"] = list(sys.path)
     print(json.dumps(output, sort_keys=True))
     return code
 

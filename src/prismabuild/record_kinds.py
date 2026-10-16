@@ -18,9 +18,21 @@ class RecordKind:
     negative_field: str | None = "schema"
     legacy_writers: tuple[str, ...] = ()
     legacy_readers: tuple[str, ...] = ()
+    stable_paths: bool = False
 
 
 KINDS = (
+    RecordKind("core-receipt", "prismaquant.prismabuild.cas_receipt.v3",
+               "cas/actions/v3/<xx>/<action>.json", "closed",
+               "prismabuild.core:PrismaBuildCAS.lookup", ("prismabuild.core:run_local_action",),
+               ("in-process", "script"), ("v2 occupies a separate namespace and is not read as v3",), stable_paths=True),
+    RecordKind("core-attestation", "prismaquant.prismabuild.worker_attestation.v2",
+               "CAS receipt producer member", "closed", "prismabuild.core:validate_worker_attestation",
+               ("prismabuild.core:preflight_action",), ("in-process", "script"), stable_paths=True),
+    RecordKind("core-runtime", "prismaquant.prismabuild.worker_runtime.v1",
+               "CAS receipt producer.runtime member", "closed", "prismabuild.core:_validate_worker_runtime",
+               ("prismabuild.core:_worker_runtime_identity",), ("in-process", "script"),
+               ("digest_primitives may be absent in pre-split receipts",), stable_paths=True),
     RecordKind("fragment", "prismaquant.prismabuild.residency_map_fragment.v1",
                "residency/<consumer>/<mover>.json", "closed",
                "prismabuild.residency_map:read_fragments",
@@ -45,7 +57,7 @@ KINDS = (
                "prismabuild.reader_lease:read_material", ("prismabuild.reader_lease:write_material",),
                ("ssd", "empty-epoch", "ram"), ("SSD material permits absent or empty epoch",)),
     RecordKind("retiring", "prismaquant.prismabuild.reader_retiring.v2",
-               "residency/<consumer>/<mover>.retiring.json", "closed",
+               "residency/leases/<consumer>/<mover>.retiring.json", "closed",
                "prismabuild.reader_lease:retiring_for", ("prismabuild.reader_lease:write_retiring",),
                ("generation",), ("v1 never establishes generation-bound retirement",)),
     RecordKind("move", "prismaquant.prismabuild.pool_move.v1", "movers/<key>.json", "additive",
@@ -156,8 +168,8 @@ KINDS = (
     RecordKind("gang-ready", "prismabuild.gang_ready.v1", "gangs/<group>/ready-<index>.json", "additive",
                "prismabuild._gang:sibling_readiness", ("prismabuild._gang:mark_ready",), ("fresh",)),
     RecordKind("gang-teardown", "prismabuild.gang_teardown.v1", "gangs/<group>/teardown.json", "additive",
-               "prismabuild._gang:teardown", ("prismabuild._gang:tear_down",), ("presence",),
-               ("any nonempty object establishes teardown; schema is diagnostic",), negative_field=None),
+               "prismabuild.pool:PoolQueue._gang_start_barrier", ("prismabuild._gang:tear_down",), ("presence",),
+               ("any object, including empty/missing-schema, establishes teardown; schema is diagnostic",), negative_field=None),
     RecordKind("gang-terminal", "prismabuild.gang_terminal_mark.v1", "gangs/<group>/terminal-<key>.json", "additive",
                "prismabuild._gang:note_terminal", ("prismabuild._gang:note_terminal",), ("observed", "empty"),
                ("foreign schema/signature resets confirmation instead of authorizing teardown",)),

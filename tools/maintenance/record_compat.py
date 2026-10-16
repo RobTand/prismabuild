@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -37,6 +39,7 @@ def reached(observed, reference):
 
 
 def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
+    kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
@@ -45,6 +48,23 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
                "--store", str(store)]
     if manifest:
         command.extend(["--manifest", str(manifest)])
+    if kind.stable_paths:
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise RuntimeError("stable-path writer fixture requires qualified bubblewrap; no fallback")
+        store.mkdir(parents=True, exist_ok=True)
+        stable = Path("/opt/prismabuild-compat")
+        namespace = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/opt",
+                     "--ro-bind", str(root), str(stable / "generation"),
+                     "--ro-bind", str(HERE), str(stable / "driver"),
+                     "--bind", str(store), str(stable / "store")]
+        command = [sys.executable, "-I", "-S", str(stable / "driver/compat_isolate.py"),
+                   "--root", str(stable / "generation"), "--adapters", str(stable / "driver/compat_adapters.py"),
+                   "--store", str(stable / "store")]
+        if manifest:
+            namespace.extend(["--ro-bind", str(manifest), str(stable / "manifest.json")])
+            command.extend(["--manifest", str(stable / "manifest.json")])
+        command = namespace + ["--"] + command
     process = subprocess.run(command, input=json.dumps(request), text=True,
                              capture_output=True, timeout=45)
     try:
@@ -52,7 +72,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
     except ValueError:
         result = {"stdout": process.stdout, "stderr": process.stderr}
     result["returncode"] = process.returncode
-    kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
+    if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
+        result["returncode"] = 2
+        result["attestation_error"] = "private namespace did not preserve PB CPU affinity"
     references = kind.writers + kind.legacy_writers if raw is None else (kind.reader,) + kind.legacy_readers
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
@@ -60,7 +82,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
         result["entry_error"] = "adapter did not reach its catalogued production entry"
     if evidence:
         evidence.parent.mkdir(parents=True, exist_ok=True)
-        evidence.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
+        with evidence.open("x") as stream:
+            stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+        evidence.chmod(0o444)
     return result
 
 
@@ -119,33 +143,57 @@ def retained(directory=CAPTURE, *, history_control=False):
 
 
 def generate(output, selected=None):
-    output.mkdir(parents=True, exist_ok=True)
-    historical, goldens = [], []
+    output.mkdir(parents=True, exist_ok=False)
+    historical, goldens, failures = [], [], []
+
+    def check(result, case, generation, phase):
+        if result["returncode"]:
+            failures.append({"case": case, "generation": generation, "phase": phase,
+                             "returncode": result["returncode"], "error": result.get("error"),
+                             "attestation_error": result.get("attestation_error"),
+                             "entry_error": result.get("entry_error")})
+            return False
+        accepted(result)
+        return True
+
     with retained() as generations, tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
         for case in (cases() if selected is None else selected):
             label = case.replace("/", "-")
-            raw = write(ROOT, case, Path(tmp) / (label + "-new"),
-                        evidence=output / "attestations" / (label + "-new-writer.json"))
+            before = len(failures)
+            result = invoke(ROOT, case, Path(tmp) / (label + "-new"),
+                            evidence=output / "attestations" / (label + "-new-writer.json"))
+            if not check(result, case, "candidate", "writer"):
+                continue
+            raw = base64.b64decode(result["result"]["raw"])
             goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode()})
             for generation, old, manifest in generations:
                 prefix = output / "attestations" / generation
                 stores = Path(tmp) / generation
-                prior = write(old, case, stores / (label + "-old"), manifest=manifest,
-                              evidence=prefix / (label + "-old-writer.json"))
-                accepted(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
-                                evidence=prefix / (label + "-forward.json")))
-                accepted(invoke(old, case, stores / (label + "-reverse"), raw=raw, manifest=manifest,
-                                evidence=prefix / (label + "-reverse.json")))
+                result = invoke(old, case, stores / (label + "-old"), manifest=manifest,
+                                evidence=prefix / (label + "-old-writer.json"))
+                if not check(result, case, generation, "writer"):
+                    continue
+                prior = base64.b64decode(result["result"]["raw"])
+                check(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
+                             evidence=prefix / (label + "-forward.json")), case, generation, "forward")
+                check(invoke(old, case, stores / (label + "-reverse"), raw=raw, manifest=manifest,
+                             evidence=prefix / (label + "-reverse.json")), case, generation, "reverse")
                 historical.append({"case": case, "generation": generation,
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
                                    "sha256": sha(prior), "raw": base64.b64encode(prior).decode()})
-            print(case, "both directions accepted", flush=True)
+            print(case, "both directions accepted" if len(failures) == before else "RED; evidence retained", flush=True)
     for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical)):
         path = output / name
         with path.open("x") as stream:
             for row in rows:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
         path.chmod(0o444)
+    path = output / "qualification.json"
+    path.write_text(json.dumps({"current_captures": len(goldens), "historical_captures": len(historical),
+                                "failures": failures, "passed": not failures}, sort_keys=True, indent=2) + "\n")
+    path.chmod(0o444)
+    if failures:
+        raise SystemExit(2)
 
 
 def main():

@@ -83,7 +83,9 @@ def operate(request, store, load):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_queue_adapters.py")))["operate"]
         return adapter(request, store, load)
     if family.startswith("core-"):
-        adapter = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["operate"]
+        filename = ("compat_receipt_adapters.py" if family in ("core-receipt", "core-attestation", "core-runtime")
+                    else "compat_core_adapters.py")
+        adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]
         return adapter(request, store, load)
     if family.startswith(("edge-", "out-")):
         filename = "compat_edge_adapters.py" if family.startswith("edge-") else "compat_output_adapters.py"
