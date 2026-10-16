@@ -774,7 +774,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
     Needed because a mutable ``done``/``failed`` row is one slot per action
     key: a later generation overwrites it, and an intermediate handoff then
     survives nowhere but here.  ``pool.archived_preemption_outcomes`` is the
-    verifying reader for this evidence and reaches ``adopted_attempt_summary``,
+    verifying reader for this evidence and reaches ``attempt_ending``,
     which reads every linked log whole to check its digest -- so an action that
     printed a gigabyte would cost a gigabyte to ask about.  Only two fields
     decide a successor, the attempt's own ``published_unix`` and the

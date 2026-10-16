@@ -199,27 +199,6 @@ PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismabuild.publication_superseded.v1"
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
 POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
-#: Inline cap on an action stream inside a mutable queue record (#1203).  The
-#: immutable attempt log keeps the full stream and the record names it, so a
-#: reader that needs the bytes follows the reference instead of the row.
-TERMINAL_STREAM_TAIL_BYTES = 64 * 1024
-
-
-def _terminal_stream_inline(raw: str) -> tuple[str, int, bool]:
-    """Bounded inline copy of an action stream for a mutable record.
-
-    Returns ``(inline, byte_count, cut)``.  The inline copy is the stream's
-    last ``TERMINAL_STREAM_TAIL_BYTES`` bytes, decoded permissively so a code
-    point the cut split still renders; the byte count and whether the copy
-    was cut travel beside it so a reader can tell a tail from a whole stream
-    (#1203).
-    """
-    data = raw.encode("utf-8")
-    if len(data) <= TERMINAL_STREAM_TAIL_BYTES:
-        return raw, len(data), False
-    tail = data[-TERMINAL_STREAM_TAIL_BYTES:]
-    return tail.decode("utf-8", errors="replace"), len(data), True
-
 
 def _membership_withdrawal_owner(value: object) -> bool:
     """Whether ``value`` names a membership supervisor drain owner.
@@ -23878,7 +23857,7 @@ class PoolQueue:
                     detail=recovery_detail,
                 )
                 record["attempts"] = attempts
-                adopted = self.adopted_attempt_summary(record)
+                adopted = self.attempt_ending(record)
                 record.update(
                     {
                         "status": adopted["status"],
@@ -25290,7 +25269,7 @@ class PoolQueue:
              "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
             for number in range(missing + 1, attempt + 1)
         ]
-        adopted = self.adopted_attempt_summary(record)
+        adopted = self.attempt_ending(record)
         if adopted["disposition"] != value.get("disposition"):
             raise PoolContractError(
                 "archived generation outcome has conflicting disposition")
@@ -25342,7 +25321,7 @@ class PoolQueue:
                  "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
                 for number in range(missing + 1, attempt + 1)
             ]
-            adopted = self.adopted_attempt_summary(record)
+            adopted = self.attempt_ending(record)
             if adopted["disposition"] != value["disposition"]:
                 raise PoolContractError("archived preemption outcome has conflicting disposition")
             for field in ("status", "finished_unix", "finished_host", "detail"):
@@ -25350,90 +25329,15 @@ class PoolQueue:
             found.append((path, record))
         return found
 
-    def adopted_attempt_summary(
-        self, record: Mapping[str, object]
-    ) -> dict[str, object]:
-        """Return the one mutable transition the immutable winner permits.
+    def attempt_ending(self, record: Mapping[str, object]) -> dict[str, object]:
+        """Capture verified immutable rows and interpret their first-writer winner.
 
-        A finisher and a stale reaper can both observe the same claim and race
-        to publish one attempt number.  ``archive_attempt`` makes that evidence
-        first-writer-wins; this method makes its status, disposition, detail,
-        and provenance first-writer-wins too.  Both queue writers and readers
-        use this rule so a mutable summary cannot route one cause while
-        reporting or returning another.
+        Both supplied dependencies are pure: the existing contract-error
+        constructor and self-contained output retry-stop proof validator.
         """
-
-        attempts = self.attempt_outcomes(record)
-        if not attempts:
-            raise PoolContractError(
-                "an attempt-backed queue record has no immutable outcome"
-            )
-        adopted = attempts[-1]
-        status = adopted.get("status")
-        disposition = adopted.get("disposition")
-        if not isinstance(status, str) or not status:
-            raise PoolContractError("pool attempt status must be nonempty text")
-        if not isinstance(disposition, str) or not disposition:
-            raise PoolContractError(
-                "pool attempt disposition must be nonempty text"
-            )
-        attempt = adopted.get("attempt")
-        max_attempts = adopted.get("max_attempts")
-        if type(attempt) is not int or type(max_attempts) is not int:
-            raise PoolContractError("pool attempt transition has invalid bounds")
-        succeeded = status in {"executed", "cache_hit"}
-        stopped = "output_retry_stop" in adopted
-        if stopped:
-            if succeeded:
-                raise PoolContractError("successful attempt cannot stop an output retry")
-            self._validate_output_retry_stop(adopted["output_retry_stop"], adopted)
-        expected = (
-            WITHDRAWN if status == WITHDRAWN else
-            DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
-        )
-        if disposition != expected:
-            raise PoolContractError(
-                f"pool attempt {attempt} status {status!r} requires "
-                f"disposition {expected!r}, not {disposition!r}"
-            )
-        raw_detail = adopted.get("detail")
-        if not isinstance(raw_detail, Mapping):
-            raise PoolContractError("pool attempt detail must be an object")
-        finished_unix = adopted.get("finished_unix")
-        if (
-            isinstance(finished_unix, bool)
-            or not isinstance(finished_unix, (int, float))
-            or not math.isfinite(float(finished_unix))
-        ):
-            raise PoolContractError("pool attempt finished_unix must be finite")
-        finished_host = adopted.get("finished_host")
-        if not isinstance(finished_host, str) or not finished_host:
-            raise PoolContractError("pool attempt finished_host must be nonempty text")
-        detail = dict(raw_detail)
-        logs = adopted.get("logs")
-        for stream in ("stdout", "stderr"):
-            # Only the bounded tail lives in the mutable record; the immutable
-            # attempt log beside it keeps the whole stream and is named so a
-            # reader can still fetch every byte (#1203).
-            inline, full_bytes, cut = _terminal_stream_inline(
-                str(adopted.get(stream) or ""))
-            detail[stream] = inline
-            detail[f"{stream}_bytes"] = full_bytes
-            detail[f"{stream}_truncated"] = cut
-            metadata = logs.get(stream) if isinstance(logs, Mapping) else None
-            if isinstance(metadata, Mapping):
-                detail[f"{stream}_log"] = dict(metadata)
-        return {
-            "attempt": attempt,
-            "status": status,
-            "disposition": disposition,
-            "output_retry_stopped": stopped,
-            "finished_unix": finished_unix,
-            "finished_host": finished_host,
-            **({"served_from": adopted["served_from"], "resident_set": adopted.get("resident_set")}
-               if "served_from" in adopted else {}),
-            "detail": detail,
-        }
+        return endings.resolve_attempt(
+            self.attempt_outcomes(record), invalid=PoolContractError,
+            validate_output_retry_stop=self._validate_output_retry_stop)
 
     def _late_finish_path(self, record: Mapping[str, object]) -> Path:
         identity = pb.canonical_sha256({field: record.get(field) for field in _CLAIM_IDENTITY})
@@ -25566,7 +25470,7 @@ class PoolQueue:
         archived["finished_host"] = socket.gethostname()
         succeeded = status in {"executed", "cache_hit"}
         limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
-        # The same rule ``adopted_attempt_summary`` applies, so this outcome can
+        # The same rule ``attempt_ending`` applies, so this outcome can
         # never be the one that makes a reader refuse the record. A withdrawn
         # status requires the withdrawn disposition: a cancelled attempt is
         # not a failure and must not descend the retry ladder.
@@ -25995,7 +25899,7 @@ class PoolQueue:
                     retained["attempt_history"] = self.archive_attempt(
                         retained, attempt=retained["attempts"], status=WITHDRAWN,
                         disposition=WITHDRAWN, detail=finished_detail)
-                    adopted = self.adopted_attempt_summary(retained)
+                    adopted = self.attempt_ending(retained)
                     if adopted["status"] != WITHDRAWN:
                         raise PoolContractError("withdrawn finish conflicts with an archived attempt")
                     for field in ("status", "finished_unix", "finished_host", "detail"):
@@ -26183,12 +26087,12 @@ class PoolQueue:
             status=status,
             disposition=disposition,
             # The merged detail, not the caller's: the attempt archive is the
-            # immutable evidence and ``adopted_attempt_summary`` reads the
+            # immutable evidence and ``attempt_ending`` reads the
             # terminal's ``detail`` back out of it, so a receipt added only to
             # the record is overwritten two statements below.
             detail=finished_detail,
         )
-        adopted = self.adopted_attempt_summary(record)
+        adopted = self.attempt_ending(record)
         record.update(
             {
                 "status": adopted["status"],

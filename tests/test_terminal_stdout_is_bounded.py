@@ -12,7 +12,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool  # noqa: E402
+from prismabuild import endings, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbstatus  # noqa: E402
@@ -52,7 +52,7 @@ def test_a_huge_stdout_stays_readable_in_the_ending(queue):
     record = json.loads(
         queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8"))
     detail = record["detail"]
-    assert len(detail["stdout"].encode("utf-8")) <= pool.TERMINAL_STREAM_TAIL_BYTES
+    assert len(detail["stdout"].encode("utf-8")) <= endings.TERMINAL_STREAM_TAIL_BYTES
     assert detail["stdout"].endswith("FINAL-MARKER\n")
     assert detail["stdout_bytes"] == len(HUGE.encode("utf-8"))
     assert detail["stdout_truncated"] is True

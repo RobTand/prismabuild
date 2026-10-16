@@ -3431,7 +3431,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     The mutable terminal summary is state-machine output.  Where the record
     links immutable attempt records, the first-writer-published attempt decides
     what this returns, so a later stale-output refusal cannot replace the
-    causal failure on the submitter's screen.  ``adopted_attempt_summary``
+    causal failure on the submitter's screen.  ``attempt_ending``
     verifies every canonical path, digest, byte count and generation on the way
     through, and refuses a summary that disagrees with the attempt it adopted.
 
@@ -3447,7 +3447,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "attempt_history" in outcome
         or "attempt_history_missing_before" in outcome
     ):
-        adopted = q.adopted_attempt_summary(outcome)
+        adopted = q.attempt_ending(outcome)
         disposition = adopted["disposition"]
         # An ending recovered from its own immutable attempt is not filed in a
         # disposition directory at all -- the attempt path is its source, for
@@ -3495,7 +3495,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 or any(retained.get(field) != outcome.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
-        stopped = q.adopted_attempt_summary(retained)
+        stopped = q.attempt_ending(retained)
         if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
             raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
         for field in ("resource_scope_cleanup", "container_cleanup"):
@@ -3513,7 +3513,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         "resource_scope_cleanup": outcome.get("resource_scope_cleanup"),
         "container_cleanup": outcome.get("container_cleanup"),
         # ``executed`` and ``cache_hit`` both mean the work is done; that is
-        # the pull queue's own rule, in ``adopted_attempt_summary``, which
+        # the pull queue's own rule, in ``attempt_ending``, which
         # routes both to ``done/``.
         "succeeded": status in {"executed", "cache_hit"},
         "transport": str(outcome.get("transport") or "pool"),

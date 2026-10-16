@@ -3576,7 +3576,7 @@ def _require_exact_withdrawal(queue: pool.PoolQueue, key: str) -> dict:
             or any(retained.get(field) != decision.get(field) for field in
                    ("action_key", "published_unix", "max_attempts", "retry_safe"))):
         raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
-    ending = queue.adopted_attempt_summary(retained)
+    ending = queue.attempt_ending(retained)
     if ending["status"] != pool.WITHDRAWN or ending["disposition"] != pool.WITHDRAWN:
         raise pool.PoolContractError("withdrawal lacks its exact immutable decision")
     expected = {**decision, "withdrawn_attempt": retained}
@@ -4036,7 +4036,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                 # Reuse the queue's canonical history/generation/log
                 # checks; no whole-model hashing, and only once for this
                 # consumer.
-                ending = queue.adopted_attempt_summary(failed)
+                ending = queue.attempt_ending(failed)
                 if (failed.get("status") != "failed"
                         or ending["status"] != "failed"
                         or ending["disposition"] != pool.FAILED):
@@ -4062,7 +4062,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                             if not _metadata_absent(queue.item_path(pool.WITHDRAWN, mover)):
                                 continue
                             terminal = _owner_record(queue, pool.DONE, mover)
-                            ending = queue.adopted_attempt_summary(terminal)
+                            ending = queue.attempt_ending(terminal)
                             if (terminal.get("status") != "executed"
                                     or ending["status"] != "executed"
                                     or ending["disposition"] != pool.DONE):

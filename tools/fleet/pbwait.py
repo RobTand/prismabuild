@@ -815,7 +815,7 @@ def verdict(rows) -> int:
     """0 when every action's work is done, and otherwise which way it is not.
 
     ``cache_hit`` counts as done.  That is the pull queue's own rule, applied
-    in ``adopted_attempt_summary``, which routes both it and ``executed`` to
+    in ``attempt_ending``, which routes both it and ``executed`` to
     ``done/``; a memoized result is the same result.
 
     A failure outranks a wait: an action that is still running is news the

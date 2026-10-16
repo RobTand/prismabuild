@@ -139,7 +139,7 @@ def test_repeated_preemptions_and_failure_share_the_original_attempt_budget(tmp_
     q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=holder)
     ending = json.loads(q.item_path(pool.FAILED, bg).read_text())
     assert ending['attempts'] == 3
-    assert q.adopted_attempt_summary(ending)['disposition'] == pool.FAILED
+    assert q.attempt_ending(ending)['disposition'] == pool.FAILED
     assert q.ledger().held() == {}
     import sys
     from pathlib import Path

@@ -57,7 +57,7 @@ FORBIDDEN_OS = frozenset({
 #: Methods that mutate, lock, or read a whole log, matched on the last
 #: component so that ``pool._write_json_atomic`` and a bare
 #: ``_write_json_atomic`` are both caught. ``attempt_outcomes`` and
-#: ``adopted_attempt_summary`` are here for the log reason rather than the
+#: ``attempt_ending`` are here for the log reason rather than the
 #: write reason: they read every stdout and stderr whole to verify a digest,
 #: which is right for a verifier and ruinous for a status call.
 FORBIDDEN_METHODS = frozenset({
@@ -68,7 +68,7 @@ FORBIDDEN_METHODS = frozenset({
     "withdraw", "finish", "announce", "serve_once", "reap_stale",
     "_write_json_atomic", "publish_immutable", "_publish_immutable",
     "_atomic_write_new_json", "publish_action_request", "publish_result",
-    "ingest_input", "attempt_outcomes", "adopted_attempt_summary",
+    "ingest_input", "attempt_outcomes", "attempt_ending",
     "archived_preemption_outcomes",
 })
 

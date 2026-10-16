@@ -178,7 +178,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         # filed by the pre-#1203 runtime carry the full streams inline with
         # none of the bounded-tail keys, so exactly one of the two shapes is
         # accepted and the matched shape feeds the later checks.
-        detail = q.adopted_attempt_summary(record)["detail"]
+        detail = q.attempt_ending(record)["detail"]
         legacy = {**archived["detail"], "stdout": archived["stdout"],
                   "stderr": archived["stderr"]}
         ending_detail = record.get("detail")

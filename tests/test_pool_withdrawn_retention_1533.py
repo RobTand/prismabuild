@@ -203,7 +203,7 @@ def test_ready_withdrawal_adds_no_worker_evidence(scoped):
     assert not (queue.root / pool.ATTEMPTS / key).exists()
 
 
-@pytest.mark.parametrize("reader", ["outcome_summary", "adopted_attempt_summary", "terminal_outcome_covers",
+@pytest.mark.parametrize("reader", ["outcome_summary", "attempt_ending", "terminal_outcome_covers",
                                     "reclaim_terminal_reservation", "pool_reset", "pbstatus", "pbrun", "pbwait"])
 def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
     queue, item, calls = scoped
@@ -213,8 +213,8 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
         summary = pbrun.outcome_summary(queue, path, record)
         assert summary["status"] == "withdrawn" and summary["adopted"] is None
         assert summary["returncode"] is None
-    elif reader == "adopted_attempt_summary":
-        adopted = queue.adopted_attempt_summary(record["withdrawn_attempt"])
+    elif reader == "attempt_ending":
+        adopted = queue.attempt_ending(record["withdrawn_attempt"])
         assert adopted["status"] == adopted["disposition"] == "withdrawn"
     elif reader == "terminal_outcome_covers":
         assert queue.terminal_outcome_covers(record, action_key=key) is None

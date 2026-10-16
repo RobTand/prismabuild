@@ -1,7 +1,7 @@
 """Pure ending questions over captured queue evidence."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 import math
@@ -288,3 +288,112 @@ def resolve_current(
     return result(failure() or (present[0] if present else None),
                   ambiguous=len(coexisting) > 1)
 
+
+
+#: Inline cap on an action stream inside a mutable queue record (#1203).  The
+#: immutable attempt log keeps the full stream and the record names it, so a
+#: reader that needs the bytes follows the reference instead of the row.
+TERMINAL_STREAM_TAIL_BYTES = 64 * 1024
+
+
+def _terminal_stream_inline(raw: str) -> tuple[str, int, bool]:
+    """Bounded inline copy of an action stream for a mutable record.
+
+    Returns ``(inline, byte_count, cut)``.  The inline copy is the stream's
+    last ``TERMINAL_STREAM_TAIL_BYTES`` bytes, decoded permissively so a code
+    point the cut split still renders; the byte count and whether the copy
+    was cut travel beside it so a reader can tell a tail from a whole stream
+    (#1203).
+    """
+    data = raw.encode("utf-8")
+    if len(data) <= TERMINAL_STREAM_TAIL_BYTES:
+        return raw, len(data), False
+    tail = data[-TERMINAL_STREAM_TAIL_BYTES:]
+    return tail.decode("utf-8", errors="replace"), len(data), True
+
+
+def resolve_attempt(
+    attempts: Sequence[Mapping[str, object]], *,
+    invalid: Callable[[str], Exception],
+    validate_output_retry_stop: Callable[[object, Mapping[str, object]], None],
+) -> dict[str, object]:
+    """Return the one mutable transition the immutable winner permits.
+
+    A finisher and a stale reaper can both observe the same claim and race
+    to publish one attempt number.  ``archive_attempt`` makes that evidence
+    first-writer-wins; this method makes its status, disposition, detail,
+    and provenance first-writer-wins too.  Both queue writers and readers
+    use this rule so a mutable summary cannot route one cause while
+    reporting or returning another.
+    """
+
+    if not attempts:
+        raise invalid(
+            "an attempt-backed queue record has no immutable outcome"
+        )
+    adopted = attempts[-1]
+    status = adopted.get("status")
+    disposition = adopted.get("disposition")
+    if not isinstance(status, str) or not status:
+        raise invalid("pool attempt status must be nonempty text")
+    if not isinstance(disposition, str) or not disposition:
+        raise invalid(
+            "pool attempt disposition must be nonempty text"
+        )
+    attempt = adopted.get("attempt")
+    max_attempts = adopted.get("max_attempts")
+    if type(attempt) is not int or type(max_attempts) is not int:
+        raise invalid("pool attempt transition has invalid bounds")
+    succeeded = status in {"executed", "cache_hit"}
+    stopped = "output_retry_stop" in adopted
+    if stopped:
+        if succeeded:
+            raise invalid("successful attempt cannot stop an output retry")
+        validate_output_retry_stop(adopted["output_retry_stop"], adopted)
+    expected = (
+        WITHDRAWN if status == WITHDRAWN else
+        DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
+    )
+    if disposition != expected:
+        raise invalid(
+            f"pool attempt {attempt} status {status!r} requires "
+            f"disposition {expected!r}, not {disposition!r}"
+        )
+    raw_detail = adopted.get("detail")
+    if not isinstance(raw_detail, Mapping):
+        raise invalid("pool attempt detail must be an object")
+    finished_unix = adopted.get("finished_unix")
+    if (
+        isinstance(finished_unix, bool)
+        or not isinstance(finished_unix, (int, float))
+        or not math.isfinite(float(finished_unix))
+    ):
+        raise invalid("pool attempt finished_unix must be finite")
+    finished_host = adopted.get("finished_host")
+    if not isinstance(finished_host, str) or not finished_host:
+        raise invalid("pool attempt finished_host must be nonempty text")
+    detail = dict(raw_detail)
+    logs = adopted.get("logs")
+    for stream in ("stdout", "stderr"):
+        # Only the bounded tail lives in the mutable record; the immutable
+        # attempt log beside it keeps the whole stream and is named so a
+        # reader can still fetch every byte (#1203).
+        inline, full_bytes, cut = _terminal_stream_inline(
+            str(adopted.get(stream) or ""))
+        detail[stream] = inline
+        detail[f"{stream}_bytes"] = full_bytes
+        detail[f"{stream}_truncated"] = cut
+        metadata = logs.get(stream) if isinstance(logs, Mapping) else None
+        if isinstance(metadata, Mapping):
+            detail[f"{stream}_log"] = dict(metadata)
+    return {
+        "attempt": attempt,
+        "status": status,
+        "disposition": disposition,
+        "output_retry_stopped": stopped,
+        "finished_unix": finished_unix,
+        "finished_host": finished_host,
+        **({"served_from": adopted["served_from"], "resident_set": adopted.get("resident_set")}
+           if "served_from" in adopted else {}),
+        "detail": detail,
+    }

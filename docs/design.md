@@ -1107,17 +1107,24 @@ The staged-wait canary accepts no execution evidence from a publication ending.
 bulk: `pbstatus` bounds an ending record at 8 MiB, so one 8.4 MB stdout
 filed a row no reader could open, and a requeued record carried the same
 stream into every discovery read. The mutable row now carries only the last
-64 KiB of each stream (`pool.TERMINAL_STREAM_TAIL_BYTES`), decoded
+64 KiB of each stream (`endings.TERMINAL_STREAM_TAIL_BYTES`), decoded
 permissively so a code point the cut split still renders, beside the stream's
 full byte count (`stdout_bytes`/`stderr_bytes`), whether it was cut
 (`stdout_truncated`/`stderr_truncated`), and the immutable attempt log that
 keeps every byte (`stdout_log`/`stderr_log`, the same first-writer-wins,
 content-addressed file `archive_attempt` already writes, with its path, byte
-count and digest). `adopted_attempt_summary` is the one writer of that shape,
+count and digest). `endings.resolve_attempt` is the one writer of that shape,
 so `finish`, the late finisher, the stale-claim reaper and preemption
 successor recovery file it identically, and receipt reconciliation accepts
 that same bounded form or, for endings filed by the pre-#1203 runtime, the
 legacy form carrying the full streams inline — and nothing else.
+`PoolQueue.attempt_ending` captures verified immutable rows through
+`attempt_outcomes`, then invokes that pure reducer. The reducer receives the
+existing contract-error constructor and self-contained output retry-stop
+validator as required pure dependencies. It reads no queue, log or current
+funding. Guard order, first-writer disposition, provenance and return-key order
+are preserved. The former `adopted_attempt_summary` method is removed and every
+internal reader and writer uses the new boundary.
 Readers that scan the last line of a stream (the canary legs, worker stderr
 tails, `pbrun`'s on-screen diagnostics) keep their answer inside the tail,
 and a reader that needs every byte follows the named log. `pbstatus` renders

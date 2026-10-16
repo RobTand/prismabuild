@@ -1889,7 +1889,7 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
             and mover_row.value.state == "failed")
     record = pool._read_json(q.item_path(pool.FAILED, mover))
     assert isinstance(record, dict), record
-    assert q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    assert q.attempt_ending(record)["disposition"] == pool.FAILED
     assert int(record.get("attempts", 0)) < int(record.get("max_attempts", 3))
     assert record["residency"]["tier_id"] == TIER, record["residency"]
     assert q.output_partial_pin_holds(record, mover) is True

@@ -213,7 +213,7 @@ def test_finish_adopts_reaper_attempt_that_won_immutable_race(
     assert not queue.item_path(pool.DONE, KEY).exists()
     ready = json.loads(landed.read_text(encoding="utf-8"))
     adopted = queue.attempt_outcomes(ready)[0]
-    summary = queue.adopted_attempt_summary(ready)
+    summary = queue.attempt_ending(ready)
     assert ready["status"] == adopted["status"] == "lease_lost"
     assert ready["detail"] == summary["detail"]
     assert ready["detail"]["stdout"] == ready["detail"]["stderr"] == ""
@@ -268,7 +268,7 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     terminal_path = queue.item_path(pool.FAILED, KEY)
     terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
     adopted = queue.attempt_outcomes(terminal)[0]
-    summary = queue.adopted_attempt_summary(terminal)
+    summary = queue.attempt_ending(terminal)
     assert terminal["status"] == adopted["status"] == "failed"
     assert terminal["detail"]["returncode"] == 37
     assert terminal["detail"] == summary["detail"]
@@ -310,7 +310,7 @@ def test_adopted_attempt_requires_a_finite_finish_time(
 
     monkeypatch.setattr(queue, "attempt_outcomes", nonfinite)
     with pytest.raises(pool.PoolContractError, match="finished_unix must be finite"):
-        queue.adopted_attempt_summary(linked)
+        queue.attempt_ending(linked)
 
 
 def test_rollout_archives_the_next_attempt_without_inventing_old_history(
