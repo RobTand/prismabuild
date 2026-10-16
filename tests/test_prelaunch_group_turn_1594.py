@@ -25,7 +25,7 @@ G3 = "33" * 32
 def queue(tmp_path: Path) -> pool.PoolQueue:
     """A bare queue; the turn reads files, not ledgers."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 

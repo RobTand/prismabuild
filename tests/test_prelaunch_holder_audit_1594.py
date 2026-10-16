@@ -39,7 +39,7 @@ def _key() -> str:
 def _fleet(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
     """A real queue with a registered stage root and minted tier room."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(

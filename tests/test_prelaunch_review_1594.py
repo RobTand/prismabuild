@@ -20,8 +20,8 @@ from test_prelaunch_tier_publish_1594 import (  # noqa: E402
 
 
 def _published(queue, movers):
-    return all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+    return all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers)
 
 
@@ -138,7 +138,7 @@ def test_a_row_published_before_its_funding_is_funded_on_a_later_cycle(
             break
     assert calls, "the window never reached the funding step"
     monkeypatch.setattr(pg, "publish_chunk", real)
-    assert any(queue.item_path(pool.READY, mover).exists() for mover in movers)
+    assert any(queue.records.item_path(pool.record_store.READY, mover).exists() for mover in movers)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
     assert _published(queue, movers)
