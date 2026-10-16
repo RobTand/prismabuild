@@ -30,6 +30,12 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("runtime-receipt", "prismaquant.prismabuild.runtime_version.v1", "private staged generation/RUNTIME_VERSION.json", "additive",
+               "prismabuild.runtime_publication:_receipt", ("publish_runtime:_run_publication",), ("implicit", "pool", "slurm"),
+               ("absent default_transport is pool; source/qualification facts are explicit fixture inputs",), stable_paths=True),
+    RecordKind("movement-publication", "prismabuild.movement-publication.v1", "private protected generation/MOVEMENT_PUBLICATION.json", "additive",
+               "prismabuild.runtime_publication:_published_root", ("prismabuild.runtime_publication:publish_generation",), ("initial",),
+               ("private custody predicate models root checks; no physical root custody or deployment claim",), stable_paths=True),
     RecordKind("storage-tier", "prismabuild.storage_tier.v1", "worker discovered tier offer", "additive",
                "prismabuild.storage_tiers:tier_tokens", ("prismabuild.storage_tiers:discover_tiers",), ("arc", "stage"),
                ("discovery inputs are private procfs and supplied command replies; no hardware probe",), negative_field="capacity_bytes", negative_value=None),
