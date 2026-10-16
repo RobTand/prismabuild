@@ -168,7 +168,7 @@ ORIGIN_CONSUMER_RELEASE_SCHEMA_V1 = (
     "prismabuild.produced_output_origin_consumer_release.v1")
 #: The queue-wide index of those releases (#954): one file per released
 #: consumer and batch, ``<consumer_key>.<ref sha256>.json`` under
-#: `pool.PoolQueue.released_origin_consumers_dir`, so a claim finds a
+#: `pool.record_store.RecordStore.released_origin_consumers_dir`, so a claim finds a
 #: released key by listing one directory. It is written before the release
 #: record, and only the record makes the release real.
 ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1 = (
@@ -1672,11 +1672,11 @@ def _unknown_attempt_detail(generation: KeyStanding,
         why = "moving"
     else:
         state, record = generation.value.state, generation.value.record
-        if state == pool_mod.READY:
+        if state == pool_mod.record_store.READY:
             why = "queued"
-        elif state == pool_mod.CLAIMED:
+        elif state == pool_mod.record_store.CLAIMED:
             why = "claim-names-no-nonce"
-        elif state == pool_mod.DONE:
+        elif state == pool_mod.record_store.DONE:
             status = str(record.get("status"))
             if status not in ("executed", "cache_hit"):
                 why = f"done-status-{status}"
@@ -2402,7 +2402,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
     for owner in owners:
         try:
-            if not queue.item_path(pool_mod.CLAIMED, owner).exists():
+            if not queue.records.item_path(pool_mod.record_store.CLAIMED, owner).exists():
                 continue
             paths = _owner_instance_paths(scopes_root / owner)
         except OSError as exc:
@@ -4893,7 +4893,7 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
                # Output-batch fragments file under the produced-output
                # fragment root, not the tier's default residency root.
                "--residency-root", str(output_fragment_root(
-                   Path(queue.root) / pool_mod.RESIDENCY)),
+                   Path(queue.root) / pool_mod.record_store.RESIDENCY)),
                "--readers", "2"]
     if fill is not None:
         # Receipt only: the mover records what its claim reserved, so a
@@ -6476,7 +6476,7 @@ def _seal_output_egress(queue, *, record: Mapping[str, object],
                 "refusal": "the stage tier announces no mountpoint to "
                            "release from"}
     residency_root = str(output_fragment_root(
-        Path(queue.root) / pool_mod.RESIDENCY))
+        Path(queue.root) / pool_mod.record_store.RESIDENCY))
     command = [mover_python, egress_tool,
                "--pool-root", str(queue.root),
                "--mover-action-key", target_mover,
@@ -6564,7 +6564,7 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
         return {"answer": {"ok": False,
                            "refusal": "unknown-retain: mover-row-unreadable"}}
     if (isinstance(mover, Present)
-            and mover.value.state in (pool_mod.READY, pool_mod.CLAIMED)):
+            and mover.value.state in (pool_mod.record_store.READY, pool_mod.record_store.CLAIMED)):
         return deferred("own-copy-in-flight")
     sealed = _seal_output_egress(
         queue, record=record, producer=producer, cas_root=cas_root,
@@ -6588,7 +6588,7 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
         return {"answer": {"ok": False, "egress_action_key": egress_key,
                            "refusal": "unknown-retain: egress-row-unreadable"}}
     if (isinstance(egress, Present)
-            and egress.value.state in (pool_mod.READY, pool_mod.CLAIMED)):
+            and egress.value.state in (pool_mod.record_store.READY, pool_mod.record_store.CLAIMED)):
         return deferred(OWN_EGRESS_IN_FLIGHT, egress_key, egress.value.state)
     # `Pool._file_move` files a node's receipt under the node's OWN key, so an
     # egress receipt is read by the egress key and names it; the mover it
@@ -6785,7 +6785,7 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
     try:
         from prismabuild import residency_map as map_mod
 
-        out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+        out_base = output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
         fragments = map_mod.read_fragments(out_base, consumer)
         if fragments:
             composed = map_mod.compose(fragments)
@@ -7401,7 +7401,7 @@ def _release_index_path(queue, consumer: str,
     digest = hashlib.sha256(json.dumps(
         dict(checked_ref), sort_keys=True,
         separators=(",", ":")).encode()).hexdigest()
-    return queue.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
+    return queue.records.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
 
 
 def _index_release(queue, consumer: str, checked_ref: Mapping[str, str]) -> None:
@@ -7444,7 +7444,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
     from prismabuild import pool as pool_mod
 
     consumer = _hex64(key, where="consumer action key")
-    directory = queue.released_origin_consumers_dir()
+    directory = queue.records.released_origin_consumers_dir()
     try:
         names = sorted(name for name in os.listdir(directory)
                        if name.startswith(f"{consumer}.")
@@ -7456,7 +7456,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
             f"unknown-retain: release index unreadable: {exc}") from None
     for name in names:
         try:
-            body = pool_mod._read_json(directory / name)
+            body = pool_mod.record_store.read_queue_record(directory / name)
         except (OSError, pool_mod.PoolContractError) as exc:
             raise ProducedOutputError(
                 f"unknown-retain: release index {name} unreadable: {exc}"
@@ -7858,15 +7858,15 @@ def _consumer_state(queue, key: str) -> str:
     if isinstance(standing.value, Moving):
         return "live"
     state, record = standing.value.state, standing.value.record
-    if state in (pool_mod.CLAIMED, pool_mod.READY):
+    if state in (pool_mod.record_store.CLAIMED, pool_mod.record_store.READY):
         return "live"
-    if state == pool_mod.DONE:
+    if state == pool_mod.record_store.DONE:
         if record.get("status") in ("executed", "cache_hit"):
             return "succeeded"
         return "unknown"
-    if state == pool_mod.FAILED:
+    if state == pool_mod.record_store.FAILED:
         return "failed"
-    if state == pool_mod.WITHDRAWN:
+    if state == pool_mod.record_store.WITHDRAWN:
         return "withdrawn"
     return "unknown"
 
@@ -8057,14 +8057,14 @@ def _attempt_state(generation: KeyStanding,
     if not isinstance(generation, Present) or isinstance(generation.value, Moving):
         return "unknown"
     state, record = generation.value.state, generation.value.record
-    if state == pool_mod.CLAIMED:
+    if state == pool_mod.record_store.CLAIMED:
         live = _record_nonce(record)
         if not live:
             return "unknown"
         return "live" if live == nonce else "dead"
-    if state in (pool_mod.FAILED, pool_mod.WITHDRAWN):
+    if state in (pool_mod.record_store.FAILED, pool_mod.record_store.WITHDRAWN):
         return "dead"
-    if state == pool_mod.DONE:
+    if state == pool_mod.record_store.DONE:
         finished = _record_nonce(record)
         if record.get("status") not in ("executed", "cache_hit") or not finished:
             return "unknown"
@@ -9465,9 +9465,9 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
             mover_state = "absent"
         case Unknown():
             mover_state = "unknown"
-    if mover_state in (pool_mod.READY, pool_mod.CLAIMED, "moving"):
+    if mover_state in (pool_mod.record_store.READY, pool_mod.record_store.CLAIMED, "moving"):
         return {"event": report.quiet()}
-    if mover_state not in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+    if mover_state not in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED, pool_mod.record_store.WITHDRAWN):
         return {"event": report.refused(
             f"unknown-retain: its mover {mover[:12]} is {mover_state}",
             mover_key=mover)}
@@ -9624,7 +9624,7 @@ def _retire_dead_staged_batches(queue, instance: Mapping[str, object],
         groups.setdefault(str(ready[batch_id]["stage_root"]), []).append(batch_id)
     from prismabuild import pool as pool_mod
 
-    residency_root = output_fragment_root(Path(queue.root) / pool_mod.RESIDENCY)
+    residency_root = output_fragment_root(Path(queue.root) / pool_mod.record_store.RESIDENCY)
     for stage_root, batch_ids in groups.items():
         try:
             results = retire_staged_batches(
@@ -10093,7 +10093,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         batches = commitments["batches"]
         assert isinstance(batches, dict)
-        out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+        out_base = output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
         for batch_id, entry in batches.items():
             if not isinstance(entry, Mapping):
                 return {"ok": False, "refusal": "unknown-retain: bad-batch-entry"}
@@ -10341,7 +10341,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
         owners = _scope_owners(scopes_root)
     except OSError:
         return events
-    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    out_base = output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
     for owner in owners:
         try:
             candidates = _owner_instance_paths(scopes_root / owner)
@@ -10548,7 +10548,7 @@ def due_mover_rows(queue, instance: Mapping[str, object],
         return []
     batches = commitments["batches"]
     assert isinstance(batches, dict)
-    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    out_base = output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
     rows: list[dict[str, object]] = []
     for batch_id in sorted(batches):
         entry = batches[batch_id]
@@ -10677,7 +10677,7 @@ def recover_batches(queue, instance: Mapping[str, object],
         return [{"event": "output-recovery-unknown", "error": repr(exc)}]
     batches = commitments["batches"]
     assert isinstance(batches, dict)
-    out_base = output_fragment_root(queue.root / pool_mod.RESIDENCY)
+    out_base = output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
     events: list[dict[str, object]] = []
     try:
         funding_names = sorted(

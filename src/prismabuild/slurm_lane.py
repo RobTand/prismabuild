@@ -2565,7 +2565,7 @@ def _land_summary(
         # A delayed waiter may choose a different terminal state than the
         # newer run. Comparing only the target filename would let its old
         # failure land alongside that newer run's success (or withdrawal).
-        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
             sibling = path.parent.parent / state / path.name
             try:
                 present = sibling.name in os.listdir(sibling.parent)
@@ -2713,7 +2713,7 @@ def publish_outcome(
         # ``cache_hit`` is the pull queue's word for work the CAS already
         # held; ``pbrun`` files it here only when the key has no ``done/``
         # record at all (see ``pbrun.cached_outcome``).
-        state = pool.DONE
+        state = pool.record_store.DONE
     elif status == "withdrawn":
         # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
         # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
@@ -2721,9 +2721,9 @@ def publish_outcome(
         # about the fleet -- every reader that counts failures counts it.
         # The marker ``publish_withdrawal`` filed there is the decision; this
         # record enriches it with the job's ending and keeps its fields.
-        state = pool.WITHDRAWN
+        state = pool.record_store.WITHDRAWN
     else:
-        state = pool.FAILED
+        state = pool.record_store.FAILED
     path = _queue_dir(queue_root, state) / f"{key}.json"
     decision: dict[str, object] = {}
     existing = _read_json_object(path)
@@ -2735,7 +2735,7 @@ def publish_outcome(
             # the write, for a record that lands while this one is built.
             return None
         theirs = _record_generation(existing)
-        if state == pool.WITHDRAWN:
+        if state == pool.record_store.WITHDRAWN:
             if "detail" in existing and theirs == float(published_unix):
                 # A full ending is already filed for this generation.
                 return None
@@ -2849,7 +2849,7 @@ def publish_outcome(
         # The withdrawal enrichment replaces the marker of its own generation
         # with the marker plus the job's ending, which is the one write that
         # legitimately lands on a record of the same generation.
-        refuse_same_generation=state != pool.WITHDRAWN,
+        refuse_same_generation=state != pool.record_store.WITHDRAWN,
     ):
         return None
     return path
@@ -2891,7 +2891,7 @@ def read_withdrawal_marker(
     """
 
     key = str(action_key)
-    directory = Path(queue_root) / pool.WITHDRAWN
+    directory = Path(queue_root) / pool.record_store.WITHDRAWN
     path = directory / f"{key}.json"
     try:
         if path.name not in os.listdir(directory):
@@ -2930,7 +2930,7 @@ def publish_withdrawal(
     """
 
     key = str(action_key)
-    _queue_dir(queue_root, pool.WITHDRAWN)
+    _queue_dir(queue_root, pool.record_store.WITHDRAWN)
     path, existing = read_withdrawal_marker(queue_root, key)
     if existing is not None:
         return path, existing
@@ -3042,7 +3042,7 @@ def supersede_withdrawal(
     if theirs is not None and theirs >= float(published_unix):
         return None
     when = _now()
-    archive_directory = _queue_dir(queue_root, pool.WITHDRAWN) / "superseded"
+    archive_directory = _queue_dir(queue_root, pool.record_store.WITHDRAWN) / "superseded"
     archive_directory.mkdir(parents=True, exist_ok=True)
     archive = archive_directory / f"{key}.{when:.6f}.withdrawal.json"
     try:
@@ -3415,7 +3415,7 @@ def _file_ending(
         return
 
     if status == "cache_hit" and (
-        _queue_dir(queue_root, pool.DONE) / f"{result.action_key}.json"
+        _queue_dir(queue_root, pool.record_store.DONE) / f"{result.action_key}.json"
     ).exists():
         # See the docstring: the run that did the work keeps the record.
         return
@@ -3517,7 +3517,7 @@ def _filed_index(queue_root: str | Path) -> dict[str, list[tuple[str, Path]]]:
     """
 
     index: dict[str, list[tuple[str, Path]]] = {}
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
             names = os.listdir(directory)
@@ -3562,7 +3562,7 @@ def _ending_on_disk(
             continue
         if _record_generation(record) != floor:
             continue
-        if state == pool.WITHDRAWN and "detail" not in record:
+        if state == pool.record_store.WITHDRAWN and "detail" not in record:
             continue
         return ALREADY_FILED
     return SUPERSEDED if superseded else None
@@ -3758,11 +3758,11 @@ def _filed_ending(
     """The status of this generation's ending, or ``None`` when none stands."""
 
     floor = float(published_unix)
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         record = _read_json_object(
             Path(queue_root) / state / f"{action_key}.json")
         if record is not None and _record_generation(record) == floor:
-            if state == pool.WITHDRAWN and "detail" not in record:
+            if state == pool.record_store.WITHDRAWN and "detail" not in record:
                 continue
             return str(record.get("status") or "")
     return None

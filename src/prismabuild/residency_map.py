@@ -45,7 +45,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from . import storage_tiers
+from . import storage_tiers, record_store
 
 #: The environment variable naming the composed map, injected by the launcher.
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
@@ -560,8 +560,8 @@ def map_path(root: str | Path, consumer_action_key: str) -> Path:
     read back as a fragment by ``read_fragments`` and refused on every scan.
     """
 
-    return (Path(root)
-            / f"{_action_key(consumer_action_key, where='consumer_action_key')}.map.json")
+    return record_store.residency_map_address(
+        Path(root), _action_key(consumer_action_key, where="consumer_action_key"))
 
 
 def write_fragment(root: str | Path, fragment: Mapping[str, object]) -> Path:

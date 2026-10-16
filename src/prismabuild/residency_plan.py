@@ -695,7 +695,7 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
 
     checked = validate_plan(plan)
     key = str(checked["consumer_action_key"])
-    path = queue.residency_plan_path(key)
+    path = queue.records.residency_plan_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     # The consumer's own transition lock, the one ``withdraw`` and the queue's
     # publication use: a plan is filed, marked and reaped exclusively, so a
@@ -739,7 +739,7 @@ def read(queue, consumer_action_key: str, *,
             on_unreadable(error)
 
     try:
-        raw = Path(queue.residency_plan_path(consumer_action_key)).read_text()
+        raw = Path(queue.records.residency_plan_path(consumer_action_key)).read_text()
     except FileNotFoundError:
         return None                       # the ordinary answer: none was filed
     except OSError as error:
@@ -818,7 +818,7 @@ def read_filed(queue, consumer_action_key: str, *,
         if on_unreadable is not None:
             on_unreadable(error)
 
-    path = queue.residency_plan_path(key)
+    path = queue.records.residency_plan_path(key)
     for _attempt in range(3):
         before, error = _stat_incarnation(path)
         if error is not None:
@@ -862,7 +862,7 @@ def _superseded_path(queue, consumer_action_key: str,
     must never retire a concurrent replacement.
     """
 
-    return (queue.residency_plan_path(consumer_action_key).parent / SUPERSEDED
+    return (queue.records.residency_plan_path(consumer_action_key).parent / SUPERSEDED
             / f"{consumer_action_key}.{plan_sha256}.superseded.json")
 
 
@@ -935,7 +935,7 @@ def _read_marker(path: Path) -> tuple[str, dict[str, object] | None, str | None]
     """
 
     try:
-        paths = _pool._glob(path.parent, path.name)
+        paths = _pool.immutable_files.match_optional(path.parent, path.name)
     except OSError as exc:                                    # pragma: no cover
         return "unreadable", None, f"{type(exc).__name__}: {exc}"
     if not paths:
@@ -1005,7 +1005,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
             "error": ("the marker's plan_incarnation is not three whole "
                       f"integers: {marker.get('plan_incarnation')!r}"),
         }
-    current = incarnation(queue.residency_plan_path(key))
+    current = incarnation(queue.records.residency_plan_path(key))
     if current is None:
         # The marker names a filing this reader cannot stat.  Only a
         # successfully read current identity may prove the marker covers a
@@ -1059,7 +1059,7 @@ def mark_superseded(queue, consumer_action_key: str, *,
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
     with queue._transition_locked(key):
-        current = incarnation(queue.residency_plan_path(key))
+        current = incarnation(queue.records.residency_plan_path(key))
         if current is None:
             return None
         if filing is not None and tuple(filing) != current:
@@ -1188,7 +1188,7 @@ def child_keys(plan: Mapping[str, object]) -> list[str]:
 
 
 #: How one key's live queue state is said in a handoff refusal.
-_LIVE_STATE_LABELS = {_pool.CLAIMED: "claimed", _pool.READY: "queued"}
+_LIVE_STATE_LABELS = {_pool.record_store.CLAIMED: "claimed", _pool.record_store.READY: "queued"}
 
 
 def live_state(queue, action_key: str) -> tuple[str | None, str]:
@@ -1204,17 +1204,17 @@ def live_state(queue, action_key: str) -> tuple[str | None, str]:
     dead-consumer sweep skips the key for this cycle.
     """
 
-    for state in (_pool.CLAIMED, _pool.READY):
+    for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
         try:
-            queue.item_path(state, action_key).stat()
+            queue.records.item_path(state, action_key).stat()
         except FileNotFoundError:
             continue
         except OSError as exc:
             return None, f"its {state} record could not be read: {exc}"
         return state, ""
     try:
-        for state in (_pool.CLAIMED, _pool.READY):
-            names = {path.stem for path in _pool._scan(queue.dir(state))}
+        for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
+            names = {path.stem for path in _pool.immutable_files.scan_optional(queue.records.dir(state))}
             if action_key in names:
                 return state, ""
     except OSError as exc:
@@ -1289,13 +1289,13 @@ def window_owned(queue, consumer_action_key: str, *,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    current = incarnation(queue.residency_plan_path(key))
+    current = incarnation(queue.records.residency_plan_path(key))
     if current is None:
         return False, "its plan filing is gone"
     if filing is not None and tuple(filing) != current:
         return False, "its plan filing was replaced"
-    for state in (_pool.CLAIMED, _pool.READY):
-        path = queue.item_path(state, key)
+    for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
+        path = queue.records.item_path(state, key)
         try:
             path.stat()
         except FileNotFoundError:
@@ -1304,7 +1304,7 @@ def window_owned(queue, consumer_action_key: str, *,
             return False, f"the consumer's {state} record could not be read: {exc}"
         if generation is not None:
             try:
-                item = _pool._read_json(path)
+                item = _pool.record_store.read_queue_record(path)
             except (OSError, ValueError) as exc:
                 return False, f"the consumer's record could not be read: {exc}"
             if not isinstance(item, Mapping):
@@ -1375,7 +1375,7 @@ def reap(queue, consumer_action_key: str, *,
         safe, _why = handoff_safe(queue, key, filed)
         if not safe:
             return None
-        path = queue.residency_plan_path(key)
+        path = queue.records.residency_plan_path(key)
         target = (path.parent / SUPERSEDED
                   / f"{path.stem}.{time.time():.6f}.{_retired_slug(reason)}.json")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1519,7 +1519,7 @@ def seal_window(queue, plan: Mapping[str, object], *,
 
     checked = validate_plan(plan)
     key = str(checked["consumer_action_key"])
-    path = queue.residency_plan_path(key)
+    path = queue.records.residency_plan_path(key)
     with queue._transition_locked(key):
         before, error = _stat_incarnation(path)
         if error is not None:
@@ -1575,7 +1575,7 @@ def _filed_keys(queue, consumer_action_key: str,
     """
 
     root = str(queue.root)
-    path = queue.residency_plan_path(consumer_action_key)
+    path = queue.records.residency_plan_path(consumer_action_key)
     for _attempt in range(3):
         before, error = _stat_incarnation(path)
         if error is not None:
@@ -1644,7 +1644,7 @@ def plan_interest(queue, mover_action_key: str, *,
     root = str(queue.root)
     try:
         filed = sorted(
-            path.stem for path in _pool._scan(queue.root / _pool.RESIDENCY_PLANS)
+            path.stem for path in _pool.immutable_files.scan_optional(queue.root / _pool.record_store.RESIDENCY_PLANS)
             if path.suffix == ".json" and len(path.stem) == 64
             and set(path.stem) <= _HEX)
     except OSError:
@@ -1673,9 +1673,9 @@ def plan_interest(queue, mover_action_key: str, *,
                 interested.append(key)
                 continue
             ended, unreadable = False, False
-            for terminal in (_pool.FAILED, _pool.WITHDRAWN, _pool.DONE):
+            for terminal in (_pool.record_store.FAILED, _pool.record_store.WITHDRAWN, _pool.record_store.DONE):
                 try:
-                    os.lstat(queue.item_path(terminal, key))
+                    os.lstat(queue.records.item_path(terminal, key))
                 except FileNotFoundError:
                     continue
                 except OSError:
@@ -1952,7 +1952,7 @@ def _filed_entry(queue, consumer_action_key: str, *,
             on_unreadable(error)
 
     try:
-        path = Path(queue.residency_plan_path(consumer_action_key))
+        path = Path(queue.records.residency_plan_path(consumer_action_key))
     except ValueError as error:
         refused(error)
         return None
@@ -2327,7 +2327,7 @@ def _plan_fragments(queue: _pool.PoolQueue, consumer_action_key: str,
     payload byte is opened here.
     """
 
-    directory = (Path(queue.residency_fragment_root())
+    directory = (Path(queue.records.residency_fragment_root())
                  / str(consumer_action_key))
     try:
         names = sorted(entry.name for entry in os.scandir(directory)
@@ -2470,7 +2470,7 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
             continue            # no leg of this plan seals that key
         if not ledger.holder_tokens(mover):
             continue            # the tier no longer accounts for the range
-        if queue.item_path(_pool.CLAIMED, mover).exists():
+        if queue.records.item_path(_pool.record_store.CLAIMED, mover).exists():
             continue            # a running copy; its receipt is a prior run's
         receipt = queue.move_record(mover)
         if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
@@ -3517,7 +3517,7 @@ def share_namespace(manifest_sha256: str, tier_id: str, start: int,
 
 
 def _shared_root(queue) -> Path:
-    return Path(queue.root) / _pool.RESIDENCY_PLANS / SHARED
+    return Path(queue.root) / _pool.record_store.RESIDENCY_PLANS / SHARED
 
 
 def shared_range_path(queue, namespace: str) -> Path:
@@ -3711,7 +3711,7 @@ def _reuse_despite_stale(queue, mover_action_key: str) -> tuple[bool, str]:
     """
 
     state, why = live_state(queue, mover_action_key)
-    if state in (_pool.READY, _pool.CLAIMED):
+    if state in (_pool.record_store.READY, _pool.record_store.CLAIMED):
         return True, f"live ({state})"
     if state is None and why:
         return True, f"live state unknown: {why}"

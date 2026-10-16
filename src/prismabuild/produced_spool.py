@@ -486,7 +486,7 @@ class ProducedSpool:
         #: Whether this producer's exports reserve fill and pace by default.
         self.paced_export = paced == "1"
         self._live()
-        row = pool._read_json(queue.item_path(pool.CLAIMED, self.owner)) or {}
+        row = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, self.owner)) or {}
         self.host = str(row.get("claimed_host") or "")
         if not self.host:
             raise SpoolError("source host is unknown")
@@ -1067,8 +1067,8 @@ def _live_rows(queue):
     """
 
     rows = {}
-    for state in (pool.READY, pool.CLAIMED):
-        directory = queue.dir(state)
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        directory = queue.records.dir(state)
         try:
             names = sorted(os.listdir(directory))
         except OSError as exc:
@@ -1077,7 +1077,7 @@ def _live_rows(queue):
             if not name.endswith(".json") or name.startswith("."):
                 continue
             try:
-                record = pool._read_json(directory / name)
+                record = pool.record_store.read_queue_record(directory / name)
             except (OSError, ValueError, pool.PoolContractError) as exc:
                 raise SpoolError(f"unknown-retain: {state}/{name}: {exc}") from None
             if isinstance(record, dict):
@@ -1545,7 +1545,7 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         record = _export_record(group, manifest["owner"])
         if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
             raise SpoolError("export action does not own this local group")
-        claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
+        claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, export_key)) or {}
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
         try:
@@ -1933,10 +1933,10 @@ def _retire_group(queue, directory, group, owner):
                         state = "absent"
                     case Unknown():
                         state = "unknown"
-                if state in (pool.READY, pool.CLAIMED):
+                if state in (pool.record_store.READY, pool.record_store.CLAIMED):
                     return {"batch_id": name, "kept": f"export-{state}",
                             "export_key": record["export_key"]}
-                if state not in (pool.FAILED, pool.WITHDRAWN, "absent"):
+                if state not in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, "absent"):
                     return {"batch_id": name, "kept": f"export-{state}-without-ack",
                             "export_key": record["export_key"]}
                 outcome = {"batch_id": name, "discarded": f"export-{state}",

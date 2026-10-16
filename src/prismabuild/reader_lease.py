@@ -1137,9 +1137,9 @@ def _replay_attestation_from_terminal(queue, action_key: str, nonce: str,
         return False, "attestation-present-no-replay"
     if isinstance(existing, Exception):
         return False, f"broker-attestation-unreadable-retain: {existing}"
-    for state in (pool_mod.DONE, pool_mod.FAILED):
+    for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED):
         try:
-            record = pool_mod._read_json(queue.item_path(state, action_key))
+            record = pool_mod.record_store.require(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError) as exc:
             return False, f"terminal record unreadable: {state}"
         if not isinstance(record, Mapping):
@@ -1402,9 +1402,9 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
 
     terminal_states: dict[str, object] = {}
     names_this_attempt: bool | None = None
-    for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+    for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED, pool_mod.record_store.WITHDRAWN):
         try:
-            record = pool_mod._read_json(queue.item_path(state, action_key))
+            record = pool_mod.record_store.require(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError):
             return False, f"terminal record unreadable: {state}"
         if record is None or not isinstance(record, Mapping):
@@ -2070,7 +2070,7 @@ def resolve_window_covers(queue, *, consumer_action_key: str,
     from prismabuild import pool as pool_mod
 
     root = Path(residency_root if residency_root is not None
-                else Path(queue.root) / pool_mod.RESIDENCY)
+                else Path(queue.root) / pool_mod.record_store.RESIDENCY)
     if manifest_sha256 is None:
         return {"ok": False, "refusal": "manifest-unbound"}
     if keys is None:
@@ -2185,7 +2185,7 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     from prismabuild import pool as pool_mod
 
     root = Path(residency_root if residency_root is not None
-                else Path(queue.root) / pool_mod.RESIDENCY)
+                else Path(queue.root) / pool_mod.record_store.RESIDENCY)
     leases = root / LEASES_SUBDIR
     if context is None:
         context = {}
@@ -2999,7 +2999,7 @@ def _file_release_failure(queue, failure: ReleaseFailure) -> None:
     if not isinstance(consumer, str):
         return
     try:
-        directory = queue.consumer_events_dir(consumer)
+        directory = queue.records.consumer_events_dir(consumer)
     except (AttributeError, ValueError):
         return
     path = directory / f"{host}{RELEASE_EVENTS_SUFFIX}"
@@ -3159,8 +3159,7 @@ def _read_claim(queue, action_key: str):
     from prismabuild import pool as pool_mod
 
     try:
-        return pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, action_key))
+        return pool_mod.record_store.require(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
     except (OSError, pool_mod.PoolContractError) as exc:
         return exc
 
@@ -3282,8 +3281,7 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if queue is None:
         queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
-        claim = pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, action_key))
+        claim = pool_mod.record_store.require(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
     except (OSError, pool_mod.PoolContractError) as exc:
         return {"ok": False, "refusal": f"claim-unreadable: {exc}"}
     if not isinstance(claim, Mapping):
