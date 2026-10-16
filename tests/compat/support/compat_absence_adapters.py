@@ -23,7 +23,7 @@ def operate(request, store, load):
     assert len(before) == 1
     raw = (store / "introduced-ending.json").read_bytes()
     body = json.loads(raw)
-    key = pool.PoolQueue.attempt_generation(body)
+    key = queue.attempt_generation(body)
     path = queue.root / "publication-endings" / body["action_key"] / (key + ".json")
     path.parent.mkdir(parents=True)
     path.write_bytes(raw)

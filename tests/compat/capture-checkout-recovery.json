@@ -1,0 +1,26 @@
+{
+  "capture_name": "recovery-capture-03",
+  "capture_report_sha256": "2f0abbcb8204c0379564505e8012f779e196e307a6b27af9aec577e1b8182aa9",
+  "excluded_cases": [],
+  "files": {
+    "goldens-checkout-recovery.jsonl": "54bd7914a6ca3ca1641ffa3d549349bab1b4518ebc578fd27386d67d930cd015",
+    "historical-checkout-recovery.jsonl": "a42758d4aadf20b4f1217b4a67bf1c5cccf3bc2ada5c89d662517fc95225be18"
+  },
+  "finished_at": "2026-10-16T23:02:58.088391+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "checkout-recovery-plan/banked"
+  ],
+  "source_git": {
+    "parents": [
+      "4de883cdfb0d31fbd850ce8f8c9970cf0577727c"
+    ],
+    "snapshot": "e397a6a9d99e4ba4cd368097cfd3aa09047c0b33",
+    "tree": "0bb1dca16f3777cbb3bc08dd076588adecf79b61"
+  },
+  "started_at": "2026-10-16T23:02:33.407877+00:00"
+}
