@@ -5,6 +5,12 @@ This record maps each acceptance criterion from
 landed implementation and the test that pins it, and names the residual
 that keeps the issue open. It changes no code and no default.
 
+**2026-10-16 retirement amendment (C16/B13):** Rob retired the legacy
+Dagster and SLURM adapters. Criterion 1 below records the historical
+implementation and its tests, both now removed. It is not a current Dagster
+contract. The retained pool movement, residency and admission contracts in
+criteria 2 and 3 are unchanged; no new measured result is claimed.
+
 ## Criterion 1: a movement node with a CAS edge to its consumer
 
 Landed. `src/prismabuild/dagster.py` carries `MovementSpec` (source tier,

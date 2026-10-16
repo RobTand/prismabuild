@@ -1,10 +1,7 @@
 """Shared-filesystem pull-queue transport: dispatch without a scheduler.
 
-``slurm.py`` and ``dagster.py`` both assume a scheduler that is not installed on
-this fleet, so neither is its live transport.  This module is the deployed
-transport: workers pull sealed actions from a directory on the shared NFS mount
-and execute them through the *same* canonical worker argv SLURM would have
-submitted.
+Workers pull sealed actions from a directory on the shared NFS mount and
+execute them through the canonical worker argv shared with the SLURM lane.
 
 **Every primitive here is ported from ``pqwork``**, the predecessor this
 replaces, because those primitives were argued out against real NFS behaviour
@@ -16,8 +13,7 @@ and two boxes of production use:
 * **A claim is a lease, not a grant.**  The claimant refreshes a heartbeat file;
   any worker may return a stale claim to ``ready``.  That is what makes a dead
   box self-healing rather than a permanent hold on the work.
-* **Intent is written before the claim**, mirroring ``slurm.py``'s
-  intent-before-``sbatch`` discipline, so a crash between the two is
+* **Intent is written before the claim**, so a crash between the two is
   diagnosable rather than invisible.
 
 **Admission is capacity-aware, and it is built from that live defect rather than
@@ -2774,22 +2770,11 @@ def worker_argv(
     checkout_root: str | Path,
     recompute: bool = False,
 ) -> list[str]:
-    """The canonical worker launch, identical to SLURM's minus its own gate.
+    """The canonical worker launch shared with the SLURM lane.
 
-    ``recompute`` appends ``--recompute``, and only the pool transport ever
-    sets it: a movement node (a mover, an egress) is published with it because
-    its effect is bytes on a tier, not a result the CAS can replay.  SLURM
-    refuses the flag outright (``run-local --require-slurm-initial-start``),
-    so the default keeps the two launches byte-identical for everything else.
-
-    ``slurm.py`` pins ``worker_argv`` to an exact list and refuses anything else,
-    so that what a scheduler runs is what the action key describes.  This
-    transport holds the same line: the only difference is the absence of
-    ``--require-slurm-initial-start``, which asserts SLURM job membership and is
-    meaningless without a scheduler.  Keeping the rest byte-identical is what
-    makes a result portable between transports -- an action executed here and
-    the same action executed under SLURM must be the same execution, or the CAS
-    receipt is comparing two different things.
+    ``recompute`` appends ``--recompute`` for movement nodes, whose effect is
+    bytes on a tier rather than a result the CAS can replay. The lane's job
+    entry uses the default launch; movement dispatch belongs to the pool.
     """
 
     return [

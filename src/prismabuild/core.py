@@ -2764,9 +2764,7 @@ def validate_produced_output_declaration(
 
 #: What a movement node produces: a statement that one byte range of one
 #: manifest's read order is resident on one tier.  Deterministic from the plan,
-#: so a consumer can bind it as a CAS dependency *before* the mover runs, which
-#: is what lets ``ActionGraph``'s content-binding check apply to residency edges
-#: unchanged (#583).
+#: so a consumer can bind it as a CAS dependency *before* the mover runs (#583).
 RESIDENCY_DESCRIPTOR_SCHEMA_V1 = "prismaquant.prismabuild.residency_descriptor.v1"
 #: The tiers a movement node may name.  ``pool`` is the raidz1 the export is
 #: served from; ``stage`` is a PB-owned pool on solid-state devices; ``arc`` is
@@ -8070,34 +8068,6 @@ def _atomic_write_new_json(path: Path, value: Mapping[str, object]) -> None:
         raise ActionContractError(f"output appeared concurrently: {path}")
 
 
-def _require_slurm_initial_start(
-    environment: Mapping[str, str] | None = None,
-) -> None:
-    """Refuse a requeued/admin-restarted batch process before task argv runs.
-
-    PrismaBuild's Slurm adapter currently seals ``max_requeues=0`` and submits
-    with ``--no-requeue``. Slurm nevertheless exposes the actual restart count
-    to the launched process; this worker-side gate is the final defense if an
-    administrator or site policy restarts the allocation anyway.
-    """
-
-    env = os.environ if environment is None else environment
-    job_id = env.get("SLURM_JOB_ID")
-    if type(job_id) is not str or re.fullmatch(r"[1-9][0-9]{0,19}", job_id) is None:
-        raise ActionContractError(
-            "Slurm worker requires a positive numeric SLURM_JOB_ID"
-        )
-    restart_count = env.get("SLURM_RESTART_COUNT", "0")
-    if type(restart_count) is not str or re.fullmatch(
-        r"(?:0|[1-9][0-9]{0,8})", restart_count
-    ) is None:
-        raise ActionContractError("SLURM_RESTART_COUNT is malformed")
-    if int(restart_count) != 0:
-        raise ActionContractError(
-            "restarted Slurm allocation is not authorized to execute task argv"
-        )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -8128,7 +8098,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--checkout-root", required=True, type=Path)
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
-    run.add_argument("--require-slurm-initial-start", action="store_true")
     run.add_argument("--initial-miss-rendezvous", type=Path)
     repair = commands.add_parser("repair-local-result")
     repair.add_argument("--action", required=True, type=Path)
@@ -8646,15 +8615,6 @@ def main(
     worker_launcher_identity: object | None = None,
 ) -> int:
     args = _build_parser().parse_args(argv)
-    if args.command == "run-local" and args.require_slurm_initial_start:
-        if args.recompute:
-            raise ActionContractError(
-                "Slurm worker protocol does not permit recompute"
-            )
-        # This is deliberately before reading even the immutable action
-        # request: a forced/admin-restarted allocation must reach no worker or
-        # task-side input processing beyond argument parsing.
-        _require_slurm_initial_start()
     if args.command == "seal-closure":
         closure = build_code_closure(args.root, args.file)
         _atomic_write_new_json(args.output, closure)
@@ -8694,34 +8654,13 @@ def main(
         )
         return 0
     action_path = args.action if hasattr(args, "action") else args.body
-    if args.command == "run-local" and args.require_slurm_initial_start:
-        raw_action = _read_regular_file_nofollow(
-            action_path, where="action request", require_readonly=True
-        )
-        action_data_value = _decode_strict_json(raw_action, where="action request")
-        if not isinstance(action_data_value, Mapping):
-            raise ActionContractError("action request root must be an object")
-        action_data = action_data_value
-    else:
-        action_data = _read_json_mapping(action_path, where="action")
+    action_data = _read_json_mapping(action_path, where="action")
     if args.command == "seal-action":
         sealed = seal_action(action_data)
         _atomic_write_new_json(args.output, sealed)
         print(args.output)
         return 0
     action = validate_action(action_data)
-    if args.command == "run-local" and args.require_slurm_initial_start:
-        cas = PrismaBuildCAS(args.cas_root)
-        expected_request = (
-            cas.root
-            / "requests"
-            / str(action["action_key"])[:2]
-            / f"{action['action_key']}.json"
-        )
-        if action_path != expected_request:
-            raise ActionContractError(
-                "Slurm worker action path differs from its canonical CAS request"
-            )
     if args.command == "key":
         print(action["action_key"])
         return 0

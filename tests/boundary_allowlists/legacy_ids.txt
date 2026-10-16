@@ -11,8 +11,6 @@ prismaquant.prismabuild.cas_receipt.v3
 prismaquant.prismabuild.checkout_cleanup_failure.v1
 prismaquant.prismabuild.code_closure.v1
 prismaquant.prismabuild.container_owner_identity.v1
-prismaquant.prismabuild.dagster_action.v1
-prismaquant.prismabuild.dagster_action.v2
 prismaquant.prismabuild.data_manifest.v1
 prismaquant.prismabuild.data_manifest.v2
 prismaquant.prismabuild.fleet_membership.v1
@@ -61,16 +59,8 @@ prismaquant.prismabuild.runtime_version.v1
 prismaquant.prismabuild.shared_mover.v1
 prismaquant.prismabuild.shared_range.v1
 prismaquant.prismabuild.slurm_cache_hit.v1
-prismaquant.prismabuild.slurm_job_binding.v1
 prismaquant.prismabuild.slurm_lane_submission.v1
 prismaquant.prismabuild.slurm_liveness.v1
-prismaquant.prismabuild.slurm_mutation.v1
 prismaquant.prismabuild.slurm_outcome.v1
-prismaquant.prismabuild.slurm_requeue_observed.v1
-prismaquant.prismabuild.slurm_retry_transition.v1
-prismaquant.prismabuild.slurm_runtime.v1
-prismaquant.prismabuild.slurm_submission_intent.v1
-prismaquant.prismabuild.slurm_submission_intent.v2
-prismaquant.prismabuild.slurm_submit_spec.v2
 prismaquant.prismabuild.worker_attestation.v2
 prismaquant.prismabuild.worker_runtime.v1

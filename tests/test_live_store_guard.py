@@ -655,17 +655,6 @@ def test_a_cas_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
     assert not (guarded / "cas/requests").exists()
 
 
-def test_a_slurm_lane_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
-    from prismabuild import slurm
-
-    with pytest.raises(RuntimeError, match=str(guarded / "slurm/jobs/x")):
-        slurm._ensure_real_directory(guarded / "slurm/jobs/x",
-                                     root=guarded / "slurm", where="test")
-    with pytest.raises(RuntimeError, match=str(guarded / "slurm")):
-        slurm._open_directory_nofollow(guarded / "slurm", where="test")
-    assert not (guarded / "slurm/jobs").exists()
-
-
 def test_a_caught_refusal_still_fails_the_test(tmp_path: Path) -> None:
     """Code that swallows exceptions cannot turn a refused call into a pass."""
 

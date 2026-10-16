@@ -1,9 +1,4 @@
-"""Pair 1 of the logical-dedup phase (issue #1295): one owner for first-writer publish.
-
-``immutable_files.publish_immutable`` owns the recipe; slurm's ``_atomic_publish_nofollow``
-is deleted and its two callers pass their ``where`` through.  Every test below
-is tmp_path-only: no SLURM binary, no mount, no network.
-"""
+"""First-writer publication, tamper refusal and cleanup on a scratch store."""
 
 from __future__ import annotations
 
@@ -45,21 +40,15 @@ def _fail_mkstemp(monkeypatch):
     monkeypatch.setattr(tempfile, "mkstemp", failing)
 
 
-def test_without_where_raw_oserror_propagates(tmp_path, monkeypatch):
+def test_raw_oserror_propagates(tmp_path, monkeypatch):
     _fail_mkstemp(monkeypatch)
     with pytest.raises(OSError) as caught:
         immutable_files.publish_immutable(tmp_path / "x.json", b"x")
     assert not isinstance(caught.value, pb.CASUnavailableError)
+    assert caught.value.errno == errno.ENOSPC
 
-
-def test_where_maps_oserror_to_cas_unavailable(tmp_path, monkeypatch):
-    _fail_mkstemp(monkeypatch)
-    with pytest.raises(pb.CASUnavailableError, match="cannot publish probe") as caught:
-        immutable_files.publish_immutable(tmp_path / "x.json", b"x", where="probe")
     assert pb.CASUnavailableError is immutable_files.CASUnavailableError
     assert pb.CASTamperError is immutable_files.CASTamperError
-    assert isinstance(caught.value, pb.PrismaBuildError)
-    assert caught.value.__cause__.errno == errno.ENOSPC
     assert pb.ReplacedRecordError.__bases__ == (immutable_files.CASTamperError,)
     assert pb._FileLinkCountError.__bases__ == (immutable_files.CASTamperError,)
 
@@ -88,15 +77,9 @@ def _lying_stat(real_stat, name, fake):
     return lying
 
 
-@pytest.mark.parametrize("where", [None, "tamper probe"])
-def test_readback_tamper_is_never_mapped_to_unavailable(
-    tmp_path, monkeypatch, where
-):
+def test_readback_tamper_is_never_mapped_to_unavailable(tmp_path, monkeypatch):
     target = tmp_path / "tampered.json"
-    if where is None:
-        assert immutable_files.publish_immutable(target, b"first") is True
-    else:
-        assert immutable_files.publish_immutable(target, b"first", where=where) is True
+    assert immutable_files.publish_immutable(target, b"first") is True
     victim = tmp_path / "victim.json"
     real = target.stat()
     fake = os.stat_result(
@@ -117,7 +100,4 @@ def test_readback_tamper_is_never_mapped_to_unavailable(
         pb.os, "stat", _lying_stat(pb.os.stat, victim.name, fake)
     )
     with pytest.raises(pb.CASTamperError, match="changed before readback"):
-        if where is None:
-            immutable_files.publish_immutable(victim, b"second")
-        else:
-            immutable_files.publish_immutable(victim, b"second", where=where)
+        immutable_files.publish_immutable(victim, b"second")

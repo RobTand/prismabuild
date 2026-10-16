@@ -116,7 +116,7 @@ does not rewrite the frozen 93424 audit or claim the other cards complete.
 
 | Thread | Agreed design | Implementation owed or qualified |
 | --- | --- | --- |
-| D01 | Recommend retiring the old SLURM and Dagster adapters if Rob lifts the Phase 3 hold. The optional extra does not establish an external support contract. Preserve `slurm_lane`. The proposal incorrectly describes Dagster as rejected; the design selected it over Snakemake. | Retirement awaits Rob. Include all four dedicated test files if chosen. |
+| D01 | Rob authorized C16/B13 retirement on 2026-10-16, lifting the adapters' Phase 3 hold. Preserve `slurm_lane` and the historical Dagster selection over Snakemake. | This candidate removes both modules, all four dedicated test files, the two adapter-only shared validator files, adapter cases in shared tests, optional extras, orphaned worker gate and publication modes. Retained SDK/core/lane/publication/runtime and duplication checks qualify the resulting source; evidence is retained outside the checkout. |
 | D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Retiring `--stage` awaits Rob and a live-writer drain. |
 | D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Hook retirement awaits Rob. The broader core/library extraction is still owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
@@ -133,11 +133,13 @@ The detailed agreement and source citations are in messages
 
 ## Product choices still pending
 
-Rob received three questions in this session. Their defaults are
-recommendations, not decisions:
+This record originally posed three questions. The C16/B13 amendment below
+records Rob's retirement decision; the other rows retain their historical text:
 
-1. Retire the old adapters, experimental prewarm `--stage` and initial-miss
-   rendezvous after their required checks, or retain selected paths.
+1. **Decided 2026-10-16:** retire the old adapters, experimental prewarm
+   `--stage` and initial-miss rendezvous after their required checks. C16/B13
+   is implemented in this candidate; the stage and rendezvous work remains
+   separate, with its drain and controlled two-worker checks still required.
 2. Choose the roles required by host upgrade and member resign. Both agents
    recommend the work/storage roles, while metrics may continue. The supervisor
    and broker continue enforcing the boundary.

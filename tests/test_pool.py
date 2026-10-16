@@ -369,7 +369,6 @@ def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
         "--checkout-root",
         "/co",
     ]
-    assert "--require-slurm-initial-start" not in argv
 
 
 def test_atomic_write_leaves_no_partial_file(

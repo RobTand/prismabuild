@@ -1,13 +1,9 @@
 """Submit one sealed action to SLURM and wait for it.  Thin, on purpose.
 
-``slurm.py`` is the other SLURM client in this tree and it is not this one.  It
-exists for a restartable orchestrator: sealed submission intents, adoption of a
-job whose submitter died mid-``sbatch``, append-only poll journals, a mutation
-ledger.  Every one of those answers "who owns this job if the process that
-submitted it is gone", and an interactive ``pbrun --wait`` has no such question
--- the submitter is a person's terminal, and when it dies the right answer is
-``scancel``, not adoption.  So this module is a transport and nothing else:
-write a script, ``sbatch`` it, record what was submitted, poll, report.
+This is the retained SLURM transport: write a script, submit it, record what
+was submitted, poll, and report. The superseded durable-state journal adapter
+was retired under C16/B13; this lane keeps its own submission and recovery
+contracts.
 
 Four decisions are worth stating, because each had an alternative.
 

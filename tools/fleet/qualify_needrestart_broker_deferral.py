@@ -74,8 +74,8 @@ for my $rc (@ARGV[1 .. $#ARGV]) {
 def _fail(message: str) -> int:
     """The process-boundary refusal: prints and returns status 2.
 
-    Distinct from ``core._fail`` and ``dagster._fail``, which raise their
-    own contract errors inside library validation; the collision is a
+    Distinct from ``core._fail``, which raises its
+    contract error inside library validation; the collision is a
     registered exact-name exception (same_name_distinct, #1386).
     """
 

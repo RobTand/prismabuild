@@ -188,8 +188,14 @@ is untouched by the lane.
 
 Phase 3, after two quiet weeks on SLURM: delete `pool.py`, `worker_loop.py`,
 `supervise.py`, `box_capacity.py`, their tests, and the scheduler-only
-branches; retire `slurm.py`'s journal machinery if the thin lane has not
-needed it; move this document's issue table to closed.
+branches; move this document's issue table to closed.
+
+**2026-10-16 amendment (C16/B13):** Rob authorized retirement of `slurm.py`'s
+superseded journal adapter and `dagster.py`, independently of the paused
+Phase 3 migration. Their modules, extras, tests and adapter-only worker gate
+are removed. `slurm_lane.py`, the live pool and worker loops remain. This
+amendment neither resumes SLURM cutover nor changes the historical choice of
+Dagster over Snakemake. See [the retirement contract](design.md#legacy-adapter-retirement-c16b13-2026-10-16).
 
 ## 7. Open issues, dispositioned
 

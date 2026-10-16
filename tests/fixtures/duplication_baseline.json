@@ -128,7 +128,6 @@
   "sorted-json:src/prismabuild/adaptive_cpu.py::action_identity",
   "sorted-json:src/prismabuild/container_images.py::InventoryCache._refresh",
   "sorted-json:src/prismabuild/container_images.py::content_ref",
-  "sorted-json:src/prismabuild/dagster.py::ActionSpec.__init__",
   "sorted-json:src/prismabuild/movement_actions.py::container_owner",
   "sorted-json:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
   "sorted-json:src/prismabuild/produced_output.py::_index_attempt",
@@ -241,7 +240,7 @@
     "tools/fleet/qualify_needrestart_broker_deferral.py"
    ],
    "name": "_fail",
-   "reason": "The qualifier's helper prints a refusal to stderr and returns process status 2; core._fail and dagster._fail raise their own contract errors inside library validation, and no caller crosses between those two contracts."
+   "reason": "The qualifier's helper prints a refusal to stderr and returns process status 2; core._fail raises its contract error inside library validation, and no caller crosses between those two contracts."
   },
   {
    "modules": [
@@ -345,10 +344,6 @@
    "src/prismabuild/pool_reconcile.py",
    "tools/fleet/pbmcp.py"
   ],
-  "_absolute_path": [
-   "src/prismabuild/dagster.py",
-   "src/prismabuild/slurm.py"
-  ],
   "_action_key": [
    "src/prismabuild/residency_map.py",
    "src/prismabuild/residency_plan.py"
@@ -369,11 +364,6 @@
    "src/prismabuild/residency_map.py",
    "tools/fleet/pb_gc.py"
   ],
-  "_exact_mapping": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py",
-   "src/prismabuild/slurm.py"
-  ],
   "_execution_checkout": [
    "src/prismabuild/materialize.py",
    "src/prismabuild/pool.py"
@@ -383,8 +373,7 @@
    "tools/fleet/pbcanary_legs/leg4.py"
   ],
   "_fail": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py"
+   "src/prismabuild/core.py"
   ],
   "_git": [
    "src/prismabuild/core.py",
@@ -432,11 +421,6 @@
    "src/prismabuild/action_edges.py",
    "src/prismabuild/produced_output.py"
   ],
-  "_nonnegative_integer": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py",
-   "src/prismabuild/slurm.py"
-  ],
   "_now": [
    "src/prismabuild/materialize.py",
    "src/prismabuild/slurm_lane.py"
@@ -463,16 +447,6 @@
   "_positive": [
    "src/prismabuild/produced_spool.py",
    "src/prismabuild/residency_map.py"
-  ],
-  "_positive_finite": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py",
-   "src/prismabuild/slurm.py"
-  ],
-  "_positive_integer": [
-   "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py",
-   "src/prismabuild/slurm.py"
   ],
   "_read": [
    "src/prismabuild/action_edges.py",
@@ -517,7 +491,6 @@
   ],
   "_sha256": [
    "src/prismabuild/core.py",
-   "src/prismabuild/slurm.py",
    "tools/fleet/publish_runtime.py",
    "tools/fleet/supervise.py"
   ],
@@ -527,7 +500,6 @@
   ],
   "_text": [
    "src/prismabuild/core.py",
-   "src/prismabuild/dagster.py",
    "tools/fleet/pbstatus.py"
   ],
   "_write": [

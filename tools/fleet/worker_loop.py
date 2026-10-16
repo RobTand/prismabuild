@@ -38,7 +38,7 @@ are properties of the box rather than of the work:
   action in a **closed** environment built from the variables the action itself
   declares, so an action's interpreter is sealed into its command and therefore
   into its action key.  Making that portable would mean changing the executed
-  contract ``slurm.py`` pins, so it is deliberately not done here.  A cross-arch
+  action contract, so it is deliberately not done here. A cross-arch
   action instead names an interpreter that exists on its target and carries the
   matching class tag; the two must agree, and the submitter owns both.
 * **The tags.**  ``--class`` replaces a hardcoded ``gb10``: a box that offers
