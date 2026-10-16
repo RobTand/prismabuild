@@ -156,7 +156,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
     monkeypatch.setattr(pool.immutable_files, 'match_optional', _hooked_glob)
     # The fixed minter uses the strict census. Interrupt the same actual
     # headroom scan on both revisions, before either scans held tokens.
-    if hasattr(pool, "_glob_visible"):
+    if hasattr(pool.immutable_files, "match_required"):
         real_visible = pool.immutable_files.match_required
 
         def _hooked_visible(path, pattern):
@@ -666,7 +666,7 @@ def test_r6_visible_enumeration_contract(tmp_path: Path) -> None:
     """Pins the enumeration contract the census refusal rests on: the
     legacy listing suppresses a file-as-directory, the authoritative
     one raises.  Skipped where the strict census predates the tree."""
-    if getattr(pool, "_scan_visible", None) is None:
+    if getattr(pool.immutable_files, "scan_required", None) is None:
         pytest.skip("strict census absent pre-R6")
     probe = tmp_path / "probe"
     probe.write_text("")

@@ -38,14 +38,19 @@ def scope(tmp_path, monkeypatch):
                            interval_s=1.0, once=True)
     events = []
 
-    class Queue:
+    class Records:
         def __init__(self, root):
             self.root = root
-            events.append("construct")
 
         def ensure_layout(self):
             events.append("layout")
             self.root.mkdir()
+
+    class Queue:
+        def __init__(self, root):
+            self.root = root
+            self.records = Records(root)
+            events.append("construct")
 
     def start(queue, **kwargs):
         events.append("adopt")
@@ -57,7 +62,7 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(tier_loop, "tier_cycle_line", lambda *args: {"event": "cycle-final"})
     monkeypatch.setattr(tier_loop, "cycle", lambda *args, **kwargs: events.append("cycle") or [])
     return SimpleNamespace(gate=gate, parked=parked, args=args, events=events,
-                           root=tmp_path, Queue=Queue, published=published)
+                           root=tmp_path, Queue=Queue, Records=Records, published=published)
 
 
 def close(scope, epoch=101.5):
@@ -90,13 +95,13 @@ def test_unknown_gate_parks_without_starting_or_claiming_epoch(scope, contents):
 
 
 def test_gate_closes_during_layout_and_blocks_adoption(scope, monkeypatch):
-    original = scope.Queue.records.ensure_layout
+    original = scope.Records.ensure_layout
 
     def layout(queue):
         original(queue)
         close(scope)
 
-    monkeypatch.setattr(scope.Queue.records, 'ensure_layout', layout)
+    monkeypatch.setattr(scope.Records, 'ensure_layout', layout)
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == ["construct", "layout"]
     assert not (scope.root / "queue" / "adoption").exists()
@@ -223,7 +228,7 @@ def test_startup_exception_restores_both_signal_handlers(scope, monkeypatch):
     def layout(queue):
         raise OSError("startup namespace unavailable")
 
-    monkeypatch.setattr(scope.Queue.records, 'ensure_layout', layout)
+    monkeypatch.setattr(scope.Records, 'ensure_layout', layout)
     with pytest.raises(OSError, match="startup namespace"):
         tier_loop._serve(scope.args)
     assert {s: signal.getsignal(s) for s in previous} == previous

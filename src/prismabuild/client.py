@@ -109,10 +109,10 @@ manifest_read_entries = manifest_layout.manifest_read_entries
 
 PoolQueue = _pool.PoolQueue
 #: The queue state of an action a worker has claimed and is running.
-CLAIMED = _pool.CLAIMED
+CLAIMED = _pool.record_store.CLAIMED
 #: The queue subdirectory residency maps, fragments and landing records live
 #: under: ``Path(queue.root) / RESIDENCY``.
-RESIDENCY = _pool.RESIDENCY
+RESIDENCY = _pool.record_store.RESIDENCY
 #: The schema of the terminal record the pool files when an action ends.
 POOL_OUTCOME_SCHEMA_V1 = _pool.POOL_OUTCOME_SCHEMA_V1
 
