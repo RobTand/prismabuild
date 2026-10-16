@@ -125,3 +125,63 @@ def test_late_scratch_boundary_refuses_before_any_probe_or_borrow(fleet, monkeyp
     assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
     assert fleet.queue.item_path(pool.READY, fleet.key).exists()
     assert not fleet.queue.passes_path(fleet.key).exists()
+
+
+def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candidate(tmp_path, monkeypatch):
+    from prismabuild import _measurement_reservation as measurement
+    from test_pool_tier_reservations import STAGE, TIER, _denial, _publish
+
+    queue = pool.PoolQueue(tmp_path / "views-queue")
+    queue.ensure_layout()
+    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    first, second = "d" * 64, "e" * 64
+    _publish(queue, first, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=10)
+    _publish(queue, second, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=0)
+    second_bytes = queue.item_path(pool.READY, second).read_bytes()
+    listed, plans, scans, replaced = [], [], [], []
+    listdir, rename = pool.os.listdir, pool.os.rename
+    fresh_plan, census = queue._fresh_reader_plan, measurement.CensusReader._census
+
+    def observe_list(path):
+        value = listdir(path)
+        if path == queue.dir(pool.CLAIMED):
+            listed.append(list(value))
+        return value
+
+    def observe_plan(*args, **kwargs):
+        value = fresh_plan(*args, **kwargs)
+        plans.append(value)
+        return value
+
+    def observe_census(self, directory):
+        scans.append(directory)
+        return census(self, directory)
+
+    def replace_then_rename(src, dst):
+        if src == queue.item_path(pool.READY, first):
+            _publish(queue, first, {"cpu": 2, "mem_gb": 1, STAGE: 1}, priority=10)
+            replaced.append(queue.item_path(pool.READY, first).read_bytes())
+            rename(src, dst)
+            queue.announce_tier({"tier_id": TIER, pool.READER_PLAN_FIELD: {
+                "declared_wait": [{"mover_action_key": "f" * 64}]}})
+            return
+        return rename(src, dst)
+
+    monkeypatch.setattr(pool.os, "listdir", observe_list)
+    monkeypatch.setattr(pool.os, "rename", replace_then_rename)
+    monkeypatch.setattr(queue, "_fresh_reader_plan", observe_plan)
+    monkeypatch.setattr(measurement.CensusReader, "_census", observe_census)
+    assert queue.claim(owner="views-owner", capacity={"cpu": 8, "mem_gb": 8}) is None
+    assert len(replaced) == 1
+    assert queue.item_path(pool.READY, first).read_bytes() == replaced[0]
+    assert queue.item_path(pool.READY, second).read_bytes() == second_bytes
+    assert _denial(queue, first)["reason"] == "claimed_record_changed"
+    assert _denial(queue, second)["reason"] == "deferred_for_declared_wait"
+    assert len(listed) == 3
+    assert plans[0] is None and plans[1]["declared_wait"] == [{"mover_action_key": "f" * 64}]
+    assert len(scans) == 4
+    assert queue.ledger().held_keys() == []
+    assert queue.ledger().available() == {"cpu": 8, "mem_gb": 8}
+    assert queue.tier_ledger(TIER).available() == {"stage_gib": 2}
+    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
+    assert not queue.passes_path(first).exists() and not queue.passes_path(second).exists()
