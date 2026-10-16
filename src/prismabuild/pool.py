@@ -902,7 +902,6 @@ DEFERRED_FOR_POOL_READERS = "deferred_for_pool_readers"
 #: A mover's own landing report (#1090): ``residency-events/<mover>/`` +
 #: this name, written by ``stage_move`` whether or not the worker gave it a
 #: progress channel.  ``consumer_events`` reads only ``*.jsonl`` there.
-MOVER_LANDING_REPORT = "landing.json"
 MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
 
 #: How long a worker's offer stays believable.  A loop re-announces on every
