@@ -1021,14 +1021,6 @@ def normalize_placement_tags(tags: Sequence[object]) -> list[str]:
     return sorted(normalized)
 
 
-class PoolError(pb.PrismaBuildError):
-    """A queue-level failure, distinct from an action-level one."""
-
-
-class PoolContractError(PoolError, ValueError):
-    """A queue record does not satisfy its schema."""
-
-
 @dataclass(frozen=True)
 class PublicationSupersession:
     """An exact publication ended; its successor supplies no execution verdict."""
