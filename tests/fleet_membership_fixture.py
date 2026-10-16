@@ -20,8 +20,8 @@ def finish_after_terminal_probe(monkeypatch, queue, snapshot):
             assert probed.wait(10), "resign never checked the held attempt's terminal"
             if cancelled.is_set():
                 return
-            assert queue.item_path(pool.CLAIMED, key).exists()
-            assert not queue.item_path(pool.WITHDRAWN, key).exists()
+            assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+            assert not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
             queue.finish(key, status="executed", detail={}, claim_snapshot=snapshot)
         except BaseException as exc:
             errors.append(exc)

@@ -9,7 +9,7 @@ class Damage:
 
     def malformed_output_funding(self, mover, tier):
         """Violate JSON syntax on an existing production-funded mover record."""
-        path = self.queue.funding_output_path(mover, tier)
+        path = self.queue.records.funding_output_path(mover, tier)
         assert pool.read_queue_record(path) is not None
         path.write_text("{corrupt", encoding="utf-8")
         with pytest.raises(pool.PoolContractError):
@@ -22,7 +22,7 @@ class Damage:
         retain this evidence. Schema validation alone cannot detect this defect.
         """
         assert self.queue.move_record(mover) is None, "damage requires a missing receipt"
-        return residency_map.write_fragment(self.queue.root / pool.RESIDENCY, {
+        return residency_map.write_fragment(self.queue.root / pool.record_store.RESIDENCY, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": mover,
             "tier_id": tier, "stage_root": str(stage), "manifest_sha256": "a" * 64,

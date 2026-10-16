@@ -78,7 +78,7 @@ class Actions:
         key = self.key()
         self.claim_new(key)
         self.queue.finish(key, status="failed", detail={"returncode": 1})
-        assert self.queue.item_path(pool.FAILED, key).exists()
+        assert self.queue.records.item_path(pool.record_store.FAILED, key).exists()
         return key
 
     def withdrawn_mover(self):
@@ -87,7 +87,7 @@ class Actions:
         self.queue.withdraw(key, reason="stale test owner", by="test")
         self.queue.finish(key, status="withdrawn", detail={"returncode": -15},
                           claim_snapshot=holder)
-        assert self.queue.item_path(pool.WITHDRAWN, key).exists()
+        assert self.queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
         return key
 
 
@@ -113,13 +113,13 @@ class Stage:
             names=names, size=size)
         assert self.queue.move_record(mover) is None, "dead mover must file no receipt"
         assert mover not in self.queue.tier_ledger(self.tier).held_keys()
-        assert not self.queue.item_path(pool.CLAIMED, mover).exists()
+        assert not self.queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
         return consumer, mover
 
     def publisher(self, *, mover, consumer):
         return stage_move._StagedPublisher(
             queue=self.queue, stage_root=self.root,
-            residency_root=self.queue.root / pool.RESIDENCY,
+            residency_root=self.queue.root / pool.record_store.RESIDENCY,
             mover_action_key=mover, manifest_sha256="a" * 64,
             tier_id=self.tier, cas_root=self.cas_root, consumer_action_key=consumer)
 

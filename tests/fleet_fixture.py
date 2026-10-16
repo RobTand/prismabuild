@@ -14,7 +14,7 @@ def queue(tmp_path):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
