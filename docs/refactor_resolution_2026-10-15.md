@@ -118,7 +118,7 @@ does not rewrite the frozen 93424 audit or claim the other cards complete.
 | --- | --- | --- |
 | D01 | Rob authorized C16/B13 retirement on 2026-10-16, lifting the adapters' Phase 3 hold. Preserve `slurm_lane` and the historical Dagster selection over Snakemake. | This candidate removes both modules, all four dedicated test files, the two adapter-only shared validator files, adapter cases in shared tests, optional extras, orphaned worker gate and publication modes. Retained SDK/core/lane/publication/runtime and duplication checks qualify the resulting source; evidence is retained outside the checkout. |
 | D02 | `storage_tiers` owns mount discovery. A stdlib `stage_marks` leaf owns mark bytes, source identity and prewarm temporary grammar. Keep distinct `by_id_names` results and both reclamation exclusions. | B01 is integrated and candidate-qualified. Retiring `--stage` awaits Rob and a live-writer drain. |
-| D03 | The initial-miss hook is qualification-only, but writes arrival and ready records. If retired, preserve its concurrency property with a controlled two-worker CAS-miss proof. | Hook retirement awaits Rob. The broader core/library extraction is still owed. |
+| D03 | Rob authorized B15 retirement on 2026-10-16. Replace the qualification hook and its arrival/ready writers with a controlled two-worker CAS-miss proof of the actual output lock and post-lock recheck. | The replacement proof was frozen at `117171849f706874eac379f9f26594e266da245d` against unchanged C16 production source. A single-line production mutation bypassing the post-lock lookup produced two task executions and failed that proof. This candidate removes the API argument, CLI flag, helpers, state and hook-only tests while retaining exact ordinary hit/miss result shapes. B15 evidence is under `/home/rob/tmp/prismabuild-resume-20261016/retire-rendezvous/`. The broader C20 library extraction remains owed. |
 | D04 | Model publication, execution slot, exact claim, reservation and evidence as distinct facts. A key may hold several generations' facets. Keep claim-pass rollback authority separate from persisted recovery facts. | B04 fixes requeue over a newer READY generation. Lifecycle classification and full conclude ownership are still owed. |
 | D05 | Share stop, generation, singleton and marker operations in a kit. Each role keeps its loop and completion policy. Prewarm stops cooperatively, joins readers, aborts partial sinks and publishes accounting before proof. HTTP waits for actual request threads; return from `handle_request` is insufficient. | B05/B06 are integrated at `4cd546acec53`, with 410 focused passes and 94 assembled-source passes. The 384-file broad source check passed 5,358 cases with three recorded capability skips. Claude's final delta review remains open. Metrics is the sole observer; its supervisor owns generation retirement and the restart record. Explicit stop has a 10-second grace, and expiry permits no marker. Worker `--once` drift still exits 0. |
 | D06 | Pure contract rows describe tag, declaration, enabled offer, companions and remedy. Gang and canary gates remain explicit. Host availability is separate from code support. | B07 source and engineering review are done. Extraction and separate tightening are integrated, including a 1,264-case combined check. Broader live eligibility, availability and submission ownership remain owed. |
@@ -134,12 +134,13 @@ The detailed agreement and source citations are in messages
 ## Product choices still pending
 
 This record originally posed three questions. The C16/B13 amendment below
-records Rob's retirement decision; the other rows retain their historical text:
+records Rob's retirement decision, and B15 implements the rendezvous part.
+The other rows retain their historical text:
 
 1. **Decided 2026-10-16:** retire the old adapters, experimental prewarm
    `--stage` and initial-miss rendezvous after their required checks. C16/B13
-   is implemented in this candidate; the stage and rendezvous work remains
-   separate, with its drain and controlled two-worker checks still required.
+   and B15 are implemented in this candidate. The stage work remains separate,
+   with its live-writer drain still required.
 2. Choose the roles required by host upgrade and member resign. Both agents
    recommend the work/storage roles, while metrics may continue. The supervisor
    and broker continue enforcing the boundary.
