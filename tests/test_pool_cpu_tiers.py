@@ -161,7 +161,7 @@ def test_finished_remote_generation_drops_local_deferral(tmp_path, clock):
     tiers = {'preferred': [], 'fallback': [4]}
     clock.set(monotonic=10.)
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers) is None
-    ready = queue.item_path(pool.READY, key)
+    ready = queue.records.item_path(pool.record_store.READY, key)
     original = ready.read_bytes()
     ready.unlink()
     assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers) is None

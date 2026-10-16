@@ -26,7 +26,7 @@ KEY_B = "b" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -77,7 +77,7 @@ def test_losing_same_key_claimant_keeps_the_winners_tokens(
     _publish(queue, KEY_B)
     other = queue.claim(owner="other-action", capacity={"cpu": 1})
     assert other is None
-    assert len(list(queue.dir(pool.CLAIMED).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json"))) == 1
 
 
 def test_a_crashed_claimants_private_tokens_are_swept(
@@ -181,8 +181,8 @@ def test_a_swept_claimant_does_not_run_unreserved(
         claimed = queue.claim(owner="swept", capacity={"cpu": 1})
 
     assert claimed is None
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().held() == {}
     assert queue.ledger().available() == {"cpu": 1}
     # The item is intact, so the next poll claims it normally.

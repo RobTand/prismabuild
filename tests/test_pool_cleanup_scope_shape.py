@@ -13,11 +13,11 @@ def test_cached_cleanup_with_invalid_scope_preserves_finish(tmp_path, control):
     record = queue.claim(capacity={"cpu": 1})
     record["resource_scope"] = control
     record["resource_scope_cleanup"] = {"complete": True, "nonce": "old"}
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     pool._write_json_atomic(path, record)
     detail = {"returncode": 0, "stdout": "completed payload"}
     assert queue.finish(key, status="executed", detail=detail, claim_snapshot=record) == path
-    pending = pool._read_json(path)
+    pending = pool.record_store.read_queue_record(path)
     assert pending["finish_pending"] == {"status": "executed", "detail": detail}
     assert pending["container_cleanup_pending"]["complete"] is False
     assert queue.ledger().held() == {"cpu": 1}

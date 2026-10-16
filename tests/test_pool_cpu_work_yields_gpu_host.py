@@ -53,7 +53,7 @@ def fleet(tmp_path):
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                       checkout_root=str(tmp_path), worker_script='worker.py',
                       resources=resources, **({'tags': tags} if tags else {}))
-        return pool._read_json(queue.item_path(pool.READY, key))
+        return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
 
     def claim(has_gpu=True):
         return queue.claim(tags=['gb10'], has_gpu=has_gpu, capacity=CAPACITY,
@@ -92,7 +92,7 @@ def test_a_cpu_only_row_is_left_to_a_host_without_a_gpu(fleet):
     denial = _local_denial(queue, 'a' * 64)
     assert denial and denial['reason'] == 'deferred_for_cpu_only_host'
     assert denial['evidence']['cpu_host']['host'] == CPU_HOST
-    assert not queue.passes_path('a' * 64).exists()     # not a refusal: ages nothing
+    assert not queue.records.passes_path('a' * 64).exists()     # not a refusal: ages nothing
 
 
 def test_the_wait_has_no_timer(fleet, monkeypatch):
@@ -211,8 +211,8 @@ def test_timer_queries_respect_an_earlier_cpu_host_charge(tmp_path, monkeypatch,
     left = (keys - {claimed['action_key']}).pop()
     assert _local_denial(queue, left)['reason'] == 'deferred_for_cpu_only_host'
     assert [denial['reason'] for denial in denials if denial] == ['deferred_for_cpu_only_host']
-    assert queue.item_path(pool.READY, left).exists()
-    assert not queue.lease_path(left).exists()
-    assert all(not queue.passes_path(key).exists() for key in keys)
+    assert queue.records.item_path(pool.record_store.READY, left).exists()
+    assert not queue.records.lease_path(left).exists()
+    assert all(not queue.records.passes_path(key).exists() for key in keys)
     assert queue.ledger().available()['cpu'] == 1
     assert queue.ledger(CPU_HOST).available()['cpu'] == 4

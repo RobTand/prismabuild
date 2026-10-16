@@ -29,7 +29,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -60,11 +60,11 @@ def test_the_claim_does_not_carry_the_aging_counter(
     assert claimed is not None
     assert "passes" not in claimed
     on_disk = json.loads(
-        queue.item_path(pool.CLAIMED, KEY_A).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text(encoding="utf-8")
     )
     assert "passes" not in on_disk
     # And the counter it would have described is gone, which is the point.
-    assert not queue.passes_path(KEY_A).exists()
+    assert not queue.records.passes_path(KEY_A).exists()
 
 
 def test_the_outcome_does_not_carry_the_aging_counter(
