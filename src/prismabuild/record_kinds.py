@@ -28,6 +28,23 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("input-test-capabilities", "prismabuild.pbtest_capabilities.v1", "caller pbtest capability configuration", "closed",
+               "pbtest_capabilities:load_config", (), ("empty", "tagged"), caller_input=True),
+    RecordKind("image-requirements", "prismabuild.container_class_requirements.v1", "immutable class-image policy declaration", "closed",
+               "prismabuild.container_images:normalize_class_image_requirements", ("prismabuild.container_images:ClassImagePolicy.__init__",),
+               ("empty", "image"), ("an explicit empty class still requires a known matching store",)),
+    RecordKind("image-verdict", "prismabuild.container_class_verdict.v1", "worker offer.class_image_verdict", "additive",
+               "prismabuild.container_images:offer_class_image_eligible",
+               ("prismabuild.container_images:ClassImagePolicy.evaluate", "prismabuild.container_images:class_image_verdict"),
+               ("satisfied", "missing", "unknown", "bare-satisfied"),
+               ("bare diagnostic verdict lacks the requirement pin and grants no offer eligibility; native work is independent of container policy",),
+               variant_writers=(("satisfied", "prismabuild.container_images:ClassImagePolicy.evaluate"),
+                                ("missing", "prismabuild.container_images:ClassImagePolicy.evaluate"),
+                                ("unknown", "prismabuild.container_images:ClassImagePolicy.evaluate"),
+                                ("bare-satisfied", "prismabuild.container_images:class_image_verdict"))),
+    RecordKind("gpu-capacity", "prismabuild.gpu_capacity.v1", "public broker device-capacity snapshot", "additive",
+               "prismabuild.box_window:DiscreteFramebufferWindow.observe", ("prismabuild.gpu_capacity:collect",),
+               ("discrete", "unified", "incomplete"), ("unified and incomplete snapshots grant no discrete framebuffer observation",)),
     RecordKind("dc-envelope", "prismabuild.task_batch.v1", "CAS input prismabuild.task-batch", "additive",
                "prismabuild.decomposition:task_data_manifest", ("prismabuild.decomposition:batch_envelope",), ("data",),
                ("the real task-data consumer reads task entries; envelope schema is a producer label",), negative_field="tasks", negative_value=None),
