@@ -62,7 +62,12 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
     ended = w.q.finish(mover, status="failed", detail=result, claim_snapshot=claimed)
     # On the regression, it is READY but admission can never claim it again.
     if ended.parent.name == pool.record_store.READY:
-        assert w.q.output_funded_cover(TIER, pool.record_store.read_document(ended), KIND, 1) == (0, None)
+        assert w.q.output_funded_cover(
+            TIER,
+            pool.record_store.read_document(ended),
+            KIND,
+            1,
+        ) == (0, None)
         assert w.q.claim(owner="retry-worker") is None
     assert ended.parent.name == pool.record_store.FAILED
     assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
@@ -87,7 +92,7 @@ def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
         # Only the mover lease expires; the producer stays live.
         lease = pool.record_store.read_document(w.q.records.lease_path(mover))
         lease["heartbeat_unix"] = 0.0
-        pool._write_json_atomic(w.q.records.lease_path(mover), lease)
+        pool.record_store._write_json(w.q.records.lease_path(mover), lease)
         w.q.reap_stale(timeout_s=60)
         ended = w.q.records.item_path(pool.record_store.FAILED, mover)
     else:
@@ -119,7 +124,7 @@ def test_unproved_or_unspent_funding_never_claims_a_terminal_override(tmp_path, 
             "transferring": ("state", "transferring"),
         }[fault]
         changed[field] = value
-        pool._write_json_atomic(path, changed)
+        pool.record_store._write_json(path, changed)
     before = path.read_bytes() if path.exists() else None
     ended = w.q.finish(mover, status="failed", claim_snapshot=claimed)
     assert ended.parent.name == pool.record_store.READY
@@ -146,7 +151,9 @@ def test_ordinary_failure_still_retries_and_can_succeed(tmp_path):
     assert second is not None and second["attempts"] == 1
     ended = q.finish(key, status="executed", claim_snapshot=second)
     assert ended.parent.name == pool.record_store.DONE
-    assert [a["disposition"] for a in q.attempt_outcomes(pool.record_store.read_document(ended))] == ["requeued", pool.record_store.DONE]
+    assert [a["disposition"] for a in q.attempt_outcomes(
+        pool.record_store.read_document(ended),
+    )] == ["requeued", pool.record_store.DONE]
 
 
 @pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED])
@@ -156,7 +163,7 @@ def test_late_failure_never_concludes_a_live_successor(tmp_path, state):
                  "claimed_by": "new-worker", "claimed_unix": claimed["claimed_unix"] + 1}
     w.q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
     path = w.q.records.item_path(state, mover)
-    pool._write_json_atomic(path, successor)
+    pool.record_store._write_json(path, successor)
     before = path.read_bytes()
     lease = w.q.records.lease_path(mover).read_bytes()
     held = w.ledger.holder_tokens(mover)
@@ -190,7 +197,7 @@ def test_corrupt_archived_stop_cannot_authorize_early_failure(tmp_path, field):
     archived["output_retry_stop"]["funding"][field] = replacement
     # Deliberate immutable-evidence corruption, confined to this private queue.
     path.chmod(0o644)
-    pool._write_json_atomic(path, archived)
+    pool.record_store._write_json(path, archived)
     path.chmod(0o444)
     with pytest.raises(pool.PoolContractError, match="binding differs"):
         w.q.adopted_attempt_summary(record)

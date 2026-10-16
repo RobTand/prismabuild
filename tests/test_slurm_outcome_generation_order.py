@@ -89,7 +89,7 @@ def test_an_ending_this_writer_crossed_is_repaired(
     the later run's ending over it.
     """
 
-    replace = sl._write_json_atomic
+    replace = sl.record_store._write_json
     crossed: list[int] = []
     older = {
         "schema": sl.OUTCOME_SCHEMA_V1, "transport": "slurm",
@@ -109,7 +109,7 @@ def test_an_ending_this_writer_crossed_is_repaired(
     # The older run ended first, so the newer writer replaces that record and
     # is the one the injection crosses.
     assert _file(tmp_path, 100.0) is not None
-    monkeypatch.setattr(sl, "_write_json_atomic", crossing_write)
+    monkeypatch.setattr(sl.record_store, "_write_json", crossing_write)
 
     assert _file(tmp_path, 200.0) is not None
 
@@ -162,7 +162,7 @@ def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
     import concurrent.futures
     import threading
 
-    replace = sl._write_json_atomic
+    replace = sl.record_store._write_json
     older_checked = threading.Event()
     newer_attempted = threading.Event()
     newer_returned = threading.Event()
@@ -185,7 +185,7 @@ def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
         return result
 
     assert _file(tmp_path, 50.0) is not None
-    monkeypatch.setattr(sl, "_write_json_atomic", delayed_write)
+    monkeypatch.setattr(sl.record_store, "_write_json", delayed_write)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         older = executor.submit(_file, tmp_path, 100.0)
         newer = executor.submit(newer_writer)
@@ -202,7 +202,7 @@ def test_unreadable_summary_is_preserved_before_known_ending_is_filed(
     path = _failed(tmp_path)
     path.parent.mkdir()
     path.write_bytes(b"{broken evidence")
-    real_link = sl._publish_json_if_absent
+    real_link = sl.record_store.RecordStore.file_lane_item_if_absent
     attempts = 0
 
     def bounded_link(*args, **kwargs):
@@ -211,7 +211,7 @@ def test_unreadable_summary_is_preserved_before_known_ending_is_filed(
         assert attempts <= 3, "unreadable summary caused a retry loop"
         return real_link(*args, **kwargs)
 
-    monkeypatch.setattr(sl, "_publish_json_if_absent", bounded_link)
+    monkeypatch.setattr(sl.record_store.RecordStore, "file_lane_item_if_absent", bounded_link)
     assert _file(tmp_path, 100.0) is not None
     assert json.loads(path.read_text())["published_unix"] == 100.0
     preserved = list((path.parent / "unreadable").glob("*.json"))

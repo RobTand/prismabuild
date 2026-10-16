@@ -216,7 +216,7 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     names = [str(name) for name in record["tokens"]]
 
     done_path = queue.records.item_path(pool.record_store.DONE, mover)
-    pool._write_json_atomic(done_path, {
+    pool.record_store._write_json(done_path, {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
         "action_key": mover, "status": "executed",
         "tier_funding": {TIER: {"generation": generation,
@@ -231,7 +231,7 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     assert ledger.available().get("stage_gib") == 4
 
     # Control: the same terminal state with no proof releases exactly.
-    pool._write_json_atomic(done_path, {
+    pool.record_store._write_json(done_path, {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
         "action_key": mover, "status": "executed",
     })

@@ -235,18 +235,18 @@ def test_a_sweeper_and_a_poller_racing_on_one_key_file_one_record(
     job = _detach(tmp_path, queue_root=queue_root, cas=cas, action=action)
     submission = sl.recorded_submission(job.action_key)
 
-    real_link = sl._publish_json_if_absent
+    real_link = sl.record_store.RecordStore.file_lane_item_if_absent
     failed_once = threading.Event()
 
-    def _link(path: Path, payload) -> bool:
+    def _link(store, path: Path, payload) -> bool:
         # The loser's view of the race: the name was taken between its read
         # and its link.  Exactly once, so the second attempt is real.
         if not failed_once.is_set():
             failed_once.set()
             return False
-        return real_link(path, payload)
+        return real_link(store, path, payload)
 
-    monkeypatch.setattr(sl, "_publish_json_if_absent", _link)
+    monkeypatch.setattr(sl.record_store.RecordStore, "file_lane_item_if_absent", _link)
 
     start = threading.Barrier(2)
     errors: list[BaseException] = []

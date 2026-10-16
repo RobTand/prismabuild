@@ -29,7 +29,9 @@ def _file(queue_root: Path, status: str, generation: float):
 
 
 def _done(queue_root: Path) -> dict:
-    return json.loads((queue_root / pool.record_store.DONE / f"{KEY}.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (queue_root / pool.record_store.DONE / f"{KEY}.json").read_text(encoding="utf-8"),
+    )
 
 
 def test_a_hit_filed_after_the_execution_leaves_the_execution_standing(tmp_path: Path) -> None:
@@ -64,8 +66,14 @@ def test_a_hit_with_no_ending_at_all_is_still_filed(tmp_path: Path) -> None:
 def test_the_writer_links_rather_than_renames_and_leaves_no_debris(tmp_path: Path) -> None:
     target = tmp_path / "done" / "record.json"
 
-    assert slurm_lane._publish_json_if_absent(target, {"who": "first"}) is True
-    assert slurm_lane._publish_json_if_absent(target, {"who": "second"}) is False
+    assert slurm_lane.record_store.RecordStore(target.parent.parent).file_lane_item_if_absent(
+        target,
+        {"who": "first"},
+    ) is True
+    assert slurm_lane.record_store.RecordStore(target.parent.parent).file_lane_item_if_absent(
+        target,
+        {"who": "second"},
+    ) is False
 
     assert json.loads(target.read_text(encoding="utf-8")) == {"who": "first"}
     assert sorted(p.name for p in target.parent.iterdir()) == ["record.json"]
