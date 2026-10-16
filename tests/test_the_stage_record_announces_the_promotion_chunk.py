@@ -27,14 +27,17 @@ WINDOW_GIB = 160
 CHUNK_GIB = 40
 
 
-def _discover(stage_extra: dict | None = None,
+def _discover(root: Path, stage_extra: dict | None = None,
               ram_extra: dict | None = None):
+    for name in ("stage", "ram"):
+        (root / name).mkdir(exist_ok=True)
+
     def discover(**_kwargs):
         tiers = {
             STAGE_TIER: {
                 "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                 "tier_id": STAGE_TIER, "host": "dl380g10", "tier": "stage",
-                "mountpoint": "/stage/prewarm",
+                "mountpoint": str(root / "stage"),
                 "capacity_bytes": 512 * GIB,
                 **(stage_extra or {})},
         }
@@ -42,7 +45,7 @@ def _discover(stage_extra: dict | None = None,
             tiers[RAM_TIER] = {
                 "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
                 "tier_id": RAM_TIER, "host": "dl380g10", "tier": "ram",
-                "mountpoint": "/ram/prewarm",
+                "mountpoint": str(root / "ram"),
                 "capacity_bytes": WINDOW_GIB * GIB,
                 **ram_extra}
         return tiers
@@ -52,9 +55,17 @@ def _discover(stage_extra: dict | None = None,
 
 def _announced(tmp_path: Path, discover) -> dict[str, dict]:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
+
+    def private_discover(**kwargs):
+        records = discover(**kwargs)
+        assert all(Path(record["mountpoint"]).is_relative_to(tmp_path)
+                   for record in records.values())
+        return records
+
     records = tier_loop.cycle(
         queue, host="dl380g10", source_pool="storage_pool",
-        receipts=tier_loop.ReceiptCache(), discover=discover)
+        receipts=tier_loop.ReceiptCache(), discover=private_discover)
+    assert all(record["stage_root_owner"] == "registered" for record in records)
     return {str(record["tier_id"]): record for record in records}
 
 
@@ -63,7 +74,7 @@ def test_the_stage_record_carries_the_ram_tiers_effective_chunk(
     """One chunk family across tiers: the stage announces what the ram
     record announces, so both legs cut the same phases at the same size."""
 
-    announced = _announced(tmp_path, _discover(ram_extra={
+    announced = _announced(tmp_path, _discover(tmp_path, ram_extra={
         "window_gib": WINDOW_GIB, "promotion_chunk_gib": CHUNK_GIB}))
 
     assert announced[STAGE_TIER]["promotion_chunk_gib"] == CHUNK_GIB
@@ -73,7 +84,7 @@ def test_a_derived_ram_chunk_reaches_the_stage_record_too(tmp_path) -> None:
     """The pin is not the only sizing: an unpinned policy derives a window
     quarter on the ram record, and the stage announces that derivation."""
 
-    announced = _announced(tmp_path, _discover(ram_extra={
+    announced = _announced(tmp_path, _discover(tmp_path, ram_extra={
         "window_gib": WINDOW_GIB,
         "promotion_chunk_gib": storage_tiers.promotion_chunk_gib_for_window(
             WINDOW_GIB)}))
@@ -85,7 +96,7 @@ def test_no_ram_tier_leaves_the_stage_whole_phase(tmp_path) -> None:
     """No tmpfs on the stage's host is nobody's chunk family: the sealer
     must seal the pair the window has published since #583."""
 
-    announced = _announced(tmp_path, _discover())
+    announced = _announced(tmp_path, _discover(tmp_path))
 
     assert "promotion_chunk_gib" not in announced[STAGE_TIER]
 
@@ -94,7 +105,7 @@ def test_a_ram_record_predating_the_chunk_announces_nothing(tmp_path) -> None:
     """Tonight's running campaign announces ram records without the key;
     the stage stays whole-phase beside them rather than guessing a size."""
 
-    announced = _announced(tmp_path, _discover(ram_extra={
+    announced = _announced(tmp_path, _discover(tmp_path, ram_extra={
         "window_gib": WINDOW_GIB}))
 
     assert "promotion_chunk_gib" not in announced[STAGE_TIER]
@@ -106,7 +117,7 @@ def test_a_non_positive_ram_chunk_announces_nothing(tmp_path) -> None:
 
     for bad in (0, -40, True):
         announced = _announced(
-            tmp_path, _discover(ram_extra={
+            tmp_path, _discover(tmp_path, ram_extra={
                 "window_gib": WINDOW_GIB, "promotion_chunk_gib": bad}))
 
         assert "promotion_chunk_gib" not in announced[STAGE_TIER], bad
