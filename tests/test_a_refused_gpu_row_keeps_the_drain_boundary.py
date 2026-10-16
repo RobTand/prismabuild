@@ -36,6 +36,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import adaptive_cpu, adaptive_gpu, pool  # noqa: E402
+from claim_transition_fixture import held_transition
 
 T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
@@ -54,16 +55,6 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 def _key_of(item):
     return None if item is None else item["action_key"]
-
-
-class _Unheld:
-    """What ``_transition_locked`` yields while another loop holds the key."""
-
-    def __enter__(self):
-        return False
-
-    def __exit__(self, *args):
-        return False
 
 
 def _release_when(monkeypatch, queue: pool.PoolQueue, key: str, reason_prefix: str,
@@ -239,26 +230,20 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
                   worker_script="/w.py", priority=1, resources=dict(LDLQ))
     queue.publish(action_key=lower, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", priority=-10, resources=dict(G2))
-    original = queue._transition_locked
-
-    def contested(key, **kwargs):
-        return _Unheld() if key == busy_row else original(key, **kwargs)
-
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
-    claimed = queue.claim(capacity=capacity)
-    assert claimed is None, (
-        f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
-        "whose holder released after its room was read")
-    busy = _denial(queue, busy_row)
-    assert busy["reason"] == "transition_busy"
-    assert busy["evidence"]["gpu_room_kept"] == LDLQ
-    assert busy["evidence"]["gpu_room_binds_all"] is True
-    deferred = _denial(queue, lower)
-    assert deferred["reason"] == "deferred_for_ready_gpu_row"
-    assert deferred["evidence"]["gpu_row"] == busy_row[:12]
-    assert deferred["evidence"]["kept_for"] == "transition_busy"
-    monkeypatch.setattr(queue, "_transition_locked", original)
+    with held_transition(queue, busy_row):
+        _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
+        claimed = queue.claim(capacity=capacity)
+        assert claimed is None, (
+            f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
+            "whose holder released after its room was read")
+        busy = _denial(queue, busy_row)
+        assert busy["reason"] == "transition_busy"
+        assert busy["evidence"]["gpu_room_kept"] == LDLQ
+        assert busy["evidence"]["gpu_room_binds_all"] is True
+        deferred = _denial(queue, lower)
+        assert deferred["reason"] == "deferred_for_ready_gpu_row"
+        assert deferred["evidence"]["gpu_row"] == busy_row[:12]
+        assert deferred["evidence"]["kept_for"] == "transition_busy"
     assert queue.claim(capacity=capacity)["action_key"] == busy_row
 
 

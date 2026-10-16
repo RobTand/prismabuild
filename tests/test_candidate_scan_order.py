@@ -129,7 +129,8 @@ def test_room_fit_keeps_foreign_count_coercion_and_missing_kind_semantics():
 def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
     tmp_path, monkeypatch, whole_box_already_held,
 ):
-    from test_drain_boundary_order import _unheld, publish
+    from test_drain_boundary_order import publish
+    from claim_transition_fixture import held_transition
 
     queue = pool.PoolQueue(tmp_path / "queue")
     capacity = {"cpu": 2, "gpu": 1}
@@ -147,18 +148,10 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
     item = json.loads(queue.item_path(pool.READY, busy).read_text())
     queue.record_denial(item, "reservation_unavailable_withholding", {"withhold": {
         "withhold": True, "mode": "tokens", "withhold_age_s": pool.WITHHOLD_CEILING_S + 1.0}})
-    transition = queue._transition_locked
     record = queue.record_denial
-    carried_lookup = queue._carried_withhold
+    carried_lookup = queue._host_denial_records
     room_lookup = queue._ready_gpu_row_room
     observations = []
-
-    def contested(key, **kwargs):
-        if key == busy:
-            if not whole_box_already_held:
-                ledger.release(holder)
-            return _unheld()
-        return transition(key, **kwargs)
 
     def deny(row, reason, evidence=None):
         record(row, reason, evidence)
@@ -166,19 +159,22 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
             assert reason == "reservation_unavailable_withholding"
             ledger.release(holder)
 
-    def carry(records, row, **kwargs):
-        observations.append(("carry", row["action_key"]))
-        return carried_lookup(records, row, **kwargs)
+    def carry():
+        observations.append(("carry", busy))
+        records = carried_lookup()
+        if not whole_box_already_held:
+            ledger.release(holder)
+        return records
 
     def room(row, **kwargs):
         observations.append(("room", row["action_key"]))
         return room_lookup(row, **kwargs)
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
     monkeypatch.setattr(queue, "record_denial", deny)
-    monkeypatch.setattr(queue, "_carried_withhold", carry)
+    monkeypatch.setattr(queue, "_host_denial_records", carry)
     monkeypatch.setattr(queue, "_ready_gpu_row_room", room)
-    claimed = queue.claim(capacity=capacity)
+    with held_transition(queue, busy):
+        claimed = queue.claim(capacity=capacity)
     path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     records = json.loads(path.read_text())["records"].values()
     busy_denial = next(row for row in records if row["action_key"] == busy)

@@ -727,12 +727,10 @@ def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    real_carry = queue._carried_withhold
-    monkeypatch.setattr(pool.PoolQueue, "_carried_withhold", staticmethod(
-        lambda records, item, *, host, now: {
-            "reason": "adaptive_cpu_refused_withholding", "mode": "exclusive",
-            "epoch_unix": now, "drain_until_unix": now + 3600.0}
-        if item.get("action_key") == measurement else real_carry(records, item, host=host, now=now)))
+    row = json.loads(queue.item_path(pool.READY, measurement).read_text())
+    queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
+        "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
+        "drain_until_unix": clock[0] + 3600.0}})
     assert gclaim("sparklina") is None
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
@@ -760,12 +758,10 @@ def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_membe
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    real_carry = queue._carried_withhold
-    monkeypatch.setattr(pool.PoolQueue, "_carried_withhold", staticmethod(
-        lambda records, item, *, host, now: {
-            "reason": "adaptive_cpu_refused_withholding", "mode": "exclusive",
-            "epoch_unix": now, "drain_until_unix": now + 3600.0}
-        if item.get("action_key") == measurement else real_carry(records, item, host=host, now=now)))
+    row = json.loads(queue.item_path(pool.READY, measurement).read_text())
+    queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
+        "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
+        "drain_until_unix": clock[0] + 3600.0}})
     assert gclaim("sparklina") is None
     assert gclaim("sparky") is None
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
