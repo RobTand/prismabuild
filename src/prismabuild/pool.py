@@ -593,7 +593,6 @@ TIER_FUNDING_OUTPUT_SCHEMA_V1 = "prismabuild.tier_funding.output.v1"
 #: :meth:`PoolQueue.retire_terminal_output_funding`).  A record is read at the
 #: same per-mover address whether or not it was retired; only the directory
 #: census, which never needs a terminal record, stops reading it.
-TIER_FUNDING_RETIRED = "retired"
 #: Immutable output binding fields within one generation (``state``/``unix``
 #: advance as in V1).  ``published_unix`` is the sealed mover publication;
 #: ``owner_*`` binds the live producer claim that prepaid the window.
