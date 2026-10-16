@@ -60,6 +60,20 @@ def test_a_truncated_file_keeps_the_last_good_shape(config):
     assert supervise.declared_shape("boxa", 0, good) == good
 
 
+@pytest.mark.parametrize("field,value", [
+    ("loops", "3"), ("loops", 3.0), ("args", ["--class", 7]),
+])
+def test_malformed_declared_fields_keep_the_last_good_shape(config, field, value):
+    good = supervise.declared_shape("boxa", 0)
+    document = json.loads(config.read_text())
+    document["boxes"]["boxa"][field] = value
+    config.write_text(json.dumps(document))
+
+    assert supervise.declared_shape("boxa", 0, good) is good
+    with pytest.raises(ValueError):
+        supervise.declared_shape("boxa", 0)
+
+
 def test_the_first_read_still_refuses_to_guess(config):
     """A fallback is for keeping a known shape, never for inventing one."""
     config.write_text('{"boxes": {}}')

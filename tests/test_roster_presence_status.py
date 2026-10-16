@@ -122,7 +122,7 @@ def test_preflight_passes_when_only_an_absent_box_is_silent(
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
 
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
     out = capsys.readouterr().out
     assert "skipping absent box" in out and "wsl-gpu" in out
@@ -135,7 +135,7 @@ def test_preflight_names_the_skipped_box(fleet, monkeypatch, capsys):
     })
     post(fleet, "sparky", SHA)
 
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
     out = capsys.readouterr().out
     assert "wsl-gpu" in out and "host down, ssh refused" in out
@@ -148,7 +148,7 @@ def test_preflight_still_names_a_silent_active_box(fleet, monkeypatch):
     })
     post(fleet, "wsl-gpu", SHA)
     with pytest.raises(SystemExit, match="has posted no attestation"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_preflight_refuses_a_malformed_presence(fleet, monkeypatch):
@@ -158,7 +158,7 @@ def test_preflight_refuses_a_malformed_presence(fleet, monkeypatch):
     })
     post(fleet, "sparky", SHA)
     with pytest.raises(SystemExit, match="cannot establish the fleet roster"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_preflight_refuses_an_unknown_status(fleet, monkeypatch):
@@ -168,7 +168,7 @@ def test_preflight_refuses_an_unknown_status(fleet, monkeypatch):
     })
     post(fleet, "sparky", SHA)
     with pytest.raises(SystemExit, match="unknown status"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 # -- the epoch roster excludes absent boxes ----------------------------------
@@ -261,7 +261,7 @@ def _supervisor_config(tmp_path, monkeypatch, boxes, host="boxa"):
 
 def test_supervisor_starts_an_active_box(tmp_path, monkeypatch):
     _supervisor_config(tmp_path, monkeypatch, {"boxa": {"loops": 2, "args": []}})
-    assert supervise._config("boxa") == {"loops": 2, "args": []}
+    assert supervise._config("boxa").entry == {"loops": 2, "args": []}
     assert supervise.box_presence("boxa") == ("active", {})
 
 

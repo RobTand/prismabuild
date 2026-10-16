@@ -60,7 +60,7 @@ def test_one_agent_marker_cannot_attest_two_generation_declarations(
     _roster(fleet, boxes)
     post(fleet, host, SHA)
     with pytest.raises(SystemExit, match=f"ambiguous.*{host}"):
-        barrier_publisher._require_attested_fleet(SHA)
+        barrier_publisher._require_attested_fleet(SHA, barrier_publisher.fleet_roster.Roster.at(barrier_publisher.CHECKOUT))
 
 
 @pytest.mark.parametrize("boxes,host", COLLISIONS)
@@ -114,12 +114,22 @@ def test_barrier_preserves_its_alias_shape_policy(fleet, alias, accepted):
             barrier_publisher._barrier_roster(generations)
 
 
-@pytest.mark.parametrize("document", [{}, {"boxes": []}, {"boxes": {}}])
+@pytest.mark.parametrize("document", [
+    pytest.param({}, id="document0"), pytest.param({"boxes": {}}, id="document2")])
 def test_candidate_preserves_its_roster_shape_policy(tmp_path, monkeypatch, document):
     checkout = _checkout(tmp_path / "checkout", document)
     mirror = _publish(tmp_path, monkeypatch, checkout, [])
     assert candidate_publisher.main() == 0
     assert mirror.is_symlink()
+
+
+def test_candidate_refuses_a_non_object_boxes_field_before_publication(tmp_path, monkeypatch):
+    checkout = _checkout(tmp_path / "checkout", {"boxes": []})
+    mirror = _publish(tmp_path, monkeypatch, checkout, [])
+    with pytest.raises(SystemExit, match="boxes.*object"):
+        candidate_publisher.main()
+    assert not mirror.exists()
+    assert not (mirror.parent / "runtime-generations").exists()
 
 
 @pytest.mark.parametrize("presence", [OFFLINE, {"status": "offline"}])

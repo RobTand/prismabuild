@@ -17792,35 +17792,53 @@ retains the existing phased refusal contract through the package owner. The
 v2 source/deployed compatibility check verifies core, `manifest_layout.py` and
 the prewarm entrypoint. A generation must carry the actual implementation bytes.
 
-`fleet_roster.py` owns presence/class facts and host alias resolution in the
-package. Callers choose their generation or checkout path and parse policy.
-Supervisor/membership prefer an explicit canonical entry; recorder evidence
-rejects ambiguous alias groups. Bootstrap and privileged policy checks retain
-their own input/authorization boundaries.
+`fleet_roster.py` owns roster source lookup, strict UTF-8 JSON decoding,
+presence, class and name facts. `Roster` captures the source path, exact bytes,
+SHA-256 and document together. `Box` binds one canonical declaration to that
+capture, including its loop arguments, count, role arguments and disk floor.
+The owner depends only on the standard library and `digest_primitives`, whose
+imports are also standard library. It has a private roster decoder because the
+pinned digest owner has no strict decoding API. It does not import Core or the
+native immutable-file owner.
 
-Publication uses `generation_aliases` to refuse a name claimed by distinct
-declarations within one generation. This includes alias-to-key and
-alias-to-alias collisions across all declared boxes; an alias equal to its own
-key is valid. Candidate validation runs before staging when publication carries
-the roster, including bootstrap and rolling publication. Attestation and barrier
-readers apply the same ownership check. Each barrier generation is checked
-separately before the existing old/new rename groups are joined. This validates
-declarations, not physical-host identity. Host spelling, roster shape and
-presence validation remain caller policy, as do canonical lookup and recorder
-ambiguity handling. This source change does not activate a runtime or qualify
-barrier lifecycle behavior.
+`Roster.at` prefers the nested checkout layout, then the flat export.
+Supervisor and recorder lookups explicitly prefer the flat current generation.
+Supervisor retains `CONFIG` as its checkout/test fallback. Membership prefers
+its repository root, then its module's roster. D38 reads beside its resolved
+module and permits documents containing only policy fields. Missing
+`d38_enforce` means false; a present value must be a boolean. Missing
+`gpu_interpreters` means no configured interpreters; a present value must be an
+array of absolute paths. The hook retains repair access on unreadable or invalid
+configuration and continues to refuse the lock wrappers.
 
-Fresh publication captures candidate roster bytes once and checks their SHA-256
-against the initial publication manifest before decoding UTF-8 JSON. Alias and
-option-preservation gates use that same parsed candidate. A live option gate
-refuses a candidate absent from the manifest; bootstrap without a roster keeps
-its existing behavior. Staged-file hashes, source-manifest rechecks and commit
-identity checks remain in force.
+Supervisor and membership prefer an explicit canonical entry, then require one
+alias match. Recorder evidence instead rejects overlapping name groups and
+invalid recorder aliases. The installer checks every matching declaration for a
+conflicting metrics role. These are distinct named questions. Generation
+membership uses `generation_aliases`, refusing distinct declarations that claim
+the same name within one generation. Each historical generation is checked
+separately before the publisher joins old and new rename groups. Historical
+rename unions are not treated as one conflicting generation. Publication keeps
+its existing permissive alias-shape boundary; the barrier and recorder retain
+their stricter named checks. Liveness, absence handling, quorum and role-log
+migration authority remain with their existing domain owners.
 
-The historical attestation preflight still obtains membership through its own
-`_roster_entries` read. A separate change must pass the captured roster through
-that preflight before its membership can be claimed to match the publication
-manifest. Per-generation alias checks do not establish that binding.
+Publication validates candidate JSON and named fields before staging. Duplicate
+keys at any depth, nonfinite constants, overflowed JSON numbers and malformed
+policy types refuse. Missing disk floor means no declared floor; a present
+fleet default or per-box override must be an integer from 0 through 99. The
+supervisor still drops only the disk offer when it cannot measure a valid
+budget. It now uses one capture for both box shape and fleet defaults.
+
+Fresh publication hashes candidate bytes against the initial manifest before
+decoding. Option preservation and historical-attestation preflight use that
+same capture. Historical barrier membership, rollback preflight and role-log
+migration use `Roster.qualified`, binding actual roster bytes to the qualified
+generation's manifest before parsing. An invalid or absent digest refuses.
+Role-log migration still requires the exact canonical host and its three roles;
+an alias does not grant extra authority. Bootstrap publication without a roster
+retains its existing behavior. Staged hashes, manifest rechecks and commit
+checks remain in force. No record format or deployed runtime changes here.
 
 `decomposition.py` owns decomposition addressing, membership capture and durable
 child verification. It also owns plan freezing and child-index publication through

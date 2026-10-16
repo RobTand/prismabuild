@@ -112,21 +112,15 @@ def _source(process: dict, allowed: tuple[str, ...]) -> tuple[dict, dict]:
 
 
 def _roster(root: Path, receipt: dict, host: str) -> dict[str, list[str]]:
-    member = "tools/fleet/fleet_boxes.json"
-    if member not in receipt["files"]:
-        raise OSError("roster is not a qualified generation member")
     try:
-        value = json.loads(_read(root / member))
-        box = value["boxes"][host]
+        roster = fleet_roster.Roster.qualified(root, receipt["files"], max_bytes=_LIMIT)
+        box = roster.boxes[host]
         if (not isinstance(box, dict)
                 or fleet_roster.box_status(host, box)[0] != fleet_roster.ACTIVE):
             raise ValueError("absent host")
-        roles = box.get("roles")
-        if not isinstance(roles, dict) or set(roles) != set(_ROLES):
+        roles = fleet_roster.Box(host, box, roster).roles
+        if set(roles) != set(_ROLES):
             raise ValueError("exact three roles must be declared")
-        for args in roles.values():
-            if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
-                raise ValueError("unsupported declared role argv")
         if any(a == "--log" or a.startswith("--log=")
                for args in roles.values() for a in args):
             raise ValueError("custom diagnostic path declaration")

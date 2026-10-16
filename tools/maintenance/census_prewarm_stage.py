@@ -17,7 +17,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild import digest_primitives
+from prismabuild import digest_primitives, fleet_roster
 
 
 TEMPORARY = re.compile(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$")
@@ -64,8 +64,8 @@ def stamp() -> dict:
     return {"unix": now, "utc": datetime.fromtimestamp(now, timezone.utc).isoformat()}
 
 
-def file_identity(path: Path) -> dict:
-    data = path.read_bytes()
+def file_identity(path: Path, *, raw: bytes | None = None) -> dict:
+    data = path.read_bytes() if raw is None else raw
     stat = path.stat()
     return {"path": str(path), "resolved": str(path.resolve()),
             "sha256": digest_primitives.raw_sha256(data), "bytes": len(data),
@@ -153,18 +153,13 @@ def collect_prewarm_stage_census(args) -> dict:
     result["published_runtime"] = file_identity(runtime / "RUNTIME_VERSION.json")
     result["published_runtime"]["commit"] = json.loads(
         (runtime / "RUNTIME_VERSION.json").read_bytes()).get("commit")
-    roster = runtime / "tools/fleet/fleet_boxes.json"
-    result["roster"] = file_identity(roster)
-    boxes = json.loads(roster.read_bytes())["boxes"]
+    roster = fleet_roster.Roster.at(runtime)
+    result["roster"] = file_identity(roster.path, raw=roster.raw)
     result["roster_hosts"] = [
         {"key": key, "alias": box.get("_alias"), "status": box.get("status"),
          "storage_argv": box.get("roles", {}).get("storage")}
-        for key, box in boxes.items()]
-    aliases = {args.host}
-    for key, box in boxes.items():
-        names = {key, box.get("_alias", key)}
-        if args.host in names:
-            aliases.update(names)
+        for key, box in roster.boxes.items()]
+    aliases = set(fleet_roster.recorder_hostnames(roster.boxes, args.host))
     result["host_aliases"] = sorted(aliases)
     if result["host"] not in aliases:
         errors.append("actual host is not the requested host or its declared alias")

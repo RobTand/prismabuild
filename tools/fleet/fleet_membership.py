@@ -148,30 +148,13 @@ def supervisor_incarnation() -> tuple[str | None, str | None]:
     return f"{host}:supervisor-{pid}:{starttime}", None
 
 
-def roster_entry(host: str, roster_path: Path | None = None) -> dict[str, Any] | None:
-    """Raw roster entry for ``host`` (alias-aware), or None when unreadable."""
-    candidates: list[Path] = []
-    if roster_path is not None:
-        candidates = [Path(roster_path)]
-    else:
-        candidates = [
-            REPO_ROOT / "tools" / "fleet" / "fleet_boxes.json",
-            TOOL_DIR / "fleet_boxes.json",
-        ]
-    for path in candidates:
-        try:
-            boxes = json.loads(path.read_text())["boxes"]
-        except (OSError, ValueError, KeyError):
-            continue
-        if not isinstance(boxes, dict):
-            continue
-        try:
-            entry = fleet_roster.entry_for_host(boxes, host)
-        except fleet_roster.RosterPresenceError as exc:
-            raise ValueError(f"{exc}: {path}") from None
-        if entry is not None:
-            return dict(entry)
-    return None
+def roster_entry(host: str, roster_path: Path | None = None) -> fleet_roster.Box | None:
+    """Captured roster entry for ``host`` (alias-aware), or None when unreadable."""
+    box = fleet_roster.Roster.for_host(
+        host, paths=(roster_path,) if roster_path is not None else (),
+        roots=() if roster_path is not None else (REPO_ROOT,),
+        modules=() if roster_path is not None else (__file__,))
+    return box
 
 
 def roster_loop_args(host: str, roster_path: Path | None = None) -> list[str]:
@@ -182,7 +165,7 @@ def roster_loop_args(host: str, roster_path: Path | None = None) -> list[str]:
         raise ValueError(str(exc))
     if entry is None:
         raise ValueError(f"no fleet_boxes.json entry for {host}")
-    return [str(a) for a in (entry.get("args") or [])]
+    return entry.loop_args
 
 
 def check_roster_active(host: str, roster_path: Path | None = None) -> tuple[bool, str]:
@@ -194,7 +177,7 @@ def check_roster_active(host: str, roster_path: Path | None = None) -> tuple[boo
     if entry is None:
         return False, f"no fleet_boxes.json entry for {host}"
     try:
-        status, detail = fleet_roster.box_status(host, entry)
+        status, detail = fleet_roster.box_status(host, entry.entry)
     except fleet_roster.RosterPresenceError as exc:
         return False, f"cannot establish roster presence: {exc}"
     if status in fleet_roster.ABSENT:
@@ -578,9 +561,11 @@ def check_shared_mount(
         entry = roster_entry(host, roster_path)
     except ValueError as exc:
         return False, {"mount": mount, "reason": str(exc)}
-    roles = entry.get("roles") if isinstance(entry, dict) else None
-    serves_files = isinstance(roles, dict) and bool(
-        set(roles) & {"storage", "tiers"})
+    try:
+        roles = entry.roles if entry is not None else {}
+    except ValueError as exc:
+        return False, {"mount": mount, "reason": str(exc)}
+    serves_files = bool(set(roles) & {"storage", "tiers"})
     fstype = str(mount.get("fstype"))
     if fstype in ("nfs", "nfs4"):
         shared = True

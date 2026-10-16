@@ -16,7 +16,7 @@ import sys
 import uuid
 from typing import Mapping, Sequence
 
-from prismabuild import action_result, container_images, core as pb, digest_primitives
+from prismabuild import action_result, container_images, core as pb, digest_primitives, fleet_roster
 
 RECEIPT_SCHEMA = "fleet.d38.preflight.v1"
 AUDIT_SCHEMA = "fleet.d38.audit.v1"
@@ -113,19 +113,11 @@ def _aware(text: object, where: str) -> datetime.datetime:
 def enforcement_enabled() -> bool:
     """Read the reviewed setting beside this resolved gate module."""
 
-    path = Path(__file__).resolve().with_name("fleet_boxes.json")
+    path = fleet_roster.Roster.beside(__file__)
     try:
-        config = _json_without_duplicates(path.read_bytes())
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        return fleet_roster.Roster.read(path).d38_enforce
+    except (OSError, ValueError) as exc:
         raise SystemExit(f"pbrun: D38 configuration error in {path}: {exc}") from None
-    if not isinstance(config, dict):
-        raise SystemExit(f"pbrun: D38 configuration error in {path}: "
-                         "configuration must be a JSON object")
-    value = config.get("d38_enforce", False)
-    if not isinstance(value, bool):
-        raise SystemExit(f"pbrun: D38 configuration error in {path}: "
-                         "d38_enforce must be a JSON boolean")
-    return value
 
 
 def load_namespace(path: str | Path) -> tuple[dict, str]:

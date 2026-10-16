@@ -22,7 +22,7 @@ FORMER = "/home/rob/dq-runs/venvs/" + "prismaquant-cu130" + "/bin/python"
 
 
 def test_the_refused_interpreter_is_the_one_configured() -> None:
-    pattern = hook.contends_pattern({"gpu_interpreters": [CONFIGURED]})
+    pattern = hook.contends_pattern((CONFIGURED,))
 
     assert pattern.search(CONFIGURED + " train.py")
     assert pattern.search("~/envs/venvs/gpu-env/bin/python train.py")
@@ -30,7 +30,7 @@ def test_the_refused_interpreter_is_the_one_configured() -> None:
 
 
 def test_no_configured_interpreter_still_refuses_the_lock_wrappers() -> None:
-    pattern = hook.contends_pattern({})
+    pattern = hook.contends_pattern(())
 
     assert not pattern.search(FORMER + " train.py")
     assert pattern.search("/home/rob/bin/gpuslot.sh python train.py")
@@ -39,10 +39,10 @@ def test_no_configured_interpreter_still_refuses_the_lock_wrappers() -> None:
 
 def test_the_published_configuration_declares_the_fleet_interpreters() -> None:
     document = json.loads((ROOT / "tools" / "fleet" / "fleet_boxes.json").read_text())
-    declared = document[hook.INTERPRETERS_FIELD]
+    declared = document["gpu_interpreters"]
 
     assert declared and all(Path(path).is_absolute() for path in declared)
-    assert hook.CONTENDS.pattern == hook.contends_pattern(document).pattern
+    assert hook.CONTENDS.pattern == hook.contends_pattern(tuple(declared)).pattern
 
 
 def test_the_hook_names_no_client_venv_in_code() -> None:

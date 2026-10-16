@@ -1028,42 +1028,24 @@ def _live_roster() -> dict | None:
         return None
     if not live.is_dir() or live.name.startswith("."):
         return None
-    for member in ("tools/fleet/fleet_boxes.json", "tools/fleet_boxes.json"):
-        try:
-            text = (live / member).read_text()
-        except OSError:
-            continue
-        try:
-            document = json.loads(text)
-        except ValueError:
-            return None
-        if isinstance(document, dict):
-            return document
-    return None
+    try:
+        return fleet_roster.Roster.at(live).document
+    except (OSError, ValueError):
+        return None
 
 
-def _candidate_roster(expected_sha256: str) -> dict:
+def _candidate_roster(expected_sha256: str) -> fleet_roster.Roster:
     """The roster this publication would publish, or refuse."""
 
     try:
-        raw = (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_bytes()
-        if raw_sha256(raw) != expected_sha256:
-            raise ValueError("bytes differ from publication manifest")
-        document = json.loads(raw.decode("utf-8"))
+        roster = fleet_roster.Roster.at(CHECKOUT, expected_sha256=expected_sha256)
+        roster.validate_publication()
     except (OSError, ValueError) as exc:
-        raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
-    if not isinstance(document, dict):
-        raise SystemExit("cannot read the candidate roster: not a JSON object")
-    boxes = document.get("boxes")
-    if isinstance(boxes, dict):
-        try:
-            fleet_roster.generation_aliases(boxes)
-        except fleet_roster.RosterPresenceError as exc:
-            raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
-    return document
+        raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
+    return roster
 
 
-def _roster_option_record(args, candidate: dict | None) -> dict[str, object] | None:
+def _roster_option_record(args, candidate: fleet_roster.Roster | None) -> dict[str, object] | None:
     """Refuse a candidate that drops a live ``--`` option name (#1664).
 
     The check runs inside the publication lock, before anything is
@@ -1080,7 +1062,7 @@ def _roster_option_record(args, candidate: dict | None) -> dict[str, object] | N
         return None
     if candidate is None:
         raise SystemExit("candidate roster is absent from publication manifest")
-    dropped = _dropped_roster_options(live, candidate)
+    dropped = _dropped_roster_options(live, candidate.document)
     if not dropped:
         return None
     by = args.drop_roster_option_by
@@ -1516,25 +1498,11 @@ def _barrier_roster(generations):
     groups = []
     boxes_by_generation = []
     for root, receipt in generations:
-        member = "tools/fleet/fleet_boxes.json"
-        if member not in receipt["files"]:
-            raise SystemExit(f"barrier roster is absent from {root.name}")
         try:
-            boxes = json.loads((root / member).read_text())["boxes"]
-            if not isinstance(boxes, dict) or not boxes:
-                raise ValueError("empty roster")
-            declared = fleet_roster.generation_aliases(boxes)
-            for key, value in boxes.items():
-                names = set(declared[key])
-                if isinstance(value, dict) and value.get("_alias"):
-                    if not isinstance(value["_alias"], str):
-                        raise ValueError("invalid roster name")
-                if any(not isinstance(n, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n) is None for n in names):
-                    raise ValueError("invalid roster name")
-                try:
-                    status, _ = fleet_roster.box_status(key, value)
-                except fleet_roster.RosterPresenceError as exc:
-                    raise ValueError(str(exc)) from exc
+            roster = fleet_roster.Roster.qualified(root, receipt["files"])
+            boxes = roster.boxes
+            for key, declared_names, value in roster.barrier_declarations():
+                names = set(declared_names)
                 overlap = [group for group in groups if group & names]
                 for group in overlap:
                     names |= group
@@ -1850,7 +1818,11 @@ def _activate_existing_locked(
                 f"{generation}: receipt records no sha256 for {member}, so a "
                 "barrier activation cannot be proved against it."
             )
-        _barrier_preflight(agent_sha, dry_run=dry_run)
+        try:
+            roster = fleet_roster.Roster.qualified(generation, files)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"invalid generation roster: {exc}") from exc
+        _barrier_preflight(agent_sha, dry_run=dry_run, roster=roster)
     print(
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
@@ -1898,38 +1870,7 @@ def _agent_definitions(*, expected_sha=None):
     return module
 
 
-def _roster_entries() -> list[tuple[str, frozenset[str], object]]:
-    """Every box the fleet declares, with its raw roster entry.
-
-    ``_roster_boxes`` is the name-and-alias view the history check needs;
-    this is the same walk with the entry attached, so presence can be
-    validated from the same bytes rather than re-reading the file.
-    """
-
-    try:
-        roster = json.loads((CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
-        boxes = roster["boxes"]
-        if not isinstance(boxes, dict) or not boxes:
-            raise ValueError("no boxes declared")
-        declared = fleet_roster.generation_aliases(boxes)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
-    return [(key, names, boxes[key]) for key, names in declared.items()]
-
-
-def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
-    """Every box the fleet declares, with the names it may report itself as.
-
-    A box is keyed here by the name its submissions use as a placement tag,
-    and that is not always what ``gethostname`` returns on it: ``gx10-6b77``
-    answers ``sparklina``.  The file records the second name as ``_alias``
-    precisely because the two are the same box, so both are accepted.
-    """
-
-    return [(key, names) for key, names, _entry in _roster_entries()]
-
-
-def _active_roster_boxes() -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
+def _active_roster_boxes(roster: fleet_roster.Roster) -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
     """The roster boxes a barrier must hear from, and the absent ones it skips.
 
     A box declared ``retired`` or ``offline`` in ``fleet_boxes.json`` (#606)
@@ -1942,7 +1883,7 @@ def _active_roster_boxes() -> tuple[list[tuple[str, frozenset[str]]], list[str]]
 
     active = []
     absent = []
-    for key, names, entry in _roster_entries():
+    for key, names, entry in roster.declarations():
         try:
             status, detail = fleet_roster.box_status(key, entry)
         except fleet_roster.RosterPresenceError as exc:
@@ -2000,7 +1941,7 @@ def _attested_agents(agent) -> dict[str, set[str]]:
     return attested
 
 
-def _require_attested_fleet(agent_sha: str) -> None:
+def _require_attested_fleet(agent_sha: str, roster: fleet_roster.Roster) -> None:
     """Require historical attestations for the target agent on every live box.
 
     This is only a bootstrap prerequisite. Matching records can remain after
@@ -2015,7 +1956,10 @@ def _require_attested_fleet(agent_sha: str) -> None:
 
     agent = _agent_definitions()
     attested = _attested_agents(agent)
-    active, absent = _active_roster_boxes()
+    try:
+        active, absent = _active_roster_boxes(roster)
+    except ValueError as exc:
+        raise SystemExit(f"cannot establish historical attestation roster: {exc}") from exc
     missing = []
     for key, names in active:
         held = set().union(*(attested.get(name, set()) for name in names))
@@ -2050,7 +1994,8 @@ def _require_attested_fleet(agent_sha: str) -> None:
         print(f"barrier preflight: skipping absent box: {line}", flush=True)
 
 
-def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
+def _barrier_preflight(agent_sha: str, *, dry_run: bool,
+                       roster: fleet_roster.Roster | None) -> None:
     """Check bootstrap compatibility; epoch quorums grant activation later."""
 
     if not dry_run:
@@ -2060,7 +2005,9 @@ def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
         if receipt["files"]["tools/upgrade_client.py"] != agent_sha:
             raise SystemExit("barrier updater differs from the live generation; "
                              "converge a reviewed rolling bridge first")
-    _require_attested_fleet(agent_sha)
+    if roster is None:
+        raise SystemExit("barrier roster is absent from publication manifest")
+    _require_attested_fleet(agent_sha, roster)
     print(
         "barrier preflight: historical attestations match; current participation, "
         "drain and rotation have not been proved. Only epoch quorums authorize activation."
@@ -2272,7 +2219,7 @@ def _run_publication(args) -> int:
                 f"this publication carries no {member}, so a barrier rollout "
                 "has nothing to prove the fleet against."
             )
-        _barrier_preflight(agent_sha, dry_run=args.dry_run)
+        _barrier_preflight(agent_sha, dry_run=args.dry_run, roster=candidate)
 
     if canary_enabled and not _canary_driver_path().is_file():
         raise SystemExit(

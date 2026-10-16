@@ -1,4 +1,4 @@
-"""Presence states for boxes in ``tools/fleet/fleet_boxes.json`` (#606).
+"""Captured fleet configuration, declared presence and hostname facts.
 
 A roster box that is gone still vetoes every barrier publish: the attestation
 preflight demands the target agent's version from *every* declared box, so one
@@ -30,9 +30,14 @@ keeping a second copy of the spelling.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from .digest_primitives import raw_sha256
 
 
 ACTIVE = "active"
@@ -48,6 +53,227 @@ ABSENT = (RETIRED, OFFLINE)
 
 class RosterPresenceError(ValueError):
     """A roster box whose presence cannot be established."""
+
+
+@dataclass(frozen=True)
+class Roster:
+    """One exact roster capture; layout, decoding and policy belong here."""
+
+    path: Path
+    raw: bytes
+    sha256: str
+    document: dict
+
+    @classmethod
+    def read(cls, path: str | Path, *, expected_sha256: str | None = None,
+             max_bytes: int | None = None) -> Roster:
+        path = Path(path)
+        with path.open("rb") as stream:
+            raw = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        if max_bytes is not None and len(raw) > max_bytes:
+            raise ValueError("oversized fleet roster")
+        return cls.capture(raw, path=path, expected_sha256=expected_sha256)
+
+    @classmethod
+    def capture(cls, raw: bytes, *, path: Path = Path("<roster>"),
+                expected_sha256: str | None = None) -> Roster:
+        digest = raw_sha256(raw)
+        if expected_sha256 is not None and digest != expected_sha256:
+            raise ValueError("roster bytes differ from publication manifest")
+
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError(f"duplicate roster key {key!r}")
+                result[key] = value
+            return result
+
+        def constant(value):
+            raise ValueError(f"nonfinite roster number {value}")
+
+        def finite(value):
+            number = float(value)
+            if not math.isfinite(number):
+                constant(value)
+            return number
+
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
+                              parse_constant=constant, parse_float=finite)
+        if not isinstance(document, dict):
+            raise ValueError("fleet roster must be a JSON object")
+        return cls(Path(path), raw, digest, document)
+
+    @staticmethod
+    def paths(root: str | Path, *, flat_first: bool = False) -> tuple[Path, ...]:
+        root = Path(root)
+        nested = root / "tools" / "fleet" / "fleet_boxes.json"
+        flat = root / "tools" / "fleet_boxes.json"
+        return (flat, nested) if flat_first else (nested, flat)
+
+    @staticmethod
+    def beside(entrypoint: str | Path) -> Path:
+        return Path(entrypoint).resolve().with_name("fleet_boxes.json")
+
+    @classmethod
+    def at(cls, root: str | Path, *, flat_first: bool = False,
+           expected_sha256: str | None = None) -> Roster:
+        for path in cls.paths(root, flat_first=flat_first):
+            try:
+                return cls.read(path, expected_sha256=expected_sha256)
+            except OSError:
+                continue
+        raise FileNotFoundError(f"no readable fleet roster under {root}")
+
+    @classmethod
+    def qualified(cls, root: str | Path, files: Mapping[str, str], *,
+                  max_bytes: int | None = None) -> Roster:
+        root = Path(root)
+        for path in cls.paths(root):
+            member = path.relative_to(root).as_posix()
+            if member in files:
+                digest = files[member]
+                if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                    raise ValueError("invalid qualified roster manifest digest")
+                return cls.read(path, expected_sha256=digest, max_bytes=max_bytes)
+        raise ValueError("roster is not a qualified generation manifest member")
+
+    @classmethod
+    def available(cls, *, roots=(), paths=(), modules=(), flat_first: bool = False):
+        """Readable boxed captures in deliberate layout/fallback order."""
+        candidates = [p for root in roots for p in cls.paths(root, flat_first=flat_first)]
+        for path in (*candidates, *paths, *(cls.beside(m) for m in modules)):
+            try:
+                roster = cls.read(path)
+                roster.boxes
+            except (OSError, ValueError):
+                continue
+            yield roster
+
+    @property
+    def boxes(self) -> dict:
+        boxes = self.document.get("boxes")
+        if not isinstance(boxes, dict):
+            raise ValueError("fleet roster must declare boxes as an object")
+        return boxes
+
+    @property
+    def d38_enforce(self) -> bool:
+        value = self.document.get("d38_enforce", False)
+        if type(value) is not bool:
+            raise ValueError("d38_enforce must be a JSON boolean")
+        return value
+
+    @property
+    def gpu_interpreters(self) -> tuple[str, ...]:
+        value = self.document.get("gpu_interpreters", [])
+        if (not isinstance(value, list)
+                or any(not isinstance(p, str) or not p.startswith("/") for p in value)):
+            raise ValueError("gpu_interpreters must be an array of absolute paths")
+        return tuple(value)
+
+    def disk_floor_percent(self, entry: Mapping | None = None) -> int | None:
+        field = "local_disk_free_floor_percent"
+        source = entry if entry is not None and field in entry else self.document
+        if field not in source:
+            return None
+        value = source[field]
+        if type(value) is not int or not 0 <= value < 100:
+            raise ValueError(f"{field} must be a whole percent from 0 to 99 (found {value!r})")
+        return value
+
+    def canonical_box(self, host: str) -> Box | None:
+        entry = entry_for_host(self.boxes, host)
+        if entry is None:
+            return None
+        key = next(key for key, value in self.boxes.items() if value is entry)
+        return Box(key, entry, self)
+
+    def matching_boxes(self, host: str) -> list[Box]:
+        """All declarations an installer must check for a conflicting role."""
+        return [Box(key, entry, self) for key, entry in self.boxes.items()
+                if isinstance(entry, dict) and (key == host or entry.get("_alias") == host)]
+
+    @classmethod
+    def for_host(cls, host: str, *, roots=(), paths=(), modules=(), flat_first: bool = False) -> Box | None:
+        for roster in cls.available(roots=roots, paths=paths, modules=modules, flat_first=flat_first):
+            box = roster.canonical_box(host)
+            if box is not None:
+                return box
+        return None
+
+    def declarations(self) -> list[tuple[str, frozenset[str], dict]]:
+        if not self.boxes:
+            raise ValueError("no boxes declared")
+        return [(key, names, self.boxes[key])
+                for key, names in generation_aliases(self.boxes).items()]
+
+    def barrier_declarations(self) -> list[tuple[str, frozenset[str], dict]]:
+        declarations = self.declarations()
+        for key, names, entry in declarations:
+            alias = entry.get("_alias") if isinstance(entry, dict) else None
+            if alias and not isinstance(alias, str):
+                raise ValueError("invalid roster name")
+            if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name) is None
+                   for name in names):
+                raise ValueError("invalid roster name")
+            box_status(key, entry)
+        return declarations
+
+    def validate_publication(self) -> None:
+        """Reject newly published bytes before strict generation readers use them."""
+        self.d38_enforce
+        self.gpu_interpreters
+        self.disk_floor_percent()
+        if "boxes" in self.document:
+            boxes = self.boxes
+            generation_aliases(boxes)
+            for key, entry in boxes.items():
+                if not isinstance(entry, dict):
+                    raise ValueError(f"invalid roster box {key!r}")
+                box_status(key, entry)
+                box = Box(key, entry, self)
+                box.disk_floor_percent
+                box.loop_args
+                box.loops
+                box.roles
+
+
+@dataclass(frozen=True)
+class Box:
+    """A canonical declaration and the exact capture supplying its defaults."""
+
+    key: str
+    entry: dict
+    roster: Roster
+
+    @property
+    def loop_args(self) -> list[str]:
+        args = self.entry.get("args", [])
+        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+            raise ValueError(f"roster box {self.key!r} args must be an array of strings (found {args!r})")
+        return list(args)
+
+    @property
+    def loops(self) -> int:
+        value = self.entry.get("loops", 1)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"roster box {self.key!r} loops must be a nonnegative integer")
+        return value
+
+    @property
+    def roles(self) -> dict[str, list[str]]:
+        roles = self.entry.get("roles", {})
+        if not isinstance(roles, dict):
+            raise ValueError(f"fleet_boxes.json roles for {self.key} must be an object")
+        if any(not isinstance(args, list) or any(not isinstance(a, str) for a in args)
+               for args in roles.values()):
+            raise ValueError(f"roster box {self.key!r} role argv must be arrays of strings")
+        return {name: list(args) for name, args in roles.items()}
+
+    @property
+    def disk_floor_percent(self) -> int | None:
+        return self.roster.disk_floor_percent(self.entry)
 
 
 def box_status(key: str, entry: object) -> tuple[str, dict[str, object]]:

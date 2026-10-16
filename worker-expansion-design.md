@@ -93,7 +93,7 @@ does not edit `staged_read_requirements_2026-09-20.json`.
 
 | FLEET ID | Meaning | Maps to today |
 |---|---|---|
-| `FLEET-01 registered` | Roster names the box with a loop shape | `fleet_boxes.json boxes[<host>]` + `supervise._box_entry`; startup `_config` refuses unknown host |
+| `FLEET-01 registered` | Roster names the box with a loop shape | `fleet_boxes.json boxes[<host>]` + `fleet_roster.Roster.for_host`; startup `_config` refuses unknown host |
 | `FLEET-02 qualifying` | Joined but not yet eligible; validation running | broker gate `draining:true` with this join's `changed_unix` + no fresh offer (`workers/<host>.json` absent/stale) |
 | `FLEET-03 eligible` | May be placed and may claim | gate `draining:false` + fresh `workers/<host>.json` (age ≤ `OFFER_TIMEOUT_S=120`) + `placeable`/`claim` match |
 | `FLEET-04 draining` | Declared absent or resigning; finish-only, no new claims/loops | roster `status in {retired,offline}` (`fleet_roster.ABSENT`) **or** broker gate `draining:true`; supervise `target=0,reserve=0`, worker_loop skips offer+admission after parking |

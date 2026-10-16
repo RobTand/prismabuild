@@ -557,10 +557,9 @@ def test_checked_in_gb10_budget_uses_the_five_percent_floor_without_a_cap(
 def test_checked_in_wsl_spool_declaration_offers_no_budget_without_a_disk_read(
         monkeypatch):
     monkeypatch.setattr(supervise.os, "statvfs", _refuse_statvfs)
-    document = json.loads(ROSTER.read_text())
-    entry = document["boxes"]["wsl-gpu"]
+    box = supervise.fleet_roster.Roster.read(ROSTER).canonical_box("wsl-gpu")
     args = supervise.spool_declaration(
-        "wsl-gpu", entry, document, entry["args"], record=False)
+        "wsl-gpu", box, box.loop_args, record=False)
     assert KIND not in _worker_offer(args)
 
 
