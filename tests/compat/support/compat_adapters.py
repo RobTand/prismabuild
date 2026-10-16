@@ -76,6 +76,9 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family == "spool-record":
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_spool_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family in ("box-window", "resource-profile", "scratch-profile", "scratch-profile-inputs", "canary-run"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_metrics_adapters.py")))["operate"]
         return adapter(request, store, load)

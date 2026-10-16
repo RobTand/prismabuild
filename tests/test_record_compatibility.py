@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -69,7 +70,7 @@ def test_supported_consumers_read_exact_production_writes_or_immutable_source_in
     assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
     kind = next(kind for kind in KINDS if kind.name == case.split("/")[0])
     readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
-               for reference in (kind.reader,) + kind.legacy_readers}
+               for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}
     for generation, old, manifest in generations:
         if not has_historical_participant(case, generation, old, manifest):
             accepted(invoke(ROOT, case, tmp_path / generation / "current-input", raw=current))
@@ -133,7 +134,7 @@ def test_invalid_record_reaches_both_real_consumer_boundaries(kind, generations,
                 continue
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
-                       for reference in (kind.reader,) + kind.legacy_readers}
+                       for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}
             assert any(call[1].lstrip("_") in readers for call in observed["calls"]), observed
 
 
@@ -152,6 +153,16 @@ def test_nested_closed_fields_are_rejected_by_retained_consumers(case, member, g
     for generation, old, manifest in generations:
         observed = invoke(old, case, tmp_path / generation / "old", raw=json.dumps(body).encode(), manifest=manifest)
         assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
+
+
+@pytest.mark.parametrize("kind,variant", [(kind, variant) for kind in KINDS if kind.variant_readers
+                                               for variant in kind.variants[1:]], ids=lambda value: value.name if hasattr(value, "name") else value)
+def test_each_distinct_wire_shape_reaches_its_real_field_boundaries(kind, variant, generations, tmp_path):
+    selected = replace(kind, variants=(variant,),
+                       field_policy=dict(kind.variant_field_policies).get(variant, kind.field_policy),
+                       negative_field=dict(kind.variant_negative_fields).get(variant, kind.negative_field))
+    test_unknown_fields_follow_real_consumer_policy(selected, generations, tmp_path / "unknown")
+    test_invalid_record_reaches_both_real_consumer_boundaries(selected, generations, tmp_path / "foreign")
 
 
 def test_actual_candidate_writer_mutation_fails_the_unchanged_old_consumer(generations, tmp_path):

@@ -28,9 +28,35 @@ class RecordKind:
     encoding: str = "json"
     older_participant_absence: bool = False
     historical_writer_source: str | None = None
+    variant_readers: tuple[tuple[str, str], ...] = ()
+    variant_field_policies: tuple[tuple[str, str], ...] = ()
+    variant_negative_fields: tuple[tuple[str, str], ...] = ()
 
 
 KINDS = (
+    RecordKind("spool-record", "prismabuild.produced_spool.v1", "private spool reservation, manifest, copy, receipt and retirement intent", "closed",
+               "prismabuild.produced_spool:ProducedSpool._reservation",
+               ("prismabuild.produced_spool:ProducedSpool.reserve_group", "prismabuild.produced_spool:ProducedSpool.submit_group",
+                "prismabuild.produced_spool:_export_entry", "prismabuild.produced_spool:_export_claimed_group",
+                "prismabuild.produced_spool:_release_acknowledged", "prismabuild.produced_spool:_OtherClaims._retire"),
+               ("reservation", "reservation-replay", "reservation-released", "manifest", "manifest-replay", "copy", "receipt", "receipt-paced", "retirement-intent"),
+               ("one unchanged wire ID has distinct reader-selected record shapes; no decoder dispatches solely on ID",), negative_field="export_key", stable_paths=True,
+               variant_writers=(("reservation", "prismabuild.produced_spool:ProducedSpool.reserve_group"),
+                    ("reservation-replay", "prismabuild.produced_spool:ProducedSpool.reserve_group"),
+                    ("reservation-released", "prismabuild.produced_spool:_release_acknowledged"),
+                    ("manifest", "prismabuild.produced_spool:ProducedSpool.submit_group"),
+                    ("manifest-replay", "prismabuild.produced_spool:ProducedSpool.submit_group"),
+                    ("copy", "prismabuild.produced_spool:_export_entry"),
+                    ("receipt", "prismabuild.produced_spool:_export_claimed_group"),
+                    ("receipt-paced", "prismabuild.produced_spool:_export_claimed_group"),
+                    ("retirement-intent", "prismabuild.produced_spool:_OtherClaims._retire")),
+               variant_readers=(("reservation-replay", "prismabuild.produced_spool:ProducedSpool._reservation"),
+                    ("reservation-released", "prismabuild.produced_spool:ProducedSpool._reservation"),
+                    ("manifest", "prismabuild.produced_spool:export_group"), ("manifest-replay", "prismabuild.produced_spool:export_group"),
+                    ("copy", "prismabuild.produced_spool:_check_copy"), ("receipt", "prismabuild.produced_spool:_check_receipt"),
+                    ("receipt-paced", "prismabuild.produced_spool:_check_receipt"), ("retirement-intent", "prismabuild.produced_spool:_OtherClaims.__init__")),
+               variant_field_policies=(("manifest", "additive"), ("manifest-replay", "additive"), ("retirement-intent", "additive")),
+               variant_negative_fields=(("manifest", "schema"), ("manifest-replay", "schema"))),
     RecordKind("box-window", "prismabuild.box_window.v1", "terminal detail.resource_profile.box_window", "additive",
                "prismabuild.pool:resource_profile_summary", ("prismabuild.box_window:read_window",), ("pqteld",),
                ("ID is a producer label; metric groups remain optional and source-labelled",), negative_field="gpu", negative_value=None),

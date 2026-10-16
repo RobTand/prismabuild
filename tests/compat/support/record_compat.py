@@ -147,7 +147,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
             writer = kind.writers[0]
         references = (writer,) + kind.legacy_writers
     else:
-        references = (kind.reader,) + kind.legacy_readers
+        references = (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers
     result["catalogued_operation"] = ("input-reader" if raw is None and kind.caller_input else
                                      "source-reader" if raw is None and kind.fixture_source else request["op"])
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
