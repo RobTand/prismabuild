@@ -43,8 +43,6 @@ refuses its consumer rather than admitting it onto bytes nobody reserved.
 
 from __future__ import annotations
 
-from prismabuild import materialize
-
 import argparse
 import array
 import bisect
@@ -70,6 +68,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
+from prismabuild import materialize  # noqa: E402
 from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions  # noqa: E402

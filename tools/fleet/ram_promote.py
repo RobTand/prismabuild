@@ -41,8 +41,6 @@ read as resident while the tmpfs holds nothing.
 
 from __future__ import annotations
 
-from prismabuild import materialize
-
 import argparse
 import json
 import os
@@ -59,6 +57,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
+from prismabuild import materialize  # noqa: E402
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
