@@ -16,7 +16,7 @@ from prismabuild import candidate_policy  # noqa: E402
 
 
 def _item(fleet, key):
-    return json.loads(fleet.queue.item_path(pool.READY, key).read_text())
+    return json.loads(fleet.queue.records.item_path(pool.record_store.READY, key).read_text())
 
 
 def test_bare_planner_row_waits_on_its_first_filed_lead(tmp_path):
@@ -24,20 +24,20 @@ def test_bare_planner_row_waits_on_its_first_filed_lead(tmp_path):
     key, plan = _planner_row(fleet, "gate-first-lead")
     item = _item(fleet, key)
     assert "residency" not in item
-    before = fleet.queue.item_path(pool.READY, key).read_bytes()
+    before = fleet.queue.records.item_path(pool.record_store.READY, key).read_bytes()
     verdict = fleet.queue.residency_verdict(item)
     assert verdict == {
         "state": "lead_not_resident",
         "pending": [{"lead": residency_plan.leads_for(plan)[0], "status": "absent"}],
         "leads": residency_plan.leads_for(plan)}
     assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
-    assert fleet.queue.item_path(pool.READY, key).read_bytes() == before
+    assert fleet.queue.records.item_path(pool.record_store.READY, key).read_bytes() == before
 
 
 def test_unreadable_filed_plan_is_a_denial_not_advisory(tmp_path):
     fleet = Fleet(tmp_path)
     key, _ = _planner_row(fleet, "gate-unreadable")
-    path = fleet.queue.residency_plan_path(key)
+    path = fleet.queue.records.residency_plan_path(key)
     # freeze publishes a read-only seal; replace it to simulate corruption.
     path.unlink()
     path.write_text("not json\n")
@@ -73,8 +73,8 @@ def test_claim_does_not_take_a_bare_consumer_before_its_lead(tmp_path):
     key, _ = _planner_row(fleet, "gate-real-claim")
     claimed = fleet.queue.claim(owner="test-consumer", capacity={"cpu": 2, "mem_gb": 2})
     assert claimed is None
-    assert fleet.queue.item_path(pool.READY, key).exists()
-    assert not fleet.queue.item_path(pool.CLAIMED, key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
 
 def test_derived_leads_use_the_same_map_gates_and_only_the_first_phase(tmp_path, monkeypatch):
@@ -91,7 +91,7 @@ def test_derived_leads_use_the_same_map_gates_and_only_the_first_phase(tmp_path,
     monkeypatch.setattr(fleet.queue, "_lead_was_adopted", lambda *args: True)
     assert fleet.queue.residency_verdict(item) == fleet.queue.residency_verdict(explicit)
     assert fleet.queue.residency_verdict(item)["state"] == "map_not_composed"
-    path = fleet.queue.residency_map_path(key)
+    path = fleet.queue.records.residency_map_path(key)
     path.write_text("fixture map\n")
     monkeypatch.setattr(residency_map, "read_map", lambda path: {"leads": []})
     assert fleet.queue.residency_verdict(item) == fleet.queue.residency_verdict(explicit)
@@ -101,7 +101,7 @@ def test_derived_leads_use_the_same_map_gates_and_only_the_first_phase(tmp_path,
     assert fleet.queue.residency_verdict(item)["state"] == "resident"
     # Later phase movers remain absent: only the published first phase gates.
     for phase in plan["phases"][1:]:
-        assert not fleet.queue.item_path(pool.DONE, phase["mover_row"]["action_key"]).exists()
+        assert not fleet.queue.records.item_path(pool.record_store.DONE, phase["mover_row"]["action_key"]).exists()
 
 
 def test_a_movers_range_block_is_not_turned_into_a_consumer(tmp_path):

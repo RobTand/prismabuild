@@ -217,7 +217,7 @@ def _shared_queue(monkeypatch, tmp_path: Path) -> Path:
     from prismabuild import pool as _pool
 
     root = tmp_path / "q"
-    _pool.PoolQueue(root).ensure_layout()
+    _pool.PoolQueue(root).records.ensure_layout()
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
         "mountpoint": "/mnt/shared"})
@@ -277,8 +277,8 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
     assert out["owner"] == owner
     assert calls and calls[0]["op"] == "maintenance_begin"
     # Retained, never cancelled: no withdrawal record anywhere.
-    assert not queue.item_path(pool.WITHDRAWN, key).exists()
-    assert queue.item_path(pool.DONE, key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
     assert fm.terminal_of(queue, snapshot) is not None
 
 
@@ -570,7 +570,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
         try:
             deadline = time.monotonic() + 20.0
             while (time.monotonic() < deadline
-                   and not queue.item_path(pool.WITHDRAWN, key).exists()):
+                   and not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()):
                 time.sleep(0.05)
             queue.finish(key, status="withdrawn", detail={},
                          claim_snapshot=snapshot)
@@ -612,8 +612,8 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
     # concluded and settlement published the budget-preserving successor
     # for the same action (the withdrawn row itself is consumed by that
     # publish, leaving the revival linkage on the ready successor).
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    successor = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    successor = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert successor["attempts"] == 1
     assert successor["retry_safe"] is True
     assert out["handled"][key]["handoff"] == "withdrawn"

@@ -63,7 +63,7 @@ def test_socket_bind_damage_refuses_before_scope_creation(queue, actions, broker
     assert allocated and all(not path.exists() for path in allocated)
     assert {child.pid for child in multiprocessing.active_children()} == before
     assert broker.process is None
-    live = pool.read_queue_record(queue.item_path(pool.CLAIMED, claimed["action_key"]))
+    live = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, claimed["action_key"]))
     assert live is not None and live.get("resource_scope") is None
 
 

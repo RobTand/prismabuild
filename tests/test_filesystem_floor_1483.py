@@ -40,7 +40,7 @@ def _stable(path: Path) -> dict:
 
 def _queue(tmp_path: Path, *, spool_gb: int = 4) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger(HOST).ensure_capacity({"spool_gb": spool_gb, "mem_gb": 2})
     return queue
 
@@ -746,7 +746,7 @@ def _pbrun_world(tmp_path, monkeypatch):
     _stable(tmp_path)
     fleet = tmp_path / "fleet"
     queue = pool.PoolQueue(fleet / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (fleet / "cas").mkdir(parents=True)
     _register(queue, fleet / "cas", filesystem_gib=4, filesystem_ledger="fs-test")
     monkeypatch.setattr(pbrun, "SH", fleet)

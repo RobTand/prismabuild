@@ -176,7 +176,7 @@ def test_busy_resign_requires_terminal_and_empty_scope(
         f"status={out.get('status')} reason={out.get('reason')} "
         f"terminal={terminals}"
     )
-    assert not queue.item_path(pool.WITHDRAWN, key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
 
 
 def test_withdrawn_retry_safe_row_requeues_with_preserved_budget(
@@ -203,7 +203,7 @@ def test_withdrawn_retry_safe_row_requeues_with_preserved_budget(
         try:
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, key).exists():
+                if queue.records.item_path(pool.record_store.WITHDRAWN, key).exists():
                     break
                 time.sleep(0.2)
             queue.finish(key, status="failed",
@@ -313,8 +313,8 @@ def test_fenced_claim_closed_fence_denies(queue: pool.PoolQueue) -> None:
                   tags=["x86"])
     assert queue.claim(tags=["x86"], owner="h:1:q1", capacity={"cpu": 4},
                        admission_open=lambda: False) is None
-    assert queue.item_path(pool.READY, key).exists()
-    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
 
 def test_requeue_refuses_foreign_cancellation(queue: pool.PoolQueue, monkeypatch) -> None:
@@ -442,7 +442,7 @@ def test_resign_retains_fence_on_unreadable_reader_refs(
     host = socket.gethostname()
     auth, _ = authority
     gate = Path(auth.maintenance_path)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     consumer = (queue.root / "residency" / "leases" / ("c" * 64))
     consumer.mkdir(parents=True)
     (consumer / ("p" * 32 + ".lease.json")).write_text("{}")
@@ -494,7 +494,7 @@ def _busy_queue(monkeypatch, tmp_path: Path) -> Path:
     from prismabuild import pool as _pool
 
     root = tmp_path / "q"
-    _pool.PoolQueue(root).ensure_layout()
+    _pool.PoolQueue(root).records.ensure_layout()
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
         "mountpoint": "/mnt/shared"})
@@ -620,7 +620,7 @@ def test_terminal_rejects_malformed_and_stale_counters(
             "claimed_unix": snapshot["claimed_unix"]}
 
     def check(record, expect):
-        path = queue.item_path(pool.DONE, key)
+        path = queue.records.item_path(pool.record_store.DONE, key)
         path.write_text(json.dumps(record))
         try:
             assert (fm.terminal_of(queue, snapshot) is not None) == expect, record
@@ -709,7 +709,7 @@ def _operator_resubmits_then_holder_concludes(queue: pool.PoolQueue, key: str, s
         queue.publish(action_key=key, cas_root=queue.root / "cas", checkout_root=queue.root / "co",
                       worker_script=queue.root / "worker.py", resources={"cpu": 1},
                       max_attempts=1, retry_safe=True, tags=["x86"])
-        published.append(json.loads(queue.item_path(pool.READY, key).read_text()))
+        published.append(json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()))
         try:
             queue.finish(key, status="failed", detail={"termination_reason": "resign-withdrawn"},
                          claim_snapshot=snapshot)
@@ -762,7 +762,7 @@ def test_resign_preserves_newer_unrelated_publication(
     assert gate_closed == [True], "the publication must land after resign closed the gate"
     assert out["status"] == "resigning", out
     assert "attempts without exact terminal" in out["reason"], out
-    live = json.loads(queue.item_path(pool.READY, key).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert live == published[0], "resign must not touch the foreign row"
 
 
@@ -796,7 +796,7 @@ def test_resign_after_a_publication_that_landed_before_it_began_owns_nothing_and
                         live=[], wait_s=25.0)
     assert out["status"] == "resigned", out
     assert out["handled"] == {}, out
-    live = json.loads(queue.item_path(pool.READY, key).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert live == published[0], "resign must not touch the foreign row"
 
 
@@ -820,7 +820,7 @@ def test_resign_second_run_publishes_no_duplicate(
         try:
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, key).exists():
+                if queue.records.item_path(pool.record_store.WITHDRAWN, key).exists():
                     break
                 time.sleep(0.2)
             queue.finish(key, status="failed",
@@ -844,11 +844,11 @@ def test_resign_second_run_publishes_no_duplicate(
             finisher.join(timeout=10.0)
     assert not errors, errors
     assert first["status"] == "resigned", first
-    before = json.loads(queue.item_path(pool.READY, key).read_text())
+    before = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
         second = run_resign()
     assert second["status"] == "resigned", second
-    after = json.loads(queue.item_path(pool.READY, key).read_text())
+    after = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert after == before, "rerun must not publish a duplicate successor"
     assert len([i for i in queue.ready_items()
                 if i.get("action_key") == key]) == 1
@@ -878,10 +878,10 @@ def test_chained_resign_preserves_budget_a_b_c(
     def finish_when_withdrawn():
         deadline = time.monotonic() + 40.0
         while time.monotonic() < deadline:
-            if queue.item_path(pool.WITHDRAWN, key).exists():
+            if queue.records.item_path(pool.record_store.WITHDRAWN, key).exists():
                 break
             time.sleep(0.2)
-        snap = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+        snap = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
         queue.finish(key, status="failed",
                      detail={"termination_reason": "chain"},
                      claim_snapshot=snap)
@@ -903,7 +903,7 @@ def test_chained_resign_preserves_budget_a_b_c(
             t1.join(timeout=15.0)
     assert not errors, errors
     assert first["status"] == "resigned", first
-    generation_b = json.loads(queue.item_path(pool.READY, key).read_text())
+    generation_b = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert int(generation_b.get("attempts")) == 1
     assert int(generation_b.get("attempt_history_missing_before")) == 1
     assert int(generation_b.get("max_attempts")) == 4
@@ -922,7 +922,7 @@ def test_chained_resign_preserves_budget_a_b_c(
     assert not errors, errors
     assert second["status"] == "resigned", (
         second.get("reason"), second.get("handled"))
-    generation_c = json.loads(queue.item_path(pool.READY, key).read_text())
+    generation_c = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert int(generation_c.get("attempts")) == 2
     assert int(generation_c.get("attempt_history_missing_before")) == 2
     assert int(generation_c.get("max_attempts")) == 4
@@ -932,7 +932,7 @@ def test_chained_resign_preserves_budget_a_b_c(
     snap_c = queue.claim(tags=["x86"], owner=f"{host}:1:q3", capacity={"cpu": 4})
     assert snap_c is not None and int(snap_c["attempts"]) == 2
     queue.finish(key, status="executed", detail={}, claim_snapshot=snap_c)
-    done = json.loads(queue.item_path(pool.DONE, key).read_text())
+    done = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text())
     assert int(done.get("attempts")) == 3
     assert int(done.get("max_attempts")) == 4
 
@@ -1010,7 +1010,7 @@ def test_takeover_keeps_gate_closed_and_resumes(
         try:
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, key).exists():
+                if queue.records.item_path(pool.record_store.WITHDRAWN, key).exists():
                     break
                 time.sleep(0.2)
             queue.finish(key, status="failed",
@@ -1061,7 +1061,7 @@ def test_join_refuses_unsettled_handoff_drain(
     gate = Path(auth.maintenance_path)
     auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
                    "owner": old_owner})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     # Join must read the REAL queue (holding the unsettled row) through a
     # namespace that proves shared: patch only the mount identity.
@@ -1100,8 +1100,8 @@ def test_interrupted_request_settles_through_reconciler(
                           broker_call=_broker_call(authority),
                           live=[], wait_s=0.0)
     assert first["status"] == "resigning", first
-    assert queue.item_path(pool.WITHDRAWN, key).exists()
-    assert not queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
     # Ordinary holder finish (no resign running anywhere).
     queue.finish(key, status="failed",
                  detail={"termination_reason": "reconciler"},
@@ -1199,7 +1199,7 @@ def test_lineage_exact_requires_full_fields(queue: pool.PoolQueue, monkeypatch) 
     queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
                    membership_handoff=pre["snapshot"])
     queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
-    live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
     snap = {"action_key": key, "published_unix": live["published_unix"],
             "attempts": live["attempts"], "claimed_by": live["claimed_by"],
             "claimed_unix": live["claimed_unix"]}
@@ -1210,7 +1210,7 @@ def test_lineage_exact_requires_full_fields(queue: pool.PoolQueue, monkeypatch) 
     status = fm.lineage_status(queue, snap, owner)
     assert status["successor_exact"] is True, status
     assert status["foreign"] is False
-    ready_path = queue.item_path(pool.READY, key)
+    ready_path = queue.records.item_path(pool.record_store.READY, key)
     exact_ready = json.loads(ready_path.read_text())
 
     def mutated(**overrides):
@@ -1271,8 +1271,8 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     real_queue.withdraw(key, reason=f"resign {owner}: drain poll", by=owner,
                         membership_handoff=drain_plan["snapshot"])
     real_queue.finish(key, status="failed", detail={}, claim_snapshot=snap)
-    assert real_queue.item_path(pool.WITHDRAWN, key).exists()
-    assert not real_queue.item_path(pool.READY, key).exists()
+    assert real_queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
+    assert not real_queue.records.item_path(pool.record_store.READY, key).exists()
 
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": True, "changed_unix": 1.0,
@@ -1306,7 +1306,7 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
     monkeypatch.setattr(fm, "supervisor_incarnation", lambda: (owner, None))
     rc = loop._run_loop(Event())
     assert rc == 0
-    ready_path = real_queue.item_path(pool.READY, key)
+    ready_path = real_queue.records.item_path(pool.record_store.READY, key)
     assert ready_path.exists(), "drain poll must publish the owed successor"
     ready = json.loads(ready_path.read_text())
     assert int(ready.get("attempts")) == 1
@@ -1457,11 +1457,11 @@ def test_lineage_treats_unreadable_ready_as_unknown(
     queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
                    membership_handoff=pre["snapshot"])
     queue.finish(key, status="failed", detail={}, claim_snapshot=snapshot)
-    live = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
     snap = {"action_key": key, "published_unix": live["published_unix"],
             "attempts": live["attempts"], "claimed_by": live["claimed_by"],
             "claimed_unix": live["claimed_unix"]}
-    queue.item_path(pool.READY, key).mkdir()  # read_text -> IsADirectoryError
+    queue.records.item_path(pool.record_store.READY, key).mkdir()  # read_text -> IsADirectoryError
     status = fm.lineage_status(queue, snap, owner)
     assert status["successor"] is None
     assert status["successor_unknown"] is True
@@ -1492,8 +1492,8 @@ def test_unreadable_withdrawn_census_keeps_gate_closed(
     auth, _ = authority
     gate = Path(auth.maintenance_path)
     auth.admin(0, {"op": "maintenance_begin", "reason": "t", "owner": owner})
-    queue.ensure_layout()
-    withdrawn = queue.dir(pool.WITHDRAWN)
+    queue.records.ensure_layout()
+    withdrawn = queue.records.dir(pool.record_store.WITHDRAWN)
     roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
@@ -1538,8 +1538,8 @@ def test_unreadable_claimed_census_retains_resignation(
     _incarnation(monkeypatch)
     auth, _ = authority
     gate = Path(auth.maintenance_path)
-    queue.ensure_layout()
-    claimed = queue.dir(pool.CLAIMED)
+    queue.records.ensure_layout()
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
 
     def inspect_and_resign():
         owned, unknown = fm.claimed_census(queue, host)
@@ -1630,7 +1630,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
         "tier_id": tier, "manifest_sha256": manifest,
         "range_start_bytes": 0, "range_end_bytes": 2 * gib,
         "bytes_staged": 2 * gib, "complete": True, "errors": []})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": tier, "stage_root": str(tmp_path / "stage"),
@@ -1639,7 +1639,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
             "stage_path": str(tmp_path / "stage" / "a.bin"),
             "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
     queue.finish(mover, status="executed", detail={}, claim_snapshot=snap_m)
-    assert tier_loop.compose_map(queue, consumer) == queue.residency_map_path(
+    assert tier_loop.compose_map(queue, consumer) == queue.records.residency_map_path(
         consumer)
     snap = queue.claim(tags=["x86"], owner=f"{host}:1:sc",
                        capacity={"cpu": 4, "mem_gb": 16})
@@ -1654,7 +1654,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
         try:
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                if queue.item_path(pool.WITHDRAWN, consumer).exists():
+                if queue.records.item_path(pool.record_store.WITHDRAWN, consumer).exists():
                     break
                 time.sleep(0.2)
             queue.finish(consumer, status="failed",
@@ -1679,7 +1679,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
     assert not errors, errors
     assert finished.is_set()
     assert out["status"] == "resigned", (out.get("reason"), out.get("phase"))
-    ready = json.loads(queue.item_path(pool.READY, consumer).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, consumer).read_text())
     assert ready["residency"] == block
     assert int(ready["attempts"]) == 1
     assert residency_plan.superseded(queue, plan) is None
@@ -1708,7 +1708,7 @@ def test_shape_only_cancellation_is_never_revived(
     gate = Path(auth.maintenance_path)
     auth.admin(0, {"op": "maintenance_begin", "reason": "run1",
                    "owner": old_owner})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     roster = _busy_roster(tmp_path, host, ["--class", "x86"], monkeypatch)
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",

@@ -38,7 +38,7 @@ from prismabuild import pool
 def _landing_report(queue, mover: str, *, started: float) -> None:
     """Write the mover's own live landing report (#1090) as stage_move does."""
 
-    path = queue.consumer_events_dir(mover) / pool.MOVER_LANDING_REPORT
+    path = queue.records.consumer_events_dir(mover) / pool.record_store.MOVER_LANDING_REPORT
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pool.MOVER_LANDING_SCHEMA_V1, "copied_bytes": 5,
@@ -79,7 +79,7 @@ def test_a_report_from_before_the_lenders_claim_is_not_mid_copy(
     _landing_report(queue, fam.MOVER, started=2000.)
     # The strict census still needs the publication generation of this
     # historical tier holder; only its claim time predates the report.
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, fam.MOVER),
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, fam.MOVER),
                             {"action_key": fam.MOVER, "claimed_unix": 3000.,
                              "published_unix": 2999., "cas_root": str(spool.cas_root)})
     export_key = fam._paced_export(spool)
@@ -179,7 +179,7 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     queue.finish(first, status="executed", claim_snapshot=claim)
     third = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert third is not None and third["action_key"] == second
-    ended = pool._read_json(queue.item_path(pool.DONE, first))
+    ended = pool.record_store.require(queue.records.item(pool.record_store.DONE, first))
     assert ended["tier_fill_borrowed"][fx.TIER]["borrowed"] == fam.OFFER
 
 
@@ -220,7 +220,7 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     assert ledger.holder_tokens(fam.MOVER).get(fam.FILL) == 50
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    ended = pool._read_json(queue.item_path(pool.DONE, first))
+    ended = pool.record_store.require(queue.records.item(pool.record_store.DONE, first))
     entry = ended["tier_fill_borrowed"][fx.TIER]
     assert entry["lenders_released_before_end"] == [fam.MOVER], entry
     assert entry["overcommit_mb_s"] == 10, entry
