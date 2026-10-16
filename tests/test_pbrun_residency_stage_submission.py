@@ -532,9 +532,9 @@ def test_a_deliberate_reseal_renews_a_reaped_windows_cancelled_children(
         "the predecessor's cancellations must not cover the fresh filing")
     assert queue.live_withdrawal(late_stage) is None
     assert queue.live_withdrawal(late_ram) is None
-    assert queue.withdrawal_decisions(late_stage), (
+    assert queue.records.withdrawal_decisions(late_stage), (
         "the operator's decision is evidence, not something retirement erases")
-    assert queue.withdrawal_decisions(late_ram)
+    assert queue.records.withdrawal_decisions(late_ram)
     retired = {path.name for path in queue.records.superseded_dir().iterdir()}
     assert any(late_stage in name for name in retired)
     assert any(late_ram in name for name in retired)

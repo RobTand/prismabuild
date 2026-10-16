@@ -33,8 +33,6 @@ class Queue:
             (root / state).mkdir(parents=True)
 
 
-    def withdrawal_decisions(self, key: str, **_kwargs) -> list:
-        return []
 
 
 def _ending(status: str, returncode: int) -> dict:
@@ -96,8 +94,6 @@ for state in ("done", "failed", "withdrawn"):
     (root / state).mkdir(parents=True)
 class Queue:
     records = pbrun.pool.record_store.RecordStore(root)
-    def withdrawal_decisions(self, key, **kwargs):
-        return []
 key = {KEY!r}
 os.mkfifo(Queue().records.item_path("done", key))
 print("entered await_outcome", flush=True)

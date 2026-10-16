@@ -44,7 +44,7 @@ def _stopped(queue, key, generation):
     immutable withdrawal decision for that generation.
     """
 
-    for _path, record in queue.withdrawal_decisions(key):
+    for _path, record in queue.records.withdrawal_decisions(key):
         if record.get("published_unix") == generation:
             return record
     raise AssertionError(f"no withdrawal decision for generation {generation}")

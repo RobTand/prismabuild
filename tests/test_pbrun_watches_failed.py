@@ -32,8 +32,6 @@ class _Queue:
             (root / name).mkdir(parents=True, exist_ok=True)
 
 
-    def withdrawal_decisions(self, key: str) -> list:
-        return []
 
 
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:

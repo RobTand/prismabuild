@@ -35,8 +35,6 @@ class Queue:
             (root / state).mkdir(parents=True)
 
 
-    def withdrawal_decisions(self, key: str, **_kwargs) -> list:
-        return []
 
 
 def _ending() -> dict:
