@@ -870,7 +870,6 @@ TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
 #: written from these; see :mod:`prismabuild.residency_map`.
-RESIDENCY = "residency"
 
 #: Where a consumer's frozen window plan lives: every movement node it
 #: will ever have, named before the first one is published, so a restart
