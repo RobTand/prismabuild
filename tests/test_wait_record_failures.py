@@ -9,7 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'tools' / 'fleet')]
-from prismabuild import core as pb, pool, slurm_lane
+from prismabuild import action_wait, core as pb, pool, slurm_lane
 import pbrun
 import pbwait
 from test_slurm_lane import fleet, _runnable_action
@@ -28,25 +28,18 @@ def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch
         q.item_path(pool.FAILED, key).write_text('{')
         if len(sleeps) > 1:
             pytest.fail('wait polled again after a malformed terminal record landed')
-    # ``pbrun.time`` is the standard-library module, which the bounded reader
-    # also uses for its private cleanup grace. Replace only pbrun's polling
+    # The bounded reader also uses the standard-library time module for its
+    # private cleanup grace. Replace only the await owner's polling
     # clock so this fixture lands corruption between parent observations rather
     # than teaching a child reaper to write terminal records.
     monkeypatch.setattr(
-        pbrun, 'time',
+        action_wait, 'time',
         SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
     )
     if waiter == 'pbrun':
         assert pbrun.action_client.await_outcome(q, key, wait_s=60, generation=1.0) == 1
         assert 'not valid JSON' in capsys.readouterr().err
     else:
-        # ``pbwait`` now owns its bounded observations in its own parent loop;
-        # land the malformed ending between those passes rather than through
-        # pbrun's former synchronous inner wait.
-        monkeypatch.setattr(
-            pbwait, 'time',
-            SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
-        )
         row = pbwait.wait_one(q, key, cas=pb.PrismaBuildCAS(tmp_path / 'cas'), deadline=time.monotonic() + 60)
         assert row['status'] == 'unreadable'
         assert 'not valid JSON' in row['note']
