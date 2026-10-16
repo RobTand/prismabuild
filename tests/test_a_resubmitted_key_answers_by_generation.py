@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 sys.path.insert(0, str(REPOSITORY / "tests"))
 
-from prismabuild import pool, progress, residency_plan  # noqa: E402
+from prismabuild import endings, pool, progress, residency_plan  # noqa: E402
 import pbstatus  # noqa: E402
 import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
@@ -489,7 +489,7 @@ def test_the_resolution_is_pure_over_one_captured_record_set(
     assert set(readable) == {pool.DONE, pool.FAILED}
     assert [entry["state"] for entry in unreadable] == [pool.WITHDRAWN]
 
-    answer = queue.resolve_ending(readable, unreadable)
+    answer = endings.resolve_current(readable, unreadable)
 
     assert answer["state"] == pool.FAILED
     assert answer["record"] is readable[pool.FAILED][1]

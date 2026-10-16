@@ -67,7 +67,7 @@ import pbstatus  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import core as pb, endings, pool  # noqa: E402
 
 #: The envelope every tool result carries, versioned so a client can tell.
 SCHEMA_V1 = "prismaquant.prismabuild.pbmcp.v1"
@@ -486,7 +486,7 @@ def _queue_view(queue_root: Path, key: str) -> dict:
     for state, (_path, record) in readable.items():
         records[state] = record
     return {"records": records,
-            "answer": _ending_view(queue.resolve_ending(readable, unreadable))}
+            "answer": _ending_view(endings.resolve_current(readable, unreadable))}
 
 
 def _resolve_state(records: Mapping[str, dict],
@@ -495,7 +495,7 @@ def _resolve_state(records: Mapping[str, dict],
     """Which state answers for this key, resolving terminals by generation.
 
     A live row outranks a terminal one, as before.  Among terminals,
-    ``PoolQueue.resolve_ending`` is the queue's one generation-resolution
+    ``endings.resolve_current`` is the queue's one generation-resolution
     rule, so an older ``done/`` row standing beside a later failed
     generation cannot answer success (#1178).  The returned record is the
     exact one the resolution ordered; a census record never replaces it.

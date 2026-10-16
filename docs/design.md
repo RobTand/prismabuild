@@ -1153,9 +1153,15 @@ is the one key-level rule every such reader now follows, built as one
 capture and one pure rule: `read_terminal_candidates` takes one read of the
 three mutable terminal rows (`done/`, `failed/`, the visible `withdrawn/`
 marker; immutable withdrawal decisions stay the generation-scoped waiter's
-evidence) and reports what it could not read, and `resolve_ending` orders
+evidence) and reports what it could not read. `endings.resolve_current` orders
 that capture with no further reads. The unique newest finite
 `published_unix` answers and the other readable candidates are history.
+The pure selector is a package operation. Direct capture consumers in action
+result verification, checkout recovery and MCP call it. The old
+`PoolQueue.resolve_ending` method is removed. `PoolQueue.current_ending` retains
+the fresh capture operation. `endings.publication_generation` owns the existing
+finite timestamp rule, including linked-attempt validation.
+
 `supersedes_terminal` is historical evidence the retiring writer filed, not
 current authority: it names the generation a later record retired, and a
 slot it points into may since have been replaced by a newer one, so it

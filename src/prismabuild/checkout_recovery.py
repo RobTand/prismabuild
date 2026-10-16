@@ -19,6 +19,7 @@ import subprocess
 import tarfile
 import time
 
+from . import endings
 from . import core as pb, materialize, pool
 from . import immutable_files
 
@@ -163,7 +164,7 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
         else:
             _checkout_recovery_refuse(f'{key} is present in {state}')
     readable, unreadable = queue.read_terminal_candidates(key, max_bytes=MAX_JSON_BYTES)
-    ending = queue.resolve_ending(readable, unreadable)
+    ending = endings.resolve_current(readable, unreadable)
     if unreadable:
         reasons = "; ".join(str(entry["reason"]) for entry in unreadable)
         _checkout_recovery_refuse(f"{key} terminal evidence is unreadable: {reasons}")

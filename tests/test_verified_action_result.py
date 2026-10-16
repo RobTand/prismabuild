@@ -16,7 +16,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tests"))
 
-from prismabuild import core as pb  # noqa: E402
+from prismabuild import core as pb, endings  # noqa: E402
 from prismabuild import client, movement_actions, pool  # noqa: E402
 from prismabuild import immutable_files  # noqa: E402
 
@@ -542,11 +542,11 @@ def test_a_huge_terminal_generation_is_unorderable_not_an_overflow(tmp_path: Pat
     # census rule must read it as unorderable, never raise OverflowError.
     row = dict(record)
     row["published_unix"] = 10 ** 400
-    ending = queue.resolve_ending({pool.DONE: (queue.item_path(pool.DONE, key), row)}, [])
+    ending = endings.resolve_current({pool.DONE: (queue.item_path(pool.DONE, key), row)}, [])
     assert ending["generation"] is None
-    assert pool._finite_generation(10 ** 400) is None
-    assert pool._finite_generation(float("inf")) is None
-    assert pool._finite_generation(3.5) == 3.5
+    assert endings.publication_generation(10 ** 400) is None
+    assert endings.publication_generation(float("inf")) is None
+    assert endings.publication_generation(3.5) == 3.5
 
 
 def _a_nesting_depth_that_refuses() -> bytes | None:

@@ -31,6 +31,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
+from . import endings
 from . import core as pb
 from . import movement_actions
 from . import pool as _pool
@@ -168,7 +169,7 @@ def _select_terminal(queue, key, published, number, evidence_cap):
     try:
         readable, unreadable = queue.read_terminal_candidates(
             key, max_bytes=evidence_cap)
-        ending = queue.resolve_ending(readable, unreadable)
+        ending = endings.resolve_current(readable, unreadable)
     except (OSError, _pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
         raise ActionResultError(
             f"terminal evidence for {key[:12]} could not be captured: {exc}") from exc
