@@ -4259,7 +4259,7 @@ class ResourceLedger:
         """
 
         try:
-            remaining = [path for path in _scan(holder)
+            remaining = [path for path in immutable_files.scan_optional(holder)
                          if path.name not in (cpu_admission.METADATA,
                                               gpu_admission.METADATA)]
         except OSError:
