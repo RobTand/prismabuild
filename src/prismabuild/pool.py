@@ -874,7 +874,6 @@ TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 #: Where a consumer's frozen window plan lives: every movement node it
 #: will ever have, named before the first one is published, so a restart
 #: resumes the same decomposition instead of cutting a new one.
-RESIDENCY_PLANS = "residency-plans"
 
 #: The queue-wide index of consumers an operator released from an origin
 #: batch (#954): one file per released key and batch.  Filed by
