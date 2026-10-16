@@ -2918,7 +2918,7 @@ def find_launcher_pids(action_key: str) -> list[int]:
     needle = action_key.encode()
     mine = os.getpid()
     found: list[int] = []
-    for entry in _scan(Path("/proc")):
+    for entry in immutable_files.scan_optional(Path("/proc")):
         if not entry.name.isdigit() or int(entry.name) == mine:
             continue
         try:
