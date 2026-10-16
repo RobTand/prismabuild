@@ -727,7 +727,7 @@ def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    row = json.loads(queue.item_path(pool.READY, measurement).read_text())
+    row = pool.read_queue_record(queue.item_path(pool.READY, measurement))
     queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
         "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
         "drain_until_unix": clock[0] + 3600.0}})
@@ -758,7 +758,7 @@ def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_membe
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    row = json.loads(queue.item_path(pool.READY, measurement).read_text())
+    row = pool.read_queue_record(queue.item_path(pool.READY, measurement))
     queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
         "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
         "drain_until_unix": clock[0] + 3600.0}})
