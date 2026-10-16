@@ -22,9 +22,33 @@ class RecordKind:
     variant_writers: tuple[tuple[str, str], ...] = ()
     negative_value: object = "invalid"
     fixture_source: tuple[str, ...] = ()
+    self_digest_field: str | None = None
 
 
 KINDS = (
+    RecordKind("state-reclaim-manifest", "prismabuild.stage-source-mark-reclaim.v1", "private reclaim run/manifest.json", "additive",
+               "stage_reclaim:read_manifest", ("stage_reclaim:write_manifest",), ("empty", "entry"),
+               ("fixtures supply recorded move metadata; no reclaim or restore operation runs",)),
+    RecordKind("state-reclaim-memo", "prismabuild.stage-source-mark-reclaim-memo.v1", "private reclaim run/memo.json", "additive",
+               "stage_reclaim:read_memo", ("stage_reclaim:write_memo_file",), ("empty", "entry"),
+               ("missing memo means no proven digests; supplied stat facts do not prove a physical file",)),
+    RecordKind("state-canary-slot", "prismabuild.publication_canary_slot.v1", "private queue/publication-canaries/v1/<identity>.json", "additive",
+               "prismabuild.publication_canary:load", ("prismabuild.publication_canary:mint", "prismabuild.publication_canary:bind"),
+               ("minted", "bound"), ("fixture stores are private; no publisher lock or GPU action is claimed",),
+               variant_writers=(("minted", "prismabuild.publication_canary:mint"), ("bound", "prismabuild.publication_canary:bind"))),
+    RecordKind("state-mover-checkpoint", "prismabuild.mover_retirement_checkpoint.v1", "private queue/movers-retired/checkpoint.json", "additive",
+               "prismabuild.pool:PoolQueue.read_mover_retirements",
+               ("prismabuild.pool:PoolQueue.begin_mover_retirement_batch", "prismabuild.pool:PoolQueue.commit_move_retirements"),
+               ("bootstrap", "committed", "replay", "recovered"),
+               ("absent or lagging state is a readable interrupted commit; caller retirement authority is separate",),
+               variant_writers=(("bootstrap", "prismabuild.pool:PoolQueue.begin_mover_retirement_batch"),
+                                ("committed", "prismabuild.pool:PoolQueue.commit_move_retirements"),
+                                ("replay", "prismabuild.pool:PoolQueue.commit_move_retirements"),
+                                ("recovered", "prismabuild.pool:PoolQueue.commit_move_retirements")),
+               self_digest_field="checkpoint_sha256"),
+    RecordKind("state-mover-state", "prismabuild.mover_retirement_state.v1", "private queue/movers-retired/state.json", "additive",
+               "prismabuild.pool:PoolQueue.read_mover_retirements", ("prismabuild.pool:PoolQueue._state_document",),
+               ("bootstrap", "committed", "replay", "recovered")),
     RecordKind("core-progress-policy", "prismabuild.action_progress_policy.v1", "action.params.progress", "closed",
                "prismabuild.core:validate_progress_policy",
                ("pbrun:parse_progress_phases", "prismabuild.core:validate_progress_policy",

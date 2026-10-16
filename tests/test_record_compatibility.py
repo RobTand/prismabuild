@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from record_compat import accepted, invoke, retained, write
 from prismabuild.record_kinds import KINDS, cases
+from prismabuild.digest_primitives import canonical_sha256
 
 DATA = ROOT / "tests/compat"
 def records(pattern):
@@ -70,6 +71,9 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
     case = kind.name + "/" + kind.variants[0]
     body = json.loads(decoded(GOLDENS[case]))
     body["compat_unknown_field"] = {"future": True}
+    if kind.self_digest_field:
+        body[kind.self_digest_field] = canonical_sha256({key: value for key, value in body.items()
+                                                       if key != kind.self_digest_field})
     raw = (json.dumps(body, sort_keys=True) + "\n").encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
