@@ -107,6 +107,8 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
+from prismabuild import immutable_files
+
 from prismabuild import kept_reads
 from prismabuild.record_store import (
     Absent, KeyStanding, Moving, Present, QueueRow, RecordStore, Unknown,
@@ -481,7 +483,12 @@ def declare_template(queue_root: str | Path, template: Mapping[str, object]) -> 
     raw = json.dumps(checked, sort_keys=True,
                      separators=(",", ":")).encode() + b"\n"
     try:
-        pool_mod._publish_immutable(path, raw, where="produced-output template")
+        immutable_files.publish_exact(
+            path,
+            raw,
+            where="produced-output template",
+            conflict_error=pool_mod.PoolContractError,
+        )
     except pool_mod.PoolContractError as exc:
         raise ProducedOutputError(
             f"a different template is already filed for {checked['template_id']}: {exc}"
@@ -896,7 +903,12 @@ def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> 
     raw = json.dumps(checked, sort_keys=True,
                      separators=(",", ":")).encode() + b"\n"
     try:
-        pool_mod._publish_immutable(path, raw, where="produced-output instance")
+        immutable_files.publish_exact(
+            path,
+            raw,
+            where="produced-output instance",
+            conflict_error=pool_mod.PoolContractError,
+        )
     except pool_mod.PoolContractError as exc:
         raise ProducedOutputError(
             f"a different instance is already filed for this owner/template/nonce: {exc}"
@@ -949,8 +961,8 @@ def _index_attempt(queue_root: str | Path, owner_action_key: str,
                       sort_keys=True, separators=(",", ":")) + "\n").encode()
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        pool_mod._publish_immutable(directory / f"{owner}.{attempt}", raw,
-                                    where="produced-output attempt index")
+        immutable_files.publish_exact(directory / f"{owner}.{attempt}", raw,
+                                    where="produced-output attempt index", conflict_error=pool_mod.PoolContractError)
     except (OSError, pool_mod.PoolContractError) as exc:
         raise ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
@@ -962,8 +974,8 @@ def _mark_attempt_index_complete(queue_root: str | Path) -> None:
     root = _attempts_root(queue_root)
     try:
         root.mkdir(parents=True, exist_ok=True)
-        pool_mod._publish_immutable(root / ATTEMPT_INDEX_COMPLETE, b"1\n",
-                                    where="produced-output attempt index")
+        immutable_files.publish_exact(root / ATTEMPT_INDEX_COMPLETE, b"1\n",
+                                    where="produced-output attempt index", conflict_error=pool_mod.PoolContractError)
     except (OSError, pool_mod.PoolContractError) as exc:
         raise ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
@@ -2064,7 +2076,12 @@ def _publish_prewrite_record(queue, instance: Mapping[str, object], *,
               "owner_attempt": dict(instance["owner_attempt"])}
     raw = json.dumps(record, sort_keys=True,
                      separators=(",", ":")).encode() + b"\n"
-    pool_mod._publish_immutable(path, raw, where="produced-output prewrite")
+    immutable_files.publish_exact(
+        path,
+        raw,
+        where="produced-output prewrite",
+        conflict_error=pool_mod.PoolContractError,
+    )
     return path
 
 
@@ -4152,11 +4169,11 @@ def commit_batch(queue, instance: Mapping[str, object],
         batch_dir.mkdir(parents=True, exist_ok=True)
         batch_path = batch_dir / f"{batch_id}.json"
         try:
-            pool_mod._publish_immutable(
+            immutable_files.publish_exact(
                 batch_path,
                 json.dumps(batch_record, sort_keys=True,
                            separators=(",", ":")).encode() + b"\n",
-                where="produced-output batch")
+                where="produced-output batch", conflict_error=pool_mod.PoolContractError)
         except pool_mod.PoolContractError as exc:
             return {"ok": False, "refusal": f"batch-conflict: {exc}"}
         batches[batch_id] = {
@@ -4470,11 +4487,11 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
             batch_path = batch_dir / f"{batch_id}.json"
             record = dict(body, unix=time.time())
             try:
-                pool_mod._publish_immutable(
+                immutable_files.publish_exact(
                     batch_path,
                     json.dumps(record, sort_keys=True,
                                separators=(",", ":")).encode() + b"\n",
-                    where="produced-output batch")
+                    where="produced-output batch", conflict_error=pool_mod.PoolContractError)
             except pool_mod.PoolContractError as exc:
                 # A crash after this record and before the entry below: the same
                 # batch, over the same identities, resumes from what is filed.
@@ -7418,9 +7435,10 @@ def _index_release(queue, consumer: str, checked_ref: Mapping[str, str]) -> None
     path = _release_index_path(queue, consumer, checked_ref)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        pool_mod._publish_immutable(
-            path, _release_index_body(consumer, checked_ref),
-            where="produced-output origin consumer release index")
+        queue.records.file_released_origin_index_at(
+            path,
+            _release_index_body(consumer, checked_ref),
+        )
     except pool_mod.PoolContractError as exc:
         raise ProducedOutputError(
             f"origin-consumer-release-conflict: {exc}") from None
@@ -7615,11 +7633,11 @@ def _release_origin_consumer_locked(
         # would let a row for this key run while the tick deletes its batch.
         _index_release(queue, consumer, checked_ref)
         try:
-            pool_mod._publish_immutable(
+            immutable_files.publish_exact(
                 directory / f"{consumer}.json",
                 json.dumps(body, sort_keys=True,
                            separators=(",", ":")).encode() + b"\n",
-                where="produced-output origin consumer release")
+                where="produced-output origin consumer release", conflict_error=pool_mod.PoolContractError)
         except pool_mod.PoolContractError as exc:
             raise ProducedOutputError(
                 f"origin-consumer-release-conflict: {exc}") from None
@@ -7776,11 +7794,11 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
         body = {"schema": ORIGIN_CONSUMER_SCHEMA_V1,
                 "consumer_action_key": consumer, "ref": dict(checked_ref)}
         try:
-            pool_mod._publish_immutable(
+            immutable_files.publish_exact(
                 directory / f"{consumer}.json",
                 json.dumps(body, sort_keys=True,
                            separators=(",", ":")).encode() + b"\n",
-                where="produced-output origin consumer")
+                where="produced-output origin consumer", conflict_error=pool_mod.PoolContractError)
         except pool_mod.PoolContractError as exc:
             raise ProducedOutputError(f"origin-consumer-conflict: {exc}") from None
     return {"ok": True, "declared": True}

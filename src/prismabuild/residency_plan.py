@@ -705,8 +705,7 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     # predecessor (#708).
     with queue._transition_locked(key):
         try:
-            _pool._publish_immutable(
-                path, pb._canonical_bytes(checked), where="residency plan")
+            queue.records.file_residency_plan_at(path, checked)
         except _pool.PoolContractError as exc:
             raise ResidencyPlanError(
                 f"a different residency plan is already filed for "
@@ -1097,9 +1096,7 @@ def mark_superseded(queue, consumer_action_key: str, *,
         if conflict is not None:
             marker["conflict"] = _conflict_record(conflict)
         try:
-            _pool._publish_immutable(
-                path, pb._canonical_bytes(marker),
-                where="residency plan supersession")
+            queue.records.file_residency_supersession_at(path, marker)
         except _pool.PoolContractError:
             # A concurrent mark of this exact filing won; its marker is the
             # decision, not this one.
@@ -1645,7 +1642,9 @@ def plan_interest(queue, mover_action_key: str, *,
     root = str(queue.root)
     try:
         filed = sorted(
-            path.stem for path in immutable_files.scan_optional(queue.root / _pool.record_store.RESIDENCY_PLANS)
+            path.stem for path in immutable_files.scan_optional(
+                queue.root / _pool.record_store.RESIDENCY_PLANS,
+            )
             if path.suffix == ".json" and len(path.stem) == 64
             and set(path.stem) <= _HEX)
     except OSError:
@@ -3810,10 +3809,10 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
         index = shared_mover_path(queue, mover)
         index.parent.mkdir(parents=True, exist_ok=True)
         try:
-            _pool._publish_immutable(index, pb._canonical_bytes({
+            immutable_files.publish_exact(index, pb._canonical_bytes({
                 "schema": SHARED_MOVER_SCHEMA_V1,
                 "mover_action_key": mover,
-                "share_namespace": namespace}), where="shared mover index")
+                "share_namespace": namespace}), where="shared mover index", conflict_error=_pool.PoolContractError)
         except _pool.PoolContractError as exc:
             raise ResidencyPlanError(
                 f"mover {mover[:12]} is already indexed under another "
@@ -3825,8 +3824,8 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
                 f"{namespace}.{current['mover_action_key']}.{retire_as}")
             os.replace(path, retired)
         try:
-            _pool._publish_immutable(path, pb._canonical_bytes(record),
-                                     where="shared range")
+            immutable_files.publish_exact(path, pb._canonical_bytes(record),
+                                     where="shared range", conflict_error=_pool.PoolContractError)
         except _pool.PoolContractError as exc:
             raise ResidencyPlanError(
                 f"a different mover is already registered for shared range "

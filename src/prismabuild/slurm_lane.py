@@ -79,7 +79,7 @@ import uuid
 from . import core as pb
 from . import immutable_files
 from . import posix_lock
-from . import pool
+from . import pool, record_store
 from .materialize import _write_json_atomic
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
@@ -862,65 +862,6 @@ def _now() -> float:
     return time.time()
 
 
-def _publish_bytes_if_absent(
-    path: Path, raw: bytes, *, mode: int = 0o644
-) -> bool:
-    """Link ``raw`` into place at ``path`` only when nothing is there yet.
-
-    The writer under ``_publish_json_if_absent``, which is where the reason
-    for the shape lives.  Separated because the batch script is bytes and a
-    mode rather than a JSON payload, and it is published under the same rule:
-    the name is the digest of these bytes, so a name that already exists holds
-    the same bytes and nothing was substituted.
-
-    Returns True when this call linked the file and False when one was already
-    there; the temp file is gone either way.
-    """
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        # Explicit, because ``os.open``'s mode is masked by the umask and a
-        # script an operator reproduces by hand should be executable.
-        os.chmod(tmp, mode)
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return False
-        return True
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _publish_json_if_absent(path: Path, payload: Mapping[str, object]) -> bool:
-    """File ``payload`` at ``path`` only when nothing is there yet.
-
-    Link-first: the bytes go to a unique temp file that is then hard-linked
-    to ``path``, and ``os.link`` refuses a name that already exists -- the
-    same primitive the CAS publishes receipts with.  Where
-    ``_write_json_atomic`` replaces whatever it finds, this never does, which
-    is the rule a ``cache_hit`` ending lives under: it is filed only when the
-    key has no ending at all (``publish_outcome``).
-
-    An existence check followed by a rename has a window, and row 15b of
-    fleet/slurm/smoke measured two submitters of one key inside it on
-    2026-09-05 (run-20260905T122808): started together, both polled on the
-    same tick, the executing job's record was filed, and the hit's rename
-    then replaced it.  The run that did the work keeps the record.
-
-    Returns True when this call filed the record and False when a record was
-    already there; the temp file is gone either way.
-    """
-
-    return _publish_bytes_if_absent(
-        path, pb._canonical_file_bytes(dict(payload)))
-
-
 def job_script_text(
     *,
     request_path: str | Path,
@@ -1049,7 +990,7 @@ def submit(
     # the same bytes share the file, and different bytes are different names.
     digest = hashlib.sha256(raw).hexdigest()
     script = directory / SCRIPT_DIRNAME / f"{digest}.sh"
-    _publish_bytes_if_absent(script, raw, mode=0o755)
+    immutable_files.publish_mutable(script, raw, mode=0o755)
     # A pointer to the newest attempt's script, for a reader that wants one
     # name.  It is not what any job executes and nothing derives a submission
     # from it: ``sbatch`` is handed the immutable path above and the record
@@ -2396,12 +2337,6 @@ def read_stream_tail(path: str | Path, *, limit: int | None = None) -> str:
     return head + raw.decode("utf-8", errors="replace")
 
 
-def _queue_dir(queue_root: str | Path, state: str) -> Path:
-    directory = Path(queue_root) / state
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
-
-
 def _record_generation(record: Mapping[str, object] | None) -> float | None:
     """The run one record belongs to, or ``None`` when it names none.
 
@@ -2546,8 +2481,9 @@ def _summary_lock(path: Path) -> Iterator[None]:
     not supported. Kernel locks are released if the writer exits or crashes.
     """
 
-    directory = path.parent.parent / ".summary-locks"
-    lock_path = directory / f"{path.stem}.lock"
+    lock_path = record_store.RecordStore.summary_lock_path(path)
+    directory = lock_path.parent
+    lock_path = lock_path
     with posix_lock.held(lock_path):
         yield
 
@@ -2565,7 +2501,7 @@ def _land_summary(
         # A delayed waiter may choose a different terminal state than the
         # newer run. Comparing only the target filename would let its old
         # failure land alongside that newer run's success (or withdrawal).
-        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+        for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
             sibling = path.parent.parent / state / path.name
             try:
                 present = sibling.name in os.listdir(sibling.parent)
@@ -2608,7 +2544,7 @@ def _land_summary_locked(
     after the newer writer has finished its reread and returned. The reread
     below remains a repair for an uncoordinated writer crossing this call,
     but all current summary writers must take the lock for ordering to hold.
-    The absent case is link-first (``_publish_json_if_absent``), so two
+    The absent case is link-first (``RecordStore.file_lane_item_if_absent``), so two
     writers arriving at an empty name cannot both think they were first.
 
     Repair stops on anything but a readable older generation.  A record with
@@ -2639,7 +2575,10 @@ def _land_summary_locked(
     while True:
         existing = _read_json_object(path)
         if existing is None:
-            if not _publish_json_if_absent(path, payload):
+            if not record_store.RecordStore(path.parent.parent).file_lane_item_if_absent(
+                path,
+                payload,
+            ):
                 # A record landed between the read and the link.  Compare
                 # against it rather than replacing it unseen. If the name
                 # contains unreadable JSON, repeating this loop cannot make
@@ -2658,7 +2597,7 @@ def _land_summary_locked(
                 and (refuse_same_generation or "detail" in existing)
             ):
                 return False
-            _write_json_atomic(path, payload, trailing_newline=True)
+            record_store.RecordStore(path.parent.parent).replace_lane_item_at(path, payload)
         after = _read_json_object(path)
         standing = None if after is None else _record_generation(after)
         if standing is None or standing >= floor:
@@ -2713,7 +2652,7 @@ def publish_outcome(
         # ``cache_hit`` is the pull queue's word for work the CAS already
         # held; ``pbrun`` files it here only when the key has no ``done/``
         # record at all (see ``pbrun.cached_outcome``).
-        state = pool.record_store.DONE
+        state = record_store.DONE
     elif status == "withdrawn":
         # The pool's rule, from ``PoolQueue.withdraw``: a withdrawal lands in
         # ``withdrawn/``, never ``failed/``.  A withdrawn action is a decision,
@@ -2721,10 +2660,10 @@ def publish_outcome(
         # about the fleet -- every reader that counts failures counts it.
         # The marker ``publish_withdrawal`` filed there is the decision; this
         # record enriches it with the job's ending and keeps its fields.
-        state = pool.record_store.WITHDRAWN
+        state = record_store.WITHDRAWN
     else:
-        state = pool.record_store.FAILED
-    path = _queue_dir(queue_root, state) / f"{key}.json"
+        state = record_store.FAILED
+    path = record_store.RecordStore(queue_root).lane_item_address(state, key)
     decision: dict[str, object] = {}
     existing = _read_json_object(path)
     if existing is not None:
@@ -2735,7 +2674,7 @@ def publish_outcome(
             # the write, for a record that lands while this one is built.
             return None
         theirs = _record_generation(existing)
-        if state == pool.record_store.WITHDRAWN:
+        if state == record_store.WITHDRAWN:
             if "detail" in existing and theirs == float(published_unix):
                 # A full ending is already filed for this generation.
                 return None
@@ -2841,7 +2780,7 @@ def publish_outcome(
         # interleave, and a rename here replaced the execution's record with
         # the hit's.  ``None`` means a record already stands, as it does for a
         # same-generation record above.
-        if not _publish_json_if_absent(path, record):
+        if not record_store.RecordStore(queue_root).file_lane_item_if_absent(path, record):
             return None
         return path
     if not _land_summary(
@@ -2849,7 +2788,7 @@ def publish_outcome(
         # The withdrawal enrichment replaces the marker of its own generation
         # with the marker plus the job's ending, which is the one write that
         # legitimately lands on a record of the same generation.
-        refuse_same_generation=state != pool.record_store.WITHDRAWN,
+        refuse_same_generation=state != record_store.WITHDRAWN,
     ):
         return None
     return path
@@ -2891,7 +2830,7 @@ def read_withdrawal_marker(
     """
 
     key = str(action_key)
-    directory = Path(queue_root) / pool.record_store.WITHDRAWN
+    directory = Path(queue_root) / record_store.WITHDRAWN
     path = directory / f"{key}.json"
     try:
         if path.name not in os.listdir(directory):
@@ -2930,7 +2869,7 @@ def publish_withdrawal(
     """
 
     key = str(action_key)
-    _queue_dir(queue_root, pool.record_store.WITHDRAWN)
+    record_store.RecordStore(queue_root).prepare_lane_state(record_store.WITHDRAWN)
     path, existing = read_withdrawal_marker(queue_root, key)
     if existing is not None:
         return path, existing
@@ -2946,7 +2885,7 @@ def publish_withdrawal(
         "withdrawn_by": str(by),
         "reason": str(reason),
     })
-    _write_json_atomic(path, filed, trailing_newline=True)
+    record_store.RecordStore(queue_root).replace_lane_item_at(path, filed)
     return path, filed
 
 
@@ -3042,9 +2981,7 @@ def supersede_withdrawal(
     if theirs is not None and theirs >= float(published_unix):
         return None
     when = _now()
-    archive_directory = _queue_dir(queue_root, pool.record_store.WITHDRAWN) / "superseded"
-    archive_directory.mkdir(parents=True, exist_ok=True)
-    archive = archive_directory / f"{key}.{when:.6f}.withdrawal.json"
+    archive = record_store.RecordStore(queue_root).lane_withdrawal_archive(key, when)
     try:
         os.rename(live, archive)
     except OSError:
@@ -3073,7 +3010,7 @@ def supersede_withdrawal(
         "superseded_unix": when,
         "superseded_host": socket.gethostname(),
     })
-    _write_json_atomic(archive, kept, trailing_newline=True)
+    record_store.RecordStore(queue_root).replace_lane_item_at(archive, kept)
     return claimed
 
 
@@ -3415,7 +3352,9 @@ def _file_ending(
         return
 
     if status == "cache_hit" and (
-        _queue_dir(queue_root, pool.record_store.DONE) / f"{result.action_key}.json"
+        record_store.RecordStore(queue_root).prepare_lane_state(
+            record_store.DONE,
+        ) / f"{result.action_key}.json"
     ).exists():
         # See the docstring: the run that did the work keeps the record.
         return
@@ -3517,7 +3456,7 @@ def _filed_index(queue_root: str | Path) -> dict[str, list[tuple[str, Path]]]:
     """
 
     index: dict[str, list[tuple[str, Path]]] = {}
-    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+    for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
             names = os.listdir(directory)
@@ -3562,7 +3501,7 @@ def _ending_on_disk(
             continue
         if _record_generation(record) != floor:
             continue
-        if state == pool.record_store.WITHDRAWN and "detail" not in record:
+        if state == record_store.WITHDRAWN and "detail" not in record:
             continue
         return ALREADY_FILED
     return SUPERSEDED if superseded else None
@@ -3758,11 +3697,11 @@ def _filed_ending(
     """The status of this generation's ending, or ``None`` when none stands."""
 
     floor = float(published_unix)
-    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+    for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
         record = _read_json_object(
             Path(queue_root) / state / f"{action_key}.json")
         if record is not None and _record_generation(record) == floor:
-            if state == pool.record_store.WITHDRAWN and "detail" not in record:
+            if state == record_store.WITHDRAWN and "detail" not in record:
                 continue
             return str(record.get("status") or "")
     return None
