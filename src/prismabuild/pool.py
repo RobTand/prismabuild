@@ -155,7 +155,46 @@ from .denial_records import (
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
-from . import immutable_files
+from . import immutable_files, record_store
+from .record_store import PoolError, PoolContractError, StaleAbsenceError
+from .record_store import (
+    ATTEMPTS,
+    CLAIMED,
+    DENIAL_TRANSITIONS,
+    DONE,
+    EXPORTS,
+    FAILED,
+    INTENT,
+    LATE_FINISH_SUFFIX,
+    MOVERS,
+    MOVERS_ARCHIVE,
+    MOVERS_PRICING,
+    MOVERS_PRICING_LOG,
+    MOVERS_RETIRED,
+    MOVERS_RETIREMENT_CHECKPOINT,
+    MOVERS_RETIREMENT_STATE,
+    MOVER_LANDING_REPORT,
+    PASSES,
+    POOL_ATTEMPT_SCHEMA_V1,
+    PREWARM,
+    READY,
+    RELEASED_ORIGIN_CONSUMERS,
+    RESIDENCY,
+    RESIDENCY_EVENTS,
+    RESIDENCY_EVENTS_HOST_DIR,
+    RESIDENCY_PLANS,
+    STAGE_OWNERSHIP_HOLDERS,
+    TIERS,
+    TIER_COMMITMENTS,
+    TIER_FUNDING,
+    TIER_FUNDING_RETIRED,
+    TIER_RESERVATIONS,
+    TOMBSTONE_SUFFIX,
+    WITHDRAWN,
+    WORKERS,
+    _CLAIM_IDENTITY,
+    _STATES,
+)
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
     _cleanup_execution_checkout,
