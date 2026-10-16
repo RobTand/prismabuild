@@ -56,8 +56,8 @@ def _assert_unknown(queue, measurement, denial, clock):
     assert decision["reason"] == "measurement_sampler_unknown", waiting
     assert decision["fresh"] is False
     assert waiting["evidence"].get("withhold", {}).get("withhold") is not True
-    assert queue.item_path(pool.READY, measurement).exists()
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert queue._carried_withhold(queue._host_denial_records(), item,
                                  host="sparklina", now=clock[0]) is None
 
@@ -86,7 +86,7 @@ def test_unknown_observations_do_not_protect_a_long_incumbent_drain(fleet, monke
     backfill = publish("backfill")
     claim = partial(claim, cpu_sampler=_silence( clock, readings, kind))
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock)
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}
 
 
@@ -107,7 +107,7 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     records = queue._host_denial_records()
     carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
@@ -125,8 +125,8 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
                                    evidence={"withhold_carried": carried})}
         assert "transition_busy" in pool.WITHHOLD_CARRYING_REASONS
     assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 @pytest.mark.parametrize("bad", ["partial", "huge_timestamp", "carried_unknown"])
@@ -136,7 +136,7 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     records = queue._host_denial_records()
     published = item["published_unix"]
@@ -166,7 +166,7 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
             invalid = dict(decision, sample=dict(observed, sampled_unix=10 ** 1000))
         records = {generation: dict(previous, evidence=dict(evidence, decision=invalid))}
     assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder}
 
 
@@ -186,7 +186,7 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     backfill = publish("backfill", timeout_s=8000)
     restarted = pool.PoolQueue(queue.root)
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock, q=restarted)
-    record = pool._read_json(queue.passes_path(measurement))
+    record = pool.record_store.read_queue_record(queue.records.passes_path(measurement))
     assert isinstance(record, dict)
     episodes = record["measurement_drains"]
     assert isinstance(episodes, dict)
@@ -207,5 +207,5 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
         assert recovered["selection"]["host"] == "sparklina"
         assert recovered["selection"]["action_key"] == measurement
         assert recovered["selection"]["opportunity_unix"] == original
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}

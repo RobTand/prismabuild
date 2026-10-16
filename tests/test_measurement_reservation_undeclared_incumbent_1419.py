@@ -54,7 +54,7 @@ def test_undeclared_incumbent_still_elects_and_bounds_the_wait_by_its_lifetime(f
         _assert_holder_unchanged(queue, incumbent, before)
     _assert_holder_unchanged(queue, incumbent, snapshot)
     assert queue.ledger().held_keys() == [incumbent]
-    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
+    chosen = reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {})
     assert chosen is not None and chosen["host"] == "sparklina" and chosen["priority"] == 0
     assert chosen["opportunity_unix"] >= chosen["epoch_unix"]
 
@@ -64,7 +64,7 @@ def test_undeclared_incumbent_still_elects_and_bounds_the_wait_by_its_lifetime(f
     assert claim() == measurement, denial(measurement)
     assert queue.ledger().held_keys() == [measurement]
     for candidate in lower:
-        assert queue.item_path(pool.READY, candidate).exists()
+        assert queue.records.item_path(pool.record_store.READY, candidate).exists()
 
 
 def test_undeclared_incumbent_election_leaves_the_other_matching_host_open(fleet):
@@ -76,7 +76,7 @@ def test_undeclared_incumbent_election_leaves_the_other_matching_host_open(fleet
     measurement = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
     assert claim("sparklina") is None
-    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
+    chosen = reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {})
     assert chosen is not None and chosen["host"] == "sparklina"
     candidate = publish("other-matching-host-backfill", priority=-10, timeout_s=None)
     assert claim("sparky") == candidate, "one election shut both matching GPUs"
@@ -138,24 +138,24 @@ def test_an_undeclared_producers_own_export_is_not_held_behind_the_election(flee
     refill = publish("unrelated-refill", priority=-10, timeout_s=None,
                      cpu=1, gpu=0, mem_gb=1, pinned=True)
     export = _export_of(tmp_path, queue, clock, producer, "export-0")
-    assert adaptive_cpu.dependent_owner(pool._read_json(queue.item_path(pool.READY, export))) == producer
+    assert adaptive_cpu.dependent_owner(pool.record_store.require(queue.records.item(pool.record_store.READY, export))) == producer
     assert claim() == export, denial(export)
     assert set(queue.ledger().held_keys()) == {producer, export}
-    chosen = reservation.selection(pool._read_json(queue.passes_path(measurement)) or {})
+    chosen = reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {})
     assert chosen is not None and chosen["host"] == "sparklina"
 
     assert claim() is None, "an unrelated refill took the elected host"
     assert denial(refill)["reason"] in (
         "deferred_for_measurement_reservation", "deferred_behind_withheld_row")
     assert denial(refill)["evidence"]["withheld_for"] == measurement
-    assert queue.item_path(pool.READY, refill).exists()
+    assert queue.records.item_path(pool.record_store.READY, refill).exists()
 
     queue.finish(export, status="executed")
     queue.finish(producer, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
     assert queue.ledger().held_keys() == [measurement]
-    assert queue.item_path(pool.READY, refill).exists()
+    assert queue.records.item_path(pool.record_store.READY, refill).exists()
 
 
 def test_a_dependent_of_hint_without_a_sealed_owner_stays_behind_the_election(fleet, tmp_path):
@@ -170,13 +170,13 @@ def test_a_dependent_of_hint_without_a_sealed_owner_stays_behind_the_election(fl
     assert claim() is None
     tick(pool.WITHHOLD_CEILING_S + 60)
     hinted = _export_of(tmp_path, queue, clock, producer, "hint-only", sealed_owner=False)
-    item = pool._read_json(queue.item_path(pool.READY, hinted))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, hinted))
     assert item["dependent_of"] == producer
     assert adaptive_cpu.dependent_owner(item) is None
     assert claim() is None, "a dependent_of hint alone bypassed the election"
     assert denial(hinted)["evidence"]["withheld_for"] == measurement
     assert queue.ledger().held_keys() == [producer]
-    assert reservation.selection(pool._read_json(queue.passes_path(measurement)) or {}) is not None
+    assert reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {}) is not None
 
 
 def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
@@ -190,22 +190,22 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     assert ledger.available().get("mem_gb") == 120, ledger.available()
     holder = hold(queue, publish, claim)
     assert queue.ledger("sparklina").held_keys() == [holder]
-    assert not queue.item_path(pool.CLAIMED, holder).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
     measurement = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
     assert claim() is None
     first = denial(measurement)["evidence"]["withhold"]
     assert first["why"] == "draining_for_measurement", first
     assert [entry["action_key"] for entry in first["holders"]] == [holder]
-    assert reservation.selection(pool._read_json(queue.passes_path(measurement)) or {}) is None
+    assert reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {}) is None
     tick(pool.WITHHOLD_CEILING_S + 60)
     refill = publish("lower-priority-consumer", priority=-10, timeout_s=None,
                      cpu=1, gpu=0, mem_gb=1, pinned=True)
     assert claim() == refill, denial(refill)
-    assert reservation.selection(pool._read_json(queue.passes_path(measurement)) or {}) is None
+    assert reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement)) or {}) is None
     lapsed = denial(measurement)["evidence"]["withhold"]
     assert lapsed["why"] == "measurement_drain_expired" and lapsed["withhold"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_a_ram_fill_hold_alone_does_not_elect_the_host(fleet):
@@ -227,7 +227,7 @@ def test_a_holder_no_claim_record_names_does_not_elect_the_host(fleet):
         orphan = publish("orphaned-holder", priority=-10, timeout_s=None,
                          cpu=2, gpu=1, mem_gb=8)
         assert claim() == orphan
-        queue.item_path(pool.CLAIMED, orphan).unlink()
+        queue.records.item_path(pool.record_store.CLAIMED, orphan).unlink()
         assert queue.holder_bound(orphan)["bound"] == "unknown"
         return orphan
     _non_action_holder_keeps_the_bounded_episode(fleet, hold)

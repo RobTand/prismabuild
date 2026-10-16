@@ -15,7 +15,7 @@ from prismabuild import drain_policy
 def test_incomplete_legacy_baseline_proof_is_not_measured(fleet, baseline):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, first, started = _unmeasured(fleet)
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     records = copy.deepcopy(queue._host_denial_records())
     stamp = item["published_unix"]
@@ -36,7 +36,7 @@ def test_incomplete_legacy_baseline_proof_is_not_measured(fleet, baseline):
     verdict.pop("unmeasured_until_unix", None)
     verdict.pop("measurement_unmeasured", None)
     assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def test_expired_unknown_does_not_reserve_a_physically_free_gpu(fleet):
@@ -50,8 +50,8 @@ def test_expired_unknown_does_not_reserve_a_physically_free_gpu(fleet):
     if result is None:
         assert denial(measurement)["evidence"]["withhold"]["withhold"] is False
     assert result == backfill
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def _tail_decision():

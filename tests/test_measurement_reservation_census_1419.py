@@ -19,7 +19,7 @@ fleet = fleet_fixture
 
 
 def _chosen(queue, key):
-    record = pool._read_json(queue.passes_path(key))
+    record = pool.record_store.read_queue_record(queue.records.passes_path(key))
     assert isinstance(record, dict)
     chosen = reservation.selection(record)
     assert chosen is not None
@@ -31,7 +31,7 @@ def test_stale_prefetch_cannot_omit_an_elected_measurement(fleet):
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("omitted-measurement", timeout_s=5)
     _observe_real_sharing_permission(fleet, lower)
-    candidate = pool._read_json(queue.item_path(pool.READY, lower))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
                          adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"],
@@ -83,9 +83,9 @@ def test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_electi
     monkeypatch.setattr(pool.ResourceLedger, '_scan_names', scan_then_arrive)
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     assert arrived[0]
-    assert reservation.selection(pool._read_json(queue.passes_path(measurement))) is None
+    assert reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(measurement))) is None
     assert queue.ledger().holder_tokens('ram-host:election-gap') == {'mem_gb': 1}
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert queue.ledger().holds_gpu(holder)
     assert queue.release_tier_host_memory(queue.ledger().host, 'election-gap') == 1
 
@@ -111,14 +111,14 @@ def test_new_unlocked_measurement_at_refresh_restarts_without_tokens(fleet, monk
     # would see it.
     assert claim() == lower, denial(lower)
     assert queue.ledger().held_keys() == [lower]
-    assert queue.item_path(pool.READY, measurement[0]).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement[0]).exists()
 
 
 def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("busy-M-lower")
-    candidate = pool._read_json(queue.item_path(pool.READY, lower))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     def candidate_only():
         return queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                            cpu_tiers={"preferred": list(range(20)), "fallback": []},
@@ -146,9 +146,9 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
     _observe_real_sharing_permission(fleet, lower)
     cpu_sampler = lambda: fleet_cpu_sample(clock, readings)
     if fault == "missing":
-        queue.item_path(pool.READY, measurement).unlink()
+        queue.records.item_path(pool.record_store.READY, measurement).unlink()
     elif fault == "corrupt":
-        queue.item_path(pool.READY, measurement).write_text("{")
+        queue.records.item_path(pool.record_store.READY, measurement).write_text("{")
     elif fault == "cpu_unknown":
         cpu_sampler = lambda: {}
     else:
@@ -157,7 +157,7 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
     assert claim(q=pool.PoolQueue(queue.root), cpu_sampler=cpu_sampler) is None
     assert _chosen(queue, measurement) == chosen
     assert queue.ledger().held_keys() == [holder]
-    assert queue.item_path(pool.READY, lower).exists()
+    assert queue.records.item_path(pool.record_store.READY, lower).exists()
 
 
 def test_measurement_keys_and_H_cover_begin_but_not_commit(fleet, monkeypatch):
@@ -195,7 +195,7 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
     measurement = publish("two-host-election", measurement=True, priority=0)
     host_context = ContextVar("fixture-host", default="sparklina")
     monkeypatch.setattr(pool.socket, "gethostname", host_context.get)
-    row = pool._read_json(queue.item_path(pool.READY, measurement))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     start = threading.Barrier(2)
     def elect_on(host):
         token = host_context.set(host)
@@ -214,7 +214,7 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
         assert a.result(timeout=10) is None and b.result(timeout=10) is None
     selected = _chosen(queue, measurement)
     assert selected["host"] in ("sparklina", "sparky")
-    assert selected["generation"] == queue.attempt_generation(row)
+    assert selected["generation"] == queue.records.attempt_generation(row)
     queue.record_pass(measurement)
     assert _chosen(queue, measurement) == selected
 
@@ -227,15 +227,15 @@ def test_claim_defer_retry_preserves_one_election(fleet):
     tick(11)
     assert claim() == measurement
     assert _chosen(queue, measurement) == chosen
-    record = pool._read_json(queue.item_path(pool.CLAIMED, measurement))
+    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, measurement))
     queue._defer_unstarted_claim(record)
     assert _chosen(queue, measurement) == chosen
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     tick(11)
     assert claim(q=pool.PoolQueue(queue.root)) == measurement
     assert _chosen(queue, measurement) == chosen
     queue.finish(measurement, status="failed", detail={"returncode": 1})
-    retry = pool._read_json(queue.item_path(pool.READY, measurement))
+    retry = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(retry, dict) and retry["attempts"] == 1
     assert _chosen(queue, measurement) == chosen
     tick(11)
@@ -257,21 +257,21 @@ def test_locked_authoritative_retirement_allows_lower_progress(fleet, ending):
         assert claim() == measurement
         queue.finish(measurement, status="executed")
     else:
-        queue.item_path(pool.READY, measurement).unlink()
+        queue.records.item_path(pool.record_store.READY, measurement).unlink()
         tick(1)
         same = publish("priority-zero-measurement", measurement=True, priority=0,
                        cpu=8, gpu=1, mem_gb=48)
         assert same == measurement
         # The new generation has not elected a host; old metadata cannot
         # bind its successor. Observe lower with stale prefetch to isolate it.
-        successor = pool._read_json(queue.item_path(pool.READY, same))
+        successor = pool.record_store.require(queue.records.item(pool.record_store.READY, same))
         assert isinstance(successor, dict)
-        assert queue.attempt_generation(successor) != old["generation"]
+        assert queue.records.attempt_generation(successor) != old["generation"]
     if queue.ledger().held_keys():
         _observe_real_sharing_permission(fleet, lower)
     else:
         tick(11)
-    candidate = pool._read_json(queue.item_path(pool.READY, lower))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
                          adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
@@ -299,7 +299,7 @@ def test_mixed_capacity_claim_cannot_bypass_an_adaptive_election(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("nonadaptive-no-refill", timeout_s=5)
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     assert _legacy_claim(pool.PoolQueue(queue.root), row) is None
     assert denial(lower)["reason"] == "deferred_for_measurement_reservation"
     assert queue.ledger().held_keys() == [holder]
@@ -308,7 +308,7 @@ def test_mixed_capacity_claim_cannot_bypass_an_adaptive_election(fleet):
 def test_lock_only_gate_preserves_nonadaptive_decisions(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     lower = publish("legacy-capacity-control")
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     def no_policy(*args, **kwargs):
         raise AssertionError("nonadaptive claim evaluated CPU policy")
     monkeypatch.setattr(adaptive_cpu.Controller, "decision", no_policy)
@@ -319,7 +319,7 @@ def test_lock_only_gate_preserves_nonadaptive_decisions(fleet, monkeypatch):
 def test_mixed_lock_contention_is_nonblocking_and_takes_no_tokens(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     lower = publish("legacy-contended-control")
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     controller = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
         sampler=lambda: fleet_cpu_sample(clock, readings))
     with controller.locked():
@@ -331,7 +331,7 @@ def test_mixed_lock_contention_is_nonblocking_and_takes_no_tokens(fleet):
 def test_unavailable_host_identity_refuses_nonadaptive_capacity_claim(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     lower = publish("legacy-unavailable-control")
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     def unknown(base):
         raise RuntimeError("unprovable host exclusion identity")
     monkeypatch.setattr(adaptive_cpu, "box_state", unknown)
@@ -346,7 +346,7 @@ def test_claimed_tombstone_ready_defer_gap_never_loses_election(fleet, monkeypat
     tick(11)
     assert claim() == measurement
     chosen = _chosen(queue, measurement)
-    row = pool._read_json(queue.item_path(pool.CLAIMED, measurement))
+    row = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, measurement))
     assert isinstance(row, dict)
     entomb = queue._entomb_claim
     gap, proceed = threading.Event(), threading.Event()
@@ -357,19 +357,19 @@ def test_claimed_tombstone_ready_defer_gap_never_loses_election(fleet, monkeypat
         return result
     monkeypatch.setattr(queue, "_entomb_claim", paused)
     lower = publish("inside-real-defer-gap")
-    candidate = pool._read_json(queue.item_path(pool.READY, lower))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     with ThreadPoolExecutor(max_workers=1) as executor:
         deferred = executor.submit(queue._defer_unstarted_claim, row)
         try:
             assert gap.wait(5)
-            assert not queue.item_path(pool.READY, measurement).exists()
-            assert not queue.item_path(pool.CLAIMED, measurement).exists()
+            assert not queue.records.item_path(pool.record_store.READY, measurement).exists()
+            assert not queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
             assert _legacy_claim(pool.PoolQueue(queue.root), candidate) is None
             assert _chosen(queue, measurement) == chosen
         finally:
             proceed.set()
         deferred.result(timeout=5)
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert _legacy_claim(queue, candidate) is None
     assert _chosen(queue, measurement) == chosen
 
@@ -391,12 +391,12 @@ def test_persisted_live_reader_blocks_restart_before_another_fork(fleet, monkeyp
 def test_corrupt_selector_never_disappears_into_legacy_attention(fleet, field):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
-    sidecar = pool._read_json(queue.passes_path(measurement))
+    sidecar = pool.record_store.read_queue_record(queue.records.passes_path(measurement))
     assert isinstance(sidecar, dict)
     sidecar[reservation.FIELD][field] = None
-    pool._write_json_atomic(queue.passes_path(measurement), sidecar)
+    pool._write_json_atomic(queue.records.passes_path(measurement), sidecar)
     lower = publish("corrupt-selector-lower")
-    candidate = pool._read_json(queue.item_path(pool.READY, lower))
+    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     assert _legacy_claim(queue, candidate) is None
     assert denial(lower)["reason"] == "measurement_census_unavailable"
     assert queue.ledger().held_keys() == [holder]
@@ -408,10 +408,10 @@ def test_unmanaged_claim_is_refused_without_changing_elected_ownership(fleet):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     lower = publish("unmanaged-bypass-witness")
-    row = pool._read_json(queue.item_path(pool.READY, lower))
+    row = pool.record_store.require(queue.records.item(pool.record_store.READY, lower))
     result = queue.claim(has_gpu=True, tags=["gb10", "sparklina"], ready=[row])
     assert result is None
     assert denial(lower)["reason"] == "admission_capacity_required"
-    assert queue.item_path(pool.READY, lower).exists()
+    assert queue.records.item_path(pool.record_store.READY, lower).exists()
     assert queue.ledger().held_keys() == [holder]
     assert _chosen(queue, measurement)["host"] == "sparklina"

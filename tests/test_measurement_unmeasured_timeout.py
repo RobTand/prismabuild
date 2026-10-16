@@ -70,8 +70,8 @@ def test_fresh_unmeasured_baseline_cannot_protect_a_long_drain_indefinitely(flee
     waiting = denial(measurement)["evidence"]["withhold"]
     assert waiting["why"] == "measurement_baseline_unknown"
     assert waiting["drain_until_unix"] <= started + FAIRNESS_BOUND_S
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
     assert queue.ledger().holds_gpu(holder)
 
 
@@ -91,8 +91,8 @@ def test_a_proven_holder_drain_is_independent_and_unknown_recovery_cannot_renew(
     waiting = denial(measurement)["evidence"]["withhold"]
     assert waiting["why"] == "measurement_baseline_unknown"
     assert waiting["drain_until_unix"] <= started + FAIRNESS_BOUND_S
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 @pytest.mark.parametrize("repeated", [False, True])
@@ -101,7 +101,7 @@ def test_fresh_cpu_carry_cannot_outlive_the_unknown_cutoff(fleet, repeated):
     holder, measurement, first, started = _unmeasured(fleet)
     tick(FAIRNESS_BOUND_S - 2)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     records = queue._host_denial_records()
     carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
@@ -118,11 +118,11 @@ def test_fresh_cpu_carry_cannot_outlive_the_unknown_cutoff(fleet, repeated):
     tick(3)
     assert clock[0] - carried["measurement_cpu_sampled_unix"] < adaptive_cpu.MAX_SAMPLE_AGE_S
     assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def _episode(queue, key):
-    record = pool._read_json(queue.passes_path(key))
+    record = pool.record_store.read_queue_record(queue.records.passes_path(key))
     assert isinstance(record, dict)
     episodes = record["measurement_drains"]
     assert isinstance(episodes, dict)
@@ -143,20 +143,20 @@ def test_bad_deadline_cannot_be_erased_into_a_new_allowance(fleet, bad, valid_js
     # Corrupted on-disk metadata, including a nonstandard nonfinite scalar;
     # the canonical production writer rightly cannot manufacture NaN.
     corrupt = json.dumps(record)
-    queue.passes_path(measurement).write_text(corrupt)
+    queue.records.passes_path(measurement).write_text(corrupt)
     assert claim(q=pool.PoolQueue(queue.root)) is None
     if not valid_json:
         # Nonfinite JSON is refused by the canonical census before the
         # permissive legacy reader can repair deadline fields (#1435).
         assert denial(measurement)["reason"] == "measurement_census_unavailable"
-        assert queue.passes_path(measurement).read_text() == corrupt
+        assert queue.records.passes_path(measurement).read_text() == corrupt
         backfill = publish("backfill")
         assert claim(q=pool.PoolQueue(queue.root)) is None
         assert denial(backfill)["reason"] == "measurement_census_unavailable"
-        assert queue.passes_path(measurement).read_text() == corrupt
+        assert queue.records.passes_path(measurement).read_text() == corrupt
         assert set(queue.ledger().held_keys()) == {holder}
-        assert queue.item_path(pool.READY, measurement).exists()
-        assert queue.item_path(pool.READY, backfill).exists()
+        assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+        assert queue.records.item_path(pool.record_store.READY, backfill).exists()
         return
     waiting = denial(measurement)["evidence"]["withhold"]
     assert waiting["withhold"] is False and waiting["drain_resolves"] is False
@@ -179,8 +179,8 @@ def test_expired_unknown_does_not_keep_fitting_cpu_room(fleet):
     assert claim() == backfill, denial(backfill)
     waiting = denial(measurement)["evidence"]["withhold"]
     assert waiting["drain_resolves"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def test_foreign_suspension_does_not_reset_or_clear_unknown_history(fleet):
