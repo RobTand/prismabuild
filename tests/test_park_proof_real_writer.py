@@ -106,12 +106,17 @@ def parked_role(tmp_path):
                     process.stdin.flush()
                     return json.loads(_line(process, log))
 
+                def stop():
+                    process.stdin.close()
+                    process.wait(timeout=5)
+                    assert process.returncode == 0, log.read_text()
+
                 census = [_census_entry(process.pid)]
                 client = upgrade_client.Upgrader(
                     {"install_dir": str(tmp_path / "installed"),
                      "state_dir": str(tmp_path / "state"),
                      "maintenance_gate": str(gate)}, procs=lambda: census)
-                yield SimpleNamespace(post=post, census=census, client=client,
+                yield SimpleNamespace(post=post, stop=stop, census=census, client=client,
                                       gate=gate, parked=parked, runtime=runtime,
                                       set_gate=set_gate)
             finally:
@@ -190,21 +195,50 @@ def test_failed_marker_write_cannot_acknowledge_until_the_directory_is_repaired(
             {"drained": True, "unparked": [], "active_scopes": 0}, True)
 
 
-@pytest.mark.parametrize("script,host_requires,member_requires", [
-    ("worker_loop.py", True, True),
-    ("worker.py", True, False),
-    ("prewarm_loop.py", True, False),
-    ("tier_loop.py", False, False),
-    ("local_tier_loop.py", False, False),
-    ("pbmetrics.py", False, False),
+@pytest.mark.parametrize("script,required", [
+    ("worker_loop.py", True),
+    ("worker.py", True),
+    ("prewarm_loop.py", True),
+    ("tier_loop.py", True),
+    ("local_tier_loop.py", True),
+    ("pbmetrics.py", False),
 ])
-def test_existing_host_and_member_profiles_select_different_roles(
-        parked_role, script, host_requires, member_requires):
+def test_work_storage_roles_require_actual_park_or_exit_for_both_proofs(
+        parked_role, monkeypatch, script, required):
     with parked_role(script) as role:
         pid, start, _ = role.census[0]
-        assert upgrade_client.serving(role.census, park_proof.HOST_QUIESCENT) == (
-            [(pid, start)] if host_requires else [])
-        assert supervise._is_fleet_loop(pid, [role.runtime]) is member_requires
+        monkeypatch.setattr(supervise, "_proven_roots", lambda: [role.runtime])
+        role.client.procs = upgrade_client.proc_census
+        census, error = fleet_membership.live_loop_census()
+        assert error is None
+        assert ((pid, start) in census) is required
+        assert role.client.drain_evidence({"draining": True, "active_scopes": 0}) == {
+            "drained": not required,
+            "unparked": [pid] if required else [],
+            "active_scopes": 0,
+        }
+        gate = fleet_membership.read_gate(role.gate)
+        markers = {p.name for p in fleet_membership.parked_markers(role.parked, gate)}
+        before = park_proof.acknowledgements(
+            processes=census, markers=markers, gate_before=gate, gate_after=gate)
+        assert before.complete is (not required)
+        assert before.unparked == ((pid,) if required else ())
+        if script == "worker.py":
+            assert markers == set()
+            role.stop()
+            assert not Path(f"/proc/{pid}").exists()
+        elif required:
+            assert role.post() is not None
+        census, error = fleet_membership.live_loop_census()
+        assert error is None
+        after_gate = fleet_membership.read_gate(role.gate)
+        markers = {p.name for p in fleet_membership.parked_markers(role.parked, after_gate)}
+        after = park_proof.acknowledgements(
+            processes=census, markers=markers, gate_before=gate, gate_after=after_gate)
+        assert after.complete
+        assert role.client.drain_evidence({"draining": True, "active_scopes": 0}) == {
+            "drained": True, "unparked": [], "active_scopes": 0,
+        }
 
 
 def test_unrelated_missing_and_malformed_receipts_do_not_block_physical_park_proof(
