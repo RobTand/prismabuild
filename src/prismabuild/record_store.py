@@ -7,7 +7,7 @@ and impose no deadline.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import errno
 import json
@@ -417,7 +417,7 @@ class RecordStore:
             return claimed
         return self._plain("ready", key)
 
-    def _plain(self, state: QueueState, key: str) -> ReadResult[JsonRecord]:
+    def _plain(self, state: str, key: str) -> ReadResult[JsonRecord]:
         path = self.root
         try:
             path = self.item_path(state, key)
@@ -1131,7 +1131,9 @@ class RecordStore:
         return [(path, self.withdrawal_decision(path)) for path in paths]
 
 
-    def attempt_documents(self, action_key: str, *, generation: float | None = None):
+    def attempt_documents(
+        self, action_key: str, *, generation: float | None = None,
+    ) -> Iterator[tuple[Path, JsonRecord | None]]:
         """Read an optional history namespace in its original file order.
 
         Documents are yielded as read, so a caller's refusal still stops
