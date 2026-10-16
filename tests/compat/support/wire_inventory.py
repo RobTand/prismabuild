@@ -13,8 +13,7 @@ WIRE = re.compile(r"^[A-Za-z][\w.-]+\.v\d+$")
 
 
 def production(path):
-    return not path.startswith(("tests/", "tools/maintenance/compat_", "tools/maintenance/record_compat.py",
-                                "tools/maintenance/wire_inventory.py", "tools/maintenance/audit_compat_actions.py"))
+    return not path.startswith("tests/")
 
 
 def module_name(path):

@@ -31,7 +31,7 @@ def pin(root, *, write=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
     print(json.dumps(pin(args.root, write=args.write), sort_keys=True))
