@@ -168,6 +168,7 @@ def main():
     consumer_started = False
     source_codes, checked_codes, code_hashes = {}, set(), {}
     code_errors = []
+    production_prefix = str(root) + "/"
 
     def begin_consumer():
         nonlocal consumer_started
@@ -182,7 +183,7 @@ def main():
     request["_consumer_boundary"] = begin_consumer
 
     def entered(frame, event, arg):
-        if event == "call" and frame.f_code.co_filename.startswith(str(root) + "/"):
+        if event == "call" and frame.f_code.co_filename.startswith(production_prefix):
             actual = frame.f_code
             filename = actual.co_filename
             identity = (filename, actual.co_qualname, actual.co_firstlineno, actual)
@@ -209,9 +210,9 @@ def main():
             calls.add((str(Path(filename).relative_to(root)), actual.co_name, actual.co_firstlineno, actual.co_qualname))
 
     def traced(frame, event, arg):
-        if frame.f_code.co_filename.startswith(str(root) + "/"):
+        if frame.f_code.co_filename.startswith(production_prefix):
             if event == "line":
-                path = str(Path(frame.f_code.co_filename).relative_to(root))
+                path = frame.f_code.co_filename[len(production_prefix):]
                 executed_lines.setdefault(path, set()).add(frame.f_lineno)
             return traced
         return None
