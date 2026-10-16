@@ -17780,6 +17780,9 @@ The bound query validates the decoded value, so receipted null retains its nativ
 ActionContractError. Reporter and queue still map that refusal to zero credit or
 no durable result. Native receipt and blob integrity errors retain their types;
 strict JSON failures use the native action-contract refusal.
+The 1,048,576-byte limit applies to every producer, including resumed
+campaigns. A larger child manifest receives no queue or reporter credit and
+cannot close its campaign group, even when its receipt and schema are valid.
 
 Queue request membership and key-based reporter result queries live in
 `decomposition`. Bound child queries require the child identity, plan and
