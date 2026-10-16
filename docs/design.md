@@ -17997,8 +17997,8 @@ uncaught preparation error still reaches the original UNCERTAIN abandonment
 and re-raise. Literal H-result seeds initialize after successful preparation.
 
 The frozen records preserve references rather than copying or freezing their
-maps. `_HostClaimRequest` describes pre-funding preparation; later H funding
-still replaces the driver demand locals and their separate reservation copy.
+maps. `_HostClaimRequest` describes pre-funding preparation. Later H funding
+replaces the host result's demand and its separate reservation copy.
 No hint, capability result, scratch price or peer observation grants local
 capacity. Canonical census and admission still decide against current host
 state, and `_ClaimReservation` still owns every token, probe, borrow, funded
@@ -18025,10 +18025,69 @@ Denials there are published before leaving that context. An unavailable census
 does not imply that M/H were acquired. Canonical PassCensus acquisition, reuse,
 refresh and setup-only catches are unchanged.
 
-The driver still owns T and the canonical census context, host admission and
-acquisition, post-H refusal accounting, tier funding, rename/commit and
-publication. The UNCERTAIN catch still ends at commit completeness. Publication
-keeps its separate recovery authority. Host/tier outcomes, publication and the
-final physical driver reduction remain unfinished C01 waves 5 through 8. This
-ownership move adds no compatibility API, queue schema, lock scope, fairness
-limit or default change.
+### Claim reservation, commit and publication driver
+
+`_claim_pass` owns the candidate T context and directly names the canonical
+`measurement_reservation.pass_admission_census` context. The canonical provider
+still acquires its reader guard, sorted local elected M keys and H. Successful
+census acquisition, conservative reuse, refresh and setup-only exceptions keep
+their existing implementation. An unavailable census can answer without owning
+M/H; its denial is still published inside the context that yielded it.
+
+`_reserve_claim_host` consumes `_CensusArbitration` directly under that context.
+It owns the two scratch freshness checks, CPU decision, funded remainder,
+withheld-room check, GPU decision, token acquisition, GPU probe and CPU borrow.
+The probe and borrow follow successful `begin_acquire`. Its optional refusal
+availability read remains under the same H. `_account_host_refusal` runs after
+the context releases M/H. Scratch generation change precedes expiry. Staged
+notes, canonical election, counting, preemption, conditional age and diagnostic
+publication retain their original order and exception boundaries.
+
+`_take_claim_tiers` owns allocation preference, reader-plan decisions, tier
+acquisition, reset and family fill borrowing. `_rename_and_commit_claim` owns
+fresh resign, claimed-name, image and gang checks, intent, rename, cache
+invalidation and moved-byte validation. `_commit_claim_reservations` commits
+tiers before the host and checks completeness. These protocols stay inside the
+original UNCERTAIN catch. Its only cleanup remains the existing reservation's
+`abandon(UNCERTAIN)` followed by a bare re-raise. An uncertain GPU probe remains
+spent. No second owner holds tokens, probes, borrow metadata or tier funding.
+
+Publication remains under T and outside UNCERTAIN. `_build_claim_record` owns
+the complete ordered projection from moved bytes. `_verify_claim_funding`
+checks tiers and kinds in insertion order, including exact token names and the
+conditional output request binding. `_persist_committed_claim` keeps terminal
+and withdrawal cleanup distinct, writes the claim before the lease, then calls
+`_seal_claim_funding`. A successful consumed mark skips readback; a failed mark
+uses the original generation-aware idempotent readback. Canonical election
+sidecars survive unstarted retries. Persistence failures retain the original
+fence-first recovery and never replace a newer READY publication.
+
+`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
+ledger totals, placement/capability views, existing read memo and canonical
+census. It captures no new per-candidate host sample, availability or holder
+state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+dead-input handling, carried room and the existing ready-GPU policy in their
+original positions. A winning rename invalidates claimed names, reader plans
+and census even when the moved record later refuses.
+
+`_HostAccepted`, `_HostRefusal`, `_TakenClaimTiers` and `_CommittedClaim` retain
+original mapping references across these boundaries. They own no resources or
+future observations. `CandidateDenial` is pending publication; `_ClaimHandled`
+means the protocol already filed that row's refusal. Cached census refusals
+retain their original evidence mapping. Ordinary gang paths retain `None` for
+the unread module, and `_gang.elected_elsewhere` retains the existing missing
+or foreign-election predicate. These are the wave4 names accepted at review.
+
+Pure candidate, reservation, gang and scratch owners decide policy from values.
+The denial codec remains `denial_records` through `record_denial`; the sole
+resource lifetime owner remains `_ClaimReservation`. The driver contains only
+typed dispatch and phase control. It is 104 ordinary physical lines and 65 AST
+statements after this extraction, against the accepted limits of 240 and fewer
+than 100. Counts do not replace inspection of the reachable protocols.
+
+`tools/maintenance/claim_driver_audit.py` records source blobs, callers,
+conditional calls, helper sizes, protected owners and driver scope checks
+without importing project code. Native histories and exact-source PB evidence
+are required separately. The diagnostic tests exercise real claims and failure
+ports rather than patching `_claim_pass`. The extraction changes no queue
+schema, lock scope, fairness limit, ready-GPU rule or default.

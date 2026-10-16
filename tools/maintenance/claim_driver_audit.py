@@ -106,7 +106,7 @@ def main():
         current[name] = claim_source_inventory((ROOT / name).read_text())
     old = claim_source_inventory(claim_audit_git("show", args.base + ":" + POOL).decode())
     references = []
-    retired = ("_carried_withhold", "_claim_pass", "_claim", "claim")
+    claim_targets = ("_carried_withhold", "_claim_pass", "_claim", "claim")
     for name in claim_audit_git("ls-files", "*.py").decode().splitlines():
         path = ROOT / name
         if not path.is_file():
@@ -118,7 +118,7 @@ def main():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 target = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-                if target in retired:
+                if target in claim_targets:
                     references.append({"path": name, "line": node.lineno, "call": claim_audit_label(node.func)})
     symbols = symtable.symtable((ROOT / POOL).read_text(), POOL, "exec")
     known = set(symbols.get_identifiers()) | set(dir(builtins))
@@ -147,6 +147,47 @@ def main():
                          ast.dump(old_methods[name], include_attributes=False) !=
                          ast.dump(new_methods[name], include_attributes=False)]
     removed_methods = sorted(set(old_methods) - set(new_methods))
+    driver = new_methods["_claim_pass"]
+    uncertain = [node for node in ast.walk(driver) if isinstance(node, ast.Try)
+                 and any(isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+                         for handler in node.handlers)]
+    census_blocks = [node for node in ast.walk(driver) if isinstance(node, ast.With)
+                     and any(claim_audit_label(item.context_expr).startswith(
+                         "measurement_reservation.pass_admission_census(") for item in node.items)]
+    transition_blocks = [node for node in ast.walk(driver) if isinstance(node, ast.With)
+                         and any(claim_audit_label(item.context_expr).startswith(
+                             "self._timed_transition_hold(") for item in node.items)]
+    scope_checks = {"single_uncertain": len(uncertain) == 1,
+                    "canonical_census_visible": len(census_blocks) == 1,
+                    "candidate_transition_visible": len(transition_blocks) == 1}
+    if len(uncertain) == 1 and len(census_blocks) == 1:
+        guarded_calls = {claim_audit_label(node.func) for statement in uncertain[0].body
+                         for node in ast.walk(statement) if isinstance(node, ast.Call)}
+        census_calls = {claim_audit_label(node.func) for node in ast.walk(census_blocks[0])
+                        if isinstance(node, ast.Call)}
+        scope_checks.update({
+            "reserve_under_census": "self._reserve_claim_host" in census_calls,
+            "accounting_after_census": "self._account_host_refusal" not in census_calls,
+            "take_and_commit_uncertain": {"self._take_claim_tiers", "self._rename_and_commit_claim"} <= guarded_calls,
+            "publication_outside_uncertain": "self._persist_committed_claim" not in guarded_calls,
+            "uncertain_cleanup_exact": ast.dump(uncertain[0].handlers[0], include_attributes=False)
+                == ast.dump(ast.parse("try: pass\nexcept BaseException:\n"
+                                      "    reservation.abandon(_ClaimExit.UNCERTAIN)\n    raise").body[0].handlers[0],
+                            include_attributes=False),
+        })
+    body = ast.Module(body=driver.body[1:], type_ignores=[])
+    scope_checks["no_nested_decision_or_encoding"] = not any(
+        isinstance(node, (ast.Lambda, ast.FunctionDef, ast.DictComp, ast.ListComp, ast.BinOp, ast.Subscript))
+        or isinstance(node, ast.Constant) and isinstance(node.value, str)
+        for node in ast.walk(body))
+    canonical_census = {}
+    module = "src/prismabuild/_measurement_reservation.py"
+    old_census = ast.parse(claim_audit_git("show", args.base + ":" + module).decode())
+    new_census = ast.parse((ROOT / module).read_text())
+    for name in ("PassCensus", "locked_census", "admission_census", "pass_admission_census"):
+        before = next(node for node in old_census.body if getattr(node, "name", None) == name)
+        after = next(node for node in new_census.body if getattr(node, "name", None) == name)
+        canonical_census[name] = ast.dump(before, include_attributes=False) == ast.dump(after, include_attributes=False)
     shape = current[POOL]["functions"]["_claim_pass"][0]
     diff = claim_audit_git("diff", "--numstat", args.base).decode().splitlines()
     report = {"head": claim_audit_git("rev-parse", "HEAD").decode().strip(),
@@ -157,6 +198,7 @@ def main():
               "unchanged_contracts": unchanged_contracts,
               "modified_existing_methods": sorted(modified_existing),
               "removed_methods": removed_methods,
+              "driver_scope_checks": scope_checks, "canonical_census_unchanged": canonical_census,
               "owners": current, "baseline_pool": old, "callers": references,
               "source_delta_numstat": diff, "driver": shape,
               "limits_pass": shape["physical"] <= 240 and shape["statements"] < 100}
@@ -164,7 +206,8 @@ def main():
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"output": str(args.output), "head": report["head"],
                       "driver": shape, "limits_pass": report["limits_pass"]}))
-    if args.final and (not report["limits_pass"] or unknown_globals or not all(unchanged_contracts.values())):
+    if args.final and (not report["limits_pass"] or unknown_globals or not all(unchanged_contracts.values())
+                       or not all(scope_checks.values()) or not all(canonical_census.values())):
         raise SystemExit(1)
 
 
