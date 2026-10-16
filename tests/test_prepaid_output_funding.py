@@ -113,7 +113,7 @@ def _publish_mover(q: pool.PoolQueue, mover: str, manifest: str,
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total},
               produced_output_batch=batch_ref)
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -214,7 +214,7 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     assert str(rec["generation"]) == gen
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
     # Consumed never re-covers.
-    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
     assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
     _moved_nothing(q, mover)
@@ -378,7 +378,7 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker)
     assert committed.get("ok") is True, committed
     # Producer finishes BEFORE mover claims (normal finish path).
     q.finish(owner, status="executed")
-    assert pool.record_store.require(q.records.item(pool.record_store.DONE, owner)) is not None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, owner)) is not None
     # Mover claim must still cover via terminal proof (not live owner).
     got = q.claim(owner="w-mover-fb")
     # Owner DONE, mover READY -> next claim is mover (if tags match).
@@ -849,7 +849,7 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
     # preserved and nothing double-charged. Repair by re-funding is refused
     # (mover holds 1 unfunded token now: physical occupancy, never credit).
     assert q.output_funded_cover(
-        TIER, pool.record_store.require(q.records.item(pool.record_store.READY, mover)) or {}, KIND, 1) == (0, None)
+        TIER, pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) or {}, KIND, 1) == (0, None)
     # Cleanup: release mover + owner holdings via normal paths preserves sum.
     assert ledger.release(mover) == 1
     assert ledger.release(owner) == held_before
@@ -1041,7 +1041,7 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
     assert (ledger.available().get(KIND, 0)
             + ledger.holder_tokens(owner).get(KIND, 0)) == cap
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
 
@@ -1107,7 +1107,7 @@ def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path, brok
         q.publish(**publication, residency=dict(residency, manifest_sha256="0" * 64))
     assert not q.records.item_path(pool.record_store.READY, mover).exists()
     q.publish(**publication, residency=residency)
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert row["produced_output_batch"] == ref
 
 
@@ -1211,7 +1211,7 @@ def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path, broker)
               residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     assert row.get("produced_output_batch") == ref
 
@@ -1241,7 +1241,7 @@ def test_sealed_contradictory_kwarg_refuses(tmp_path: Path, broker) -> None:
                              "range_start_bytes": 0,
                              "range_end_bytes": total},
                   produced_output_batch=other)
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is None
 
 
 def test_sealed_corrupt_request_refuses_not_legacy(tmp_path: Path) -> None:
@@ -1260,7 +1260,7 @@ def test_sealed_corrupt_request_refuses_not_legacy(tmp_path: Path) -> None:
                              "tier_id": TIER, "manifest_sha256": "a" * 64,
                              "manifest_bytes": 1024,
                              "range_start_bytes": 0, "range_end_bytes": 1024})
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is None
 
 
 def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker) -> None:
@@ -1303,7 +1303,7 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker
     assert request["action_key"] == mover
     assert request["params"]["produced_output_batch"] == ref
     ready_path = q.records.item_path(pool.record_store.READY, mover)
-    ready = pool.record_store.read_queue_record(ready_path)
+    ready = pool.record_store.read_document(ready_path)
     assert isinstance(ready, dict) and "produced_output_batch" in ready
     del ready["produced_output_batch"]
     pool._write_json_atomic(ready_path, ready)
@@ -1380,13 +1380,13 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path, broker) -> None:
     assert committed.get("ok") is True, committed
     # Tamper the sealed projection in place (corrupt authority).
     ready_path = q.records.item_path(pool.record_store.READY, mover)
-    row = pool.record_store.read_queue_record(ready_path)
+    row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict)
     row["produced_output_batch"] = {"schema": "garbage"}
     pool._write_json_atomic(ready_path, row)
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-cp") is None
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is not None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is not None
     assert ledger.available().get(KIND) == free_before
 
 
@@ -1420,7 +1420,7 @@ def test_publish_without_staged_intent_refuses(tmp_path: Path, broker) -> None:
     ref = _ref(inst, template, "b1", descs)
     with pytest.raises(pool.PoolContractError):
         _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is None
 
 
 def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
@@ -1444,7 +1444,7 @@ def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
     assert staged.get("ok") is True, staged
     with pytest.raises(pool.PoolContractError):
         _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is None
 
 
 def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path, broker) -> None:
@@ -1494,7 +1494,7 @@ def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path, broker
                              "range_start_bytes": 0,
                              "range_end_bytes": total},
                   produced_output_batch=ref)
-    assert pool.record_store.require(q.records.item(pool.record_store.READY, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover)) is None
 
 
 def test_ready_reread_failure_defers_at_claim_seam(
@@ -1524,7 +1524,7 @@ def test_ready_reread_failure_defers_at_claim_seam(
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
     target = str(q.records.item_path(pool.record_store.READY, mover))
-    real_read = pool.record_store.read_queue_record
+    real_read = pool.record_store._read_json
     calls = {"n": 0}
 
     def fail_reread(path, *a, **k):
@@ -1704,7 +1704,7 @@ def test_filed_request_without_ref_invented_projection_never_covers(
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
     ready_path = q.records.item_path(pool.record_store.READY, mover)
-    row = pool.record_store.read_queue_record(ready_path)
+    row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict) and "produced_output_batch" not in row
     # Invent the mutable projection the immutable request never declared.
     row["produced_output_batch"] = dict(ref)
@@ -1766,7 +1766,7 @@ def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path, broker) -
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     other = dict(chain["ref"], batch_id="b2")
     ready_path = q.records.item_path(pool.record_store.READY, mover)
-    row = pool.record_store.read_queue_record(ready_path)
+    row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict)
     row["produced_output_batch"] = other
     pool._write_json_atomic(ready_path, row)
@@ -1787,7 +1787,7 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) ->
     chain = _real_cas_chain(tmp_path, "pl7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     ready_path = q.records.item_path(pool.record_store.READY, mover)
-    row = pool.record_store.read_queue_record(ready_path)
+    row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict) and "produced_output_batch" in row
     del row["produced_output_batch"]
     pool._write_json_atomic(ready_path, row)
@@ -1849,7 +1849,7 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
 
     # The stale-reaper shape: the concluded row is back in ``ready`` with
     # its terminal still filed under the same generation.
-    done = pool.record_store.require(q.records.item(pool.record_store.DONE, owner))
+    done = pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, owner))
     assert isinstance(done, dict), done
     pool._write_json_atomic(q.records.item_path(pool.record_store.READY, owner), done)
 

@@ -129,7 +129,7 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
     })
     control = scope.control_record()
     path = q.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -296,7 +296,7 @@ def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str,
     (the bash wrapper running stage_move). No direct run_local_action
     shortcut: this is the runtime callability under test.
     """
-    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict), "mover row must be claimed to execute"
     outcome = q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, outcome
@@ -713,7 +713,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
         # The null digest survives every transition as JSON null.
-        rec = pool.record_store.read_queue_record(
+        rec = pool.record_store.read_document(
             Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
             / po.instance_namespace(inst) / f"{batch_id}.json")
         assert rec["entries"][0]["sha256"] is None
@@ -977,7 +977,7 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
         cas_root=cas_root, producer_action_key=owner,
         command_extra=["--unpaced"])
     assert res.get("ok") is True, res
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, str(res["mover_key"])))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, str(res["mover_key"])))
     assert isinstance(row, dict)
     assert row.get("priority") == -10
     assert row.get("retry_safe") is True
@@ -1811,11 +1811,11 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
     # The finisher dies: the claim is gone, the lease is stale, and no
     # terminal record was ever filed.
     q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
-    lease = pool.record_store.read_queue_record(q.records.lease_path(mover)) or {}
+    lease = pool.record_store.read_document(q.records.lease_path(mover)) or {}
     lease["heartbeat_unix"] = pool._now() - 10_000
     pool._write_json_atomic(q.records.lease_path(mover), lease)
-    assert pool.record_store.require(q.records.item(pool.record_store.DONE, mover)) is None
-    assert pool.record_store.require(q.records.item(pool.record_store.FAILED, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover)) is None
 
     assert q.sweep_widowed_leases(timeout_s=60) == [mover]
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
@@ -1887,7 +1887,7 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     # this malformed receipt: the two judgements are independent.
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
-    record = pool.record_store.require(q.records.item(pool.record_store.FAILED, mover))
+    record = pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(record, dict), record
     assert q.adopted_attempt_summary(record)["disposition"] == pool.record_store.FAILED
     assert int(record.get("attempts", 0)) < int(record.get("max_attempts", 3))
@@ -1987,7 +1987,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     # real terminal through the one production requeue shaper, so the claim
     # path the drop sites live on is still driven against the occupied
     # state those sites would have to be safe for.
-    terminal = pool.record_store.require(q.records.item(pool.record_store.FAILED, mover))
+    terminal = pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(terminal, dict), terminal
     legacy = dict(terminal)
     pool._write_json_atomic(

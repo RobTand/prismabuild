@@ -45,7 +45,7 @@ def _start(queue, item, monkeypatch):
                         lambda record: {"complete": True, "used": True,
                                         "removed": ["owned-container"], "remaining": []})
     queue._start_resource_scope(item)
-    return pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, item["action_key"]))
+    return pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, item["action_key"]))
 
 
 def _conclude(queue, item, monkeypatch):
@@ -53,13 +53,13 @@ def _conclude(queue, item, monkeypatch):
     key = live["action_key"]
     queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
     path = queue.records.item_path(pool.record_store.WITHDRAWN, key)
-    decision = pool.record_store.read_queue_record(path)
+    decision = pool.record_store.read_document(path)
     immutable = queue.records.withdrawal_decision_path(decision)
     decision_bytes = immutable.read_bytes()
     assert queue.finish(key, status="withdrawn", detail={"returncode": -15,
                         "stdout": "last output\n", "stderr": "stopped\n"},
                         claim_snapshot=live) == path
-    record = pool.record_store.read_queue_record(path)
+    record = pool.record_store.read_document(path)
     assert record["resource_scope_cleanup"]["export"]["stopped"] is True
     assert all(record[field] == value for field, value in decision.items()), "decision fields changed"
     assert immutable.read_bytes() == decision_bytes
@@ -138,7 +138,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
     # The admission fixture freezes wall time; isolate the signal ladder
     # (tested elsewhere) while stopping this exact real payload group.
     monkeypatch.setattr(pool, "terminate_action", lambda pid: os.killpg(pid, signal.SIGTERM))
-    snapshots = {key: pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key)) for key in (first, second)}
+    snapshots = {key: pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key)) for key in (first, second)}
 
     def execute(key):
         try:
@@ -160,19 +160,19 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
         assert not threads[1].is_alive() and not errors, errors
         queue.finish(second, status=outcomes[second]["status"], detail=outcomes[second],
                      claim_snapshot=snapshots[second])
-        failed = pool.record_store.require(queue.records.item(pool.record_store.FAILED, second))
+        failed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, second))
         assert failed["status"] == "failed"
         assert failed["resource_scope_cleanup"]["nonce"] == snapshots[second]["resource_scope"]["nonce"]
         assert failed["resource_scope_cleanup"]["export"]["stopped"] is True
         assert queue.attempt_outcomes(failed)[-1]["status"] == "failed"
-        decision = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, first))
+        decision = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, first))
         assert decision["withdrawn_by"] == "gang:" + group
         threads[0].join(20)
         assert not threads[0].is_alive() and not errors, errors
         assert outcomes[first]["status"] == "withdrawn"
         monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
         queue.finish(first, status="withdrawn", detail=outcomes[first], claim_snapshot=snapshots[first])
-        record = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, first))
+        record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, first))
         assert record["resource_scope_cleanup"]["nonce"] == snapshots[first]["resource_scope"]["nonce"]
         assert all(record[field] == value for field, value in decision.items())
         assert queue.attempt_outcomes(record["withdrawn_attempt"])[-1]["status"] == "withdrawn"
@@ -196,7 +196,7 @@ def test_ready_withdrawal_adds_no_worker_evidence(scoped):
     queue.publish(action_key=key, cas_root=item["cas_root"], checkout_root=item["checkout_root"],
                   worker_script=item["worker_script"], resources={"cpu": 1, "mem_gb": 1})
     queue.withdraw(key, by="rob", signal_child=False)
-    record = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
     assert record["withdrawn_from"] == pool.record_store.READY
     assert not any(field in record for field in ("resource_scope", "resource_scope_cleanup",
                    "container_cleanup", "finished_unix", "finished_host", "withdrawn_attempt"))
@@ -255,7 +255,7 @@ def test_superseding_publication_does_not_gain_the_old_attempts_evidence(scoped,
     assert decision_path.read_bytes() == decision_bytes
     # Superseded cancellations retain the old worker's evidence outside the
     # current terminal slot; it may not revive a marker over the successor.
-    retained = [pool.record_store.read_queue_record(path) for path in queue.records.superseded_dir().glob(key + "*.json")]
+    retained = [pool.record_store.read_document(path) for path in queue.records.superseded_dir().glob(key + "*.json")]
     matching = [record for record in retained if record.get("withdrawn_attempt")]
     assert len(matching) == 1
     assert matching[0]["published_unix"] == live["published_unix"]
@@ -279,7 +279,7 @@ def test_late_withdrawn_finish_archives_the_withdrawn_disposition(scoped):
     queue.reap_stale(timeout_s=-1)
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     decision_path = queue.records.item_path(pool.record_store.WITHDRAWN, key)
-    decision = pool.record_store.read_queue_record(decision_path)
+    decision = pool.record_store.read_document(decision_path)
     immutable = queue.records.withdrawal_decision_path(decision)
     immutable_bytes = immutable.read_bytes()
     _publish_successor(queue, item)
@@ -289,7 +289,7 @@ def test_late_withdrawn_finish_archives_the_withdrawn_disposition(scoped):
                           "stdout": "last output\n", "stderr": "stopped\n"},
                           claim_snapshot=item)
     assert result == queue.records.attempt_path(item, 1)
-    archived = pool.record_store.read_queue_record(result)
+    archived = pool.record_store.read_document(result)
     assert archived["status"] == pool.record_store.WITHDRAWN
     assert archived["disposition"] == pool.record_store.WITHDRAWN
     # The verifying reader checks the attempt's identity, digests and adopted
@@ -315,7 +315,7 @@ def test_late_withdrawn_finish_after_a_charged_retry_reads_back_withdrawn(scoped
     result = queue.finish(key, status="withdrawn", detail={"returncode": -15},
                           claim_snapshot=item)
     assert result == queue.records.attempt_path(item, 2)
-    archived = pool.record_store.read_queue_record(result)
+    archived = pool.record_store.read_document(result)
     assert archived["status"] == pool.record_store.WITHDRAWN
     assert archived["disposition"] == pool.record_store.WITHDRAWN
     # With a charged retry this attempt was on the failure ladder pre-#1537:
@@ -337,12 +337,12 @@ def test_late_scope_withdrawn_finish_archives_the_withdrawn_disposition(scoped, 
                           "stdout": "last output\n", "stderr": "stopped\n"},
                           claim_snapshot=live)
     assert result == queue.records.attempt_path(live, 1)
-    archived = pool.record_store.read_queue_record(result)
+    archived = pool.record_store.read_document(result)
     assert archived["status"] == pool.record_store.WITHDRAWN
     assert archived["disposition"] == pool.record_store.WITHDRAWN
     assert archived["detail"]["resource_scope_cleanup"]["nonce"] == live["resource_scope"]["nonce"]
     assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.LATE_FINISH_SUFFIX}"))
-    retained = [pool.record_store.read_queue_record(path) for path
+    retained = [pool.record_store.read_document(path) for path
                 in queue.records.superseded_dir().glob(f"{key}.*.late-finish.json")]
     assert len(retained) == 1 and retained[0]["status"] == pool.record_store.WITHDRAWN
     assert queue.archived_generation_outcomes(key, generation=live["published_unix"]) == []

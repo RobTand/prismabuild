@@ -229,7 +229,7 @@ def _state_1690(tmp_path):
     assert _holder_tokens(queue, movers[0]) == 40
     assert _holder_tokens(queue, movers[1]) == 40
     for mover in movers:
-        done = pool.record_store.require(queue.records.item(pool.record_store.DONE, mover))
+        done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
         assert isinstance(done, dict) and done.get("status") == "executed"
     ledger = queue.tier_ledger(TIER)
     held = int(ledger.held().get("stage_gib", 0))
@@ -295,7 +295,7 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
         "entries_declared": 1, "entries_staged": 1,
         "complete": True, "seconds": 60.0, "unix": 3000.0})
     queue.finish(mover, status="executed")
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, mover))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
     assert isinstance(done, dict) and done.get("status") == "executed"
     assert queue.tier_ledger(TIER).holder_tokens(mover)
 
