@@ -52,6 +52,32 @@ def resident_set(rs, core, pool, store, variant):
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     write = request["op"] == "write"
+    if family == "resident-pin":
+        rs, core, pool, local = (load("prismabuild." + name) for name in ("resident_sets", "core", "pool", "local_resident"))
+        resident, body = resident_set(rs, core, pool, store, "until")
+        key = body["set_id"]
+        spec = {"root": str(store / "local")}
+        final = Path(spec["root"]) / key
+        final.mkdir(parents=True)
+        resident.write_copy(key, "compat-host", {"state": "resident", "local_root": str(final),
+                            "verification": [], "bytes": 7, "completed_unix": 100})
+        path = local._pins_root(resident, key, "compat-host") / (("7" * 32) + ".json")
+        if write:
+            import uuid
+            token = uuid.uuid4
+            uuid.uuid4 = lambda: type("Token", (), {"hex": "7" * 32})()
+            try:
+                assert local.pin(resident, key, "compat-host", spec,
+                    {"action_key": "c" * 64, "nonce": "7" * 32, "scope_id": "compat"}, now=100) == "7" * 32
+            finally:
+                uuid.uuid4 = token
+        else:
+            path.parent.mkdir(parents=True)
+            path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
+            assert local._pinned(resident, key, "compat-host", final) is True
+            return {"pinned": True, "body_decoded": False}
+        return {"raw": base64.b64encode(path.read_bytes()).decode()}
     if family == "tier-epoch":
         tiers = load("prismabuild.storage_tiers")
         path = store / tiers.RAM_EPOCH_MARKER

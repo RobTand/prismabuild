@@ -104,7 +104,7 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
 
 
 @pytest.mark.parametrize("kind", KINDS, ids=lambda kind: kind.name)
-def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations, tmp_path):
+def test_invalid_record_reaches_both_real_consumer_boundaries(kind, generations, tmp_path):
     case = kind.name + "/" + kind.variants[0]
     body = decode_wire(kind, decoded(GOLDENS[case]))
     if kind.negative_field is None:
@@ -119,6 +119,10 @@ def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations,
         for root, attestation, suffix in readers:
             observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
+            if kind.field_policy == "presence-only":
+                accepted(observed)
+                assert observed["result"]["body_decoded"] is False
+                continue
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
                        for reference in (kind.reader,) + kind.legacy_readers}

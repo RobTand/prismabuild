@@ -30,6 +30,18 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("storage-tier", "prismabuild.storage_tier.v1", "worker discovered tier offer", "additive",
+               "prismabuild.storage_tiers:tier_tokens", ("prismabuild.storage_tiers:discover_tiers",), ("arc", "stage"),
+               ("discovery inputs are private procfs and supplied command replies; no hardware probe",), negative_field="capacity_bytes", negative_value=None),
+    RecordKind("residency-block", "prismabuild.residency.v1", "consumer queue residency derived from its filed plan", "closed",
+               "prismabuild.pool:PoolQueue.validate_residency", ("prismabuild.residency_plan:_filed_entry",), ("stage", "ram"),
+               ("filed projections preserve the sealed manifest and lead keys",), stable_paths=True),
+    RecordKind("plan-superseded", "prismaquant.prismabuild.residency_plan_superseded.v1", "private queue plan supersession marker", "additive",
+               "prismabuild.residency_plan:superseded", ("prismabuild.residency_plan:mark_superseded",), ("initial", "replay"),
+               ("unknown incarnation is a refusal; stat inputs are supplied wire facts",), stable_paths=True),
+    RecordKind("resident-pin", "prismabuild.resident_pin.v1", "private queue resident-pins/<host>/<set>/<token>.json", "presence-only",
+               "prismabuild.local_resident:_pinned", ("prismabuild.local_resident:pin",), ("held",),
+               ("the safety consumer treats every directory entry as a pin and intentionally does not decode its body",), stable_paths=True),
     RecordKind("measurement-election", "prismabuild.measurement_reservation.v1", "private queue passes.measurement_reservation", "closed",
                "prismabuild._measurement_reservation:selection", ("prismabuild._measurement_reservation:elect",), ("bounded", "unbounded"),
                ("holder deadlines are metadata, not release predictions; supplied fixture census confers no live admission",)),
