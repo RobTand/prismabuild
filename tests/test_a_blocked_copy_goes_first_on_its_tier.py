@@ -78,7 +78,7 @@ def _declare_wait(queue: pool.PoolQueue, consumer: str, movers: list[str], *,
     """The consumer's reader blocked on ``movers``, as PQ's reader files it."""
 
     path = Path(pb_progress.staged_wait_path(
-        str(queue.action_progress_path(consumer))))
+        str(queue.records.action_progress_path(consumer))))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pb_progress.STAGED_WAIT_SCHEMA_V1, "token": "t" * 32,
@@ -87,7 +87,7 @@ def _declare_wait(queue: pool.PoolQueue, consumer: str, movers: list[str], *,
 
 
 def _tier_record(queue: pool.PoolQueue) -> dict[str, object]:
-    return json.loads(queue.tier_record_path(TIER).read_text())
+    return json.loads(queue.records.tier_record_path(TIER).read_text())
 
 
 # ---------------------------------------------------------------- need order
@@ -266,7 +266,7 @@ def _move_args(queue: pool.PoolQueue, stage: Path, manifest: Path, digest: str,
         "--consumer-action-key", READER, "--tier-id", TIER,
         "--stage-root", str(stage), "--manifest-sha256", digest,
         "--manifest", str(manifest),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--range-start-bytes", str(start), "--range-end-bytes", str(end),
         "--readers", str(readers), "--max-readers", str(readers),
         "--warm-after-copy", "never", "--unpaced",
@@ -308,8 +308,8 @@ def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
     queue.publish(**dict(filed["phases"][0]["mover_row"]))
     # The waited copy is claimed, as a running copy is: a copy stands aside
     # only for a waited copy that is reading (#1091 review 1).
-    ready = queue.item_path(pool.READY, waited)
-    queue.item_path(pool.CLAIMED, waited).write_text(json.dumps({
+    ready = queue.records.item_path(pool.record_store.READY, waited)
+    queue.records.item_path(pool.record_store.CLAIMED, waited).write_text(json.dumps({
         **json.loads(ready.read_text()), "claimed_unix": time.time(),
         "claimed_by": "fixture", "claimed_host": "dl380g10"}))
     ready.unlink()
@@ -327,11 +327,11 @@ def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
     # The others are still paced, and they yield to the waited copy until it
     # lands: here, until the reader's next cycle no longer declares it.
     # The window published the other copy; it is claimed and running.
-    published = queue.item_path(pool.READY, other)
+    published = queue.records.item_path(pool.record_store.READY, other)
     row = (json.loads(published.read_text()) if published.exists()
            else dict(filed["phases"][1]["mover_row"]))
     published.unlink(missing_ok=True)
-    queue.item_path(pool.CLAIMED, other).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, other).write_text(json.dumps({
         **row, "claimed_unix": time.time(), "claimed_by": "fixture",
         "claimed_host": "dl380g10"}))
     finished: dict[str, object] = {}
@@ -346,8 +346,8 @@ def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
     time.sleep(0.6)
     assert worker.is_alive(), "the other copy did not yield to the waited one"
     wait_record.unlink()
-    claimed = queue.item_path(pool.CLAIMED, waited)
-    done = queue.item_path(pool.DONE, waited)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, waited)
+    done = queue.records.item_path(pool.record_store.DONE, waited)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({**json.loads(claimed.read_text()), "status": "done"}))
     claimed.unlink()
@@ -410,7 +410,7 @@ def test_a_cold_copy_is_not_priced_from_its_legs_warm_copies(
            reported_unix=now - 10.0)
     cold = dict(plan["phases"][2]["mover_row"])          # type: ignore[index]
     claimed_unix = now - 1.0
-    path = queue.item_path(pool.CLAIMED, str(cold["action_key"]))
+    path = queue.records.item_path(pool.record_store.CLAIMED, str(cold["action_key"]))
     path.write_text(json.dumps({**cold, "claimed_unix": claimed_unix,
                                 "claimed_by": "fixture",
                                 "claimed_host": "dl380g10"}))
@@ -426,10 +426,10 @@ def test_a_cold_copy_is_not_priced_from_its_legs_warm_copies(
         f"whole delivery of {POOL_DELIVERED_MB_S:.0f} MB/s: it was priced "
         f"from copies the ARC served")
     record = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), READER))
+        queue.records.residency_fragment_root(), READER))
     row = next(row for row in record["ranges"]            # type: ignore[union-attr]
                if row["mover_action_key"] == cold["action_key"])
-    assert row["state"] == pool.CLAIMED
+    assert row["state"] == pool.record_store.CLAIMED
     assert row["expected_landing_unix"] - claimed_unix >= size / delivered, row
 
 
@@ -451,7 +451,7 @@ def test_a_claimed_copy_is_priced_from_its_own_live_rate(
     waited, _other = _two_phase_reader(queue, stage, digest, total)
     row = dict(residency_plan.read_filed(queue, READER)[0]["phases"][0]["mover_row"])
     claimed_unix = time.time() - 0.5
-    queue.item_path(pool.CLAIMED, waited).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, waited).write_text(json.dumps({
         **row, "claimed_unix": claimed_unix, "claimed_by": "fixture",
         "claimed_host": "dl380g10"}))
     gate = threading.Event()
@@ -488,13 +488,13 @@ def test_a_claimed_copy_is_priced_from_its_own_live_rate(
             queue, tiers={TIER: _tier_record_for(stage)},
             consumers=tier_loop.live_consumers(queue))
         record = residency_map.read_landing(residency_map.landing_path(
-            queue.residency_fragment_root(), READER))
+            queue.records.residency_fragment_root(), READER))
         found = next(entry for entry in record["ranges"]  # type: ignore[union-attr]
                      if entry["mover_action_key"] == waited)
     finally:
         gate.set()
         worker.join(30)
-    assert found["state"] == pool.CLAIMED
+    assert found["state"] == pool.record_store.CLAIMED
     assert found["basis"] == "reported", (
         f"the claimed copy was priced from {found['basis']!r}, not from its "
         f"own progress: {found}")
