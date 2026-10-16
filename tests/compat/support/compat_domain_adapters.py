@@ -43,6 +43,24 @@ def operate(request, store, load):
     dc = load("prismabuild.decomposition")
     declared, frozen, plan = context(dc)
     path = store / "record.json"
+    if family == "dc-data-plans":
+        campaign, core = load("pbcampaign"), load("prismabuild.core")
+        cas = core.PrismaBuildCAS(store / "cas")
+        children = [{"action_key": "c" * 64, "params": {}}]
+        path = dc.record_dir(cas.root, plan["parent_key"]) / "data-plans.json"
+        declared["task_data_manifest"] = {"residency_tier": None, "residency_ram": "off", "mover_readers": 1, "mover_mem_gb": 1}
+        args = dict(request=declared, plan=plan, children=children, template={}, args=SimpleNamespace(), queue=None, cas=cas)
+        if request["op"] == "write":
+            assert campaign.frozen_child_data_plans(**args) == [None]
+            if variant == "replay":
+                assert campaign.frozen_child_data_plans(**args) == [None]
+            return {"raw": base64.b64encode(path.read_bytes()).decode()}
+        path.parent.mkdir(parents=True)
+        path.write_bytes(base64.b64decode(request["raw"]))
+        request["_consumer_boundary"]()
+        result = campaign.frozen_child_data_plans(**args)
+        assert result == [None]
+        return result
     if family in ("dc-envelope", "dc-membership", "dc-group"):
         core = load("prismabuild.core")
         cas = core.PrismaBuildCAS(store / "cas")

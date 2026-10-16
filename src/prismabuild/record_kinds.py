@@ -30,6 +30,23 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("idle-baseline", "prismabuild.idle_baseline.v1", "host private idle-history state", "additive",
+               "prismabuild.adaptive_cpu:idle_judgement_with_reference", ("prismabuild.adaptive_cpu:idle_judgement_with_reference",),
+               ("within", "excursion"), ("foreign schema resets the window and grants no measured baseline",)),
+    RecordKind("dc-data-plans", "prismabuild.decomposed_data_plans.v1", "private CAS decomposition/data-plans.json", "closed",
+               "pbcampaign:frozen_child_data_plans", ("pbcampaign:frozen_child_data_plans",), ("initial", "replay"),
+               ("no-read child has no staging plan; exact child order and parent pins remain checked",), stable_paths=True),
+    RecordKind("spool-pacing", "prismabuild.produced_spool.pacing.v1", "private export receipt pacing", "closed",
+               "prismabuild.produced_spool:_check_pacing", ("prismabuild.produced_spool:ExportPacer.record",), ("empty", "written")),
+    RecordKind("spool-refusal", "prismabuild.produced_spool.refusal.v1", "private queue/produced-spool-refusals", "additive",
+               "prismabuild.produced_spool:refusal_records", ("prismabuild.produced_spool:_file_refusal",), ("initial", "replay"),
+               ("diagnostic reader takes refusal evidence; schema is a producer label",), negative_field=None, stable_paths=True),
+    RecordKind("spool-tick", "prismabuild.produced_spool.retirement_tick.v1", "private queue/produced-spool-retirements/host.tick.json", "additive",
+               "prismabuild.produced_spool:retirement_records",
+               ("prismabuild.produced_spool:retirement_tick", "prismabuild.produced_spool:record_failed_tick"), ("empty", "failed"),
+               ("only empty private roots are scanned; no cleanup or retirement permission is claimed",), negative_field=None,
+               variant_writers=(("empty", "prismabuild.produced_spool:retirement_tick"),
+                                ("failed", "prismabuild.produced_spool:record_failed_tick"))),
     RecordKind("shape-table", "prismabuild.shape_gate.table.v1", "gzip member holding manifest shape entries and phases", "additive",
                "shape_gate:parse_table", ("shape_gate:table_from_manifest",), ("unhashed", "hashed"),
                ("exact production gzip bytes are pinned; probe mutations are recompressed independently",), encoding="gzip-json", older_participant_absence=True),

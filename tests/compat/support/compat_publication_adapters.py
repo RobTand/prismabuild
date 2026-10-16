@@ -54,8 +54,8 @@ def operate(request, store, load):
                 path.chmod(0o444)
                 request["_consumer_boundary"]()
                 result = queue.publication_ending(C, generation=100.0)
-                assert result is not None and result.successor_generation == 101.0
-                return {"predecessor": 100.0, "successor": result.successor_generation}
+                assert result is not None and result.successor_published_unix == 101.0
+                return {"predecessor": 100.0, "successor": result.successor_published_unix}
         elif writing:
             mover = load("stage_move")
             copier = SimpleNamespace(lock=threading.Lock(), bytes_staged=8 if variant == "landed" else 4,
