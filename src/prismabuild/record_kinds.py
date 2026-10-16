@@ -28,6 +28,23 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("reader-ownership", "prismabuild.reader_ownership.v1", "exact reader ownership metadata in caller record", "closed",
+               "prismabuild._bounded_reader:ReaderOwnership.from_record", ("prismabuild._bounded_reader:ReaderOwnership.to_record",),
+               ("census", "ready_items"), ("supplied PID/start/boot facts are wire controls, not liveness or drain proof",)),
+    RecordKind("scratch-selection", "prismabuild.scratch_lifetime_selection.v1", "sealed environment scratch lifetime selection", "closed",
+               "prismabuild.local_scratch:_scratch_lifetime_selections", ("prismabuild.local_scratch:build_scratch_lifetime_selection",),
+               ("ephemeral", "persistent"), ("legacy naming arrays do not authorize lifetime cleanup",), stable_paths=True),
+    RecordKind("scratch-ephemeral", "prismabuild.ephemeral_scratch.v1", "claim.scratch_declaration_record.declarations[]", "closed",
+               "prismabuild.local_scratch:_scratch_declaration", ("prismabuild.local_scratch:bind_ephemeral_scratch",),
+               ("bound",), ("declaration-only naming does not grant cleanup authority",),
+               ("prismabuild.local_scratch:_EPHEMERAL_FIELDS",), stable_paths=True),
+    RecordKind("scratch-declaration", "prismabuild.scratch_declaration_record.v1", "private claimed row and lease scratch_declaration_record", "closed",
+               "prismabuild.local_scratch:_scratch_declaration_record", ("prismabuild.pool:PoolQueue._record_ephemeral_scratch_declarations",),
+               ("first", "repeated"), ("durable naming record preserves claim and lease ownership; not cleanup registration",), stable_paths=True),
+    RecordKind("scratch-lifetime", "prismabuild.scratch_lifetime_record.v1", "private claimed row and lease scratch_lifetime_record", "closed",
+               "prismabuild.local_scratch:_scratch_lifetime_record", ("prismabuild.pool:PoolQueue._record_scratch_lifetimes",),
+               ("persistent", "persistent-replay", "interrupted"),
+               ("interrupted intent is captured before directory creation; these fixtures never clean a directory",), stable_paths=True),
     RecordKind("input-d38-plan", "fleet.d38.plan.v1", "preflight CAS input d38-plan", "additive",
                "d38_gate:load_plan", (), ("target",),
                ("caller supplies this input; fixture exercises the actual CAS digest gate, not GPU authorization",),

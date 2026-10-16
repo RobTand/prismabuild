@@ -76,6 +76,9 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family.startswith("scratch-") or family == "reader-ownership":
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_scratch_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family.startswith("input-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_input_adapters.py")))["operate"]
         return adapter(request, store, load)
