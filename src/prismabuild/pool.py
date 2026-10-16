@@ -3904,7 +3904,7 @@ class ResourceLedger:
 
     def free_preferred(self, tiers: Mapping) -> int:
         return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
-                   for token in _glob(self.free_dir, "cpu-*"))
+                   for token in immutable_files.match_optional(self.free_dir, "cpu-*"))
 
     @_guarded_mutation(blocking=True)
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
