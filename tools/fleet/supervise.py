@@ -84,7 +84,7 @@ from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import filesystem_capacity, fleet_roster, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
-CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
+CONFIG = fleet_roster.Roster.beside(__file__)
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
 PROC = Path("/proc")

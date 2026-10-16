@@ -32,12 +32,12 @@ from __future__ import annotations
 
 import json
 import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from .digest_primitives import raw_sha256
-import re
-from collections.abc import Mapping
 
 
 ACTIVE = "active"
@@ -174,8 +174,11 @@ class Roster:
 
     def disk_floor_percent(self, entry: Mapping | None = None) -> int | None:
         field = "local_disk_free_floor_percent"
-        value = (entry if entry is not None and field in entry else self.document).get(field)
-        if value is not None and (type(value) is not int or not 0 <= value < 100):
+        source = entry if entry is not None and field in entry else self.document
+        if field not in source:
+            return None
+        value = source[field]
+        if type(value) is not int or not 0 <= value < 100:
             raise ValueError(f"{field} must be a whole percent from 0 to 99 (found {value!r})")
         return value
 
@@ -241,7 +244,7 @@ class Box:
 
     @property
     def loop_args(self) -> list[str]:
-        args = self.entry.get("args") or []
+        args = self.entry.get("args", [])
         if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
             raise ValueError(f"roster box {self.key!r} args must be an array of strings (found {args!r})")
         return list(args)
@@ -255,7 +258,7 @@ class Box:
 
     @property
     def roles(self) -> dict[str, list[str]]:
-        roles = self.entry.get("roles") or {}
+        roles = self.entry.get("roles", {})
         if not isinstance(roles, dict):
             raise ValueError(f"fleet_boxes.json roles for {self.key} must be an object")
         if any(not isinstance(args, list) or any(not isinstance(a, str) for a in args)

@@ -19,6 +19,10 @@ from test_roster_presence_status import _generation_with_roster, _offer, fleet
     b'{"boxes":{"one":{}},"gpu_interpreters":"/bad/python"}',
     b'{"boxes":{"one":{}},"local_disk_free_floor_percent":true}',
     b'{"boxes":{"one":{"local_disk_free_floor_percent":100}}}',
+    b'{"boxes":{"one":{}},"local_disk_free_floor_percent":null}',
+    b'{"boxes":{"one":{"local_disk_free_floor_percent":null}}}',
+    b'{"boxes":{"one":{"args":null}}}',
+    b'{"boxes":{"one":{"roles":null}}}',
 ])
 def test_publication_refuses_invalid_roster_before_staging(tmp_path, monkeypatch, raw):
     checkout = _checkout(tmp_path / "checkout", {})
