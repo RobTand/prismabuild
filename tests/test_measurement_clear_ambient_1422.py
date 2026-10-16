@@ -37,7 +37,7 @@ def _measurement_decision(fleet, *, busy, attribution="clear", with_holder=False
     })
     measurement = publish("measurement", measurement=True, pinned=True,
                           priority=0, cpu=8)
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     assert adaptive_cpu.action_identity(item)[1] is True
     predicted = queue.ledger().free_cpu_allocation(8, TIERS)
@@ -81,8 +81,8 @@ def test_clear_measurement_cpu_attribution_continues_past_aggregate_idle(fleet, 
     assert decision["reason"] == "admitted"
     # A CPU decision is not a token or a claim: the real GPU/fit gates still
     # own admission, and this test neither spends nor fabricates a permission.
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert not queue.item_path(pool.CLAIMED, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
 
 
 @pytest.mark.parametrize("attribution,with_holder,expected", [
@@ -97,9 +97,9 @@ def test_ambient_clear_never_skips_unknown_foreign_or_holder_gates(
         fleet, busy=2.3, attribution=attribution, with_holder=with_holder)
     assert metadata is None
     assert decision["reason"] == expected, decision
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     if holder is not None:
-        assert queue.item_path(pool.CLAIMED, holder).exists()
+        assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
         assert queue.ledger().holds_gpu(holder)
         assert decision["holder"] == holder
 
@@ -121,4 +121,4 @@ def test_clear_cpu_attribution_preserves_same_reference_psi_gate(
     observed = decision["sample"]
     assert isinstance(observed, dict)
     assert observed["psi_some"] == psi
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()

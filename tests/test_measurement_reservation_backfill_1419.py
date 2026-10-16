@@ -24,7 +24,7 @@ TIERS = {"preferred": list(range(20)), "fallback": []}
 
 def _holder_snapshot(queue, key):
     ledger = queue.ledger("sparklina")
-    return (queue.item_path(pool.CLAIMED, key).read_bytes(),
+    return (queue.records.item_path(pool.record_store.CLAIMED, key).read_bytes(),
             ledger.holder_tokens(key),
             sorted(path.name for path in (ledger.held_dir / key).glob("*-*")))
 
@@ -32,7 +32,7 @@ def _holder_snapshot(queue, key):
 def _assert_holder_unchanged(queue, key, snapshot):
     assert _holder_snapshot(queue, key) == snapshot
     assert queue.ledger("sparklina").holds_gpu(key)
-    assert not queue.item_path(pool.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def _bounded_measurement_wait(fleet, *, with_other_host=False):
@@ -55,7 +55,7 @@ def _bounded_measurement_wait(fleet, *, with_other_host=False):
 
     measurement = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     assert adaptive_cpu.action_identity(item)[1] is True
     assert item["resources"] == {"cpu": 8, "gpu": 1, "mem_gb": 48}
@@ -88,7 +88,7 @@ def _observe_real_sharing_permission(fleet, candidate):
     no history or decision is replaced. The queue must still admit for itself.
     """
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
-    item = pool._read_json(queue.item_path(pool.READY, candidate))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, candidate))
     assert isinstance(item, dict)
     gpu = None
     permission = None
@@ -154,7 +154,7 @@ def test_expiry_cannot_give_a_continuous_lower_priority_stream_the_original_drai
             waiting = denial(measurement)["evidence"]
             assert waiting["decision"]["reason"] == "measurement_holder", waiting
             refills.append((result, clock[0]))
-            assert queue.item_path(pool.READY, measurement).exists()
+            assert queue.records.item_path(pool.record_store.READY, measurement).exists()
             assert queue.ledger().holds_gpu(result)
         # The declared-end incumbent, then each replacement, finishes through
         # the real queue. On main each newly claimed replacement stays while
@@ -168,8 +168,8 @@ def test_expiry_cannot_give_a_continuous_lower_priority_stream_the_original_drai
         tick(adaptive_gpu.PSI_AVG10_S + 1)
         assert claim(q=pool.PoolQueue(queue.root)) == measurement, denial(measurement)
     assert queue.ledger().held_keys() == [measurement]
-    assert queue.item_path(pool.CLAIMED, measurement).exists()
-    assert not queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
+    assert not queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert not refills, (
         "lower-priority claims stole the original bounded drain point",
         {"original_end": original_end, "claims": refills,
@@ -186,16 +186,16 @@ def test_backfill_without_a_finite_pre_point_finish_stays_ready(fleet, bound_kin
     timeout = {"unknown": None, "short_payload": 5,
                "late": original_end - clock[0] + 1, "long": 4200}[bound_kind]
     candidate = publish(f"unsafe-{bound_kind}-backfill", priority=-10, timeout_s=timeout)
-    item = pool._read_json(queue.item_path(pool.READY, candidate))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, candidate))
     assert isinstance(item, dict)
     assert pool._declared_run_bound(item) == ("deadline", timeout)
     _observe_real_sharing_permission(fleet, candidate)
     assert claim() is None, f"{bound_kind} backfill consumed the reserved host"
-    assert queue.item_path(pool.READY, candidate).exists()
-    assert not queue.item_path(pool.CLAIMED, candidate).exists()
+    assert queue.records.item_path(pool.record_store.READY, candidate).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, candidate).exists()
     assert queue.ledger().held_keys() == [incumbent]
     _assert_holder_unchanged(queue, incumbent, snapshot)
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     tick(original_end - clock[0] + 0.1)
     _observe_real_sharing_permission(fleet, candidate)
     assert claim() is None, f"expiry let {bound_kind} backfill steal the drain point"
@@ -204,7 +204,7 @@ def test_backfill_without_a_finite_pre_point_finish_stays_ready(fleet, bound_kin
     queue.finish(incumbent, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
-    assert queue.item_path(pool.READY, candidate).exists()
+    assert queue.records.item_path(pool.record_store.READY, candidate).exists()
 
 
 def test_a_portable_measurement_does_not_shut_two_matching_hosts_to_backfill(fleet):
@@ -215,9 +215,9 @@ def test_a_portable_measurement_does_not_shut_two_matching_hosts_to_backfill(fle
     other_holders = other_ledger.held_keys()
     assert len(other_holders) == 1
     other = other_holders[0]
-    other_claim = queue.item_path(pool.CLAIMED, other).read_bytes()
+    other_claim = queue.records.item_path(pool.record_store.CLAIMED, other).read_bytes()
     other_tokens = other_ledger.holder_tokens(other)
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     assert isinstance(item, dict)
     assert item["tags"] == []
     # Both hosts match the real measurement; this is NOT the old pinned-row
@@ -229,9 +229,9 @@ def test_a_portable_measurement_does_not_shut_two_matching_hosts_to_backfill(fle
     assert set(other_ledger.held_keys()) == {other, candidate}
     assert other_ledger.holds_gpu(candidate)
     assert other_ledger.holder_tokens(other) == other_tokens
-    assert queue.item_path(pool.CLAIMED, other).read_bytes() == other_claim
+    assert queue.records.item_path(pool.record_store.CLAIMED, other).read_bytes() == other_claim
     _assert_holder_unchanged(queue, incumbent, snapshot)
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     tick(original_end - clock[0])
     queue.finish(incumbent, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)

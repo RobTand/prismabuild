@@ -40,7 +40,7 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: clock[0])
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     readings = {"busy_cpus": 0.0, "foreign": {str(cpu): 0.0 for cpu in range(20)}}
@@ -117,7 +117,7 @@ def fleet(tmp_path, monkeypatch):
                               gpu_sampler=gpu_sampler)
         if result is not None and len(active.ledger(host).held_keys()) == 1:
             key = result["action_key"]
-            record = pool._read_json(active.item_path(pool.CLAIMED, key))
+            record = pool.record_store.require(active.records.item(pool.record_store.CLAIMED, key))
             assert isinstance(record, dict)
             if (record.get("needs_gpu")
                     and not adaptive_gpu.action_contract(record, record["resources"])[1]):
@@ -167,7 +167,7 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
         cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
             sampler=lambda: cpu_sample(clock, readings))
         gpu = adaptive_gpu.Controller(queue.ledger(), sampler=lambda: gpu_sample(sample, readings))
-        record = pool._read_json(queue.item_path(pool.CLAIMED, holder))
+        record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, holder))
         with cpu.locked():
             permission = gpu.decision(record, record["resources"])
     assert permission is not None and permission["probe"] is True, gpu.last_decision
@@ -180,7 +180,7 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
     queue.finish(holder, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
-    assert queue.item_path(pool.READY, backfill).exists()
+    assert queue.records.item_path(pool.record_store.READY, backfill).exists()
 
 
 def test_affirmative_foreign_clear_replaces_the_old_measurement_foreign_veto(fleet):
@@ -203,7 +203,7 @@ def test_affirmative_foreign_clear_replaces_the_old_measurement_foreign_veto(fle
     readings["busy_cpus"] = 0.0
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
-    assert queue.item_path(pool.READY, backfill).exists()
+    assert queue.records.item_path(pool.record_store.READY, backfill).exists()
 
 
 def test_current_foreign_cpu_load_never_becomes_a_measurement_drain(fleet):
@@ -222,7 +222,7 @@ def test_current_foreign_cpu_load_never_becomes_a_measurement_drain(fleet):
     waiting = denial(measurement)
     assert waiting["evidence"]["decision"]["reason"] == "measurement_foreign_ambient"
     assert waiting["evidence"]["withhold"]["withhold"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episode(fleet):
@@ -264,7 +264,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     assert claim(cpu_sampler=cpu_sampler) is None
     assert denial(measurement)["evidence"]["withhold"]["why"] == "foreign_load"
     def foreign_stamp():
-        record = pool._read_json(queue.passes_path(measurement))
+        record = pool.record_store.read_queue_record(queue.records.passes_path(measurement))
         assert isinstance(record, dict)
         episodes = record["measurement_drains"]
         assert isinstance(episodes, dict)
@@ -308,7 +308,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     else:
         verdict = waiting["withhold"]
         assert verdict["why"] == "foreign_load" and verdict["withhold"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_an_unbounded_incumbent_has_only_one_bounded_measurement_episode(fleet):
@@ -394,7 +394,7 @@ def test_measurement_deadlines_survive_transient_carry_without_renewal(fleet):
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, measurement))
     records = queue._host_denial_records()
     carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
     assert carried is not None
