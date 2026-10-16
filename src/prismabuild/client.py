@@ -127,7 +127,7 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
     mount is never read as "not claimed" (#1267).
     """
 
-    return _pool.record_store.require(queue.records.claimed_for_action(action_key))
+    return _pool.record_store.value_or_raise(queue.records.claimed_for_action(action_key))
 
 
 # -- produced output ---------------------------------------------------------

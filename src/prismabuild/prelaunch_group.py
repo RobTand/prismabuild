@@ -165,7 +165,7 @@ def group_dir(queue: pool.PoolQueue, unit: str, tier_id: str) -> Path:
 def _read_receipt(path: Path) -> tuple[str, dict | None, str | None]:
     """Read one receipt as absent, record or unknown with its reason."""
     try:
-        raw = pool.record_store.read_queue_record(path)
+        raw = pool.record_store.read_document(path)
     except OSError as exc:
         return ("unknown", None, f"receipt unreadable: {exc!r}")
     except pool.PoolContractError as exc:
@@ -462,7 +462,7 @@ def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
     try:
         if queue.records.item_path(pool.record_store.CLAIMED, mover).exists():
             return
-        done = pool.record_store.require(queue.records.item(pool.record_store.DONE, mover))
+        done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
     except (OSError, pool.PoolContractError, ValueError):
         found.funding_unknown.append(mover)
         return

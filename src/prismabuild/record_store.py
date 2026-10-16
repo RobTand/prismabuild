@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import errno
-import hashlib
 import json
 import math
 import os
@@ -166,7 +165,7 @@ def stage_ownership_name(stage_root) -> str:
     """The name one stage root's ownership lock and holder record share."""
 
     root = str(Path(stage_root).absolute())
-    return hashlib.sha256(f"stage-ownership:{root}".encode()).hexdigest()
+    return digest_primitives.raw_sha256(f"stage-ownership:{root}".encode())
 
 
 def _read_json(
@@ -1107,7 +1106,7 @@ class RecordStore:
                 # attempt is exactly ``<digits>.json`` and nothing else here
                 # is one.
                 continue
-            value = read_queue_record(path)
+            value = read_document(path)
             if value is None:
                 raise PoolContractError(f"archived attempt is unreadable: {path}")
             attempt = self.archived_attempt_identity(
@@ -1116,12 +1115,12 @@ class RecordStore:
         return present
 
 
-def read_queue_record(path: Path) -> dict[str, object] | None:
+def read_document(path: Path) -> dict[str, object] | None:
     """Read a permissive JSON object; missing/empty is absent and errors escape."""
     return _read_json(path)
 
 
-def require[T](result: ReadResult[T]) -> T | None:
+def value_or_raise[T](result: ReadResult[T]) -> T | None:
     """Adapt an observation to an existing value-or-error public contract."""
     if isinstance(result, Unknown):
         if result.error is not None:
