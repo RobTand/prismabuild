@@ -110,7 +110,7 @@ def fleet(tmp_path: Path):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(_manifest()))
@@ -194,12 +194,12 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
 
     # The joint-fit gate admits cur plus protected next, so a 4 GiB tier
     # publishes both 2 GiB phases; the pin is what this file proves.
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     others = [k for k in residency_plan.mover_keys(fleet.staged["plan"]) if k != mover]
     assert others and all(
-        queue.item_path(pool.READY, k).exists() for k in others)
+        queue.records.item_path(pool.record_store.READY, k).exists() for k in others)
     # ...and the row it published carries the pin the pool reads.
-    published = pool._read_json(queue.item_path(pool.READY, mover))
+    published = pool.record_store.require(queue.records.item(pool.record_store.READY, mover))
     block = published.get("residency")
     assert isinstance(block, dict), "the published mover row carries no residency block"
     assert block["tier_id"] == TIER
@@ -223,7 +223,7 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
     assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
     assert queue.residency_pin_holds(
-        pool._read_json(queue.item_path(pool.DONE, mover)), mover) is True
+        pool.record_store.require(queue.records.item(pool.record_store.DONE, mover)), mover) is True
 
 
 def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
@@ -247,7 +247,7 @@ def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
 
     # A mover files its fragment; the next cycle composes the map, which is the
     # other half of the gate.
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(fleet.stage),
@@ -274,7 +274,7 @@ def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
     import manifest_promotion
 
     queue, mover = fleet.queue, _lead(fleet)
-    path = queue.item_path(pool.READY, CONSUMER)
+    path = queue.records.item_path(pool.record_store.READY, CONSUMER)
     row = json.loads(path.read_text())
     row.pop("residency")
     path.write_text(json.dumps(row))
@@ -295,7 +295,7 @@ def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
     queue.finish(mover, status="executed", claim_snapshot=claim)
     assert queue.prewarm(CONSUMER)["tier"]["status"] == "planned"
 
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(fleet.stage),
@@ -307,9 +307,9 @@ def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
 
     tier = queue.prewarm(CONSUMER)["tier"]
     assert tier["status"] == "landed", tier
-    assert tier["consumer_state"] == pool.READY
+    assert tier["consumer_state"] == pool.record_store.READY
     assert tier["verdict"] == "resident"
-    assert queue.item_path(pool.READY, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
 
 
 def test_the_frozen_plan_refuses_a_mover_row_that_carries_no_pin(fleet) -> None:
@@ -355,8 +355,8 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     # The exact shape the reaper sees: the concluded claim record back in
     # ``claimed/``, its lease beside it, both aged past the lease timeout.
     stale = dict(claim)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, mover), stale)
-    pool._write_json_atomic(queue.lease_path(mover), {
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, mover), stale)
+    pool._write_json_atomic(queue.records.lease_path(mover), {
         "owner": stale.get("claimed_by"), "action_key": mover,
         "attempt": stale.get("attempt", 1),
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
@@ -364,13 +364,13 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     reaped = queue.reap_stale(timeout_s=1.0)
 
     # It did conclude the stale copy...
-    assert not queue.item_path(pool.CLAIMED, mover).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     assert mover not in reaped, "a filed ending is cleanup, not work to retry"
     # ...and the pin survived it.
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
     assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
     assert queue.residency_pin_holds(
-        pool._read_json(queue.item_path(pool.DONE, mover)), mover) is True
+        pool.record_store.require(queue.records.item(pool.record_store.DONE, mover)), mover) is True
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is True
 
 
@@ -385,13 +385,13 @@ def test_a_widowed_lease_does_not_hand_back_a_completed_pin(fleet) -> None:
 
     queue, mover = fleet.queue, _lead(fleet)
     claim = _stage_the_lead(fleet)
-    pool._write_json_atomic(queue.lease_path(mover), {
+    pool._write_json_atomic(queue.records.lease_path(mover), {
         "owner": claim.get("claimed_by"), "action_key": mover,
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
 
     queue.sweep_widowed_leases(timeout_s=1.0)
 
-    assert not queue.lease_path(mover).exists()
+    assert not queue.records.lease_path(mover).exists()
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
 
 
@@ -417,8 +417,8 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
     queue.finish(mover, status="executed", claim_snapshot=claim)
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
 
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, mover), dict(claim))
-    pool._write_json_atomic(queue.lease_path(mover), {
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, mover), dict(claim))
+    pool._write_json_atomic(queue.records.lease_path(mover), {
         "owner": claim.get("claimed_by"), "action_key": mover,
         "attempt": claim.get("attempt", 1),
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
@@ -481,7 +481,7 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     stage = fleet.stage
     stage.mkdir(exist_ok=True)
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
+    other.records.ensure_layout()
     assert stage_release.register_stage_root(
         other, tier_id=TIER, stage_root=stage) == "registered"
 
@@ -491,10 +491,10 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     assert record["stage_root_admits"] is False
     assert record["tokens"]["stage_gib"] == 4
     assert queue.tier_ledger(TIER).available()["stage_gib"] == 4
-    assert not queue.item_path(pool.READY, mover).exists()
+    assert not queue.records.item_path(pool.record_store.READY, mover).exists()
 
     (stage / stage_release.STAGE_ROOT_MARKER).unlink()
     record = _cycle(fleet)[0]
     assert record["stage_root_owner"] == "registered"
     assert "stage_root_admits" not in record
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()

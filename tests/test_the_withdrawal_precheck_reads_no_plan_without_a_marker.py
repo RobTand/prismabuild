@@ -33,10 +33,10 @@ from test_a_failed_consumer_stops_staging import queue  # noqa: E402
 def _finish_consumer(queue, consumer: str) -> None:
     """File the consumer's terminal the way a done ending does."""
 
-    source = queue.item_path(base.pool.READY, consumer)
+    source = queue.records.item_path(base.pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "executed"
-    queue.item_path(base.pool.DONE, consumer).write_text(json.dumps(record))
+    queue.records.item_path(base.pool.record_store.DONE, consumer).write_text(json.dumps(record))
     source.unlink()
 
 
@@ -86,7 +86,7 @@ def test_a_marker_written_after_the_precheck_is_seen_on_the_next_pass(
     events = base.tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert _reaped(events), events
-    assert not queue.residency_plan_path(base.FIRST).exists()
+    assert not queue.records.residency_plan_path(base.FIRST).exists()
     # The sweep reads the plan, and reap re-reads it under the lock before
     # it archives the exact filing it decided against.
     assert reads and set(reads) == {base.FIRST}, (
@@ -97,7 +97,7 @@ def test_an_unreadable_marker_listing_keeps_the_locked_checks(
         queue, monkeypatch):
     _done_consumer(queue)
     reads = _plan_reads(monkeypatch)
-    superseded = (queue.residency_plan_path(base.FIRST).parent
+    superseded = (queue.records.residency_plan_path(base.FIRST).parent
                   / base.residency_plan.SUPERSEDED)
     real_listdir = base.tier_loop.os.listdir
 
@@ -117,7 +117,7 @@ def test_an_unreadable_marker_listing_keeps_the_locked_checks(
 def test_a_marker_for_another_filing_does_not_supersede(queue, monkeypatch):
     _done_consumer(queue)
     reads = _plan_reads(monkeypatch)
-    superseded = (queue.residency_plan_path(base.FIRST).parent
+    superseded = (queue.records.residency_plan_path(base.FIRST).parent
                   / base.residency_plan.SUPERSEDED)
     superseded.mkdir(parents=True, exist_ok=True)
     # A well-formed address for this key, but not this plan's body: the
@@ -134,7 +134,7 @@ def test_a_marker_for_another_filing_does_not_supersede(queue, monkeypatch):
     assert events == []
     assert reads == [base.FIRST], (
         "the marker address exists, so the locked identity check runs")
-    assert queue.residency_plan_path(base.FIRST).exists()
+    assert queue.records.residency_plan_path(base.FIRST).exists()
 
 
 def test_a_resubmitted_filing_is_not_covered_by_its_predecessors_marker(
@@ -146,7 +146,7 @@ def test_a_resubmitted_filing_is_not_covered_by_its_predecessors_marker(
                                                reason="old") is not None
     first = base.tier_loop.withdraw_dead_consumer_movers(queue)
     assert _reaped(first), first
-    assert not queue.residency_plan_path(base.FIRST).exists()
+    assert not queue.records.residency_plan_path(base.FIRST).exists()
 
     # A new filing under the same key: the archived window's marker was
     # retired beside its body, so the fresh window starts clean.
@@ -159,7 +159,7 @@ def test_a_resubmitted_filing_is_not_covered_by_its_predecessors_marker(
 
     assert not _reaped(events), events
     assert reads == [], "no active marker names the new filing"
-    assert queue.residency_plan_path(base.FIRST).exists()
+    assert queue.records.residency_plan_path(base.FIRST).exists()
     assert base.residency_plan.superseded(queue, plan) is None
 
 
@@ -167,19 +167,19 @@ def test_a_live_resubmission_defers_before_the_precheck(queue, monkeypatch):
     _done_consumer(queue)
     reads = _plan_reads(monkeypatch)
     # A resubmission publishes a live row under the same key.
-    queue.item_path(base.pool.READY, base.FIRST).write_text(
+    queue.records.item_path(base.pool.record_store.READY, base.FIRST).write_text(
         json.dumps({"action_key": base.FIRST}))
 
     events = base.tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert events == []
     assert reads == [], "a live consumer defers before any plan read"
-    assert queue.item_path(base.pool.READY, base.FIRST).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, base.FIRST).exists()
 
 
 def test_an_unrecognized_marker_entry_makes_the_hint_unknown(queue):
     _done_consumer(queue)
-    superseded = (queue.residency_plan_path(base.FIRST).parent
+    superseded = (queue.records.residency_plan_path(base.FIRST).parent
                   / base.residency_plan.SUPERSEDED)
     superseded.mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +189,7 @@ def test_an_unrecognized_marker_entry_makes_the_hint_unknown(queue):
 
 
 def test_the_hint_parses_only_the_marker_address(queue):
-    superseded = (queue.residency_plan_path(base.FIRST).parent
+    superseded = (queue.records.residency_plan_path(base.FIRST).parent
                   / base.residency_plan.SUPERSEDED)
     superseded.mkdir(parents=True, exist_ok=True)
     key, digest = base.FIRST, "a" * 64

@@ -63,7 +63,7 @@ def _fragment(*, tier_id: str, root: str, mover: str,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -80,7 +80,7 @@ def _ram_resident(queue: pool.PoolQueue, tmp_path: Path, *, epoch: str,
         "bytes_staged": 2 * GIB, "complete": True, "epoch": epoch,
         "seconds": 1.0, "unix": 1000.0})
     residency_map.write_fragment(
-        queue.root / pool.RESIDENCY,
+        queue.root / pool.record_store.RESIDENCY,
         _fragment(tier_id=RAM_TIER, root=str(tmp_path / "ram"), mover=mover,
                   epoch=epoch))
 
@@ -100,7 +100,7 @@ def _ram_record(tmp_path: Path, *, epoch: str) -> dict[str, object]:
 def test_a_prior_epoch_is_dropped_and_holds_until_fresh_ranges_land(
         queue: pool.PoolQueue, tmp_path: Path) -> None:
     residency_map.write_fragment(
-        queue.root / pool.RESIDENCY,
+        queue.root / pool.record_store.RESIDENCY,
         _fragment(tier_id=STAGE_TIER, root=STAGE_ROOT, mover=STAGE_MOVER))
     _ram_resident(queue, tmp_path, epoch=OLD_EPOCH)
     record = _ram_record(tmp_path, epoch=NEW_EPOCH)
@@ -113,24 +113,24 @@ def test_a_prior_epoch_is_dropped_and_holds_until_fresh_ranges_land(
     assert events[1]["holder"] == RAM_MOVER
     # The prior epoch's fragment is gone; the stage's own is untouched.
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, RAM_MOVER).exists()
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, STAGE_MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, STAGE_MOVER).exists()
     # The ghost's tokens are back: the bytes they stood for were deleted by
     # the reboot, and holding them would starve the new window.
     assert queue.tier_ledger(RAM_TIER).holder_tokens(RAM_MOVER) == {}
     # Hold: nothing reads as ram-resident until fresh ranges land.
     tier_loop.compose_map(queue, CONSUMER, ram_tiers={RAM_TIER: record})
-    mapping = residency_map.read_map(queue.residency_map_path(CONSUMER))
+    mapping = residency_map.read_map(queue.records.residency_map_path(CONSUMER))
     assert "ram_path" not in mapping["entries"][ENTRY_KEY]
 
     # ...and a promotion under the new epoch is announced resident again.
     residency_map.write_fragment(
-        queue.root / pool.RESIDENCY,
+        queue.root / pool.record_store.RESIDENCY,
         _fragment(tier_id=RAM_TIER, root=str(tmp_path / "ram"),
                   mover=RAM_MOVER_NEW, epoch=NEW_EPOCH))
     tier_loop.compose_map(queue, CONSUMER, ram_tiers={RAM_TIER: record})
-    mapping = residency_map.read_map(queue.residency_map_path(CONSUMER))
+    mapping = residency_map.read_map(queue.records.residency_map_path(CONSUMER))
     assert mapping["entries"][ENTRY_KEY]["ram_path"] == (
         f"{tmp_path}/ram/model/shard-0.bin")
 
@@ -146,7 +146,7 @@ def test_a_mount_that_is_gone_has_no_current_epoch(
     assert [event["event"] for event in events] == [
         "ram-fragment-dropped", "ram-ghost-tokens-released"]
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, RAM_MOVER).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(RAM_MOVER) == {}
 
 
@@ -159,7 +159,7 @@ def test_a_current_epoch_fragment_and_holder_are_left_alone(
 
     assert events == []
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, RAM_MOVER).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(RAM_MOVER) == {
         "ram_gib": 2}
 
@@ -173,7 +173,7 @@ def test_the_cycle_says_the_epoch_changed_and_does_the_drop(
     (tmp_path / "ram").mkdir()
     queue.announce_tier(_ram_record(tmp_path, epoch=OLD_EPOCH))
     residency_map.write_fragment(
-        queue.root / pool.RESIDENCY,
+        queue.root / pool.record_store.RESIDENCY,
         _fragment(tier_id=STAGE_TIER, root=STAGE_ROOT, mover=STAGE_MOVER))
     _ram_resident(queue, tmp_path, epoch=OLD_EPOCH)
 
@@ -192,7 +192,7 @@ def test_the_cycle_says_the_epoch_changed_and_does_the_drop(
     assert any(line.get("event") == "ram-ghost-tokens-released"
                for line in lines)
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, RAM_MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, RAM_MOVER).exists()
     assert queue.tier_ledger(RAM_TIER).holder_tokens(RAM_MOVER) == {}
     # The new epoch is what the loop announced, and the retired fragments are
     # gone: nothing of the prior epoch survived the cycle.

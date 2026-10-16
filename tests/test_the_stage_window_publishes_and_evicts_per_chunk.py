@@ -230,7 +230,7 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
     ``stage``, which stays ``None`` so the existing shape holds."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan()
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={
@@ -263,7 +263,7 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
 @pytest.fixture()
 def live_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(STAGE_TIER, {"stage_gib": 5})
     return q
 
@@ -297,8 +297,7 @@ def test_the_loop_publishes_chunk_movers_with_their_index(
                          ("phase-0001", 0)]
     for event in events:
         if event["event"] == "mover-published":
-            assert pool._read_json(
-                live_queue.item_path(pool.READY, event["action_key"]))[
+            assert pool.record_store.require(live_queue.records.item(pool.record_store.READY, event["action_key"]))[
                     "recompute"] is True
 
 
@@ -320,5 +319,5 @@ def test_a_chunk_whose_egress_is_queued_waits_for_the_deletion(
                 if event["event"] == "mover-publish-deferred-for-egress"]
     assert [(event["phase"], event["chunk_index"]) for event in deferred] == [
         ("phase-0000", 0)]
-    assert not live_queue.item_path(
-        pool.READY, _key(0, 0)).exists()
+    assert not live_queue.records.item_path(
+        pool.record_store.READY, _key(0, 0)).exists()
