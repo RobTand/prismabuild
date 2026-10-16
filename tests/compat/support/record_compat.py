@@ -199,7 +199,9 @@ def write(root, case, store, **kw):
 @contextmanager
 def retained(directory=CAPTURE, *, history_control=False):
     if history_control:
-        sources = [json.loads(path.read_bytes()) for path in sorted(directory.glob("*.json"))]
+        index = directory / "prepared.json"
+        sources = (json.loads(index.read_bytes()) if index.exists() else
+                   [json.loads(path.read_bytes()) for path in sorted(directory.glob("*.json"))])
     else:
         window = json.loads((directory / "window.json").read_bytes())
         assert window["complete"] is True and window["rollback"]["generation"] in {
