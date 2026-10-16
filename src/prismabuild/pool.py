@@ -352,7 +352,6 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 #: as ``<key>.json`` or ``<key>.lease`` -- ``reap_stale`` and
 #: ``sweep_widowed_leases`` by glob, ``item_path`` and ``find_key`` by name --
 #: so a suffix that is neither is invisible to all of them, which is the point.
-TOMBSTONE_SUFFIX = ".tombstone"
 # Old sweepers must ignore exact-attempt cleanup beside a newer live claim;
 # they retire ordinary tombstones in that situation without scope cleanup.
 LATE_FINISH_SUFFIX = ".late-finish"
