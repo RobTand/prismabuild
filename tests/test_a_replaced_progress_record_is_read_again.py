@@ -270,25 +270,48 @@ def test_a_record_replaced_under_every_reread_is_not_a_rejection(
 def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
     """Publish the incoming inode after its first fstat, before its read."""
     incoming = path.parent / ".incoming.progress"
-    original_open, original_read = (pb.immutable_files.open_regular_nofollow, os.read)
-    pending = set()
+    original_open, original_read = pb.immutable_files.open_regular_nofollow, os.read
+    pending = {}
+    observations = []
 
     def opened(candidate, *, where):
         if Path(candidate) != path:
             return original_open(candidate, where=where)
         incoming.write_bytes(raw)
         held = original_open(incoming, where=where)
-        pending.add(held[0])
+        pending[held[0]] = os.fstat(held[0])
         return held
 
     def read(descriptor, count):
         if descriptor in pending:
-            pending.remove(descriptor)
+            before = pending.pop(descriptor)
             os.replace(incoming, path)
+            after = os.fstat(descriptor)
+            # ZFS can retain ctime across rename; this fixture requires an
+            # actual ctime-only race, independent of rename's timestamp policy.
+            deadline = time.monotonic() + 1.0
+            while after.st_ctime_ns == before.st_ctime_ns:
+                os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+                after = os.fstat(descriptor)
+                if after.st_ctime_ns != before.st_ctime_ns:
+                    break
+                assert time.monotonic() < deadline, "fixture could not change ctime"
+                time.sleep(0.001)
+            assert (before.st_dev, before.st_ino, before.st_size, before.st_mode,
+                    before.st_uid, before.st_gid, before.st_mtime_ns, before.st_nlink) == (
+                        after.st_dev, after.st_ino, after.st_size, after.st_mode,
+                        after.st_uid, after.st_gid, after.st_mtime_ns, after.st_nlink)
+            observations.append({
+                "ctime": (before.st_ctime_ns, after.st_ctime_ns),
+                "mtime": (before.st_mtime_ns, after.st_mtime_ns),
+                "size": (before.st_size, after.st_size),
+                "links": (before.st_nlink, after.st_nlink),
+            })
         return original_read(descriptor, count)
 
     monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", opened)
     monkeypatch.setattr(pb.os, "read", read)
+    return observations
 
 
 def test_incoming_rename_metadata_churn_does_not_reject_or_renew_grace(
