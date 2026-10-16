@@ -28,6 +28,16 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("slurm-cache", "prismaquant.prismabuild.slurm_cache_hit.v1", "private SLURM lane/cache-hit marker", "additive",
+               "prismabuild.slurm_lane:read_cache_hit", ("prismabuild.slurm_lane:write_cache_hit",),
+               ("empty-digest", "digest"), ("missing, unreadable or foreign marker is not a cache hit",)),
+    RecordKind("slurm-submission", "prismaquant.prismabuild.slurm_lane_submission.v1", "private SLURM lane/latest.json and immutable submission record", "additive",
+               "prismabuild.slurm_lane:recorded_submission", ("prismabuild.slurm_lane:submit",),
+               ("unbounded", "bounded", "placed"), ("submission reader takes fields without closing schema; scheduler response is supplied",),
+               negative_field=None, stable_paths=True),
+    RecordKind("slurm-outcome", "prismaquant.prismabuild.slurm_outcome.v1", "private queue done/failed ending", "additive",
+               "pbstatus:_transport", ("prismabuild.slurm_lane:publish_outcome",), ("executed", "cache_hit", "failed"),
+               ("the status consumer identifies this transport by its immutable ID; no SLURM job ran",)),
     RecordKind("reader-ownership", "prismabuild.reader_ownership.v1", "exact reader ownership metadata in caller record", "closed",
                "prismabuild._bounded_reader:ReaderOwnership.from_record", ("prismabuild._bounded_reader:ReaderOwnership.to_record",),
                ("census", "ready_items"), ("supplied PID/start/boot facts are wire controls, not liveness or drain proof",)),
