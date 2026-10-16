@@ -4397,7 +4397,7 @@ class ResourceLedger:
                 path.unlink(missing_ok=True)
             return None
         try:
-            previous = _read_json(path) or {}
+            previous = record_store.read_queue_record(path) or {}
         except (OSError, PoolContractError):
             previous = {}
         now = _now()
