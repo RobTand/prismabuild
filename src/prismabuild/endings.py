@@ -27,6 +27,12 @@ RecordedEnding = tuple[Path, dict[str, object]]
 ObservedEnding = RecordedEnding | PublicationSupersession
 
 
+@dataclass(frozen=True)
+class VerifiedExecution:
+    ending: RecordedEnding
+    rendered: dict[str, object]
+
+
 class _Uncaptured(Enum):
     INPUT = "not_captured"
 
@@ -210,13 +216,13 @@ def resolve_current(
 
     Nothing is moved, deleted or rewritten.  A lone record is the key's
     ending even when its generation is malformed or absent:
-    ``pbrun.terminal_record`` already states that a record carrying no
+    ``action_wait.terminal_record`` already states that a record carrying no
     generation stands, because staleness cannot be proved of it and
     refusing it would hang a reader on the only account of what
     happened.  The conservative rule above applies to a contest, not to
     a sole record.  This is a point-in-time
     status rule; a waiter bound to one generation keeps
-    ``pbrun.outcome_poll`` and ``archived_generation_outcomes``, which
+    ``action_wait.outcome_poll`` and ``archived_generation_outcomes``, which
     are exact to that generation.
     """
 

@@ -135,13 +135,13 @@ def test_a_waiter_on_the_earlier_generation_still_reads_its_ending(
     _second_path, second = _run(queue, "executed")
     assert not queue.item_path(pool.FAILED, KEY).exists()
 
-    landed, generation = pbrun.outcome_poll(
+    landed, generation = pbrun.action_wait.outcome_poll(
         queue, KEY, float(first["published_unix"]))
     assert landed is not None and generation == float(first["published_unix"])
     assert landed[1]["status"] == "failed"
     assert landed[1]["published_unix"] == first["published_unix"]
 
-    newer, _ = pbrun.outcome_poll(queue, KEY, float(second["published_unix"]))
+    newer, _ = pbrun.action_wait.outcome_poll(queue, KEY, float(second["published_unix"]))
     assert newer is not None and newer[1]["status"] == "executed"
 
 

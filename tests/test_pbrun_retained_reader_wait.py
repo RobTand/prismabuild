@@ -212,10 +212,48 @@ def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
 def test_a_retained_reader_is_its_own_exception_and_still_unavailable() -> None:
     """Every ``except OutcomeReadUnavailable`` keeps catching it (exit 74)."""
 
-    exc = pbrun.action_wait.OutcomeReaderRetained("stuck", [{"pid": 1, "starttime_ticks": 2}])
+    exc = pbrun.action_wait.OutcomeReaderRetained("stuck", [{"section": "test", "pid": 1, "starttime_ticks": 2, "since_unix": 1.0}])
     assert isinstance(exc, pbrun.action_wait.OutcomeReadUnavailable)
     assert not isinstance(exc, pbrun.action_wait.OutcomeObservationTimedOut)
-    assert exc.retained == [{"pid": 1, "starttime_ticks": 2}]
+    assert exc.retained == [{"section": "test", "pid": 1, "starttime_ticks": 2, "since_unix": 1.0}]
+
+
+def test_a_retained_wait_uses_its_clock_above_real_monotonic(monkeypatch, capsys):
+    class Clock:
+        now = 10**12
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    owner = pbrun.action_wait
+    calls = []
+    reaped = []
+
+    def observation(*_args, **_kwargs):
+        calls.append(clock.now)
+        raise owner.OutcomeReaderRetained('clock test', [{
+            'section': 'pool outcome observation', 'pid': 4242,
+            'starttime_ticks': 7, 'since_unix': 1.0,
+        }])
+
+    def held(pid, grace_s):
+        reaped.append((pid, grace_s))
+        return False
+
+    monkeypatch.setattr(owner, 'time', clock)
+    monkeypatch.setattr(owner, 'POLL_S', 0.2)
+    monkeypatch.setattr(owner._reader, '_reap_within', held)
+    monkeypatch.setattr(pbrun, 'bounded_outcome_observation', observation)
+
+    assert pbrun.await_outcome(object(), KEY, wait_s=2.0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert len(calls) == 1
+    assert clock.now - 10**12 == pytest.approx(2.0, abs=0.0001)
+    assert reaped and all(event == (4242, 0) for event in reaped)
+    assert 'still retained when --wait-s ran out' in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
@@ -268,7 +306,7 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
     def broken(*_args, **_kwargs):
         raise RuntimeError("the mount answered EIO")
 
-    monkeypatch.setattr(pbrun, "outcome_poll", broken)
+    monkeypatch.setattr(pbrun.action_wait, "outcome_poll", broken)
     readers = Readers(monkeypatch)
     # A reader that raised is reaped on the error path by
     # ``_reap_status_within`` (#1216 keeps its exit status for the
@@ -535,7 +573,7 @@ def test_a_waiting_client_names_its_retained_reader_once_not_per_read(
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
         with pytest.raises(pbrun.action_wait.OutcomeReaderRetained) as raised:
-            pbrun.action_wait.bounded_read("pool outcome observation",
+            pbrun.action_wait.read_observation("pool outcome observation",
                                      fifo.read_bytes, budget_s=0.05)
         assert f'"pid": {readers.forked[0]}' in str(raised.value)
         assert "pbstatus: retained reader" not in capsys.readouterr().err

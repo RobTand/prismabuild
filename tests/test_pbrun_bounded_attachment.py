@@ -127,7 +127,7 @@ def test_slurm_query_remains_in_parent_after_bounded_record_read(
         return None if state is None else (state, {})
 
     monkeypatch.setattr(pbrun, "outstanding_submission", records)
-    monkeypatch.setattr(pbrun, "landed_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pbrun.action_wait, "await_ending", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pbrun.slurm_lane, "query_state", query)
     result = pbrun.bounded_attachment(
         pool.PoolQueue(tmp_path / "queue"), "c" * 64, squeue="private-squeue")
@@ -149,7 +149,8 @@ def test_retained_reader_refuses_before_scheduler_query(
         # The attachment path names the retained reader in its own refusal,
         # so it asks pbstatus not to announce it too (#1048, #1051).
         assert announce_retained is False
-        abandoned.append({"pid": 12345, "starttime_ticks": 67890})
+        abandoned.append({"section": _section, "pid": 12345,
+                          "starttime_ticks": 67890, "since_unix": 1.0})
         return {"status": "ok", "value": {"transport": "slurm",
                 "generation": 200.0, "job_id": "41", "submission": "unused"}}
 

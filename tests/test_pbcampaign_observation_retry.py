@@ -96,7 +96,8 @@ def _retained_fakes(monkeypatch, polls, *, still_at_deadline=False):
             if status == "retained":
                 rows.append(pbcampaign.pbwait._row(
                     key, "record_error",
-                    retained_readers=[{"pid": 4242, "starttime_ticks": 7}],
+                    retained_readers=[{"section": "test", "pid": 4242,
+                                      "starttime_ticks": 7, "since_unix": 1.0}],
                     note="pbwait observation timed out after 5.0s and its "
                          "reader could not be reaped"))
             else:
@@ -104,7 +105,7 @@ def _retained_fakes(monkeypatch, polls, *, still_at_deadline=False):
         return rows
 
     def wait_out(retained, deadline, **kwargs):
-        events.append(("wait-out", [child["pid"] for child in retained]))
+        events.append(("wait-out", [child.pid for child in retained]))
         return (list(retained) if still_at_deadline else []), 1.5
 
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", wait)

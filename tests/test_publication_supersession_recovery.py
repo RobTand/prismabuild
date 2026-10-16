@@ -90,7 +90,7 @@ def test_death_converges_without_losing_original_or_successor_authority(
     attempt = queue.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
     if boundary == "ready_collision":
-        assert pbrun.outcome_poll(queue, KEY, generation) == (None, generation)
+        assert pbrun.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
     else:
         _assert_superseded(queue, generation, successor_generation)
 
@@ -142,7 +142,7 @@ def test_uncertain_write_retains_authority_and_first_persisted_successor_wins(
         first_decision_bytes = decision.read_bytes()
     else:
         assert not decision.exists()
-        assert pbrun.outcome_poll(queue, KEY, generation) == (None, generation)
+        assert pbrun.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
 
     clock[0] += 1
     _publish(queue)

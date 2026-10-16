@@ -6,7 +6,7 @@ the launcher was still running it. The branch used to pick ``done/`` or
 write a record carrying no ``published_unix``. When the reaper had already filed
 ``failed/<key>.json`` for the same generation and the launcher then succeeded,
 both directories held a record for one key. The unstamped ``done/`` record
-scores ``-inf`` in ``pbrun.landed_outcome``, so the caller was told the action
+scores ``-inf`` in ``pbrun.action_wait.await_ending``, so the caller was told the action
 failed while its receipt sat in the CAS, ``pool_reset`` offered to re-run it,
 and ``reclaim_terminal_reservation`` refused the key for having two terminals.
 """
@@ -84,7 +84,7 @@ def test_a_reaper_that_already_concluded_the_claim_keeps_the_terminal(
     assert not queue.item_path(pool.DONE, KEY).exists()
     assert landed == queue.item_path(pool.FAILED, KEY)
 
-    found = pbrun.landed_outcome(queue, KEY, wait_s=0.1)
+    found = pbrun.action_wait.await_ending(queue, KEY, wait_s=0.1)
     assert found is not None
     path, record = found
     assert Path(path).parent.name == pool.FAILED
@@ -122,7 +122,7 @@ def test_an_uncovered_lost_race_files_a_generation_stamped_record(
     assert "attempt_history" not in record
     assert "attempt_history_missing_before" not in record
 
-    found = pbrun.landed_outcome(queue, KEY, wait_s=0.1, generation=generation)
+    found = pbrun.action_wait.await_ending(queue, KEY, wait_s=0.1, generation=generation)
     assert found is not None
     assert pbrun.outcome_summary(queue, found[0], found[1])["status"] == (
         "finish_lost_race"

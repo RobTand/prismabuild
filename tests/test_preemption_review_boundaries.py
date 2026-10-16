@@ -145,7 +145,7 @@ def test_repeated_preemptions_and_failure_share_the_original_attempt_budget(tmp_
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
     import pbrun
-    landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=generations[0])
+    landed = pbrun.action_wait.await_ending(q, bg, wait_s=0, generation=generations[0])
     assert landed is not None and landed[1]['status'] == 'failed'
     assert landed[1]['published_unix'] == holder['published_unix']
 

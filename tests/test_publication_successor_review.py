@@ -75,7 +75,7 @@ def test_structurally_unusable_successor_demand_cannot_end_old_publication(
 
     assert ready.read_bytes() == raw
     assert queue.publication_ending(KEY, generation=original["published_unix"]) is None
-    assert pbrun.outcome_poll(queue, KEY, original["published_unix"]) == (
+    assert pbrun.action_wait.outcome_poll(queue, KEY, original["published_unix"]) == (
         None, original["published_unix"])
     _assert_old_authority_retained(queue, original["published_unix"])
 

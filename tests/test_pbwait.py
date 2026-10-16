@@ -37,7 +37,7 @@ __all__ = ["fleet"]
 
 
 def _count_single_poll(monkeypatch):
-    real_look = pbwait._look_once
+    real_look = pbwait._look_once_checked
     calls = []
 
     def look(*args, **kwargs):
@@ -45,7 +45,7 @@ def _count_single_poll(monkeypatch):
         assert len(calls) == 1, "a terminal verdict must not be polled again"
         return real_look(*args, **kwargs)
 
-    monkeypatch.setattr(pbwait, "_look_once", look)
+    monkeypatch.setattr(pbwait, "_look_once_checked", look)
     return calls
 
 
@@ -129,7 +129,7 @@ def test_full_key_resolution_never_starts_a_prefix_reader(
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     key = "a" * 64
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", lambda *_args, **_kwargs:
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *_args, **_kwargs:
                         pytest.fail("a full key must retain its fast path"))
     assert pbwait.resolve_key(queue, key) == key
 
@@ -211,7 +211,7 @@ def test_prefix_reader_setup_error_is_exit_seventy_four(
     def cannot_fork(*_args, **_kwargs):
         raise OSError(24, "Too many open files")
 
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", cannot_fork)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", cannot_fork)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
     assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
@@ -323,7 +323,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     key = "a" * 64
 
-    real_look = pbwait._look_once
+    real_look = pbwait._look_once_checked
     observations = []
 
     def look_then_land(*args, **kwargs):
@@ -335,7 +335,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
                                            returncode=0))
         return row
 
-    monkeypatch.setattr(pbwait, "_look_once", look_then_land)
+    monkeypatch.setattr(pbwait, "_look_once_checked", look_then_land)
     rows = pbwait.wait_for_keys(queue, [key], cas=cas, wait_s=30.0)
     assert len(observations) == 2
     assert rows[0]["status"] == "executed"
@@ -404,7 +404,7 @@ def test_a_terminal_record_nobody_can_read_ends_the_wait(
 ) -> None:
     """An ending that was filed is an ending, readable or not.
 
-    ``pbrun.terminal_record`` returns ``None`` for a record it cannot parse,
+    ``pbrun.action_wait.terminal_record`` returns ``None`` for a record it cannot parse,
     which is right for "is this the generation I asked about" and wrong as the
     whole answer: the wait then spent ``--wait-s`` -- a day, by default -- on a
     verdict that was already on disk, and exited 75, which tells the operator

@@ -4,7 +4,7 @@ PR #54 gave the lane ``read_withdrawal_marker`` and routed three readers of
 ``pb-queue/withdrawn`` through it, because that directory is on NFS with
 default attribute caching: a lookup of a name that did not exist yet is
 negatively cached, so ``exists()`` keeps answering False and ``open()`` keeps
-raising ``ENOENT`` after the file has landed.  ``pbrun.terminal_record`` polls
+raising ``ENOENT`` after the file has landed.  ``pbrun.action_wait.terminal_record`` polls
 by ``os.listdir`` for the same reason and says so.
 
 ``pbrun._file_slurm_withdrawal`` was left behind.  It asks all three terminal

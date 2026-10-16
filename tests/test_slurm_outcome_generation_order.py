@@ -4,7 +4,7 @@ An action key is a content hash, so one key holds the ending of every run of
 the same work at one name.  ``publish_outcome`` refused only an *equal*
 generation, so a waiter that resumed an old job after a newer run of the same
 key had already ended replaced the newer record with its own:
-``pbrun.terminal_record(path, <newer generation>)`` then answered ``None``, a
+``pbrun.action_wait.terminal_record(path, <newer generation>)`` then answered ``None``, a
 generation-specific waiter timed out with an ending on disk, and an unscoped
 reader was handed the older run.
 
@@ -63,8 +63,8 @@ def test_an_older_waiter_does_not_replace_a_newer_generations_ending(
 
     record = json.loads(_failed(tmp_path).read_text(encoding="utf-8"))
     assert record["published_unix"] == 200.0
-    assert pbrun.terminal_record(_failed(tmp_path), 200.0) is not None
-    assert pbrun.terminal_record(_failed(tmp_path), 100.0) is None
+    assert pbrun.action_wait.terminal_record(_failed(tmp_path), 200.0) is not None
+    assert pbrun.action_wait.terminal_record(_failed(tmp_path), 100.0) is None
 
 
 def test_a_newer_ending_still_replaces_an_older_one(tmp_path: Path) -> None:
@@ -152,7 +152,7 @@ def test_a_delayed_resume_of_an_older_job_leaves_the_newer_ending(
     record = json.loads(_failed(queue).read_text(encoding="utf-8"))
     assert record["published_unix"] == 200.0
     assert record["claimed_by"] == "1002"
-    assert pbrun.terminal_record(_failed(queue), 200.0) is not None
+    assert pbrun.action_wait.terminal_record(_failed(queue), 200.0) is not None
 
 
 def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(

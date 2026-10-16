@@ -125,7 +125,7 @@ def test_a_job_that_ends_with_nobody_watching_is_filed_by_the_sweeper(
 
     # And a wait for the key now reads that record rather than resuming a job
     # or re-running the work.
-    landed = pbrun.landed_outcome(
+    landed = pbrun.action_wait.await_ending(
         pool.PoolQueue(queue_root), key, wait_s=0.0,
         generation=record["published_unix"])
     assert landed is not None

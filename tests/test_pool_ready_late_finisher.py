@@ -45,7 +45,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     assert not queue.item_path(pool.FAILED, key).exists(), 'late caller failed the READY retry'
     assert result == original_outcome
     assert original_outcome.read_bytes() == original_bytes
-    assert pbrun.landed_outcome(queue, key, wait_s=0.01,
+    assert pbrun.action_wait.await_ending(queue, key, wait_s=0.01,
                                generation=retry['published_unix']) is None
     successor = queue.claim(owner='successor', capacity={'cpu': 1})
     assert successor is not None and successor['attempts'] == (0 if republish else 1)
@@ -91,7 +91,7 @@ def test_late_ready_cleanup_refusal_is_recoverable_without_ending_the_retry(scop
         assert not queue.item_path(pool.DONE, key).exists()
         assert not queue.item_path(pool.FAILED, key).exists()
         assert all(nonce == first['resource_scope']['nonce'] for nonce, _ in observed)
-        assert pbrun.landed_outcome(queue, key, wait_s=0.01,
+        assert pbrun.action_wait.await_ending(queue, key, wait_s=0.01,
                                    generation=first['published_unix']) is None
 
     recovered = pool.PoolQueue(queue.root)

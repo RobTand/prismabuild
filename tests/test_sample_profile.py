@@ -430,7 +430,7 @@ def test_a_reader_is_told_when_a_profile_did_not_survive(tmp_path: Path):
 def _dying_action(checkout: Path, *, profile: str | None, script: str):
     """The same sealed argv with and without the flag, so the arms compare."""
 
-    action = _action(checkout, profile=profile)
+    action = _action(checkout)
     body = {key: value for key, value in action.items() if key != "action_key"}
     body["task"] = {**body["task"], "argv": [
         "/bin/bash", "--noprofile", "--norc", "-c", script,

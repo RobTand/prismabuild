@@ -2426,7 +2426,7 @@ def _read_json_object(path: Path) -> dict[str, object] | None:
     """The JSON object at ``path``, revalidated first, or ``None``.
 
     Listing the parent before the read is the rule ``read_withdrawal_marker``
-    and ``pbrun.terminal_record`` already follow on these directories: they are
+    and ``action_wait.terminal_record`` already follow on these directories: they are
     on NFS with default attribute caching, where a lookup of a name that did
     not exist yet is negatively cached and keeps answering ENOENT after the
     file has landed.
@@ -2601,7 +2601,7 @@ def _land_summary_locked(
     and an earlier one may not replace a later one.  Only equality was
     checked, so a waiter that resumed an old job after a newer run of the same
     key had already finished replaced the newer ending with its own --
-    ``pbrun.terminal_record(path, <newer generation>)`` then answered ``None``
+    ``action_wait.terminal_record(path, <newer generation>)`` then answered ``None``
     and a generation-specific waiter timed out with an ending on disk saying
     the older run.
 
@@ -2866,7 +2866,7 @@ def read_withdrawal_marker(
     fleet already measured what that does to a lookup of a name that did not
     exist yet: the client caches the negative entry, so ``exists()`` keeps
     answering False and ``open()`` keeps raising ``ENOENT`` after the marker
-    has landed.  ``pbrun.terminal_record`` polls the terminal directories by
+    has landed.  ``action_wait.terminal_record`` polls the terminal directories by
     ``os.listdir`` for exactly that reason, and this is the same rule for the
     same directory.
 
@@ -3513,7 +3513,7 @@ def _filed_index(queue_root: str | Path) -> dict[str, list[tuple[str, Path]]]:
     and asking the shared mount about each of them separately is the slow path
     a sweep would otherwise spend all its time in.
 
-    Read by ``listdir`` for the reason ``pbrun.terminal_record`` gives: a
+    Read by ``listdir`` for the reason ``action_wait.terminal_record`` gives: a
     ``stat`` of a path that did not exist yet is negatively cached on NFS, so
     a record filed by another box can stay invisible for ``acdirmax``.
     """

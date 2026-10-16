@@ -2483,7 +2483,7 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
     owner waited that out on every staged group, after a copy that took 4 s.
 
-    ``slurm_lane._read_json_object`` and ``pbrun.terminal_record`` follow the
+    ``slurm_lane._read_json_object`` and ``action_wait.terminal_record`` follow the
     same rule by listing the parent.  Opening it is used here because these
     reads are polled several times a second and a listing costs what the
     directory holds (``done`` held 17,117 names when this was written): an
@@ -25027,7 +25027,7 @@ class PoolQueue:
         relies on (#808) is not enough here.
 
         A miss is revalidated by listing each directory on the canonical
-        path, the rule ``pbrun.terminal_record`` follows for ``done/``, and
+        path, the rule ``action_wait.terminal_record`` follows for ``done/``, and
         the file is read again only when every name is listed.  Only a miss
         pays for the listings, and ``attempts/`` holds one name per action
         key, about as many as the ``done/`` a waiter already lists on every

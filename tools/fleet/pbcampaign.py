@@ -980,11 +980,12 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
                         # A reader still retained at the deadline stops the
                         # window, and its row says so (exit 74).
                         still, waited_s = (action_wait.wait_out_retained_readers(
-                            row["retained_readers"], deadline, tool="pbcampaign",
+                            [action_wait.RetainedReader.from_record(child)
+                             for child in row["retained_readers"]], deadline, tool="pbcampaign",
                             subject=key[:12])
                             if row["retained_readers"] else ([], 0.0))
                         if still:
-                            row = dict(row, retained_readers=still, note=(
+                            row = dict(row, retained_readers=[child.to_record() for child in still], note=(
                                 f"{row['note']}; that reader was still retained "
                                 f"when the campaign's --wait-s ran out, "
                                 f"{waited_s:.1f}s after its read timed out, so "

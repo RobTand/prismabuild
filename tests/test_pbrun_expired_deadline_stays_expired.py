@@ -57,12 +57,12 @@ def _observe(monkeypatch, clock: FakeClock) -> list[float]:
 
     budgets: list[float] = []
 
-    def observation(_q, _key, generation, *, budget_s, use_delivered_snapshot=False):
+    def observation(_q, _key, generation, *, budget_s):
         budgets.append(budget_s)
         clock.now += budget_s
         return None, generation
 
-    monkeypatch.setattr(pbrun, "time", clock)
+    monkeypatch.setattr(pbrun.action_wait, "time", clock)
     monkeypatch.setattr(pbrun, "bounded_outcome_observation", observation)
     return budgets
 

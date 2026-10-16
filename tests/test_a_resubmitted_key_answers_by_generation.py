@@ -212,13 +212,13 @@ def test_pbwait_still_binds_the_generation(
     queue.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
-    landed, generation = pbrun.outcome_poll(
+    landed, generation = pbrun.action_wait.outcome_poll(
         queue, KEY, float(pair["second"]["published_unix"]))
     assert landed is not None and generation == float(
         pair["second"]["published_unix"])
     assert landed[1]["status"] == second_word
 
-    landed, _generation = pbrun.outcome_poll(queue, KEY, None)
+    landed, _generation = pbrun.action_wait.outcome_poll(queue, KEY, None)
     assert landed is not None
     assert landed[1]["status"] == second_word, (
         "a key-only wait must answer with the newest generation")

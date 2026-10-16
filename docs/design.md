@@ -170,9 +170,19 @@ translation, retained-reader polling, delivered-reader scope and timing defaults
 The synchronous and detached frontends, campaign window and canary import that
 owner directly. `pbrun` no longer exports those internal wait helpers. The
 generic reader mechanism and persistent scope-owned protocol are unchanged.
-The shared await loop and typed submission/recovery channel remain separate
-C06 work; moving these owners does not establish their completion. This
-infrastructure does not certify a complete measurement census: `ready_items`
+The synchronous and detached wait loops share `action_wait.await_action`.
+The synchronous and detached profiles preserve deadline clipping, the final
+synchronous reread and immediate detached preemption handoff at expiry.
+Attachment reads remain strict outside an active synchronous await. Immutable
+verification keeps its own finite read budget. Each await owns distinct typed
+retained and delivered-reader populations; only the original absolute deadline
+is shared across detached-key threads. The ordinary reader wire shape remains
+`section`, `pid`, `starttime_ticks` and `since_unix`. Strict decoding preserves
+those values on serialization. Malformed reader identities retain their raw
+records, refuse recovery and start no second reader. The existing own-child
+waitpid and SIGCHLD behavior is preserved; ordinary waits acquire no persistent
+ownership fence or new pidfd. Typed exit/recovery and the submission channel remain separate C06 work.
+This infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and

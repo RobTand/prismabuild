@@ -123,7 +123,7 @@ def test_this_runs_withdrawal_beats_an_old_unstamped_success(
         expected = queue.withdrawal_decision_path(current)
         queue._persist_withdrawal_decision(current)
 
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0.05, generation=200.0)
 
     assert path == expected
@@ -146,7 +146,7 @@ def test_an_old_broken_decision_does_not_poison_this_runs_ending(queue) -> None:
     current = _outcome(200.0, status="executed", returncode=0)
     expected = _file(queue, pool.DONE, current)
 
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0.05, generation=200.0)
 
     assert path == expected
@@ -161,4 +161,4 @@ def test_a_broken_decision_for_this_run_still_refuses_a_verdict(queue) -> None:
           _outcome(200.0, status="executed", returncode=0))
 
     with pytest.raises(pool.PoolContractError, match="invalid withdrawal decision"):
-        pbrun.landed_outcome(queue, KEY, wait_s=0.05, generation=200.0)
+        pbrun.action_wait.await_ending(queue, KEY, wait_s=0.05, generation=200.0)

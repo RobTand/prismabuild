@@ -128,7 +128,7 @@ def test_immutable_verification_timeout_is_loud_non_success(
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
     queue.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
-    real_read = pbrun.action_wait.bounded_read
+    real_read = pbrun.action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
         # Only the verification is meant to time out. The observation before
@@ -140,7 +140,7 @@ def test_immutable_verification_timeout_is_loud_non_success(
     def blocked_summary(*_args, **_kwargs):
         time.sleep(30)
 
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", short_verification)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked_summary)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
     assert "pool outcome verification timed out" in capsys.readouterr().err
@@ -156,7 +156,7 @@ def test_parent_carries_preemption_successor_between_bounded_observations(
     seen: list[float | None] = []
 
     def observation(_queue, _key, generation, *, budget_s,
-                    use_delivered_snapshot=False):
+                    ):
         assert budget_s > 0
         seen.append(generation)
         if len(seen) == 1:
@@ -190,7 +190,8 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
     monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
@@ -218,7 +219,8 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
     monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
@@ -293,14 +295,14 @@ def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
     real = pbrun.bounded_outcome_observation
     calls: list[str] = []
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+    def flaky(q, key, generation, *, budget_s):
         calls.append("observation")
         if len(calls) == 1:
             raise pbrun.action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped; "
                 'retained reader=[{"pid": 1}]')
         return real(q, key, generation, budget_s=budget_s,
-                    use_delivered_snapshot=use_delivered_snapshot)
+                    profile=profile)
 
     monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
@@ -319,7 +321,7 @@ def test_terminal_reread_with_no_ending_names_host_and_key(
     queue = Queue(tmp_path / "queue")
     real = pbrun.bounded_outcome_observation
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+    def flaky(q, key, generation, *, budget_s):
         raise pbrun.action_wait.OutcomeReadUnavailable(
             "pool outcome observation timed out after 5.0s and its reader "
             "could not be reaped")
@@ -342,13 +344,13 @@ def test_terminal_reread_with_still_no_ending_says_so(
     real = pbrun.bounded_outcome_observation
     calls: list[str] = []
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+    def flaky(q, key, generation, *, budget_s):
         calls.append("observation")
         if len(calls) == 1:
             raise pbrun.action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped")
         return real(q, key, generation, budget_s=budget_s,
-                    use_delivered_snapshot=use_delivered_snapshot)
+                    profile=profile)
 
     monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT

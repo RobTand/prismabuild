@@ -234,7 +234,7 @@ def test_a_duplicate_submission_keeps_the_first_generation(
     assert queue.claim(capacity={"cpu": 4}) is not None
     queue.finish(KEY, status="executed")
 
-    landed, _ = pbrun.outcome_poll(queue, KEY, first)
+    landed, _ = pbrun.action_wait.outcome_poll(queue, KEY, first)
     assert landed is not None, (
         "the duplicate restamped the row, so the first waiter's generation "
         "no longer matches any terminal record")

@@ -79,7 +79,7 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
         queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
@@ -122,7 +122,7 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
         queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
@@ -152,7 +152,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
         queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
@@ -176,17 +176,17 @@ def test_a_newer_generations_failure_is_never_the_waited_verdict(queue) -> None:
     assert second != first
     _run(queue, status="failed", returncode=3, stdout="later run\n")
 
-    landed, generation = pbrun.outcome_poll(queue, KEY, first)
+    landed, generation = pbrun.action_wait.outcome_poll(queue, KEY, first)
     assert landed is None
     assert generation == first
-    assert pbrun.landed_outcome(
+    assert pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first) is None
 
 
 def test_pbwait_reports_the_recovered_generation(queue, tmp_path, monkeypatch) -> None:
     """The bounded waiter shares the selection step, so it recovers too."""
 
-    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(pbwait.action_wait, "OUTCOME_READ_TIMEOUT_S", 30.0)
     first = _publish(queue)
     _run(queue, status="executed", returncode=0, stdout="first run\n")
     second = _publish(queue)
@@ -253,7 +253,7 @@ def test_tampered_attempt_evidence_is_refused(queue, damage) -> None:
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)
     with pytest.raises(pool.PoolContractError):
-        pbrun.landed_outcome(queue, KEY, wait_s=0, generation=generation)
+        pbrun.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)
 
 
 @pytest.mark.parametrize("absent", ["first", "middle"])
@@ -294,4 +294,4 @@ def test_an_attempt_beyond_its_recorded_budget_is_refused(queue) -> None:
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)
     with pytest.raises(pool.PoolContractError):
-        pbrun.landed_outcome(queue, KEY, wait_s=0, generation=generation)
+        pbrun.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)

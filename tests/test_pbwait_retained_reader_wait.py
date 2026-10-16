@@ -57,7 +57,7 @@ def _stuck_queue(tmp_path: Path):
 
 
 def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pbwait, "PBWAIT_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbwait.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.1)
 
 

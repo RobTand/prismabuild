@@ -4,7 +4,7 @@
 codebase already measured what that does to a lookup of a path that did not
 exist yet: the client caches the negative entry, so ``exists()`` keeps
 answering False and ``open()`` keeps raising ``ENOENT`` after the file has
-landed.  ``pbrun.terminal_record`` polls by ``os.listdir`` for exactly that
+landed.  ``pbrun.action_wait.terminal_record`` polls by ``os.listdir`` for exactly that
 reason, and says so.
 
 Three reads in ``slurm_lane`` trusted the lookup instead, and what they lose is

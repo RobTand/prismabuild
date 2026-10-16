@@ -37,7 +37,7 @@ What it deliberately does not do:
     hooks that gate it live; an MCP tool that published to the queue would be
     a way around them.
 *   Take the transition lock to resolve a preemption handoff.  ``pbrun``'s
-    ``landed_outcome`` does, and it is right to: it is deciding what to tell a
+    ``action_wait.await_ending`` does, and it is right to: it is deciding what to tell a
     waiter.  This is reporting, so it re-derives the same successor rule
     unlocked and stamps ``unlocked_read`` on the answer -- a requeue published
     in the microseconds since the read reads as "not yet visible", never as
@@ -820,7 +820,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
 def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> float | None:
     """The generation a preemption requeued this one as, read without the lock.
 
-    ``pbrun._read_preemption_successor`` holds the transition lock while it looks,
+    ``action_wait._read_preemption_successor`` holds the transition lock while it looks,
     because it is deciding what to tell a waiter and must not answer in the
     middle of admission's withdraw-then-republish.  This is reporting, and
     taking that lock would make a read-only server a participant in the

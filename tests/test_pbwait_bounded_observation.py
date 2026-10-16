@@ -79,7 +79,7 @@ def blocked(path, *args, **kwargs):
     return original(path, *args, **kwargs)
 Path.read_text = blocked
 pbwait.slurm_lane.recorded_submission = lambda *_args, **_kwargs: None
-pbwait.PBWAIT_READ_TIMEOUT_S = 0.05
+pbwait.action_wait.OUTCOME_READ_TIMEOUT_S = 0.05
 row = pbwait.wait_one(queue, {KEY!r}, cas=pb.PrismaBuildCAS(Path({str(tmp_path / "cas")!r})), deadline=time.monotonic())
 print(row["status"])
 print(row["note"])
@@ -109,7 +109,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
 ) -> None:
     queue = _queue(tmp_path)
     queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
-    real_read = pbrun.action_wait.bounded_read
+    real_read = pbrun.action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
         # Only the verification is meant to time out. The observation before
@@ -121,7 +121,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
     def blocked(*_args, **_kwargs):
         time.sleep(30)
 
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", short_verification)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", short_verification)
     monkeypatch.setattr(pbrun, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
@@ -212,7 +212,7 @@ def test_preemption_handoff_skips_cas_until_the_successor_is_observed(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "outstanding", lambda *_args, **_kwargs:
                         ("pool", 1.0, {"published_unix": 1.0}))
-    monkeypatch.setattr(pbrun, "outcome_poll", lambda *_args, **_kwargs:
+    monkeypatch.setattr(pbrun.action_wait, "outcome_poll", lambda *_args, **_kwargs:
                         (None, 2.0))
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
         "the stopped generation must not reach the request/CAS read"))
@@ -273,7 +273,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
         return row
 
     monkeypatch.setattr(pbwait, "outstanding", outstanding)
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", inline_reader)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", inline_reader)
     monkeypatch.setattr(pbwait, "wait_one", observed_wait_one)
     # Zero patience: the blocked key's single timed-out read is its row. A
     # patient wait would retry it until the deadline (#558).
@@ -299,7 +299,7 @@ def test_reader_setup_failure_never_retries_reads_in_the_parent(
     def forbidden(*_args, **_kwargs):
         pytest.fail("reader setup failure must not retry shared reads")
 
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", setup_failed)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", setup_failed)
     monkeypatch.setattr(pbwait, "outstanding", forbidden)
     monkeypatch.setattr(pbwait, "recorded_action", forbidden)
     row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)

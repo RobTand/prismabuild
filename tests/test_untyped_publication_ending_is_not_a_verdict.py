@@ -117,7 +117,7 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
         "outcome": outcome, "observed_generation": original["published_unix"],
         "action": None, "receipt_published": False,
     }
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *args, **kwargs: payload)
 
     with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
         if consumer == "pbrun":
@@ -154,7 +154,7 @@ def test_verification_ipc_cannot_report_a_publication_status_as_execution(
     path, record = queue.archived_generation_outcomes(KEY, generation=executed["published_unix"])[0]
     summary = pbrun.outcome_summary(queue, path, record)
     payload = {"summary": {**summary, "status": "superseded"}, "attempts": []}
-    monkeypatch.setattr(pbrun.action_wait, "bounded_read", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *args, **kwargs: payload)
 
     with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
         pbrun.bounded_outcome_render(queue, path, record, budget_s=5)

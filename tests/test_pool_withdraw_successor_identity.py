@@ -210,7 +210,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     assert queue.claim() is None
     assert queue.find_key(KEY[:12]) == KEY
     assert pbwait.resolve_key(queue, KEY[:12], lane_root=tmp_path / "slurm") == KEY
-    path, ending = pbrun.landed_outcome(
+    path, ending = pbrun.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=original["published_unix"])
     assert ending["status"] == "withdrawn"
     assert path == queue.withdrawal_decision_path(original)
