@@ -47,14 +47,39 @@ def audit(key, fleet):
     request = json.loads(request_raw)
     check_hash(request, "action_key")
     assert request["action_key"] == key
-    logs, counts = {}, []
+    logs, counts, phases, completion = {}, [], [], None
     for name in ("stdout", "stderr"):
         row = detail[name + "_log"]
         path = queue / row["path"]
         assert path.resolve().is_relative_to(queue.resolve())
         file_hash(path, row["sha256"], row["bytes"])
         logs[name] = {k: row[k] for k in ("path", "bytes", "sha256")}
-        counts.extend(re.findall(r"(\d+) (passed|failed|skipped)", path.read_text(errors="replace")))
+        text = path.read_text(errors="replace")
+        counts.extend(re.findall(r"(\d+) (passed|failed|skipped)", text))
+        for line in text.splitlines():
+            if line.startswith("pbtest-trace: "):
+                row = json.loads(line.removeprefix("pbtest-trace: "))
+                if row.get("event") == "phase":
+                    phases.append(row)
+            elif line.startswith("pbtest-completion: "):
+                assert completion is None, "duplicate native completion"
+                completion = json.loads(line.removeprefix("pbtest-completion: "))
+    native = None
+    if completion is not None:
+        assert completion["collection_complete"] and not completion["collect_only"]
+        assert not completion["collection_errors"] and not completion["duplicate_teardown"]
+        selected = set(completion["collected"])
+        assert selected and len(selected) == len(completion["collected"])
+        assert selected == set(completion["teardown_finished"]) == set(completion["outcome_nodeids"])
+        by_phase = {when: [row["nodeid"] for row in phases if row.get("when") == when]
+                    for when in ("setup", "call", "teardown")}
+        if phases:
+            assert set(by_phase["setup"]) == set(by_phase["teardown"]) == selected
+            assert all(len(values) == len(set(values)) for values in by_phase.values())
+        native = {"selected": len(selected), "teardown_finished": len(completion["teardown_finished"]),
+                  "outcome_nodeids": len(completion["outcome_nodeids"]),
+                  "phase_counts": {when: len(values) for when, values in by_phase.items()},
+                  "no_call": sorted(selected - set(by_phase["call"])) if phases else None}
     inputs = []
     for row in request["inputs"]:
         path = cas / "blobs" / row["sha256"][:2] / row["sha256"]
@@ -88,6 +113,7 @@ def audit(key, fleet):
     return {"action_key": key, "terminal": str(present[0]), "returncode": detail["returncode"],
             "worker": ending["finished_host"], "source_snapshot": snapshot,
             "request_sha256": sha(request_raw), "logs": logs, "native_counts": counts,
+            "native_completion": native,
             "inputs": inputs, "source_bundle_heads_verified": True, "cleanup_complete": True,
             "receipt_sha256": receipt["receipt_sha256"] if receipt else None,
             "runtime_sha256": receipt["producer"]["runtime"]["runtime_sha256"] if receipt else None}
