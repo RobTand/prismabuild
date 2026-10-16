@@ -52,7 +52,7 @@ def _end_claim(
     else:
         if ending == "reap_unstarted":
             # Reproduce the lost write between the claim rename and its lease.
-            queue.lease_path(KEY).unlink()
+            queue.records.lease_path(KEY).unlink()
         clock[0] += max(pool.LEASE_TIMEOUT_S, pool.HEARTBEAT_S) + 1
         queue.reap_stale()
 
@@ -68,7 +68,7 @@ def test_requeue_preserves_newer_ready_publication(
 
     clock[0] += 1
     _publish(queue, priority=7)
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     newer_bytes = ready.read_bytes()
     newer = json.loads(newer_bytes)
     assert newer["published_unix"] > claim["published_unix"]
@@ -78,11 +78,11 @@ def test_requeue_preserves_newer_ready_publication(
     assert ready.read_bytes() == newer_bytes, (
         f"{ending} displaced the newer ready publication with its older claim"
     )
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     assert queue.ledger().held() == {}
     filed = [json.loads(path.read_bytes())
-             for path in queue.superseded_dir().glob(f"{KEY}.*.json")]
+             for path in queue.records.superseded_dir().glob(f"{KEY}.*.json")]
     retired = [record for record in filed if record.get("status") == "dropped"]
     assert len(retired) == 1
     assert retired[0]["published_unix"] == claim["published_unix"]
@@ -106,7 +106,7 @@ def test_requeue_preserves_newer_ready_publication(
     assert terminal["attempts"] == 1
     assert [outcome["status"] for outcome in queue.attempt_outcomes(terminal)] == ["executed"]
     assert queue.attempt_outcomes(retired[0]) == old_outcomes
-    assert not queue.attempt_path(claim, 2).exists()
+    assert not queue.records.attempt_path(claim, 2).exists()
     assert queue.ledger().held() == {}
     landed, watched = pbrun.outcome_poll(queue, KEY, newer["published_unix"])
     assert landed is not None and landed[1]["status"] == "executed"
@@ -129,14 +129,14 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
 
     _end_claim(queue, claim, ending, clock)
 
-    ready = json.loads(queue.item_path(pool.READY, KEY).read_bytes())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())
     charged = ending in {"finish_retry", "reap_lease_lost"}
     assert ready["published_unix"] == claim["published_unix"]
     assert ready["attempts"] == int(charged)
     assert ready["max_attempts"] == 2
     assert ready["retry_safe"] is True
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     assert queue.ledger().held() == {}
     outcomes = queue.attempt_outcomes(ready)
     if charged:
@@ -148,7 +148,7 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
         assert outcomes[0]["disposition"] == "requeued"
     else:
         assert outcomes == []
-        assert not queue.attempt_path(claim, 1).exists()
+        assert not queue.records.attempt_path(claim, 1).exists()
 
     clock[0] += 1
     successor = queue.claim(owner="first-claim", capacity=DEMAND)
@@ -168,8 +168,8 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
     _publish(queue)
     claim = queue.claim(owner="first-claim", capacity=DEMAND)
     assert claim is not None
-    original_bytes = queue.item_path(pool.CLAIMED, KEY).read_bytes()
-    ready = queue.item_path(pool.READY, KEY)
+    original_bytes = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     if failure == "collision_filing":
         clock[0] += 1
         _publish(queue, priority=7)
@@ -200,12 +200,12 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
                 _end_claim(queue, claim, ending, clock)
 
     retained = [
-        *queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}"),
-        *queue.dir(pool.CLAIMED).glob(f"{KEY}.json"),
+        *queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
     ]
     assert len(retained) == 1
     assert retained[0].read_bytes() == original_bytes
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     assert queue.ledger().held() == {}
     if failure == "collision_filing":
         assert ready.read_bytes() == newer_bytes
@@ -217,12 +217,12 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
     queue.reap_stale()
     queue.reap_stale()
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not list(queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}"))
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"))
     assert queue.ledger().held() == {}
     charged = ending in {"finish_retry", "reap_lease_lost"}
-    assert queue.attempt_path(claim, 1).exists() == charged
-    assert not queue.attempt_path(claim, 2).exists()
+    assert queue.records.attempt_path(claim, 1).exists() == charged
+    assert not queue.records.attempt_path(claim, 2).exists()
     if failure == "collision_filing":
         assert ready.read_bytes() == newer_bytes
     else:

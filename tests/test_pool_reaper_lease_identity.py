@@ -21,7 +21,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
 
     publish(key)
     first = queue.claim(owner='original', capacity=resources)
-    claim_path, lease_path = queue.item_path(pool.CLAIMED, key), queue.lease_path(key)
+    claim_path, lease_path = queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key)
     # Reconstruct a legacy handoff, then inject only the old claim observation.
     # The durable claim, lease and reservation on disk belong to the successor.
     claim_path.unlink()
@@ -40,7 +40,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
         first['finish_pending'] = {'status': 'executed', 'detail': {'returncode': 0}}
     cleanup_calls = []
     cleanup = queue.cleanup_action_containers
-    read = pool._read_json
+    read = pool.record_store.read_queue_record
     later = pool._now() + pool.LEASE_TIMEOUT_S + 1
 
     def observed_cleanup(record, **kwargs):
@@ -48,7 +48,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
         return cleanup(record, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, '_read_json',
+        patch.setattr(pool.record_store, '_read_json',
                       lambda path, **kwargs: dict(first) if path == claim_path else read(path, **kwargs))
         patch.setattr(pool, '_now', lambda: later)
         patch.setattr(queue, 'cleanup_action_containers', observed_cleanup)
@@ -60,14 +60,14 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
     assert 'contradictory claim and lease identity' in capsys.readouterr().err
     assert all(path.read_bytes() == data for path, data in saved.items())
     assert queue.ledger().held() == resources
-    for state in (pool.READY, pool.DONE, pool.FAILED):
-        assert not queue.item_path(state, key).exists()
-    assert not queue.attempt_path(first, 1).exists()
+    for state in (pool.record_store.READY, pool.record_store.DONE, pool.record_store.FAILED):
+        assert not queue.records.item_path(state, key).exists()
+    assert not queue.records.attempt_path(first, 1).exists()
 
     # A later consistent read can recover the expired successor normally.
     with monkeypatch.context() as patch:
         patch.setattr(pool, '_now', lambda: later)
         assert queue.reap_stale() == [key]
     assert queue.ledger().held() == {}
-    ending = json.loads(queue.attempt_path(newer, 1).read_text())
+    ending = json.loads(queue.records.attempt_path(newer, 1).read_text())
     assert ending['status'] == 'lease_lost'

@@ -78,7 +78,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     which is exactly what ``claim`` leaves when it is interrupted there.
     """
 
-    claimed_path = q.item_path(pool.CLAIMED, KEY)
+    claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     real = pool._write_json_atomic
 
     def dies_before_naming_itself(path, payload):
@@ -96,7 +96,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     # window has moved and the assertions below are about something else.
     record = json.loads(claimed_path.read_text())
     assert "claimed_host" not in record, "claim named its box after all"
-    assert not q.lease_path(KEY).exists(), "a lease means the rewrite landed"
+    assert not q.records.lease_path(KEY).exists(), "a lease means the rewrite landed"
     assert q.ledger(HELD_BY).held() == DEMAND, (
         "the claimant committed no tokens; there is nothing to misplace")
     assert q.claim_intent_host(KEY, record) == HELD_BY
@@ -117,7 +117,7 @@ def _reap_here(q: pool.PoolQueue) -> list[str]:
 
 
 def _same_generation_record(q: pool.PoolQueue) -> dict:
-    published = json.loads(q.item_path(pool.CLAIMED, KEY).read_text())
+    published = json.loads(q.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     return {"action_key": KEY, "published_unix": published["published_unix"]}
 
 
@@ -182,7 +182,7 @@ def test_the_ledger_closes_the_case_the_marker_could_not(
 
     _publish(queue)
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
 
     _reap_here(queue)
 
@@ -203,7 +203,7 @@ def test_with_no_evidence_at_all_no_holder_is_invented(
 
     _publish(queue)
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
     assert queue.ledger(HELD_BY).release(KEY) == 1
 
     _reap_here(queue)
@@ -221,11 +221,11 @@ def test_a_claim_already_filed_elsewhere_still_credits_its_holder(
     _lose_the_record_rewrite(queue)
     filed = _same_generation_record(queue)
     filed["status"] = "executed"
-    pool._write_json_atomic(queue.item_path(pool.DONE, KEY), filed)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.DONE, KEY), filed)
 
     _reap_here(queue)
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == {}
     assert queue.ledger(HELD_BY).available() == DEMAND
 
@@ -239,11 +239,11 @@ def test_a_withdrawn_claim_still_credits_its_holder(
     _lose_the_record_rewrite(queue)
     marker = _same_generation_record(queue)
     marker["withdrawn_unix"] = pool._now()
-    pool._write_json_atomic(queue.item_path(pool.WITHDRAWN, KEY), marker)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.WITHDRAWN, KEY), marker)
 
     _reap_here(queue)
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == {}
     assert queue.ledger(HELD_BY).available() == DEMAND
 
@@ -264,10 +264,10 @@ def test_the_record_and_the_ledger_name_the_same_box(
 
     _reap_here(queue)
 
-    requeued = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     superseded = [
         json.loads(path.read_text())
-        for path in sorted(queue.superseded_dir().glob("*.json"))
+        for path in sorted(queue.records.superseded_dir().glob("*.json"))
     ]
     named = {record.get("claimed_host") for record in superseded}
     assert named == {HELD_BY}, f"superseded filings name {named}"

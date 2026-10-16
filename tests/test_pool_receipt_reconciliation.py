@@ -22,19 +22,19 @@ def recover(fixture, **kwargs):
     from prismabuild.pool_reconcile import reconcile
     q, cas, action, ending = fixture
     return reconcile(q, action['action_key'], cas=cas,
-                     generation=kwargs.pop('generation', q.attempt_generation(ending)),
+                     generation=kwargs.pop('generation', q.records.attempt_generation(ending)),
                      attempt=kwargs.pop('attempt', ending['attempts']), **kwargs)
 
 
 def snapshots(q, key):
-    roots = [q.item_path(pool.FAILED, key), *sorted((q.root / pool.ATTEMPTS / key).rglob('*'))]
+    roots = [q.records.item_path(pool.record_store.FAILED, key), *sorted((q.root / pool.record_store.ATTEMPTS / key).rglob('*'))]
     return {str(p): p.read_bytes() for p in roots if p.is_file()}
 
 
 def rewrite_ending(fixture, edit):
     q, _, action, ending = fixture
     edit(ending)
-    q.item_path(pool.FAILED, action['action_key']).write_text(json.dumps(ending))
+    q.records.item_path(pool.record_store.FAILED, action['action_key']).write_text(json.dumps(ending))
 
 
 def test_explicit_recovery_verifies_action_payload_without_rewriting_attempt(failure):
@@ -53,8 +53,8 @@ def test_explicit_recovery_verifies_action_payload_without_rewriting_attempt(fai
     record = Path(result['reconciliation_path'])
     assert record.is_file() and not record.stat().st_mode & 0o222
     assert recover(failure) == result, 'repeated reconciliation reuses immutable evidence'
-    assert not q.item_path(pool.DONE, key).exists()
-    assert not q.item_path(pool.READY, key).exists()
+    assert not q.records.item_path(pool.record_store.DONE, key).exists()
+    assert not q.records.item_path(pool.record_store.READY, key).exists()
     # The ordinary wait still reports the actual transport ending. Explicit
     # recovery is not an implicit license to reinterpret a failed attempt.
     rows = pbwait.wait_for_keys(q, [key], cas=cas, wait_s=0)
@@ -75,10 +75,10 @@ def test_no_receipt_eof_is_not_recoverable(tmp_path, monkeypatch):
         recover(failure)
 
 
-@pytest.mark.parametrize('state', [pool.READY, pool.CLAIMED, pool.INTENT, pool.DONE, pool.WITHDRAWN])
+@pytest.mark.parametrize('state', [pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.INTENT, pool.record_store.DONE, pool.record_store.WITHDRAWN])
 def test_active_work_or_another_terminal_is_never_reconciled(failure, state):
     q, _, action, ending = failure
-    path = q.item_path(state, action['action_key'])
+    path = q.records.item_path(state, action['action_key'])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(ending))
     before = snapshots(q, action['action_key'])
@@ -89,7 +89,7 @@ def test_active_work_or_another_terminal_is_never_reconciled(failure, state):
 
 def test_leftover_lease_is_not_cleanup_proof(failure):
     q, _, action, _ = failure
-    q.lease_path(action['action_key']).write_text('{}')
+    q.records.lease_path(action['action_key']).write_text('{}')
     with pytest.raises(ValueError, match='lease'):
         recover(failure)
 
@@ -177,7 +177,7 @@ def test_corrupt_canonical_evidence_is_not_accepted(failure, target):
     elif target == 'payload':
         path = cas.result_path(cas.lookup(action), action)
     elif target == 'attempt':
-        path = q.attempt_path(ending, ending['attempts'])
+        path = q.records.attempt_path(ending, ending['attempts'])
     else:
         path = q.root / q.attempt_outcomes(ending)[-1]['logs']['stderr']['path']
     path.chmod(0o644)
@@ -204,13 +204,13 @@ def test_cli_recovery_is_explicit_and_preserves_original_exit(failure, monkeypat
     # The CLI's live layout is pb-queue. Give its factory the fixture queue;
     # all authority is still the fixture's canonical CAS and records.
     monkeypatch.setattr(pbwait.pool, 'PoolQueue', lambda _root: q)
-    status = pbwait.main(['--reconcile-pool', '--generation', q.attempt_generation(ending),
+    status = pbwait.main(['--reconcile-pool', '--generation', q.records.attempt_generation(ending),
                           '--attempt', '1', action['action_key']])
     assert status == 0
     output = capsys.readouterr().out
     assert 'payload_verified' in output and '125' in output
     assert 'failed' in output and 'reconciliation' in output
-    assert json.loads(q.item_path(pool.FAILED, action['action_key']).read_text())['status'] == 'failed'
+    assert json.loads(q.records.item_path(pool.record_store.FAILED, action['action_key']).read_text())['status'] == 'failed'
 
 
 @pytest.mark.parametrize('argv', [
@@ -227,7 +227,7 @@ def test_cli_refuses_ambiguous_reconciliation_before_reading_fleet(argv):
 
 def test_newer_intent_is_refused_without_deleting_it(failure):
     q, _, action, ending = failure
-    path = q.item_path(pool.INTENT, action['action_key'])
+    path = q.records.item_path(pool.record_store.INTENT, action['action_key'])
     intent = json.loads(path.read_text())
     intent['intent_unix'] = ending['finished_unix'] + 1
     path.write_text(json.dumps(intent))
@@ -238,7 +238,7 @@ def test_newer_intent_is_refused_without_deleting_it(failure):
 
 def test_a_missing_completed_intent_does_not_invent_active_work(failure):
     q, _, action, _ = failure
-    q.item_path(pool.INTENT, action['action_key']).unlink()
+    q.records.item_path(pool.record_store.INTENT, action['action_key']).unlink()
     assert recover(failure)['payload_status'] == 'verified'
 
 
@@ -252,7 +252,7 @@ def test_changed_ending_during_cas_verification_never_files_supplement(failure, 
     monkeypatch.setattr(cas, 'lookup', lookup)
     with pytest.raises(ValueError):
         recover(failure)
-    assert not list((q.root / pool.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
+    assert not list((q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
 
 
 def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch):
@@ -260,12 +260,12 @@ def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch)
     original_lookup = cas.lookup
     def lookup(action):
         receipt = original_lookup(action)
-        q.item_path(pool.WITHDRAWN, action['action_key']).write_text(json.dumps(ending))
+        q.records.item_path(pool.record_store.WITHDRAWN, action['action_key']).write_text(json.dumps(ending))
         return receipt
     monkeypatch.setattr(cas, 'lookup', lookup)
     with pytest.raises(ValueError, match='withdrawn'):
         recover(failure)
-    assert not list((q.root / pool.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
+    assert not list((q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'))
 
 
 def test_cli_reports_cas_corruption_as_refusal(failure, monkeypatch, capsys):
@@ -276,7 +276,7 @@ def test_cli_reports_cas_corruption_as_refusal(failure, monkeypatch, capsys):
     path.chmod(0o644)
     path.write_text('{}')
     path.chmod(0o444)
-    assert pbwait.main(['--reconcile-pool', '--generation', q.attempt_generation(ending),
+    assert pbwait.main(['--reconcile-pool', '--generation', q.records.attempt_generation(ending),
                         '--attempt', '1', action['action_key']]) == 1
     assert 'reconciliation refused' in capsys.readouterr().err
 
@@ -288,7 +288,7 @@ def test_retired_withdrawal_decision_is_scoped_to_its_generation(failure, same_g
     if not same_generation:
         decision['published_unix'] -= 1
     q._persist_withdrawal_decision(decision)
-    assert not q.item_path(pool.WITHDRAWN, action['action_key']).exists()
+    assert not q.records.item_path(pool.record_store.WITHDRAWN, action['action_key']).exists()
     if same_generation:
         with pytest.raises(ValueError, match='withdrawal decision'):
             recover(failure)

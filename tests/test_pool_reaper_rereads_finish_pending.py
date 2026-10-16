@@ -55,7 +55,7 @@ def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
     racing for it.
     """
 
-    path = q.item_path(pool.CLAIMED, KEY)
+    path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     real = pool.PoolQueue.lease_age
     landed: dict[str, object] = {}
 
@@ -84,7 +84,7 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
 
     _publish(queue, max_attempts=4, retry_safe=True)
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
-    path = queue.item_path(pool.CLAIMED, KEY)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
 
     landed = _finish_pending_lands_during(queue, host="a-foreign-box")
 
@@ -93,9 +93,9 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
     assert path.exists(), "a completed action's claim was reaped as lease_lost"
     assert json.loads(path.read_text()).get("finish_pending") is not None
     # Nothing was concluded on its behalf.
-    assert list(queue.dir(pool.FAILED).glob("*.json")) == []
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
-    assert list((queue.root / pool.ATTEMPTS).rglob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.FAILED).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+    assert list((queue.root / pool.record_store.ATTEMPTS).rglob("*.json")) == []
 
 
 def test_the_owner_host_still_concludes_its_own_pending_finish(
@@ -110,10 +110,10 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
 
     # Not this cycle -- the guard read before the replace -- but the record is
     # intact, so the next cycle's guard reads it and files the saved outcome.
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert landed["reaped"] == []
     assert queue.reap_stale(timeout_s=-1) == []
-    done = list(queue.dir(pool.DONE).glob("*.json"))
+    done = list(queue.records.dir(pool.record_store.DONE).glob("*.json"))
     assert [p.name for p in done] == [f"{KEY}.json"]
     assert json.loads(done[0].read_text())["status"] == "executed"
 
@@ -126,5 +126,5 @@ def test_an_ordinary_stale_claim_is_still_reaped(queue: pool.PoolQueue) -> None:
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
