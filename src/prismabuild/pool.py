@@ -5913,6 +5913,39 @@ class _RefusalAccounting:
     preempted: bool
 
 
+@dataclass
+class _ClaimScan:
+    ready: list[dict[str, object]]
+    tags: frozenset[str]
+    has_gpu: bool
+    owner: str
+    capacity: Mapping[str, int] | None
+    cpu_tiers: Mapping[str, Sequence[int]] | None
+    controller: cpu_admission.Controller | None
+    gpu_controller: gpu_admission.Controller | None
+    observed_images: Container[str] | None
+    container_class_policy: image_inventory.ClassImagePolicy | None
+    container_inventory: Mapping[str, object] | None
+    admission_open: Callable[[], bool] | None
+    withdrawn: Container[str]
+    released: Container[str]
+    placement: _peer_placement.PlacementPass
+    ledger: ResourceLedger | None
+    host_gate: object
+    total: dict[str, int]
+    gpu_first: frozenset[str]
+    ready_gpu: Mapping[str, object] | None
+    host: str
+    ready_priority: dict[str, int]
+    copy_authority: object
+    interpreter_host: capability_eligibility.LiveInterpreters
+    dependency_host: capability_eligibility.LiveDependencies
+    image_host: capability_eligibility.LiveImages
+    reads: _ClaimScanReads
+    census: object
+    census_refusal: Mapping[str, object] | None
+
+
 class _ClaimScanReads:
     def __init__(self, queue: "PoolQueue", *, ledger: ResourceLedger | None,
                  tags: frozenset[str], has_gpu: bool) -> None:
@@ -22649,6 +22682,164 @@ class PoolQueue:
             self.passes_path(key).unlink(missing_ok=True)
         return claimed
 
+    def _start_claim_scan(
+        self,
+        *,
+        tags: Iterable[str] = (),
+        has_gpu: bool = False,
+        owner: str | None = None,
+        capacity: Mapping[str, int] | None = None,
+        cpu_tiers: Mapping[str, Sequence[int]] | None = None,
+        controller: cpu_admission.Controller | None = None,
+        gpu_controller: gpu_admission.Controller | None = None,
+        ready: list[dict[str, object]] | None = None,
+        observed_images: Container[str] | None = None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
+        admission_open: Callable[[], bool] | None = None,
+    ) -> _ClaimScan:
+        """Prepare the ordered ready scan and its existing pass-lived views."""
+
+        owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        tagset = frozenset(str(t) for t in tags)
+        self.ensure_layout()
+        # The load-bearing half of ``withdraw``.  A withdrawal that lands while
+        # a worker is mid-``finish`` can leave a requeued ready record behind
+        # it, and without this guard that record is claimed and the cancelled
+        # work runs again -- which is the race the operator used to have to win
+        # by hand.  Read once per scan, not once per item.
+        withdrawn = self.withdrawn_keys()
+        # The same listing for keys an operator released from an origin batch
+        # (#954).  Membership is only the placement-bypass hint below; the
+        # guard lists the index fresh under the key's transition lock (#964),
+        # so a release that lands after this scan listed it is still seen.
+        released = self.released_origin_consumer_keys()
+        placement = _peer_placement.PlacementPass(
+            self.offers, self._read_peer_observation, history=self._placement_history,
+            wall_clock=lambda: _now())
+
+        ledger = None
+        host_gate = controller
+        total: dict[str, int] = {}
+        if capacity is not None:
+            ledger = self.ledger()
+            if host_gate is None:
+                host_gate = cpu_admission.AdmissionGate(ledger)
+            # The CPU map is immutable while workers run. Validate an existing
+            # map before admission so a shared read cannot block sibling work.
+            # A missing map still needs serialized initialization below; no
+            # capacity or reservation state is prefetched here.
+            configured_tiers = (ledger.configure_cpu_tiers(cpu_tiers, initialize=False)
+                                if cpu_tiers is not None else None)
+            # Minting and retiring tokens is a read-modify-write of this box's
+            # own capacity, so it stays exclusive -- two loops retiring against
+            # different clamped offers must not interleave.  It is bounded and
+            # it is not the claim: no rename, lease or token move happens here.
+            with self._admission_lock(host_gate):
+                if cpu_tiers is None:
+                    cpu_tiers = _read_json(ledger.base / "cpu-map.json")
+                if cpu_tiers is not None:
+                    cpu_tiers = (configured_tiers if configured_tiers is not None else
+                                 ledger.configure_cpu_tiers(cpu_tiers))
+                    if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
+                        raise PoolContractError("CPU capacity exceeds the inherited CPU map")
+                    ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
+                ledger.ensure_capacity(capacity)
+                total = ledger.capacity()
+        if ready is None:
+            with ready_placement(tagset, has_gpu):
+                ready = self.ready_items()
+        else:
+            ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
+        live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
+                            for item in ready}
+        self._placement_history.retain(live_generations)
+        # The reason ring's memo, bounded the same way (#991).
+        self._retire_denial_memo({
+            (str(item.get("action_key", "")), repr(float(item["published_unix"])))
+            for item in ready if isinstance(item.get("published_unix"), (int, float))})
+        #: Ready GPU rows that fit this box's free GPU, scanned first in their
+        #: band (#1169, :meth:`_gpu_first_order`).
+        gpu_first: frozenset[str] = frozenset()
+        if ledger is not None:
+            ready, gpu_first = self._gpu_first_order(
+                ready, ledger=ledger, total=total, tags=tagset, has_gpu=has_gpu,
+                gpu_controller=gpu_controller)
+        # _aged_for and GPU-first planning can both restore ordinary band
+        # order. Re-elevate verified publication slots before any withhold.
+        ready = publication_canary.promote(
+            self.root, ready, eligible=lambda item: self._placement_matches(
+                item, tags=tagset, has_gpu=has_gpu))
+        reads = _ClaimScanReads(self, ledger=ledger, tags=tagset, has_gpu=has_gpu)
+        # Protect GPU capacity even across priority bands and when a CPU row
+        # fits beside it. This is a placement rule, not #1169's scan ordering.
+        ready_gpu = self._ready_gpu_for_host(
+            ready, tags=tagset, has_gpu=has_gpu, total=total,
+            gpu_controller=gpu_controller, offers=placement.offers,
+            observed_images=observed_images, reads=reads)
+        host = socket.gethostname()
+        #: Each ready row's priority, so a gang member past the reservation bound
+        #: is released from a measurement withhold only when that measurement is
+        #: not of strictly higher priority (#1579): higher priority goes first.
+        ready_priority = {str(row.get("action_key", "")): int(row.get("priority", 0))
+                          for row in ready if isinstance(row.get("priority", 0), int)}
+        # Read copy authority outside admission locks. Copy age does not
+        # prove that a READY prerequisite has ended.
+        from . import _measurement_reservation as measurement_reservation, runtime_publication
+        copy_authority = runtime_publication.live_authority()
+        interpreter_host = capability_eligibility.LiveInterpreters()
+        dependency_host = capability_eligibility.LiveDependencies()
+        image_host = capability_eligibility.LiveImages(
+            observed_images, policy=container_class_policy, inventory=container_inventory)
+        #: The census is not read about a candidate, so a refusal of it
+        #: (the reader fence busy, a record unreadable) is the same answer for
+        #: every later candidate of this pass: take it once (#1571).  Each
+        #: candidate otherwise waited out ``FENCE_WAIT_S`` for the fence again,
+        #: ten loops hammered the one fence, and 80 dependents of a running
+        #: measurement stayed READY behind 'reader busy'.  Refusing never
+        #: authorizes anything; the next pass takes the fence afresh.
+        census_refusal: dict[str, object] | None = None
+        #: One successful census this pass reuses for later candidates
+        #: (#1571): with a free fence each candidate otherwise paid two
+        #: bounded-child scans, the discovery read and the refresh read.
+        #: Later candidates re-take only the elected keys of this host
+        #: plus host admission, never the fence or the scan.  Reset where
+        #: authority may have changed: this pass's own claim, gang
+        #: election, or measurement election.
+        from . import _measurement_reservation as _pass_reservation
+        pass_census = _pass_reservation.PassCensus(self, ledger, host_gate)
+        return _ClaimScan(
+            ready=ready,
+            tags=tagset,
+            has_gpu=has_gpu,
+            owner=owner,
+            capacity=capacity,
+            cpu_tiers=cpu_tiers,
+            controller=controller,
+            gpu_controller=gpu_controller,
+            observed_images=observed_images,
+            container_class_policy=container_class_policy,
+            container_inventory=container_inventory,
+            admission_open=admission_open,
+            withdrawn=withdrawn,
+            released=released,
+            placement=placement,
+            ledger=ledger,
+            host_gate=host_gate,
+            total=total,
+            gpu_first=gpu_first,
+            ready_gpu=ready_gpu,
+            host=host,
+            ready_priority=ready_priority,
+            copy_authority=copy_authority,
+            interpreter_host=interpreter_host,
+            dependency_host=dependency_host,
+            image_host=image_host,
+            reads=reads,
+            census=pass_census,
+            census_refusal=census_refusal,
+        )
+
     def _claim_pass(
         self,
         *,
@@ -22741,116 +22932,43 @@ class PoolQueue:
         recovers as soon as the foreign work exits.
         """
 
-        owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
-        tagset = frozenset(str(t) for t in tags)
-        self.ensure_layout()
-        # The load-bearing half of ``withdraw``.  A withdrawal that lands while
-        # a worker is mid-``finish`` can leave a requeued ready record behind
-        # it, and without this guard that record is claimed and the cancelled
-        # work runs again -- which is the race the operator used to have to win
-        # by hand.  Read once per scan, not once per item.
-        withdrawn = self.withdrawn_keys()
-        # The same listing for keys an operator released from an origin batch
-        # (#954).  Membership is only the placement-bypass hint below; the
-        # guard lists the index fresh under the key's transition lock (#964),
-        # so a release that lands after this scan listed it is still seen.
-        released = self.released_origin_consumer_keys()
-        placement = _peer_placement.PlacementPass(
-            self.offers, self._read_peer_observation, history=self._placement_history,
-            wall_clock=lambda: _now())
-
-        ledger = None
-        host_gate = controller
-        total: dict[str, int] = {}
-        if capacity is not None:
-            ledger = self.ledger()
-            if host_gate is None:
-                host_gate = cpu_admission.AdmissionGate(ledger)
-            # The CPU map is immutable while workers run. Validate an existing
-            # map before admission so a shared read cannot block sibling work.
-            # A missing map still needs serialized initialization below; no
-            # capacity or reservation state is prefetched here.
-            configured_tiers = (ledger.configure_cpu_tiers(cpu_tiers, initialize=False)
-                                if cpu_tiers is not None else None)
-            # Minting and retiring tokens is a read-modify-write of this box's
-            # own capacity, so it stays exclusive -- two loops retiring against
-            # different clamped offers must not interleave.  It is bounded and
-            # it is not the claim: no rename, lease or token move happens here.
-            with self._admission_lock(host_gate):
-                if cpu_tiers is None:
-                    cpu_tiers = _read_json(ledger.base / "cpu-map.json")
-                if cpu_tiers is not None:
-                    cpu_tiers = (configured_tiers if configured_tiers is not None else
-                                 ledger.configure_cpu_tiers(cpu_tiers))
-                    if int(capacity.get("cpu", 0)) > sum(map(len, cpu_tiers.values())):
-                        raise PoolContractError("CPU capacity exceeds the inherited CPU map")
-                    ledger.retire_free_capacity({"cpu": int(capacity.get("cpu", 0))})
-                ledger.ensure_capacity(capacity)
-                total = ledger.capacity()
-        if ready is None:
-            with ready_placement(tagset, has_gpu):
-                ready = self.ready_items()
-        else:
-            ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
-        live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
-                            for item in ready}
-        self._placement_history.retain(live_generations)
-        # The reason ring's memo, bounded the same way (#991).
-        self._retire_denial_memo({
-            (str(item.get("action_key", "")), repr(float(item["published_unix"])))
-            for item in ready if isinstance(item.get("published_unix"), (int, float))})
-        #: Ready GPU rows that fit this box's free GPU, scanned first in their
-        #: band (#1169, :meth:`_gpu_first_order`).
-        gpu_first: frozenset[str] = frozenset()
-        if ledger is not None:
-            ready, gpu_first = self._gpu_first_order(
-                ready, ledger=ledger, total=total, tags=tagset, has_gpu=has_gpu,
-                gpu_controller=gpu_controller)
-        # _aged_for and GPU-first planning can both restore ordinary band
-        # order. Re-elevate verified publication slots before any withhold.
-        ready = publication_canary.promote(
-            self.root, ready, eligible=lambda item: self._placement_matches(
-                item, tags=tagset, has_gpu=has_gpu))
-        reads = _ClaimScanReads(self, ledger=ledger, tags=tagset, has_gpu=has_gpu)
-        # Protect GPU capacity even across priority bands and when a CPU row
-        # fits beside it. This is a placement rule, not #1169's scan ordering.
-        ready_gpu = self._ready_gpu_for_host(
-            ready, tags=tagset, has_gpu=has_gpu, total=total,
-            gpu_controller=gpu_controller, offers=placement.offers,
-            observed_images=observed_images, reads=reads)
-        host = socket.gethostname()
+        scan_pass = self._start_claim_scan(
+            tags=tags, has_gpu=has_gpu, owner=owner, capacity=capacity,
+            cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
+            ready=ready, observed_images=observed_images,
+            container_class_policy=container_class_policy, container_inventory=container_inventory,
+            admission_open=admission_open)
+        ready = scan_pass.ready
+        tagset = scan_pass.tags
+        has_gpu = scan_pass.has_gpu
+        owner = scan_pass.owner
+        capacity = scan_pass.capacity
+        cpu_tiers = scan_pass.cpu_tiers
+        controller = scan_pass.controller
+        gpu_controller = scan_pass.gpu_controller
+        observed_images = scan_pass.observed_images
+        container_class_policy = scan_pass.container_class_policy
+        container_inventory = scan_pass.container_inventory
+        admission_open = scan_pass.admission_open
+        withdrawn = scan_pass.withdrawn
+        released = scan_pass.released
+        placement = scan_pass.placement
+        ledger = scan_pass.ledger
+        host_gate = scan_pass.host_gate
+        total = scan_pass.total
+        gpu_first = scan_pass.gpu_first
+        ready_gpu = scan_pass.ready_gpu
+        host = scan_pass.host
+        ready_priority = scan_pass.ready_priority
+        copy_authority = scan_pass.copy_authority
+        interpreter_host = scan_pass.interpreter_host
+        dependency_host = scan_pass.dependency_host
+        image_host = scan_pass.image_host
+        reads = scan_pass.reads
+        pass_census = scan_pass.census
+        census_refusal = scan_pass.census_refusal
         scan = candidate_policy.ScanOrder()
         preempted = False
-        #: Each ready row's priority, so a gang member past the reservation bound
-        #: is released from a measurement withhold only when that measurement is
-        #: not of strictly higher priority (#1579): higher priority goes first.
-        ready_priority = {str(row.get("action_key", "")): int(row.get("priority", 0))
-                          for row in ready if isinstance(row.get("priority", 0), int)}
-        # Read copy authority outside admission locks. Copy age does not
-        # prove that a READY prerequisite has ended.
-        from . import _measurement_reservation as measurement_reservation, runtime_publication
-        copy_authority = runtime_publication.live_authority()
-        interpreter_host = capability_eligibility.LiveInterpreters()
-        dependency_host = capability_eligibility.LiveDependencies()
-        image_host = capability_eligibility.LiveImages(
-            observed_images, policy=container_class_policy, inventory=container_inventory)
-        #: The census is not read about a candidate, so a refusal of it
-        #: (the reader fence busy, a record unreadable) is the same answer for
-        #: every later candidate of this pass: take it once (#1571).  Each
-        #: candidate otherwise waited out ``FENCE_WAIT_S`` for the fence again,
-        #: ten loops hammered the one fence, and 80 dependents of a running
-        #: measurement stayed READY behind 'reader busy'.  Refusing never
-        #: authorizes anything; the next pass takes the fence afresh.
-        census_refusal: dict[str, object] | None = None
-        #: One successful census this pass reuses for later candidates
-        #: (#1571): with a free fence each candidate otherwise paid two
-        #: bounded-child scans, the discovery read and the refresh read.
-        #: Later candidates re-take only the elected keys of this host
-        #: plus host admission, never the fence or the scan.  Reset where
-        #: authority may have changed: this pass's own claim, gang
-        #: election, or measurement election.
-        from . import _measurement_reservation as _pass_reservation
-        pass_census = _pass_reservation.PassCensus(self, ledger, host_gate)
         for item in ready:
             key = str(item.get("action_key", ""))
             measurement_suspended = False
