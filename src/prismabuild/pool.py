@@ -3834,7 +3834,7 @@ class ResourceLedger:
                 raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
             self.base.mkdir(parents=True, exist_ok=True)
             immutable_files.publish_immutable(path, pb._canonical_bytes(record))
-            existing = _read_json(path)
+            existing = record_store.read_queue_record(path)
         if existing != record:
             raise PoolContractError("CPU tier map differs: stop workers, drain reservations "
                                     "and remove cpu-map.json before changing topology")
