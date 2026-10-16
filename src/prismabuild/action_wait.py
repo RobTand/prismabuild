@@ -72,6 +72,51 @@ class RetainedReader:
                 'starttime_ticks': self.starttime_ticks, 'since_unix': self.since_unix}
 
 
+@dataclass(frozen=True)
+class ReaderHistory:
+    abandoned_count: int = 0
+    identities: tuple[RetainedReader, ...] = ()
+    complete: bool = True
+
+
+@dataclass
+class ClientReaderHistory:
+    abandoned_count: int = 0
+    identities: list[RetainedReader] = field(default_factory=list)
+    complete: bool = True
+
+    def record_abandoned(self, records: Sequence[Mapping[str, object]]) -> None:
+        for record in records:
+            self.abandoned_count += 1
+            if len(self.identities) >= 8:
+                self.complete = False
+                continue
+            try:
+                identity = RetainedReader.from_record(record)
+            except OutcomeReadUnavailable:
+                self.complete = False
+            else:
+                self.identities.append(identity)
+
+    def snapshot(self) -> ReaderHistory:
+        return ReaderHistory(self.abandoned_count, tuple(self.identities), self.complete)
+
+
+_CLIENT_READERS: contextvars.ContextVar[ClientReaderHistory | None] = contextvars.ContextVar(
+    'action_client_reader_history', default=None)
+
+
+@contextlib.contextmanager
+def client_readers():
+    """Keep abandonment for the whole client, even after a child is reaped."""
+    history = ClientReaderHistory()
+    token = _CLIENT_READERS.set(history)
+    try:
+        yield history
+    finally:
+        _CLIENT_READERS.reset(token)
+
+
 @dataclass
 class AwaitState:
     generation: float | None
@@ -257,6 +302,9 @@ def read_observation(section: str, read, *, budget_s: float):
     result = _reader.bounded(
         section, read, deadline=_reader.Deadline(budget_s), abandoned=abandoned,
         announce_retained=False)
+    history = _CLIENT_READERS.get()
+    if history is not None:
+        history.record_abandoned(abandoned)
     try:
         readers = [RetainedReader.from_record(child) for child in abandoned]
     except OutcomeReadUnavailable as exc:
