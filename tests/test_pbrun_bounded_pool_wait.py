@@ -28,11 +28,10 @@ KEY = "b" * 64
 class Queue:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.records = pbrun.pool.record_store.RecordStore(root)
         for state in ("done", "failed", "withdrawn"):
             (root / state).mkdir(parents=True)
 
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
 
     def withdrawal_decisions(self, key: str, **_kwargs) -> list:
         return []
@@ -61,7 +60,7 @@ def test_bounded_wait_keeps_healthy_terminal_verdicts(
     status: str, returncode: int, expected: int,
 ) -> None:
     queue = Queue(tmp_path / "queue")
-    queue.item_path(state, KEY).write_text(
+    queue.records.item_path(state, KEY).write_text(
         json.dumps(_ending(status, returncode)), encoding="utf-8")
 
     assert pbrun.await_outcome(queue, KEY, wait_s=0) == expected
@@ -70,7 +69,7 @@ def test_bounded_wait_keeps_healthy_terminal_verdicts(
 
 def _blocked_fifo_queue(tmp_path: Path) -> Queue:
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     return queue
 
 
@@ -96,12 +95,11 @@ root = Path({str(root)!r})
 for state in ("done", "failed", "withdrawn"):
     (root / state).mkdir(parents=True)
 class Queue:
-    def item_path(self, state, key):
-        return root / state / f"{{key}}.json"
+    records = pbrun.pool.record_store.RecordStore(root)
     def withdrawal_decisions(self, key, **kwargs):
         return []
 key = {KEY!r}
-os.mkfifo(Queue().item_path("done", key))
+os.mkfifo(Queue().records.item_path("done", key))
 print("entered await_outcome", flush=True)
 print(pbrun.await_outcome(Queue(), key, wait_s=0), flush=True)
 '''
@@ -127,7 +125,7 @@ def test_immutable_verification_timeout_is_loud_non_success(
 ) -> None:
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
-    queue.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
+    queue.records.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
     real_read = pbrun._bounded_pool_read
 
     def short_verification(section, read, *, budget_s, **kwargs):
@@ -151,7 +149,7 @@ def test_parent_carries_preemption_successor_between_bounded_observations(
 ) -> None:
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
-    path = queue.item_path("done", KEY)
+    path = queue.records.item_path("done", KEY)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     seen: list[float | None] = []
 
@@ -183,7 +181,7 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(
+    queue.records.item_path("done", KEY).write_text(
         json.dumps(_ending("executed", 0)), encoding="utf-8")
     retained: list[int] = []
 
@@ -288,7 +286,7 @@ def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(
+    queue.records.item_path("done", KEY).write_text(
         json.dumps(_ending("executed", 0)), encoding="utf-8")
     real = pbrun.bounded_outcome_observation
     calls: list[str] = []

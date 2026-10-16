@@ -109,7 +109,7 @@ def _land(queue: pool.PoolQueue, *, complete: bool = True) -> None:
 
     stage = queue.root / "stage"
     path = stage / "part-0.bin"
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": STAGE_TIER, "stage_root": str(stage),
@@ -160,7 +160,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
 
     # A claim file for the mover makes its receipt a previous run's, even
     # one too torn to parse: ``resident_movers`` asks the filesystem.
-    claim = queue.item_path(pool.CLAIMED, MOVER)
+    claim = queue.records.item_path(pool.record_store.CLAIMED, MOVER)
     text = scrapes.after("a torn claim for the mover",
                          lambda: _file_raw(claim, "{"))
     assert _sample(text, STAGED) == "0"
@@ -168,7 +168,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
     assert _sample(text, STAGED) == "1"
 
     fragment = residency_map.fragment_path(
-        queue.residency_fragment_root(), CONSUMER, MOVER)
+        queue.records.residency_fragment_root(), CONSUMER, MOVER)
     text = scrapes.after("fragment removed", fragment.unlink)
     assert _sample(text, STAGED) == "0"
 
@@ -179,7 +179,7 @@ def test_the_cursor_follows_the_lease(queue_and_scrapes):
     _land(queue)
     settle(queue.root, scrapes.patch)
     assert _sample(scrapes.check("landed"), STAGED) == "1"
-    lease_path = queue.lease_path(CONSUMER)
+    lease_path = queue.records.lease_path(CONSUMER)
     lease = json.loads(lease_path.read_text())
     lease["progress_observation"]["last_accepted"]["phase"] = "phase-0001"
     # The staged first phase is now behind the cursor, which counts only
@@ -197,7 +197,7 @@ def test_heartbeats_and_announcements_are_followed(queue_and_scrapes):
     scrapes.check("initial")
 
     def heartbeat() -> None:
-        for path in sorted(queue.lease_path(CONSUMER).parent.glob("*.lease")):
+        for path in sorted(queue.records.lease_path(CONSUMER).parent.glob("*.lease")):
             lease = json.loads(path.read_text())
             lease["heartbeat_unix"] = lease["heartbeat_unix"] + 0.5
             _replace(path, lease)
@@ -219,14 +219,14 @@ def test_plans_follow_their_consumers_and_their_files(queue_and_scrapes):
     before = _sample(scrapes.check("initial"), ready_plans)
     consumer = _key("consumer", 2)
     text = scrapes.after("a plan's consumer published", lambda: _put(
-        queue.root / pool.READY / f"{consumer}.json",
+        queue.root / pool.record_store.READY / f"{consumer}.json",
         shaped._item(consumer, scrapes.now - 5.0)))
     assert int(_sample(text, ready_plans)) == int(before) + 1
 
     absent = (f'prismabuild_residency_plans'
               f'{{state="absent",tier="{STAGE_TIER}"}}')
     counted = int(_sample(text, absent))
-    plan = queue.residency_plan_path(_key("consumer", 3))
+    plan = queue.records.residency_plan_path(_key("consumer", 3))
     text = scrapes.after("a plan removed", plan.unlink)
     assert int(_sample(text, absent)) == counted - 1
 
@@ -240,14 +240,14 @@ def test_history_follows_new_records(queue_and_scrapes):
 
     key = _key("late-ending", 0)
     text = scrapes.after("a new ending", lambda: _put(
-        queue.root / pool.DONE / f"{key}.json",
+        queue.root / pool.record_store.DONE / f"{key}.json",
         shaped._ending(key, "executed", "sparky", scrapes.now - 1.0,
                        profiled=True), scrapes.now - 1.0))
     assert int(_sample(text, window)) == int(_sample(before, window)) + 1
 
     receipt = _key("late-receipt", 0)
     text = scrapes.after("a new receipt", lambda: _put(
-        queue.root / pool.MOVERS / f"{receipt}.json", {
+        queue.root / pool.record_store.MOVERS / f"{receipt}.json", {
             "schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": receipt,
             "tier_id": STAGE_TIER, "host": "dl380g10",
             "unix": scrapes.now - 1.0, "complete": True,
@@ -258,16 +258,16 @@ def test_history_follows_new_records(queue_and_scrapes):
     assert int(_sample(text, jobs)) == int(_sample(before, jobs)) + 1
 
     # A withdrawal decision newer than its summary displaces the summary.
-    withdrawn = _key(pool.WITHDRAWN, 0)
-    summary = queue.root / pool.WITHDRAWN / f"{withdrawn}.json"
+    withdrawn = _key(pool.record_store.WITHDRAWN, 0)
+    summary = queue.root / pool.record_store.WITHDRAWN / f"{withdrawn}.json"
     decided = os.stat(summary).st_mtime + 1.0
     scrapes.after("a newer withdrawal decision", lambda: _put(
-        queue.root / pool.WITHDRAWN / "decisions" / withdrawn / "2.000000.json",
+        queue.root / pool.record_store.WITHDRAWN / "decisions" / withdrawn / "2.000000.json",
         {"status": "withdrawn", "action_key": withdrawn}, decided))
 
     # Filed by rename, as every queue writer files (``DirectoryRecords``).
     scrapes.after("a torn receipt filed", lambda: _file_raw(
-        queue.root / pool.MOVERS / f"{receipt}.json", "{"))
+        queue.root / pool.record_store.MOVERS / f"{receipt}.json", "{"))
 
 
 def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
@@ -277,10 +277,10 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
     histories = scrapes.reader._histories._slots
-    decisions = queue.root / pool.WITHDRAWN / "decisions"
+    decisions = queue.root / pool.record_store.WITHDRAWN / "decisions"
     gone = sorted(decisions.iterdir())[0]
     assert str(gone) in histories
-    receipts = sorted((queue.root / pool.MOVERS).glob("*.json"))
+    receipts = sorted((queue.root / pool.record_store.MOVERS).glob("*.json"))
     for path in receipts[: len(receipts) // 2]:
         path.unlink()
     for path in gone.iterdir():
@@ -289,7 +289,7 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     settle(queue.root, scrapes.patch)
     scrapes.check("half the receipts and one decision gone")
     assert str(gone) not in histories
-    movers = histories[str(queue.root / pool.MOVERS)].value
+    movers = histories[str(queue.root / pool.record_store.MOVERS)].value
     assert len(movers) == len(receipts) - len(receipts) // 2
     derived = scrapes.reader._derived_entries.get("receipt", {})
     assert len(derived) <= len(movers)
@@ -327,7 +327,7 @@ def _fails(name: str, target: Path, error: int):
 
 def _new_ending(queue: pool.PoolQueue, now: float, index: int = 0) -> Path:
     key = _key("late-ending", index)
-    path = queue.root / pool.DONE / f"{key}.json"
+    path = queue.root / pool.record_store.DONE / f"{key}.json"
     _put(path, shaped._ending(key, "executed", "sparky", now - 1.0, profiled=True),
          now - 1.0)
     return path
@@ -361,7 +361,7 @@ def test_a_receipt_that_cannot_be_stat_ed_fails_the_move_window(queue_and_scrape
     shaped._require_trusted(queue.root)
     complete = "prismabuild_tier_move_window_complete"
     assert _sample(scrapes.check("initial"), complete) == "1"
-    receipt = queue.root / pool.MOVERS / f"{_key('late-receipt', 0)}.json"
+    receipt = queue.root / pool.record_store.MOVERS / f"{_key('late-receipt', 0)}.json"
     _put(receipt, {"schema": pool.POOL_MOVE_SCHEMA_V1, "unix": scrapes.now - 1.0,
                    "tier_id": STAGE_TIER}, scrapes.now - 1.0)
     settle(queue.root, scrapes.patch)
@@ -376,7 +376,7 @@ def test_a_directory_that_cannot_be_listed_fails_the_scrape(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
-    done = queue.root / pool.DONE
+    done = queue.root / pool.record_store.DONE
     # A permission change moves the directory's ctime, as a real one would.
     os.chmod(done, os.stat(done).st_mode)
     settle(queue.root, scrapes.patch)
@@ -396,7 +396,7 @@ def test_a_directory_that_leaves_and_returns_is_followed(queue_and_scrapes):
     shaped._require_trusted(queue.root)
     window = "prismabuild_terminal_outcomes_window_jobs"
     before = scrapes.check("initial")
-    done = queue.root / pool.DONE
+    done = queue.root / pool.record_store.DONE
     away = queue.root / "done.away"
     text = scrapes.after("done/ gone", lambda: done.rename(away))
     assert _sample(text, TERMINAL_OK) == "0"

@@ -76,25 +76,25 @@ print(rc)
 
 
 @pytest.mark.parametrize("state,age,ended,attaches", [
-    (pool.READY, None, False, True),
-    (pool.CLAIMED, 0.0, False, True),
-    (pool.CLAIMED, pool.LEASE_TIMEOUT_S + 60, False, False),
-    (pool.READY, None, True, False),
+    (pool.record_store.READY, None, False, True),
+    (pool.record_store.CLAIMED, 0.0, False, True),
+    (pool.record_store.CLAIMED, pool.LEASE_TIMEOUT_S + 60, False, False),
+    (pool.record_store.READY, None, True, False),
 ])
 def test_pool_attachment_keeps_generation_and_liveness(
     tmp_path: Path, state, age, ended, attaches,
 ) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "b" * 64
     generation = 123.0
     row = {"action_key": key, "published_unix": generation}
-    record = queue.item_path(state, key)
+    record = queue.records.item_path(state, key)
     record.write_text(json.dumps(row))
     if age is not None:
-        queue.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age}))
+        queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age}))
     if ended:
-        queue.item_path(pool.DONE, key).write_text(json.dumps({
+        queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps({
             **row, "status": "executed", "detail": {"returncode": 0}}))
     result = pbrun.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
     if attaches:
@@ -164,11 +164,11 @@ def test_claim_lease_read_is_inside_attachment_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "d" * 64
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps({
         "action_key": key, "published_unix": 123.0}))
-    os.mkfifo(queue.lease_path(key))
+    os.mkfifo(queue.records.lease_path(key))
     monkeypatch.setattr(pbrun, "ATTACHMENT_READ_TIMEOUT_S", 0.05)
     with pytest.raises(pbrun.OutcomeReadUnavailable, match="attachment discovery timed out"):
         pbrun.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
@@ -190,4 +190,4 @@ def test_attachment_setup_failure_returns_74_without_publishing(
                         pytest.fail("failed attachment must not publish"))
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 74
     assert "reader setup refused" in capsys.readouterr().err
-    assert not list((queue.root / pool.READY).glob("*.json"))
+    assert not list((queue.root / pool.record_store.READY).glob("*.json"))
