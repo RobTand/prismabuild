@@ -22,7 +22,7 @@ def test_snapshot_filter_finds_only_matching_git_identity(tmp_path, field):
         record["action_key"] = key
         record["checkout_root"] = None
         record["checkout_snapshot"] = {"parent": value, "commit": value}
-        fleet.queue.item_path("ready", key).write_text(json.dumps(record))
+        fleet.queue.records.item_path("ready", key).write_text(json.dumps(record))
     session = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link)
     body = session.call("pb_actions", {"snapshot_" + field: "1" * 40,

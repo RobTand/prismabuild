@@ -99,7 +99,7 @@ def test_the_successor_is_found_where_only_the_immutable_attempt_kept_it(
     # live row names the retry, so a reader of the mutable queue alone cannot
     # see the handoff at all.
     terminal = json.loads(
-        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     assert terminal["published_unix"] not in generations
 
     found = pbmcp._requeued_as(queue.root, key, second_stop)
@@ -122,7 +122,7 @@ def test_an_ordinary_ending_names_no_successor(tmp_path: Path) -> None:
 
     queue, key, _generations, _stops = _overwritten_handoff(tmp_path)
     terminal = json.loads(
-        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     assert terminal.get("preempted_by") is None
     assert pbmcp._requeued_as(queue.root, key, terminal) is None
 
@@ -138,7 +138,7 @@ def test_the_attempt_scan_never_opens_a_log(
     """
 
     queue, key, _generations, stops = _overwritten_handoff(tmp_path)
-    logs = sorted((queue.root / pool.ATTEMPTS).rglob("*.log"))
+    logs = sorted((queue.root / pool.record_store.ATTEMPTS).rglob("*.log"))
     assert logs, "the fixture published no attempt logs to protect"
     opened: list[str] = []
     real_open = Path.open
@@ -150,7 +150,7 @@ def test_the_attempt_scan_never_opens_a_log(
     monkeypatch.setattr(Path, "open", watched)
     assert pbmcp._requeued_as(queue.root, key, stops[1]) is not None
 
-    attempts = str(queue.root / pool.ATTEMPTS)
+    attempts = str(queue.root / pool.record_store.ATTEMPTS)
     read = [name for name in opened if name.startswith(attempts)]
     assert [name for name in read if name.endswith(".json")], (
         "the watcher saw no attempt record, so it would not have seen a log")

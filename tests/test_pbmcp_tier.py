@@ -103,9 +103,9 @@ def test_a_misfiled_record_is_named_and_does_not_hide_the_rest(
     session: pbmcp.Session, fleet: fx.Fleet,
 ) -> None:
     _announce(fleet)
-    wrong = fleet.queue_root / pool.TIERS / "ram:intruder.json"
+    wrong = fleet.queue_root / pool.record_store.TIERS / "ram:intruder.json"
     wrong.write_text('{"tier_id": "ram:someone-else"}', encoding="utf-8")
-    broken = fleet.queue_root / pool.TIERS / "broken.json"
+    broken = fleet.queue_root / pool.record_store.TIERS / "broken.json"
     broken.write_text("{not json", encoding="utf-8")
 
     body = session.call("pb_tier")
