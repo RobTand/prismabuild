@@ -75,6 +75,19 @@ def _snapshot(root: Path, *, ignored: str | None = None) -> dict[str, object]:
     return result
 
 
+def _snapshot_delta(before, after):
+    delta = {}
+    for root in before.keys() | after.keys():
+        old, new = before.get(root, {}), after.get(root, {})
+        if old != new:
+            delta[root] = {
+                name: (old.get(name), new.get(name))
+                for name in old.keys() | new.keys()
+                if old.get(name) != new.get(name)
+            }
+    return delta
+
+
 def _json(path: Path, value: object) -> None:
     if path.exists():
         path.chmod(0o644)
@@ -191,6 +204,28 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.ensure_layout()
+    publishers = []
+    publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
+
+    def publish_and_track(local, shared):
+        child = publish_snapshot(local, shared)
+        if child is not None:
+            publishers.append(child)
+        return child
+
+    monkeypatch.setattr(pool.cpu_admission.adaptive_snapshot, "publish", publish_and_track)
+    claim_unsettled = queue.queue.claim
+
+    def settled_claim(*args, **kwargs):
+        try:
+            return claim_unsettled(*args, **kwargs)
+        finally:
+            # Real admission returns before its diagnostic copy. This fixture
+            # compares the whole queue, so settle only the children it started.
+            while publishers:
+                assert publishers.pop(0).wait(timeout=10) == 0
+
+    monkeypatch.setattr(queue.queue, "claim", settled_claim)
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
     unrelated = hashlib.sha256(str(tmp_path).encode()).hexdigest()
     queue.publish(action_key=unrelated, cas_root=protected_root / "active-cas",
@@ -295,7 +330,7 @@ def _planned(case: RecoveryCase, **kwargs: object) -> dict[str, object]:
     assert plan["schema"] == PLAN_SCHEMA, json.dumps(plan, sort_keys=True)
     assert plan["complete"] is True and plan["status"] == "planned", plan
     assert case.cleanup_calls == []
-    assert case.preserved() == before
+    assert case.preserved() == before, _snapshot_delta(before, case.preserved())
     return plan
 
 
@@ -1808,7 +1843,7 @@ def test_pid_or_mapping_lifetime_change_after_mapping_read_refuses_without_clean
     assert any("changed" in error for error in result["errors"]), result
     after = case.preserved()
     after.pop(str(case.proc_root))
-    assert after == before
+    assert after == before, _snapshot_delta(before, after)
 
 
 def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_exception(case):
