@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -164,6 +165,10 @@ def retained(directory=CAPTURE, *, history_control=False):
 def generate(output, selected=None):
     output.mkdir(parents=True, exist_ok=False)
     historical, goldens, failures = [], [], []
+    started = datetime.now(timezone.utc).isoformat()
+    selected = list(cases() if selected is None else selected)
+    source = subprocess.check_output(["git", "-C", str(ROOT), "show", "-s", "--format=%H%n%P%n%T"],
+                                     text=True).splitlines()
 
     def check(result, case, generation, phase):
         if result["returncode"]:
@@ -176,7 +181,7 @@ def generate(output, selected=None):
         return True
 
     with retained() as generations, tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
-        for case in (cases() if selected is None else selected):
+        for case in selected:
             kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
             phase = "source" if kind.fixture_source else "writer"
             label = case.replace("/", "-")
@@ -213,6 +218,9 @@ def generate(output, selected=None):
     path = output / "qualification.json"
     path.write_text(json.dumps({"current_captures": len(goldens), "historical_captures": len(historical),
                                 "configuration_captures": sum("origin" in row for row in goldens),
+                                "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
+                                "selected_cases": selected,
+                                "source_git": {"snapshot": source[0], "parents": source[1].split(), "tree": source[2]},
                                 "failures": failures, "passed": not failures}, sort_keys=True, indent=2) + "\n")
     path.chmod(0o444)
     if failures:
