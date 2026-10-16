@@ -22565,8 +22565,6 @@ class PoolQueue:
     def _persist_committed_claim(
         self, committed: _CommittedClaim, scan_pass: _ClaimScan,
     ) -> dict[str, object] | None:
-        ledger = scan_pass.ledger
-        cpu_tiers = scan_pass.cpu_tiers
         owner = scan_pass.owner
         host = committed.tiers.host
         item = host.candidate.item
