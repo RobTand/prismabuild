@@ -162,7 +162,7 @@ def _stage_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(TOTAL),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -184,7 +184,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(TOTAL),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -211,7 +211,7 @@ def _documents(queue: pool.PoolQueue, consumer: str, mover: str
                ) -> tuple[set[str] | None, set[str] | None]:
     """The keys the fragment vouches and the sidecar dates; None if absent."""
 
-    residence = queue.root / pool.RESIDENCY
+    residence = queue.root / pool.record_store.RESIDENCY
     try:
         fragment = json.loads(residency_map.fragment_path(
             residence, consumer, mover).read_bytes())
@@ -267,7 +267,7 @@ def _killed_stage_move(tmp_path: Path, monkeypatch, *, behind: bool):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest, manifest_sha, body = _manifest(tmp_path)
     if behind:
         monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", 0.0)
@@ -348,7 +348,7 @@ def _killed_promotion(tmp_path: Path, monkeypatch):
     """A promotion killed between the two documents of its one publication."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest, manifest_sha, body = _manifest(tmp_path)
     staged = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, CONSUMER, STAGE_MOVER))
@@ -419,12 +419,12 @@ def test_a_date_no_vouch_cites_is_inert_to_the_strict_reader(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest, manifest_sha, body = _manifest(tmp_path)
     staged = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, CONSUMER, STAGE_MOVER))
     assert staged["complete"] is True, staged
-    residence = queue.root / pool.RESIDENCY
+    residence = queue.root / pool.record_store.RESIDENCY
     keys = _keys(body)
     path = residency_map.fragment_path(residence, CONSUMER, STAGE_MOVER)
     fragment = json.loads(path.read_bytes())

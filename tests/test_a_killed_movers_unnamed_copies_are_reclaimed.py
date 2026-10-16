@@ -92,8 +92,8 @@ class _World:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
-        self.residence = self.queue.root / pool.RESIDENCY
+        self.queue.records.ensure_layout()
+        self.residence = self.queue.root / pool.record_store.RESIDENCY
         self.stage = tmp_path / "stage"
         self.ram = tmp_path / "ram"
         self.manifest, self.manifest_sha, self.body = _manifest(tmp_path)
@@ -322,7 +322,7 @@ def test_a_live_writers_residue_is_kept_and_sized(world, monkeypatch, owner):
     if owner == "wanted":
         wanted = {RAM_MOVER}
     else:
-        pool._write_json_atomic(world.queue.lease_path(RAM_MOVER),
+        pool._write_json_atomic(world.queue.records.lease_path(RAM_MOVER),
                                 {"action_key": RAM_MOVER})
 
     receipt = stage_release.reconcile(world.queue, tier_id=RAM_TIER,
@@ -361,7 +361,7 @@ def test_a_live_promotions_source_leg_is_kept(world):
                     "sha256": world.manifest_sha,
                     "bytes": blob.stat().st_size}],
     }))
-    (world.queue.dir(pool.CLAIMED) / f"{RAM_MOVER}.json").write_text(
+    (world.queue.records.dir(pool.record_store.CLAIMED) / f"{RAM_MOVER}.json").write_text(
         json.dumps({"action_key": RAM_MOVER, "cas_root": str(cas),
                     "resources": {"cpu": 2, "mem_gb": 1,
                                   f"{storage_tiers.RAM_CAPACITY_KIND}"
