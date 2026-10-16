@@ -25,7 +25,7 @@ def publisher_generation(store, load, variant):
     publisher.CHECKOUT, publisher.MIRROR = source, store / "repo"
     facts = {"_commit_identity": lambda: "a" * 40, "_working_tree_dirty": lambda: False,
              "_publication_manifest": lambda: {MEMBER: hashlib.sha256(member.read_bytes()).hexdigest()},
-             "_git_index_modes": lambda: {MEMBER: "100644"},
+             "_git_index_modes": lambda: {MEMBER: 0o100644},
              "_shape_gate_record": lambda *args, **kwargs: {"verdict": "waived", "reason": "codec fixture; no execution qualification"},
              "_roster_option_record": lambda *args: None, "_probe": lambda *args: None,
              "_sign_movement_approval": lambda *args, **kwargs: None}

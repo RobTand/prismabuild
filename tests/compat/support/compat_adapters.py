@@ -76,6 +76,9 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family in ("checkout-snapshot", "checkout-v1-input"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_snapshot_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family in ("runtime-receipt", "movement-publication"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_generation_adapters.py")))["operate"]
         return adapter(request, store, load)
