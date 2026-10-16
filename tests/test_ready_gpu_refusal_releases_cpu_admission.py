@@ -35,7 +35,7 @@ def test_a_non_draining_gpu_refusal_releases_cpu_across_passes(fleet, fault, rea
                       mem_gb=8, tags=["gb10"])
         assert claim() == cpu, denial(cpu)
         queue.finish(cpu, status="executed")
-        assert queue.item_path(pool.READY, gpu).exists()
+        assert queue.records.item_path(pool.record_store.READY, gpu).exists()
 
 
 def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
@@ -49,7 +49,7 @@ def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
     gpu = publish("measurement-on-sky", measurement=True, priority=0,
                   cpu=8, gpu=1, mem_gb=48, tags=["gb10"])
     assert claim("sparky") is None
-    selected = reservation.selection(pool._read_json(queue.passes_path(gpu)) or {})
+    selected = reservation.selection(pool.record_store.read_queue_record(queue.records.passes_path(gpu)) or {})
     assert selected is not None and selected["host"] == "sparky"
     assert claim("sparklina") is None
     refused = denial(gpu, "sparklina")
@@ -60,7 +60,7 @@ def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
                       cpu=4, gpu=0, mem_gb=8, tags=["gb10"])
         assert claim("sparklina") == cpu, denial(cpu, "sparklina")
         queue.finish(cpu, status="executed")
-        assert queue.item_path(pool.READY, gpu).exists()
+        assert queue.records.item_path(pool.record_store.READY, gpu).exists()
         assert queue.ledger("sparky").held_keys() == [sky_holder]
 
 

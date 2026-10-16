@@ -42,7 +42,7 @@ GIB = storage_tiers.GIB
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -169,7 +169,7 @@ def test_publish_refuses_a_demand_below_the_range_it_declares(
     # The derived demand publishes, and so does more than it (a mover may
     # reserve headroom; it may never reserve less than it will write).
     _publish(queue, MOVER, {"cpu": 1, **derived}, residency=block)
-    item = pool._read_json(queue.item_path(pool.READY, MOVER))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, MOVER))
     assert item is not None and item["residency"]["range_end_bytes"] == 3 * GIB
     _publish(queue, MOVER, {"cpu": 1, STAGE: derived[STAGE] + 1}, residency=block)
 
@@ -213,7 +213,7 @@ def _compose_map(q: pool.PoolQueue, *, mover: str = MOVER) -> Path:
     """
 
     return residency_map.write_map(
-        q.residency_map_path(CONSUMER),
+        q.records.residency_map_path(CONSUMER),
         residency_map.compose([{
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER, "mover_action_key": mover,
@@ -269,7 +269,7 @@ def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None
     queue.finish(MOVER, status="cache_hit", claim_snapshot=mover_claim)
-    done = pool._read_json(queue.item_path(pool.DONE, MOVER))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, MOVER))
     assert done is not None and done["status"] == "cache_hit"
 
     _publish_consumer(queue, [MOVER])
@@ -336,9 +336,9 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
     """
 
     _publish(queue, MOVER, {"cpu": 1})
-    dropped = pool._read_json(queue.item_path(pool.READY, MOVER))
+    dropped = pool.record_store.require(queue.records.item(pool.record_store.READY, MOVER))
     assert dropped is not None
-    queue.item_path(pool.READY, MOVER).unlink()
+    queue.records.item_path(pool.record_store.READY, MOVER).unlink()
     queue._file_superseded(dropped, key=MOVER, kind="dropped", status="dropped")
 
     _publish_consumer(queue, [MOVER])
@@ -362,7 +362,7 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
-    done = pool._read_json(queue.item_path(pool.DONE, MOVER))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, MOVER))
     assert done is not None and done["status"] == "executed"
 
     _publish_consumer(queue, [MOVER])  # names manifest "a" * 64

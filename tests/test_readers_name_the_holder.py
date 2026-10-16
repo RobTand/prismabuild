@@ -67,7 +67,7 @@ def lost_claim(tmp_path: Path) -> tuple[pool.PoolQueue, Path, dict]:
     with mock.patch.object(pool, "_now", lambda: later):
         assert q.reap_stale(timeout_s=-1) == [KEY]
 
-    path = q.item_path(pool.FAILED, KEY)
+    path = q.records.item_path(pool.record_store.FAILED, KEY)
     record = json.loads(path.read_text())
     assert record["claimed_host"] == HELD_BY
     assert record["finished_host"] == REAPED_BY
@@ -104,18 +104,18 @@ def test_an_ending_with_no_claimant_still_names_a_box(tmp_path: Path) -> None:
     """
 
     q = pool.PoolQueue(tmp_path / "queue")
-    q.ensure_layout()
-    pool._write_json_atomic(q.item_path(pool.DONE, KEY), {
+    q.records.ensure_layout()
+    pool._write_json_atomic(q.records.item_path(pool.record_store.DONE, KEY), {
         "action_key": KEY, "status": "cache_hit", "transport": "slurm",
         "finished_host": REAPED_BY, "finished_unix": pool._now(),
         "detail": {"elapsed_s": 0.0, "returncode": 0},
     })
-    record = json.loads(q.item_path(pool.DONE, KEY).read_text())
+    record = json.loads(q.records.item_path(pool.record_store.DONE, KEY).read_text())
 
     rows = pbstatus.read_endings(q.root, limit=10)
     assert next(row for row in rows if row["action_key"] == KEY)["host"] == REAPED_BY
 
-    row = pbwait._from_ending(q, (q.item_path(pool.DONE, KEY), record))
+    row = pbwait._from_ending(q, (q.records.item_path(pool.record_store.DONE, KEY), record))
     assert row["host"] == REAPED_BY
 
 

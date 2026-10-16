@@ -35,7 +35,7 @@ def test_new_claim_and_immutable_attempt_record_canonical_serving(tmp_path):
     import pbstatus
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 1, "mem_gb": 2},
                                  default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"), checkout_root=str(tmp_path),
                   worker_script="/worker.py", max_attempts=1)
@@ -62,6 +62,6 @@ def test_explicit_resident_declaration_is_sealed_and_projected_not_a_gate(tmp_pa
     assert row["resident_set"] == set_id
     queue.publish(**row)
     # An absent set cannot turn the optional accelerator into admission gating.
-    item = json.loads(queue.item_path(pool.READY, action["action_key"]).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, action["action_key"]).read_text())
     assert item["resident_set"] == set_id
     assert item.get("residency") is None
