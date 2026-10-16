@@ -26,8 +26,6 @@ names only; they do not register directories or implement scratch cleanup.
 """
 from __future__ import annotations
 
-from . import immutable_files
-
 import math
 import os
 import re
@@ -1464,7 +1462,7 @@ class ProfileInputs:
         from . import core
         return tuple(
             (core.raw_sha256(
-                immutable_files.read_stable_file(
+                core.immutable_files.read_stable_file(
                     self.source_root / name,
                     where="installed scratch producer source",
                 ),
@@ -1493,7 +1491,7 @@ class ProfileInputs:
         if found is None:
             raise LocalScratchError("scratch producer successful CAS receipt absent")
         receipt = cast(dict[str, Any], found)
-        raw = immutable_files.read_immutable_file(
+        raw = core.immutable_files.read_immutable_file(
             cas.result_path(receipt, action),
             where="scratch profile result",
             max_bytes=65536,
@@ -1583,7 +1581,7 @@ class ProfileInputs:
                 stamps = [f["path"] for f in action["code_closure"]["files"]
                           if Path(f["path"]).name.startswith(core.PBRUN_STAMP_PREFIX)]
                 stamp = core.digest_primitives.decode_strict_json(
-                    immutable_files.read_stable_file(
+                    core.immutable_files.read_stable_file(
                         checkout / stamps[0],
                         where="scratch producer original identity",
                         max_bytes=4096,
@@ -1606,7 +1604,7 @@ class ProfileInputs:
                     raise LocalScratchError("scratch producer owner/marker not derived from sealed intent")
                 actual = tuple(
                     (core.raw_sha256(
-                        immutable_files.read_stable_file(
+                        core.immutable_files.read_stable_file(
                             checkout / name,
                             where="scratch producer source",
                         ),

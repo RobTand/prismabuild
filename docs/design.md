@@ -18063,10 +18063,11 @@ Only existing strict intake boundaries use it; plain queue reads keep their
 permissive JSON and missing/empty behavior. Core has no private forwarding
 reader or decoder aliases. Its public `ReplacedRecordError` is the exact
 native class object, alongside its existing canonical CAS error bindings.
-Dynamic tools with a loaded Core use that Core's native/digest module objects,
-while package modules import the native owner directly. Strict decoder callers
-use either their loaded Core's digest member or the direct digest owner; each
-module uses one native-owner access form,
+Dynamic tools and the standalone-capable `local_scratch` recorder use their
+loaded Core's native/digest module objects. Other package modules import the
+native owner directly. Strict decoder callers use either their loaded Core's
+digest member or the direct digest owner; each module uses one native-owner
+access form,
 so isolated, installed and retained source bundles keep their own dependency
 and exception identity. The attested member set is unchanged, and current,
 historical optional-member and retained receipt-listed proof rules remain in
