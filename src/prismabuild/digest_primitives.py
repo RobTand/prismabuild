@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -16,6 +17,18 @@ class PrismaBuildError(RuntimeError):
 
 class ActionContractError(PrismaBuildError, ValueError):
     """An action, closure, receipt, or worker identity is not exact."""
+
+
+def unique_json_object(
+    pairs: list[tuple[str, object]], *,
+    duplicate_error: Callable[[str], ValueError],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise duplicate_error(key)
+        result[key] = value
+    return result
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -89,13 +102,6 @@ def stream_sha256(path: str | Path, *, offset: int = 0,
 
 
 def decode_strict_json(raw: bytes, *, where: str) -> object:
-    def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ActionContractError(f"{where} contains duplicate key {key!r}")
-            result[key] = value
-        return result
 
     def reject_constant(value: str) -> object:
         raise ActionContractError(f"{where} contains non-finite number {value}")
@@ -103,7 +109,9 @@ def decode_strict_json(raw: bytes, *, where: str) -> object:
     try:
         return json.loads(
             raw.decode("utf-8"),
-            object_pairs_hook=pairs_hook,
+            object_pairs_hook=lambda pairs: unique_json_object(
+                pairs, duplicate_error=lambda key: ActionContractError(
+                    f"{where} contains duplicate key {key!r}")),
             parse_constant=reject_constant,
         )
     except ActionContractError:
