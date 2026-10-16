@@ -78,7 +78,9 @@ def test_late_finisher_releases_its_scope_without_touching_the_live_attempt(scop
     assert archived['status'] == 'executed'
     cleanup = archived['detail']['resource_scope_cleanup']
     assert cleanup['complete'] is True and cleanup['nonce'] == old
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX),
+    )
 
 
 @pytest.mark.parametrize('operation', ['stop', 'release'])
@@ -153,8 +155,8 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
     if phase == "after_create":
         # Initially consistent reads; the later broker reply exposes a fresh
         # successor lease while the caller's claim observation remains old.
-        pool._write_json_atomic(claim_path, first)
-        pool._write_json_atomic(lease_path, {
+        pool.record_store._write_json(claim_path, first)
+        pool.record_store._write_json(lease_path, {
             "owner": first["claimed_by"], "host": first["claimed_host"],
             "claimed_unix": first["claimed_unix"],
             "published_unix": first["published_unix"],
@@ -198,7 +200,7 @@ def test_stale_create_recovery_preserves_successor_before_lease_refusal(
     if reused_owner:
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    claim_path = queue.records.item_path(pool.record_store.CLAIMED, first["action_key"])
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, first['action_key'])
     read = pool.record_store._read_json
     request = resource_scope.ResourceScope._request
 
@@ -255,7 +257,9 @@ def test_crash_before_stop_leaves_a_record_only_the_owner_host_can_recover(scope
         with pytest.raises(ProcessDied):
             queue.finish(first['action_key'], status='executed',
                          detail={'returncode': 0}, claim_snapshot=first)
-    paths = list(queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX))
+    paths = list(
+        queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX),
+    )
     assert len(paths) == 1
     before = paths[0].read_bytes()
     with monkeypatch.context() as patch:

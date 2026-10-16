@@ -7,7 +7,10 @@ KEY = "b" * 64
 def _queue(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.READY, KEY), {"action_key": KEY})
+    pool.record_store._write_json(
+        queue.records.item_path(pool.record_store.READY, KEY),
+        {"action_key": KEY},
+    )
     return queue
 
 
@@ -25,7 +28,7 @@ def test_quarantine_rereads_the_record_it_takes(tmp_path, monkeypatch):
         record = read(source, *args, **kwargs)
         if source == path and not replaced:
             replaced = True
-            pool._write_json_atomic(path, replacement)
+            pool.record_store._write_json(path, replacement)
         return record
 
     monkeypatch.setattr(pool.record_store, '_read_json', replace_after_read)
@@ -37,7 +40,7 @@ def test_quarantine_rereads_the_record_it_takes(tmp_path, monkeypatch):
 def test_orphan_ready_copy_does_not_authorize_releasing_a_claim(tmp_path):
     queue = _queue(tmp_path)
     # A damaged duplicate in ready does not own an action already claimed.
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY),
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY),
                             {"action_key": KEY, "claimed_by": "live"})
     queue.ledger().ensure_capacity({"cpu": 1})
     assert queue.ledger().acquire(KEY, {"cpu": 1})
@@ -49,7 +52,7 @@ def test_orphan_ready_copy_does_not_authorize_releasing_a_claim(tmp_path):
 def test_orphan_does_not_overwrite_existing_failure(tmp_path):
     queue = _queue(tmp_path)
     failed = queue.records.item_path(pool.record_store.FAILED, KEY)
-    pool._write_json_atomic(failed, {"action_key": KEY, "status": "failed",
+    pool.record_store._write_json(failed, {"action_key": KEY, "status": "failed",
                                    "detail": {"stderr": "attributable error"}})
     original = failed.read_bytes()
     assert queue.quarantine_orphans() == [KEY]

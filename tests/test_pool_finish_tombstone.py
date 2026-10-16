@@ -43,7 +43,9 @@ def _publish(q: pool.PoolQueue, **kw: object) -> None:
 
 
 def _tombstones(q: pool.PoolQueue) -> list[Path]:
-    return sorted(q.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    return sorted(
+        q.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
 
 
 def test_finish_does_not_delete_the_retrys_claim_or_lease(
@@ -164,7 +166,7 @@ def test_a_finisher_interrupted_mid_publish_is_recovered(
     # fresh claim one grace period. On the fleet the tombstone sat for the
     # lease timeout before the sweep looked, so that clock was long past.
     record["claimed_unix"] = pool._now() - 2 * pool.HEARTBEAT_S
-    pool._write_json_atomic(restored, record)
+    pool.record_store._write_json(restored, record)
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
     requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     assert requeued["attempts"] == 1

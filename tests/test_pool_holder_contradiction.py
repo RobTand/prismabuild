@@ -26,7 +26,9 @@ def _conflicting_claim(queue, tmp_path):
         max_attempts=2,
         retry_safe=True,
     )
-    queue.records.item_path(pool.record_store.READY, KEY).replace(queue.records.item_path(pool.record_store.CLAIMED, KEY))
+    queue.records.item_path(pool.record_store.READY, KEY).replace(
+        queue.records.item_path(pool.record_store.CLAIMED, KEY),
+    )
     ledger = _reservation(queue)
     claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     claim.update({
@@ -35,8 +37,8 @@ def _conflicting_claim(queue, tmp_path):
         "claimed_host": WRONG,
         "reserved_on": WRONG,
     })
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), claim)
-    pool._write_json_atomic(queue.records.lease_path(KEY), {
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY), claim)
+    pool.record_store._write_json(queue.records.lease_path(KEY), {
         "action_key": KEY,
         "owner": "owner",
         "host": WRONG,
@@ -49,7 +51,7 @@ def test_widowed_lease_retains_conflicting_host_evidence(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
     ledger = _reservation(queue)
-    pool._write_json_atomic(queue.records.lease_path(KEY), {
+    pool.record_store._write_json(queue.records.lease_path(KEY), {
         "action_key": KEY,
         "host": WRONG,
         "heartbeat_unix": pool._now() - 10_000,

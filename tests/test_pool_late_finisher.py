@@ -160,7 +160,7 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
     record["max_attempts"] = 1
     record["withdrawn_note"] = "withdrawn by an operator"
     record["stop_pending"] = {"holder_host": "sparky"}
-    pool._write_json_atomic(live_path, record)
+    pool.record_store._write_json(live_path, record)
 
     assert pool._same_claim(record, claimed)
     result = queue.finish(

@@ -7,7 +7,10 @@ from prismabuild import pool, resource_scope
 from test_pool_resource_scope import scoped, _process
 
 
-@pytest.mark.parametrize('status,expected', [('executed', pool.record_store.DONE), ('failed', pool.record_store.READY), ('timeout', pool.record_store.READY)])
+@pytest.mark.parametrize(
+    'status,expected',
+    [('executed', pool.record_store.DONE), ('failed', pool.record_store.READY), ('timeout', pool.record_store.READY)],
+)
 def test_fresh_lease_cleanup_retry_preserves_finished_attempt(scoped, monkeypatch, status, expected):
     queue, item, calls = scoped
     key = item['action_key']
@@ -54,7 +57,7 @@ def test_oom_cleanup_retry_preserves_kernel_evidence(scoped, monkeypatch):
     key = item['action_key']
     _process(monkeypatch, queue, item, calls)
     item['max_attempts'] = 1
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     sample = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
                         lambda scope: {**sample(scope), 'oom_kill': 5, 'oom_local': 1, 'memory_peak_bytes': 2 * 1024**3})
