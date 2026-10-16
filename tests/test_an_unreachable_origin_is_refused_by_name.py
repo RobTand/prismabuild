@@ -79,7 +79,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
         "--max-readers", "2",

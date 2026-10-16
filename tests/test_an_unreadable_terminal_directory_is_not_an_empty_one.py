@@ -68,8 +68,8 @@ def test_terminal_keys_is_loud_when_a_state_directory_cannot_be_read(
 ) -> None:
     """An unreadable ``done/`` is not the same answer as an empty one."""
 
-    queue.ensure_layout()
-    _listing_of(monkeypatch, queue.dir(pool.DONE), STALE)
+    queue.records.ensure_layout()
+    _listing_of(monkeypatch, queue.records.dir(pool.record_store.DONE), STALE)
     with pytest.raises(OSError) as raised:
         queue.terminal_keys()
     assert raised.value.errno == errno.ESTALE
@@ -90,15 +90,15 @@ def test_a_filed_outcome_is_not_requeued_when_done_cannot_be_listed(
 
     item = queue.claim(capacity={"cpu": 1})
     assert item is not None
-    claimed_path = queue.item_path(pool.CLAIMED, KEY)
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())
     # A claimant that won the rename and then died: no lease, and old enough
     # that the reaper's grace has passed.
     record["claimed_unix"] = pool._now() - (pool.HEARTBEAT_S * 10)
     pool._write_json_atomic(claimed_path, record)
-    queue.lease_path(KEY).unlink(missing_ok=True)
+    queue.records.lease_path(KEY).unlink(missing_ok=True)
     pool._write_json_atomic(
-        queue.item_path(pool.DONE, KEY),
+        queue.records.item_path(pool.record_store.DONE, KEY),
         {
             "schema": pool.POOL_OUTCOME_SCHEMA_V1,
             "action_key": KEY,
@@ -109,10 +109,10 @@ def test_a_filed_outcome_is_not_requeued_when_done_cannot_be_listed(
         },
     )
 
-    _listing_of(monkeypatch, queue.dir(pool.DONE), STALE)
+    _listing_of(monkeypatch, queue.records.dir(pool.record_store.DONE), STALE)
     with pytest.raises(OSError):
         queue.reap_stale()
-    assert not queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 def test_a_missing_done_directory_still_answers_empty(tmp_path: Path) -> None:
@@ -121,11 +121,11 @@ def test_a_missing_done_directory_still_answers_empty(tmp_path: Path) -> None:
     assert pool.PoolQueue(tmp_path / "fresh").terminal_keys() == frozenset()
 
 
-@pytest.mark.parametrize("state", [pool.DONE, pool.FAILED])
+@pytest.mark.parametrize("state", [pool.record_store.DONE, pool.record_store.FAILED])
 def test_a_terminal_state_path_that_is_a_file_is_not_empty(
     queue: pool.PoolQueue, state: str
 ) -> None:
-    directory = queue.dir(state)
+    directory = queue.records.dir(state)
     directory.rmdir()
     directory.write_text("invalid queue state", encoding="utf-8")
 

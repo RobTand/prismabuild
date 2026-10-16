@@ -90,7 +90,7 @@ def box(tmp_path: Path, monkeypatch):
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
     gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -164,9 +164,9 @@ def test_an_unknown_inventory_does_not_admit_a_cpu_row_into_the_drain(box) -> No
         assert carried["mode"] == "exclusive"
         assert carried["reason"] == "adaptive_gpu_refused_withholding"
         assert carried["epoch_unix"] == pytest.approx(epoch), "a carry renewed the episode"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
     # #714 stands: unknown is not presence, so no claim, no pass, no token.
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
     assert queue.passes(big) == passes
 
     # The drain completes and the row is admitted on a positive inventory.
@@ -220,7 +220,7 @@ def test_an_unreadable_residency_lead_record_keeps_the_drain(box, monkeypatch) -
     denial = _denial(queue, big)
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert denial["evidence"]["withhold_carried"]["epoch_unix"] == pytest.approx(epoch)
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 #: The rows a pass could not evaluate for a transient reason (#1085, #1143).

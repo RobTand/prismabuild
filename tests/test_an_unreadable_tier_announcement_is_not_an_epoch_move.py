@@ -44,7 +44,7 @@ def held(tmp_path: Path):
     """A RAM pin acquired under ``epoch-1``, and what opening it needs."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=STAGE_TIER,
@@ -52,7 +52,7 @@ def held(tmp_path: Path):
     staged = stage / "model" / "p.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x16" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key(SOURCE, 0)
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,

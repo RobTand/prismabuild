@@ -70,8 +70,8 @@ def test_withdrawn_keys_is_loud_when_the_directory_cannot_be_read(
 ) -> None:
     """An unreadable ``withdrawn/`` is not the same answer as an empty one."""
 
-    queue.ensure_layout()
-    _listing_of(monkeypatch, queue.dir(pool.WITHDRAWN), STALE)
+    queue.records.ensure_layout()
+    _listing_of(monkeypatch, queue.records.dir(pool.record_store.WITHDRAWN), STALE)
     with pytest.raises(OSError) as raised:
         queue.withdrawn_keys()
     assert raised.value.errno == errno.ESTALE
@@ -88,19 +88,19 @@ def test_a_withdrawn_action_is_not_claimed_when_the_marker_cannot_be_listed(
     and the cancelled work was claimed and run again.
     """
 
-    ready = queue.item_path(pool.READY, KEY)
+    ready = queue.records.item_path(pool.record_store.READY, KEY)
     requeued_bytes = ready.read_bytes()
     result = queue.withdraw(KEY, reason="operator cancelled it", signal_child=False)
     assert result["status"] == "withdrawn"
-    assert queue.item_path(pool.WITHDRAWN, KEY).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY).exists()
     # The requeue that lands behind the marker: the same generation, back in
     # ready, which is exactly what the guard is written to catch.
     ready.write_bytes(requeued_bytes)
 
-    _listing_of(monkeypatch, queue.dir(pool.WITHDRAWN), STALE)
+    _listing_of(monkeypatch, queue.records.dir(pool.record_store.WITHDRAWN), STALE)
     with pytest.raises(OSError):
         queue.claim(capacity={"cpu": 1})
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
 
 
 def test_a_missing_withdrawn_directory_still_answers_empty(tmp_path: Path) -> None:
@@ -112,7 +112,7 @@ def test_a_missing_withdrawn_directory_still_answers_empty(tmp_path: Path) -> No
 def test_a_withdrawn_state_path_that_is_a_file_is_not_empty(
     queue: pool.PoolQueue,
 ) -> None:
-    directory = queue.dir(pool.WITHDRAWN)
+    directory = queue.records.dir(pool.record_store.WITHDRAWN)
     directory.rename(directory.with_name("withdrawn-original"))
     directory.write_text("invalid queue state", encoding="utf-8")
 
