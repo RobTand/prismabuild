@@ -342,11 +342,6 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 # every receipt already published to this CAS; mixing prefixes inside one store
 # would be worse than carrying the history.  See the package docstring.
 
-READY = "ready"
-CLAIMED = "claimed"
-DONE = "done"
-FAILED = "failed"
-INTENT = "intent"
 #: Where an operator's cancellation is filed.  Deliberately not ``failed``: a
 #: withdrawn action is a decision, and putting it in the failure record makes
 #: the failure record lie about the fleet.  Four withdrawn test suites are in
