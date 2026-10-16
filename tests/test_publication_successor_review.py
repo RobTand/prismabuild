@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import endings
 from prismabuild import core as pb, pool
 import pbrun
 
@@ -90,7 +91,7 @@ def test_positive_host_demand_does_not_require_both_cpu_and_memory(
     _end_claim(queue, original, "finish_retry", clock)
 
     ending = queue.publication_ending(KEY, generation=original["published_unix"])
-    assert isinstance(ending, pool.PublicationSupersession)
+    assert isinstance(ending, endings.PublicationSupersession)
     assert ending.successor_published_unix == successor["published_unix"]
     claimed = queue.claim(owner="successor", capacity=DEMAND)
     assert claimed is not None

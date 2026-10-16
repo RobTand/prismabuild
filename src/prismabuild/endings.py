@@ -2,12 +2,27 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 import math
 from pathlib import Path
 
 _DONE = "done"
 _FAILED = "failed"
 _WITHDRAWN = "withdrawn"
+
+
+@dataclass(frozen=True)
+class PublicationSupersession:
+    """An exact publication ended; its successor supplies no execution verdict."""
+
+    path: Path
+    action_key: str
+    published_unix: float
+    successor_published_unix: float
+    record: Mapping[str, object]
+
+
+ObservedEnding = tuple[Path, dict[str, object]] | PublicationSupersession
 
 
 def publication_generation(value: object) -> float | None:

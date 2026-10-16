@@ -85,6 +85,7 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import endings
 from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
@@ -180,7 +181,6 @@ RESERVED_EXITS = frozenset(
     {2, RECORD_WRITE_FAILED_EXIT, GAVE_UP_EXIT, PUBLICATION_SUPERSEDED_EXIT, WITHDRAWN_EXIT}
 )
 
-ObservedEnding = tuple[Path, dict[str, object]] | pool.PublicationSupersession
 
 #: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
 #: ``pbwait`` parse it, and a fleet runs a published runtime generation that
@@ -2934,7 +2934,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
 
 def outcome_poll(
     q, key: str, generation: float | None, *, report_unreadable: bool = False,
-) -> tuple[ObservedEnding | None, float | None]:
+) -> tuple[endings.ObservedEnding | None, float | None]:
     """Read one terminal-outcome snapshot and select its next state.
 
     This is the canonical selection step shared by the historical synchronous
@@ -3050,7 +3050,7 @@ def outcome_poll(
 def landed_outcome(
     q, key: str, *, wait_s: float, generation: float | None = None,
     report_unreadable: bool = False,
-) -> ObservedEnding | None:
+) -> endings.ObservedEnding | None:
     """Block until this action's ending lands, and return it with its path.
 
     Watches all THREE terminal directories.  An action whose argv exits
@@ -3310,7 +3310,7 @@ _DELIVERED_READERS: contextvars.ContextVar[list | None] = contextvars.ContextVar
 def bounded_outcome_observation(
     q, key: str, generation: float | None, *, budget_s: float,
     use_delivered_snapshot: bool = False,
-) -> tuple[ObservedEnding | None, float | None]:
+) -> tuple[endings.ObservedEnding | None, float | None]:
     """Read and select one pool outcome snapshot in an abandonable child.
 
     The child returns only JSON values.  In particular, paths become strings
@@ -3346,14 +3346,14 @@ def bounded_outcome_observation(
                  or isinstance(next_generation, bool))):
         raise OutcomeReadUnavailable("pool outcome observation returned an invalid generation")
     landed = decode_outcome_ending(q, key, next_generation, value)
-    if isinstance(landed, pool.PublicationSupersession) and next_generation != generation:
+    if isinstance(landed, endings.PublicationSupersession) and next_generation != generation:
         raise OutcomeReadUnavailable("publication supersession changed the watched generation")
     return landed, float(next_generation) if next_generation is not None else None
 
 
-def encode_outcome_ending(ending: ObservedEnding | None) -> dict:
+def encode_outcome_ending(ending: endings.ObservedEnding | None) -> dict:
     """Encode the observed-ending union for both bounded waiter protocols."""
-    if isinstance(ending, pool.PublicationSupersession):
+    if isinstance(ending, endings.PublicationSupersession):
         return {"landed": None,
                 "superseded": {"path": str(ending.path), "record": ending.record}}
     return {"landed": None if ending is None else {
@@ -3362,7 +3362,7 @@ def encode_outcome_ending(ending: ObservedEnding | None) -> dict:
 
 
 def decode_outcome_ending(q, key: str, generation: float | None, value: dict
-                          ) -> ObservedEnding | None:
+                          ) -> endings.ObservedEnding | None:
     """Decode wire branches; the queue owns publication-proof validation."""
     superseded = value.get("superseded")
     landed = value.get("landed")
@@ -3924,7 +3924,7 @@ def await_outcome(
                     use_delivered_snapshot=True)
                 first_observation = False
                 if landed is not None:
-                    if isinstance(landed, pool.PublicationSupersession):
+                    if isinstance(landed, endings.PublicationSupersession):
                         break
                     # Verification keeps its own full budget once an ending
                     # has landed; it does not borrow the caller's deadline.
@@ -4020,7 +4020,7 @@ def await_outcome(
                   f"{key[:12]}*.json or run pbwait.py {key[:12]}",
                   file=sys.stderr)
             return RECORD_WRITE_FAILED_EXIT
-        if landed is not None and not isinstance(landed, pool.PublicationSupersession):
+        if landed is not None and not isinstance(landed, endings.PublicationSupersession):
             try:
                 rendered = bounded_outcome_render(
                     q, landed[0], landed[1],
@@ -4056,7 +4056,7 @@ def await_outcome(
     if landed is None:
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
         return GAVE_UP_EXIT
-    if isinstance(landed, pool.PublicationSupersession):
+    if isinstance(landed, endings.PublicationSupersession):
         print(f"pbrun: {key[:12]} publication {landed.published_unix!r} superseded by "
               f"publication {landed.successor_published_unix!r}; no execution verdict",
               file=sys.stderr)

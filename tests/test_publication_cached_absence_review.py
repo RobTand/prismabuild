@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import endings
 from prismabuild import immutable_files
 from prismabuild import core as pb, pool
 
@@ -48,7 +49,7 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
 
     assert ready.read_bytes() == ready_bytes
     ending = queue.publication_ending(KEY, generation=original["published_unix"])
-    assert isinstance(ending, pool.PublicationSupersession)
+    assert isinstance(ending, endings.PublicationSupersession)
     assert ending.successor_published_unix == successor["published_unix"]
     assert not queue.item_path(pool.CLAIMED, KEY).exists()
     assert not list(queue.dir(pool.CLAIMED).glob(f"{KEY}.*{pool.TOMBSTONE_SUFFIX}"))

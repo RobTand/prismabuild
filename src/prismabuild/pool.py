@@ -1041,15 +1041,6 @@ class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
 
 
-@dataclass(frozen=True)
-class PublicationSupersession:
-    """An exact publication ended; its successor supplies no execution verdict."""
-
-    path: Path
-    action_key: str
-    published_unix: float
-    successor_published_unix: float
-    record: Mapping[str, object]
 
 
 def normalize_priority_reason(value: object) -> str | None:
@@ -6223,7 +6214,7 @@ class PoolQueue:
 
     def decode_publication_supersession(
         self, path: Path, record: Mapping[str, object],
-    ) -> PublicationSupersession:
+    ) -> endings.PublicationSupersession:
         """Validate disk or IPC evidence without reading another queue record."""
         if (not isinstance(record, dict)
                 or record.get("schema") != PUBLICATION_SUPERSEDED_SCHEMA_V1
@@ -6238,13 +6229,13 @@ class PoolQueue:
         successor_generation = self._successor_generation(record, successor)
         if successor_generation == generation:
             raise PoolContractError("same-generation retry is not publication supersession")
-        return PublicationSupersession(
+        return endings.PublicationSupersession(
             Path(path), str(record["action_key"]), generation, successor_generation, record,
         )
 
     def publication_ending(
         self, key: str, *, generation: float,
-    ) -> PublicationSupersession | None:
+    ) -> endings.PublicationSupersession | None:
         """Read one exact immutable decision; absence never infers a successor."""
         path = self.publication_ending_path({"action_key": key, "published_unix": generation})
         try:
@@ -6268,7 +6259,7 @@ class PoolQueue:
 
     def _persist_publication_supersession(
         self, record: Mapping[str, object], *, successor: Mapping[str, object],
-    ) -> PublicationSupersession:
+    ) -> endings.PublicationSupersession:
         key, generation = str(record["action_key"]), float(record["published_unix"])
         prior = self.publication_ending(key, generation=generation)
         if prior is not None:

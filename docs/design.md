@@ -1060,6 +1060,10 @@ no execution, receipt, resource release, successor-follow or resubmission claim.
 `PoolQueue.publication_ending` reads one deterministic address, and its public
 `decode_publication_supersession` validates the same proof from bounded-reader
 IPC without queue I/O. Neither scans untyped timestamped dropped records.
+The value is `endings.PublicationSupersession`; `endings.ObservedEnding`
+distinguishes it from an execution or withdrawal record. These types have one
+package owner. The former Pool class and pbrun type alias are removed, and all
+internal callers use the package types directly.
 
 A retained finish tombstone is the recovery journal for an interrupted
 collision. Its existing cleanup still checks actual ownership and retains

@@ -42,6 +42,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import endings
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 import pbrun  # noqa: E402
@@ -327,7 +328,7 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
                  or isinstance(observed_generation, bool))):
         raise pbrun.OutcomeReadUnavailable(
             "pbwait observation returned an invalid observed generation")
-    if isinstance(landed, pool.PublicationSupersession):
+    if isinstance(landed, endings.PublicationSupersession):
         expected = generation if generation is not None else found[1] if found else None
         if next_generation != observed_generation or next_generation != expected:
             raise pbrun.OutcomeReadUnavailable("publication supersession changed the watched generation")
@@ -369,8 +370,8 @@ def _job_id(found) -> str:
     return str(submission.get("job_id") or "-")
 
 
-def _from_ending(q, ending: pbrun.ObservedEnding) -> dict:
-    if isinstance(ending, pool.PublicationSupersession):
+def _from_ending(q, ending: endings.ObservedEnding) -> dict:
+    if isinstance(ending, endings.PublicationSupersession):
         return _row(
             ending.action_key, "superseded", transport="pool",
             published_unix=ending.published_unix,

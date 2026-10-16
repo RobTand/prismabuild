@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import endings
 from prismabuild import immutable_files
 from prismabuild import core as pb, pool
 from test_pool_requeue_preserves_newer_generation import (
@@ -31,7 +32,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
 
     decision = queue.publication_ending(KEY, generation=original["published_unix"])
 
-    assert isinstance(decision, pool.PublicationSupersession)
+    assert isinstance(decision, endings.PublicationSupersession)
     assert decision.action_key == KEY
     assert decision.published_unix == original["published_unix"]
     assert decision.successor_published_unix == successor["published_unix"]
