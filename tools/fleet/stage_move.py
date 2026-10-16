@@ -433,7 +433,7 @@ def _string_bytes(value: object) -> int:
     return _STR_HEADER_BYTES + _STR_CHAR_BYTES * len(str(value))
 
 
-def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
+def _read_metadata(path: Path) -> tuple[kept_reads.FileVersion, bytes]:
     """One metadata file's bytes, with the version those bytes were read at.
 
     ``fstat`` of the open descriptor rather than a second ``stat`` of the
@@ -447,7 +447,7 @@ def _read_metadata(path: Path) -> tuple[tuple[int, int, int, int, int], bytes]:
         return version, stream.read()
 
 
-def _observe(path: Path) -> "tuple[int, int, int, int, int] | OSError":
+def _observe(path: Path) -> "kept_reads.FileVersion | OSError":
     """One metadata file's version, or the ``OSError`` its ``stat`` raised.
 
     The per-lookup stat of the reuse index (#761), taken before the
@@ -4156,7 +4156,7 @@ def announced_pool_identity(pool_root: str | Path,
 
 
 def _parse_own_document(path: Path, validate: Callable[[object], object],
-                        ) -> tuple[tuple[int, int, int, int, int], object] | None:
+                        ) -> tuple[kept_reads.FileVersion, object] | None:
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
@@ -4187,7 +4187,7 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
 
 
 def _reread_own_document(path: Path,
-                         prior: tuple[tuple[int, int, int, int, int], object]
+                         prior: tuple[kept_reads.FileVersion, object]
                          | None,
                          validate: Callable[[object], object]) -> object:
     """This mover's own document, reusing ``prior`` only at its own version.

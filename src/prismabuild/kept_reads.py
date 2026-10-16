@@ -35,17 +35,20 @@ def file_versions_enabled() -> bool:
     return _FILE_VERSION_SCOPE.get()
 
 
-def metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
+FileVersion = tuple[int, int, int, int, int, int]
+
+
+def metadata_version(info: "os.stat_result") -> FileVersion:
     """Change evidence for one publication metadata file.
 
     Device and inode catch a replacement, size and mtime catch a rewrite,
-    ctime catches a permission or ownership change that leaves mtime alone.
-    The same kind of stat fence every strict reader already uses; nothing
-    here invents an identity of its own.
+    ctime catches ownership changes that leave mtime alone. Mode is also
+    observed: a permission change can repeat a coarse ctime, and an unreadable
+    file must not retain the publication proof produced while it was readable.
     """
 
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
+            int(getattr(info, "st_ctime_ns", 0)), info.st_mode)
 
 
 #: The clock a local Linux filesystem stamps a directory's mtime and ctime
