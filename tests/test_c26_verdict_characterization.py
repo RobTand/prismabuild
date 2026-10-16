@@ -18,6 +18,25 @@ FILES = ['tests/test_one.py']
 PASS = 'def test_one():\n    assert True\n'
 
 
+class NativeReceiptEvidence:
+    def pytest_terminal_summary(self, terminalreporter):
+        # pbtest's forwarding allowlist excludes pytest's passed-capture flag.
+        receipts = {}
+        for reports in terminalreporter.stats.values():
+            for report in reports:
+                for line in getattr(report, 'capstdout', '').splitlines():
+                    if line.startswith('C26_NATIVE_GATE_RECEIPT '):
+                        value = json.loads(line.split(' ', 1)[1])
+                        receipts[value['action_key']] = line
+        for line in receipts.values():
+            terminalreporter.write_line(line)
+
+
+@pytest.fixture(scope='module', autouse=True)
+def retain_native_receipt_evidence(request):
+    request.config.pluginmanager.register(NativeReceiptEvidence(), 'c26-native-receipts')
+
+
 @pytest.mark.parametrize('mode', ['normal', 'nonzero', 'timeout'])
 def test_native_client_ending_cannot_disappear_from_mergeq(tmp_path, monkeypatch, mode):
     root = repository(tmp_path / 'suite', {FILES[0]: PASS},
