@@ -4219,7 +4219,7 @@ class ResourceLedger:
             if want <= 0:
                 continue
             taken = 0
-            for token in sorted(_glob(holder, f"{kind}-*"), reverse=True):
+            for token in sorted(immutable_files.match_optional(holder, f"{kind}-*"), reverse=True):
                 if taken >= want:
                     break
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
