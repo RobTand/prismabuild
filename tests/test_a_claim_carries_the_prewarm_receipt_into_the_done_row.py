@@ -66,7 +66,7 @@ def test_the_reference_reaches_the_claim_and_resolves_into_the_done_row(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"]["bytes_warmed"] == 63786036448
     assert done["detail"]["prewarm"]["status"] == "complete"
     assert done["detail"]["status"] == "executed"
@@ -84,7 +84,7 @@ def test_a_receipt_pruned_before_finish_leaves_no_dangling_pointer(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert "prewarm" not in done["detail"]
 
 
@@ -105,7 +105,7 @@ def test_a_same_key_successors_receipt_is_not_this_generations_window(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert "prewarm" not in done["detail"]
 
 
@@ -120,7 +120,7 @@ def test_a_legacy_full_copy_claim_still_files_a_complete_row(
     # itself -- filed before the reference -- so the legacy block goes there,
     # where ``finish`` reads it, not on the in-memory snapshot.
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
-    on_disk = pool.record_store.read_queue_record(path)
+    on_disk = pool.record_store.read_document(path)
     assert on_disk is not None
     on_disk["prewarm"] = {
         "host": "dl380g10", "manifest_sha256": "a" * 64,
@@ -130,7 +130,7 @@ def test_a_legacy_full_copy_claim_still_files_a_complete_row(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"]["bytes_warmed"] == 63786036448
 
 
@@ -150,7 +150,7 @@ def test_an_action_nobody_warmed_carries_no_prewarm_key(
 
     queue.finish(OTHER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, OTHER))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, OTHER))
     assert "prewarm" not in done["detail"]
 
 
@@ -163,5 +163,5 @@ def test_a_workers_own_measurement_outranks_the_loops_prediction(
                  detail={"status": "executed",
                          "prewarm": {"measured_by": "the worker"}},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"] == {"measured_by": "the worker"}

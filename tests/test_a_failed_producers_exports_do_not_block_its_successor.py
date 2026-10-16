@@ -78,7 +78,7 @@ def _retry(spool):
 
     q = spool.queue
     control = fx._broker_control(q, spool.owner)
-    claimed = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, spool.owner))
+    claimed = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, spool.owner))
     instance = po.bind_instance(q, spool.template, owner_action_key=spool.owner,
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": spool.owner,
                                      "PRISMABUILD_ACTION_NONCE": control["nonce"],

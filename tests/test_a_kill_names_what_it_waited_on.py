@@ -78,14 +78,14 @@ def _publish_export(queue: pool.PoolQueue, owner: str, seed: str) -> dict:
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources=dict(EXPORT_DEMAND), tags=[socket.gethostname()],
                   dependent_of=owner)
-    record = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert record is not None
     return record
 
 
 def _claim_pass(queue: pool.PoolQueue) -> dict | None:
     # Reuse the holder's immutable map when this fixture really executes.
-    tiers = pool.record_store.read_queue_record(queue.ledger().base / "cpu-map.json")
+    tiers = pool.record_store.read_document(queue.ledger().base / "cpu-map.json")
     return queue.claim(capacity=CAPACITY, tags=[socket.gethostname()],
                        cpu_tiers=CPU_TIERS if tiers is None else tiers,
                        adaptive_cpu=True)

@@ -128,13 +128,13 @@ def drained_box(tmp_path, monkeypatch):
                   worker_script=str(tmp_path / "worker.py"),
                   resources=RESOURCES, max_attempts=1)
 
-    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
     record["resource_scope"] = _scope_control(OWNER_KEY, "c" * 32)
     pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY), record)
 
     queue.withdraw(OWNER_KEY, reason="drained for a U4 window",
                    by="u4-R2-20261001T0334Z", signal_child=False)
-    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
     path = queue.finish(OWNER_KEY, status="withdrawn",
                         detail={"returncode": -15,
                                 "termination_reason": "withdrawn"},

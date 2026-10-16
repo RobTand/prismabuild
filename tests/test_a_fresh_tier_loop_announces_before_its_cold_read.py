@@ -137,7 +137,7 @@ class _Consumer(threading.Thread):
 
 
 class _Slow:
-    """``pool.record_store.read_queue_record``, with every cold receipt's read costing ``READ_S``."""
+    """``pool.record_store.read_document``, with every cold receipt's read costing ``READ_S``."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *,
                  read_s: float = READ_S) -> None:
@@ -148,7 +148,7 @@ class _Slow:
         self.hang_name: str | None = None
         self.hung = threading.Event()
         self.release = threading.Event()
-        real = pool.record_store.read_queue_record
+        real = pool.record_store._read_json
 
         def read(path, *args, **kwargs):
             name = Path(path).name
@@ -520,14 +520,14 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
         records = kept_reads.DirectoryRecords()
         with pytest.raises(Exception) as caught:
             records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool.record_store.read_queue_record, readers=readers)
+                         parse=pool.record_store.read_document, readers=readers)
         raised[readers] = (type(caught.value), str(caught.value),
                            records.generation(directory), records.parsed)
         # The directory is not remembered: the next read lists it again.
         (directory / "r-012.json").write_text(json.dumps({"i": 12}))
         with pytest.raises(IsADirectoryError):
             records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool.record_store.read_queue_record, readers=readers)
+                         parse=pool.record_store.read_document, readers=readers)
         (directory / "r-012.json").write_text("{\"schema\": ")
     assert raised[1] == raised[2] == raised[8], raised
     assert raised[1][0] is pool.PoolContractError

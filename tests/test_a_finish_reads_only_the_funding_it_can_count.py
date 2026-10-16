@@ -72,7 +72,7 @@ def _held(queue: pool.PoolQueue, tier: str, key: str) -> list[str]:
 
 def _count_funding_reads(monkeypatch, queue: pool.PoolQueue) -> list[str]:
     reads: list[str] = []
-    original = pool.record_store.read_queue_record
+    original = pool.record_store._read_json
     funding = str(queue.root / pool.record_store.TIER_FUNDING)
 
     def counted(path, *args, **kwargs):
