@@ -64,8 +64,8 @@ def _withdraw_consumer(queue: pool.PoolQueue) -> str:
     queue.withdraw(key, reason="operator withdrew the consumer", by="test")
     queue.finish(key, status="withdrawn", detail={"returncode": -15},
                  claim_snapshot=holder)
-    assert queue.item_path(pool.WITHDRAWN, key).exists()
-    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     return key
 
 
@@ -100,7 +100,7 @@ def test_a_withdrawn_consumers_dead_owner_is_retired(fleet) -> None:
     assert [entry["reason"] for entry in _retired(receipts, mover)] == ["dead-owner-sweep"]
     assert not any((stage / name).exists() for name in NAMES)
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_a_withdrawn_consumer_without_its_decision_retains(fleet) -> None:
@@ -108,8 +108,8 @@ def test_a_withdrawn_consumer_without_its_decision_retains(fleet) -> None:
 
     queue, stage, _cas = fleet
     consumer, mover = _withdrawn_owner(fleet)
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, consumer).read_bytes())
-    queue.withdrawal_decision_path(marker).unlink()
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, consumer).read_bytes())
+    queue.records.withdrawal_decision_path(marker).unlink()
     receipts = stage_release.sweep(
         queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert not _retired(receipts, mover)
@@ -122,7 +122,7 @@ def test_a_withdrawn_consumer_that_is_live_again_retains(fleet) -> None:
     queue.publish(action_key=consumer, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources={"cpu": 1}, max_attempts=1,
                   recompute=True)
-    assert queue.item_path(pool.READY, consumer).exists()
+    assert queue.records.item_path(pool.record_store.READY, consumer).exists()
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     dead._assert_retained(queue, stage, consumer, mover)
 
@@ -133,9 +133,9 @@ def test_a_consumer_both_withdrawn_and_failed_retains(fleet) -> None:
     queue, stage, _cas = fleet
     consumer, mover = _withdrawn_owner(fleet)
     failed_consumer, _generation = dead._fail_consumer(queue)
-    record = json.loads(queue.item_path(pool.FAILED, failed_consumer).read_bytes())
+    record = json.loads(queue.records.item_path(pool.record_store.FAILED, failed_consumer).read_bytes())
     record["action_key"] = consumer
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     dead._assert_retained(queue, stage, consumer, mover)
 
@@ -174,7 +174,7 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, consumer: str) -> str:
         "bytes_staged": storage_tiers.GIB, "complete": True})
     queue.finish(mover, status="executed")
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
-    queue.move_path(mover).unlink()
+    queue.records.move_path(mover).unlink()
     assert queue.move_record(mover) is None
     return mover
 
@@ -183,7 +183,7 @@ def _done_consumer(queue: pool.PoolQueue) -> str:
     key = dead._key()
     dead._publish(queue, key, max_attempts=1)
     queue.finish(key, status="executed", detail={"returncode": 0})
-    assert queue.item_path(pool.DONE, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
     return key
 
 
@@ -221,7 +221,7 @@ def test_a_receiptless_holder_is_swept_through_its_fragments_consumer(fleet) -> 
     assert not any((stage / name).exists() for name in NAMES)
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 def test_a_receiptless_holder_waits_for_pressure_like_any_orphan(fleet) -> None:
@@ -266,7 +266,7 @@ def test_a_receiptless_holder_with_no_fragment_retains(fleet) -> None:
 def test_a_receiptless_holder_with_a_tainted_census_retains(fleet) -> None:
     queue, stage, _cas = fleet
     consumer, mover = _receiptless(fleet)
-    residue = queue.root / pool.RESIDENCY / consumer / "residue.json"
+    residue = queue.root / pool.record_store.RESIDENCY / consumer / "residue.json"
     residue.write_bytes(b"{not json")
     receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert not _retired(receipts, mover)
@@ -281,7 +281,7 @@ def test_a_produced_output_holder_is_left_to_its_batch_lifecycle(fleet) -> None:
     consumer = _done_consumer(queue)
     mover = _held_mover(queue, stage, consumer)
     namespace = dead._key()
-    root = produced_output.output_fragment_root(queue.root / pool.RESIDENCY)
+    root = produced_output.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     for name in NAMES:
         dead._stage_marked(stage, name)
     residency_map.write_fragment(root, {
@@ -341,7 +341,7 @@ def test_a_fragment_naming_a_still_queued_consumer_retains(fleet) -> None:
     queue, stage, _cas = fleet
     consumer = dead._key()
     dead._publish(queue, consumer, max_attempts=1)
-    assert queue.item_path(pool.CLAIMED, consumer).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, consumer).exists()
     mover = _fragment_named(fleet, consumer)
     receipts = stage_release.sweep(
         queue, stage_roots={TIER: str(stage)}, pressure=UNMET)

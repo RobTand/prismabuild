@@ -163,7 +163,7 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=key, cas_root=cas.root, checkout_root=checkout,
         worker_script=WORKER_LOOP.parents[1] / "prismabuild_worker.py",
@@ -203,11 +203,11 @@ raise SystemExit(wl.main())
     ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         action_pid = _await_pid(pidfile, worker=worker)
-        assert _await(lambda: (queue.lease_path(key).exists() and json.loads(
-            queue.lease_path(key).read_text()).get("child_pid") is not None))
+        assert _await(lambda: (queue.records.lease_path(key).exists() and json.loads(
+            queue.records.lease_path(key).read_text()).get("child_pid") is not None))
         assert queue.ledger(host).available().get("cpu", 0) == cpu_slots - 1, (
             f"one of {cpu_slots} cpu token(s) is held while the action runs")
-        claim = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+        claim = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
         control = claim["resource_scope"]
         assert control["memory_max_bytes"] == 1024 ** 3
         membership = Path(f"/proc/{action_pid}/cgroup").read_text()
@@ -223,12 +223,12 @@ raise SystemExit(wl.main())
             "the action outlived the operator's decision")
 
         # One place, and it is not the failure record.
-        filed = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+        filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
         assert filed["status"] == "withdrawn"
         assert filed["reason"] == "ten merges stale"
-        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED):
-            assert list(queue.dir(state).glob("*.json")) == [], state
-        assert not queue.lease_path(key).exists()
+        for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED):
+            assert list(queue.records.dir(state).glob("*.json")) == [], state
+        assert not queue.records.lease_path(key).exists()
 
         # And the box is whole again: every token back, nothing widowed.
         ledger = queue.ledger(host)
