@@ -88,7 +88,7 @@ def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations,
     if kind.negative_field is None:
         body = []
     else:
-        body[kind.negative_field] = "compat.foreign.v999"
+        body[kind.negative_field] = kind.negative_value
     raw = json.dumps(body).encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
@@ -177,6 +177,20 @@ def test_empty_legacy_teardown_stops_the_actual_start_barrier(generations, tmp_p
                                      raw=b"{}\n", manifest=attestation,
                                      evidence=evidence(generation + "/empty-teardown-" + label + ".json")))
             assert result["termination_reason"] == "gang_torn_down"
+
+
+@pytest.mark.parametrize("stamp", [None, "legacy", "absent"])
+def test_legacy_outcome_without_numeric_generation_remains_visible(stamp, generations, tmp_path):
+    body = json.loads(decoded(GOLDENS["q-outcome/executed"]))
+    if stamp == "absent":
+        body.pop("published_unix")
+    else:
+        body["published_unix"] = stamp
+    for generation, old, manifest in generations:
+        for root, attestation, label in ((ROOT, None, "new"), (old, manifest, "old")):
+            result = accepted(invoke(root, "q-outcome/executed", tmp_path / generation / label,
+                                     raw=json.dumps(body).encode(), manifest=attestation))
+            assert result["status"] == "executed" and result["action_key"] == body["action_key"]
 
 
 def test_pythonpath_poison_cannot_supply_a_retained_dependency(generations, tmp_path, monkeypatch):

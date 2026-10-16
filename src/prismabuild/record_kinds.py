@@ -20,6 +20,7 @@ class RecordKind:
     legacy_readers: tuple[str, ...] = ()
     stable_paths: bool = False
     variant_writers: tuple[tuple[str, str], ...] = ()
+    negative_value: object = "invalid"
 
 
 KINDS = (
@@ -41,8 +42,9 @@ KINDS = (
     RecordKind("q-outcome", "prismaquant.prismabuild.pool_outcome.v1", "done|failed|withdrawn/<key>.json", "additive",
                "pbrun:terminal_record", ("prismabuild.pool:PoolQueue.finish", "prismabuild.pool:PoolQueue.withdraw"),
                ("executed", "cache_hit", "failed", "withdrawn", "preempted"),
-               ("unscoped claims remain historical library inputs; this fixture fabricates no physical proof",),
-               negative_field="published_unix", stable_paths=True,
+               ("unscoped claims remain historical library inputs; this fixture fabricates no physical proof",
+                "absent or nonnumeric published_unix cannot prove a stale generation and remains visible"),
+               negative_field="published_unix", negative_value=101.0, stable_paths=True,
                variant_writers=(("executed", "prismabuild.pool:PoolQueue.finish"),
                                 ("cache_hit", "prismabuild.pool:PoolQueue.finish"),
                                 ("failed", "prismabuild.pool:PoolQueue.finish"),
