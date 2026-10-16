@@ -5835,26 +5835,11 @@ class PoolQueue:
         self, key: str, *, generation: float,
     ) -> PublicationSupersession | None:
         """Read one exact immutable decision; absence never infers a successor."""
-        path = self.records.publication_ending_path({"action_key": key, "published_unix": generation})
-        try:
-            names = os.listdir(path.parent)
-        except FileNotFoundError:
+        captured = self.records.publication_ending(key, generation=generation)
+        if captured is None:
             return None
-        if path.name not in names:
-            return None
-        raw = immutable_files.read_immutable_file(path, where="publication ending")
-        record = pb.digest_primitives.decode_strict_json(raw, where="publication ending")
-        return self.decode_publication_supersession(path, record)
+        return self.decode_publication_supersession(*captured)
 
-    def _read_ready_publication(self, key: str) -> dict[str, object]:
-        raw = immutable_files.read_replaced_record(
-            self.records.item_path(READY, key),
-            where="successor publication",
-        )
-        record = pb.digest_primitives.decode_strict_json(raw, where="successor publication")
-        if not isinstance(record, dict):
-            raise PoolContractError("successor publication must be an object")
-        return record
 
     def _persist_publication_supersession(
         self, record: Mapping[str, object], *, successor: Mapping[str, object],
@@ -7301,7 +7286,7 @@ class PoolQueue:
                 try:
                     os.link(source, destination)
                 except FileExistsError:
-                    successor = self._read_ready_publication(action_key)
+                    successor = self.records.ready_publication(action_key)
                     if self._successor_generation(record, successor) == record["published_unix"]:
                         return destination
                     self._persist_publication_supersession(record, successor=successor)
@@ -23377,7 +23362,7 @@ class PoolQueue:
                             if archived:
                                 covered = True
                             else:
-                                candidate = self._read_ready_publication(key)
+                                candidate = self.records.ready_publication(key)
                                 candidate_generation = self._successor_generation(record, candidate)
                                 live = True
                                 if candidate_generation > generation:
@@ -24253,17 +24238,7 @@ class PoolQueue:
         for raw_link in links:
             attempt = raw_link["attempt"]
             expected = self.records.attempt_path(record, attempt)
-            raw = self.records.attempt_bytes(expected, where="pool attempt outcome")
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise PoolContractError(
-                    f"pool attempt outcome is not valid JSON: {expected}"
-                ) from exc
-            if not isinstance(value, dict):
-                raise PoolContractError(
-                    f"pool attempt outcome is not an object: {expected}"
-                )
+            value = self.records.attempt_document(expected)
             self._bind_linked_attempt(
                 record, value, attempt=attempt, where=str(expected))
             raw_logs = value.get("logs")
@@ -24342,38 +24317,7 @@ class PoolQueue:
         """
 
         key = str(action_key)
-        if (
-            type(generation) not in (int, float)
-            or isinstance(generation, bool)
-            or not math.isfinite(float(generation))
-        ):
-            raise PoolContractError("archived generation must be a finite timestamp")
-        identity = {"action_key": key, "published_unix": float(generation)}
-        generation_name = self.records.attempt_generation(identity)  # validates key and timestamp
-        base = self.root / ATTEMPTS / key / generation_name
-        try:
-            entries = immutable_files.scan_required(base)
-        except (FileNotFoundError, NotADirectoryError):
-            # A generation that has not archived an attempt is an ordinary
-            # wait.  Every other enumeration failure stays loud: a reader
-            # that cannot see the directory must not answer "no ending".
-            return []
-        present: dict[int, tuple[Path, dict[str, object]]] = {}
-        for path in entries:
-            name = path.name
-            stem = name[:-5] if name.endswith(".json") else ""
-            if not stem or not stem.isascii() or not stem.isdigit():
-                # ``pool_reconcile`` writes ``<number>.receipt-reconciliation
-                # .json`` beside the attempt it supplements; a numbered
-                # attempt is exactly ``<digits>.json`` and nothing else here
-                # is one.
-                continue
-            value = record_store.read_queue_record(path)
-            if value is None:
-                raise PoolContractError(f"archived attempt is unreadable: {path}")
-            attempt = self.records.archived_attempt_identity(
-                path, value, action_key=key, generation=identity["published_unix"])
-            present[attempt] = (path, value)
+        present = self.records.archived_generation_records(key, generation=generation)
         if not present:
             return []
         terminal = [

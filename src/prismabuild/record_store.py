@@ -372,7 +372,6 @@ class Moving:
 type KeyStanding = ReadResult[QueueRow | Moving]
 
 
-
 @dataclass(frozen=True)
 class QueueAddress:
     path: Path
@@ -988,7 +987,6 @@ class RecordStore:
         return TerminalCapture(tuple(candidates))
 
 
-
     def item_for_publish(self, state: str, key: str) -> ReadResult[JsonRecord]:
         path = self.item_path(state, key)
         try:
@@ -1028,7 +1026,6 @@ class RecordStore:
         return _read_optional_document(self.mover_retirement_state_path())
 
 
-
     def listed_record(self, path: Path) -> ReadResult[JsonRecord]:
         """Read an already-enumerated row with the existing ESTALE absence rule."""
         try:
@@ -1037,6 +1034,86 @@ class RecordStore:
             return Unknown("record-unreadable", path, exc)
         return Absent() if value is None else Present(value)
 
+
+    def ready_publication(self, key: str) -> dict[str, object]:
+        raw = immutable_files.read_replaced_record(
+            self.item_path(READY, key),
+            where="successor publication",
+        )
+        record = digest_primitives.decode_strict_json(raw, where="successor publication")
+        if not isinstance(record, dict):
+            raise PoolContractError("successor publication must be an object")
+        return record
+
+
+    def publication_ending(
+        self, key: str, *, generation: float,
+    ) -> tuple[Path, JsonRecord] | None:
+        """Read one exact immutable decision; absence never infers a successor."""
+        path = self.publication_ending_path({"action_key": key, "published_unix": generation})
+        try:
+            names = os.listdir(path.parent)
+        except FileNotFoundError:
+            return None
+        if path.name not in names:
+            return None
+        raw = immutable_files.read_immutable_file(path, where="publication ending")
+        record = digest_primitives.decode_strict_json(raw, where="publication ending")
+        return path, record
+
+
+    def attempt_document(self, path: Path) -> JsonRecord:
+        raw = self.attempt_bytes(path, where="pool attempt outcome")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PoolContractError(
+                f"pool attempt outcome is not valid JSON: {path}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise PoolContractError(
+                f"pool attempt outcome is not an object: {path}"
+            )
+        return value
+
+
+    def archived_generation_records(
+        self, action_key: str, *, generation: float,
+    ) -> dict[int, tuple[Path, JsonRecord]]:
+        key = str(action_key)
+        if (
+            type(generation) not in (int, float)
+            or isinstance(generation, bool)
+            or not math.isfinite(float(generation))
+        ):
+            raise PoolContractError("archived generation must be a finite timestamp")
+        identity = {"action_key": key, "published_unix": float(generation)}
+        generation_name = self.attempt_generation(identity)  # validates key and timestamp
+        base = self.root / ATTEMPTS / key / generation_name
+        try:
+            entries = immutable_files.scan_required(base)
+        except (FileNotFoundError, NotADirectoryError):
+            # A generation that has not archived an attempt is an ordinary
+            # wait.  Every other enumeration failure stays loud: a reader
+            # that cannot see the directory must not answer "no ending".
+            return {}
+        present: dict[int, tuple[Path, dict[str, object]]] = {}
+        for path in entries:
+            name = path.name
+            stem = name[:-5] if name.endswith(".json") else ""
+            if not stem or not stem.isascii() or not stem.isdigit():
+                # ``pool_reconcile`` writes ``<number>.receipt-reconciliation
+                # .json`` beside the attempt it supplements; a numbered
+                # attempt is exactly ``<digits>.json`` and nothing else here
+                # is one.
+                continue
+            value = read_queue_record(path)
+            if value is None:
+                raise PoolContractError(f"archived attempt is unreadable: {path}")
+            attempt = self.archived_attempt_identity(
+                path, value, action_key=key, generation=identity["published_unix"])
+            present[attempt] = (path, value)
+        return present
 
 
 def read_queue_record(path: Path) -> dict[str, object] | None:

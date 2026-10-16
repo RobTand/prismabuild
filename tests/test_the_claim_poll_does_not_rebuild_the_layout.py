@@ -30,7 +30,7 @@ LAYOUT_NAMES = (
 
 
 def _layout_dirs(q: pool.PoolQueue) -> set[Path]:
-    return ({q.records.dir(state) for state in pool._STATES}
+    return ({q.records.dir(state) for state in pool.record_store._STATES}
             | {q.root / name for name in LAYOUT_NAMES})
 
 
