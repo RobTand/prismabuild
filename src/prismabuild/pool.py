@@ -5913,6 +5913,12 @@ class _RefusalAccounting:
     preempted: bool
 
 
+@dataclass(frozen=True)
+class _OpenClaimRow:
+    key: str
+    held_back: bool
+
+
 @dataclass
 class _ClaimScan:
     ready: list[dict[str, object]]
@@ -5943,7 +5949,7 @@ class _ClaimScan:
     image_host: capability_eligibility.LiveImages
     reads: _ClaimScanReads
     census: object
-    census_refusal: Mapping[str, object] | None
+    census_refusal: candidate_policy.CandidateDenial | None
 
 
 class _ClaimScanReads:
@@ -21653,10 +21659,18 @@ class PoolQueue:
             gang_backfill, backfill_binding, _gang)
 
     def _reserve_claim_host(
-        self, request: _HostClaimRequest, gang_context: _ClaimGang, census, scan, *,
-        ledger, total, copy_authority, tagset, has_gpu, placement,
-        controller, gpu_controller, cpu_tiers, held_back,
+        self, request: _HostClaimRequest, gang_context: _ClaimGang, census, scan,
+        scan_pass: _ClaimScan, *, held_back,
     ) -> _HostAccepted | _HostRefusal | _ClaimHandled:
+        ledger, total = scan_pass.ledger, scan_pass.total
+        copy_authority, tagset, has_gpu = scan_pass.copy_authority, scan_pass.tags, scan_pass.has_gpu
+        placement, controller = scan_pass.placement, scan_pass.controller
+        gpu_controller, cpu_tiers = scan_pass.gpu_controller, scan_pass.cpu_tiers
+        if "unavailable" in census:
+            scan_pass.census_refusal = candidate_policy.CandidateDenial(
+                "measurement_census_unavailable", census, scan)
+            self.record_denial(request.candidate.item, "measurement_census_unavailable", census)
+            return _ClaimHandled.REFUSED
         qualified = request.candidate
         item, key = qualified.item, qualified.key
         demand = qualified.demand.host
@@ -21819,9 +21833,11 @@ class PoolQueue:
         return host
 
     def _account_host_refusal(
-        self, refusal: _HostRefusal, scan, *, preempted, ledger, total,
-        controller, gpu_controller, cpu_tiers, copy_authority, tagset, has_gpu,
+        self, refusal: _HostRefusal, scan, scan_pass: _ClaimScan, *, preempted,
     ) -> _RefusalAccounting:
+        ledger, total = scan_pass.ledger, scan_pass.total
+        controller, gpu_controller, cpu_tiers = scan_pass.controller, scan_pass.gpu_controller, scan_pass.cpu_tiers
+        copy_authority, tagset, has_gpu = scan_pass.copy_authority, scan_pass.tags, scan_pass.has_gpu
         host = refusal.host
         qualified, request = host.candidate, host.request
         item, key = qualified.item, qualified.key
@@ -21957,8 +21973,10 @@ class PoolQueue:
         return _RefusalAccounting(scan, preempted)
 
     def _take_claim_tiers(
-        self, host: _HostAccepted, *, ledger, cpu_tiers, placement, reads,
+        self, host: _HostAccepted, scan_pass: _ClaimScan,
     ) -> _TakenClaimTiers | _ClaimHandled:
+        ledger, cpu_tiers = scan_pass.ledger, scan_pass.cpu_tiers
+        placement, reads = scan_pass.placement, scan_pass.reads
         qualified = host.candidate
         item, key = qualified.item, qualified.key
         sealed_demand, tier_demand = host.demand.sealed, host.demand.tiers
@@ -22042,9 +22060,11 @@ class PoolQueue:
         return _TakenClaimTiers(host, tier_borrowed, tier_fill_waived)
 
     def _rename_and_commit_claim(
-        self, tiers: _TakenClaimTiers, *, ledger, owner, tagset, has_gpu,
-        admission_open, image_host, container_class_policy, reads, pass_census,
+        self, tiers: _TakenClaimTiers, scan_pass: _ClaimScan,
     ) -> _CommittedClaim | _ClaimHandled:
+        ledger, owner, tagset, has_gpu = scan_pass.ledger, scan_pass.owner, scan_pass.tags, scan_pass.has_gpu
+        admission_open, image_host = scan_pass.admission_open, scan_pass.image_host
+        container_class_policy, reads, pass_census = scan_pass.container_class_policy, scan_pass.reads, scan_pass.census
         host = tiers.host
         qualified = host.candidate
         item, key = qualified.item, qualified.key
@@ -22413,8 +22433,9 @@ class PoolQueue:
         return _FundingSeal(funding_sealed, failed_tier)
 
     def _build_claim_record(
-        self, committed: _CommittedClaim, *, ledger, cpu_tiers, owner,
+        self, committed: _CommittedClaim, scan_pass: _ClaimScan,
     ) -> dict[str, object]:
+        ledger, cpu_tiers, owner = scan_pass.ledger, scan_pass.cpu_tiers, scan_pass.owner
         tiers = committed.tiers
         host = tiers.host
         qualified = host.candidate
@@ -22496,8 +22517,9 @@ class PoolQueue:
         return claimed
 
     def _persist_committed_claim(
-        self, committed: _CommittedClaim, *, ledger, cpu_tiers, owner,
+        self, committed: _CommittedClaim, scan_pass: _ClaimScan,
     ) -> dict[str, object] | None:
+        ledger, cpu_tiers, owner = scan_pass.ledger, scan_pass.cpu_tiers, scan_pass.owner
         host = committed.tiers.host
         item, key = host.candidate.item, host.candidate.key
         reservation = host.candidate.reservation
@@ -22536,8 +22558,7 @@ class PoolQueue:
             )
             dst.unlink(missing_ok=True)
             return None
-        claimed = self._build_claim_record(
-            committed, ledger=ledger, cpu_tiers=cpu_tiers, owner=owner)
+        claimed = self._build_claim_record(committed, scan_pass)
         if reservation.tier_funded:
             # Re-verify each funding against the renamed record before
             # persisting: the claim holds this key's transition lock,
@@ -22840,6 +22861,132 @@ class PoolQueue:
             census_refusal=census_refusal,
         )
 
+    def _opening_claim_row(self, item, scan, scan_pass: _ClaimScan, *, holds):
+        tagset, has_gpu = scan_pass.tags, scan_pass.has_gpu
+        released, ready_gpu, host = scan_pass.released, scan_pass.ready_gpu, scan_pass.host
+        total, ready_priority = scan_pass.total, scan_pass.ready_priority
+        reads, copy_authority = scan_pass.reads, scan_pass.copy_authority
+        key = str(item.get("action_key", ""))
+        takes_kind = (self._demands_withheld_kind(item, scan.withheld_kinds)
+                      if scan.withheld_for is not None and scan.withheld_kinds is not None
+                      else False)
+        held_back = scan.row_held_back(takes_kind=takes_kind)
+        reserving_gang = (self._gang_reservation_priority(
+            item, authority=reads.movement_authority(copy_authority))
+            if held_back and (scan.withheld_for in scan.measurement_withholds
+                              or scan.withheld_for in scan.carried_measurement_withholds)
+            else None)
+        if reserving_gang is not None:
+            held_back = scan.row_held_back(
+                takes_kind=takes_kind, reserving_priority=reserving_gang,
+                withheld_priority=ready_priority.get(scan.withheld_for, 0))
+        producer = held_back and self._may_serve_a_producer(item)
+        opening = candidate_policy.row_before_placement(
+            scan, held_back=held_back, producer=producer)
+        if isinstance(opening, candidate_policy.CandidateDenial):
+            self.record_denial(item, opening.reason, opening.evidence)
+            return _ClaimHandled.REFUSED
+        matches = (self._placement_matches(item, tags=tagset, has_gpu=has_gpu)
+                   if key and key not in released else None)
+        next_opening = candidate_policy.row_after_placement(
+            item, opening, order=scan, key=key, released=released, matches=matches,
+            worker_tags=tagset, has_gpu=has_gpu, ready_gpu=ready_gpu, host=host)
+        if next_opening is candidate_policy.RowProbe.GPU_SCOPE:
+            takes_gpu = self._demands_withheld_kind(item, frozenset({"gpu"}))
+            opening = candidate_policy.row_after_gpu_scope(
+                opening, order=scan, takes_gpu=takes_gpu, ready_gpu=ready_gpu,
+                total=total)
+        else:
+            opening = next_opening
+        if isinstance(opening, candidate_policy.CandidateDenial):
+            self.record_denial(item, opening.reason, opening.evidence)
+            return _ClaimHandled.REFUSED
+        held_back = opening.held_back
+        if (isinstance(item.get("produced_output_batch"), Mapping)
+                and key
+                and self.fail_dead_input_dependency(item, key,
+                                                    hints=reads.dead_input_hints,
+                                                    holds=holds)):
+            # Before the hold and any admission (#1184): the method
+            # serializes its own transition under this key's lock, so a
+            # concurrent publisher or claimant cannot interleave with
+            # the ending.  A box that can place the row is one box that
+            # can fail it; the prewarm loop reaches it on every box
+            # regardless, and an unprovable dependency answers False
+            # and claims exactly as before.
+            return _ClaimHandled.REFUSED
+        return _OpenClaimRow(key, held_back)
+
+    def _refuse_busy_row(self, item, opening: _OpenClaimRow, scan, scan_pass: _ClaimScan):
+        key = opening.key
+        reads, gpu_first, ledger = scan_pass.reads, scan_pass.gpu_first, scan_pass.ledger
+        total, controller, gpu_controller = scan_pass.total, scan_pass.controller, scan_pass.gpu_controller
+        observed_images = scan_pass.observed_images
+        container_class_policy = scan_pass.container_class_policy
+        container_inventory = scan_pass.container_inventory
+        if key:
+            # Another loop holds this key's lock, and may be
+            # writing its reason ring: the entry waits (#991).
+            # If this host's last word on the row was a withhold
+            # still inside its episode, the row still withholds
+            # for this pass (#1085): the loop holding the lock is
+            # this box's sibling deciding the same row, or another
+            # box deciding it for itself, and neither ends the
+            # drain this box is holding it for.  When no live
+            # episode is on file -- it expired past the carry
+            # ceiling, as a long drain can, or none was ever
+            # filed -- the row's kept room binds every row for
+            # the rest of this pass, not only rows that demand
+            # no GPU (#1217): a later row claiming now would take
+            # the boundary it waited for, which is the inversion
+            # the pool's band order exists to prevent.
+            carried = None
+            if not scan.whole_box_held:
+                carried = self._carried_withhold(
+                    reads.verdicts(), item, host=socket.gethostname(), now=_now())
+                scan = scan.carry(key, carried)
+            # A GPU row moved ahead for the free GPU keeps its
+            # room for the rows behind it (#1169): the loop
+            # deciding it may be about to claim it.  A busy GPU
+            # row with no live carry keeps its room whether or
+            # not the pass moved it ahead (#1217, #1230 review):
+            # ``gpu_first`` is read once, at the pass's start, and
+            # is empty while a quantum holder still holds the
+            # GPU -- a holder that releases mid-pass, exactly the
+            # drain-boundary incident, must not strip the row of
+            # the room its own claim would take.  The whole-box
+            # signal is kept apart (#1230 review): a None carry
+            # from a pass-wide withhold is not an expired
+            # episode and binds nothing extra.  The room reads
+            # only live facts -- free tokens, GPU sample, images,
+            # residency -- so a row that does not fit answers
+            # None on its own.
+            room = None
+            if scan.busy_room_needed(
+                    key, carried=carried, gpu_first=gpu_first,
+                    has_ledger=ledger is not None):
+                # Unlike a ``gpu_first`` row, this one's demand
+                # was never read this pass: a row the loop holding
+                # it will refuse as malformed keeps no room here,
+                # and must not end this pass for every row.
+                try:
+                    host_demand, _tiers = storage_tiers.split_demand(
+                        self.demand_of(item))
+                except (TypeError, ValueError, pb.PrismaBuildError):
+                    host_demand = {}
+                if host_demand.get("gpu"):
+                    room = self._ready_gpu_row_room(
+                        item, ledger=ledger, total=total,
+                        controller=controller,
+                        gpu_controller=gpu_controller,
+                        observed_images=observed_images,
+                        container_class_policy=container_class_policy,
+                        container_inventory=container_inventory)
+            denial = candidate_policy.busy_denial(scan, key, carried=carried, room=room)
+            scan = denial.order_before
+            self.record_denial(item, denial.reason, denial.evidence)
+        return scan
+
     def _claim_pass(
         self,
         *,
@@ -22857,322 +23004,90 @@ class PoolQueue:
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
     ) -> dict[str, object] | None:
-        """Take one ready item, atomically.  ``None`` when nothing matches.
-
-        The claim IS the ``rename``.  Two workers racing the same item both call
-        it; exactly one succeeds and the loser sees ``FileNotFoundError`` and
-        moves on.  Nothing else in this method may fail in a way that leaves the
-        item in neither directory.
-
-        When ``capacity`` is given, admission runs *before* the rename and the
-        tokens are released again if the rename is lost -- so a worker never
-        holds capacity it is not about to use, and never waits while holding.
-
-        With a ``controller``, the host-wide admission lock is taken *here*,
-        and it covers the capacity prelude and, per candidate, the decision
-        through ``begin_acquire``.  That is what has to be exclusive between
-        the loops of one box, because ``begin_acquire`` moves the tokens out of
-        ``free/`` and into a directory every sibling's ``decision`` and
-        ``available`` already counts, so the same headroom cannot be spent
-        twice once it returns.  Everything after it runs outside the lock,
-        including the rename: ownership is decided fleet-wide by that rename
-        and by the per-key transition lock, neither of which a host-local flock
-        adds anything to, and holding it across the mount is what emptied whole
-        boxes out of the claiming population when the mount was slow (#351).
-
-        Nothing reacquires the lock on the way to a claim.  The borrow record
-        that ``admitted`` writes is taken inside the same block as the
-        decision it belongs to, so once the rename happens there is no
-        host-local gate left that could refuse and cost this loop a claim it
-        already made.  The lock is taken again only on the branches that give
-        the reservation back, to give the borrow back with it: a claimant that
-        lost the rename occupied no borrowed CPU, and a refusal there costs
-        one sample's borrow rather than a claim.
-        An item that declares container images (``container_images``, sealed
-        from the action's own params) is refused before any resource decision
-        unless ``observed_images`` positively holds every reference.  ``None``
-        is unknown, an absent reference is named in the denial, and neither
-        path records a pass or touches an attempt or a token: the item stays
-        ready, which is what keeps it portable to the box that has the image
-        (#714).
-
-        A starved item (``passes >= STARVATION_FLOOR``) that this host could
-        eventually fit withholds the host rather than being overtaken; one it
-        could never fit is skipped, because withholding a box for work that
-        will never run there is the deadlock, not the fix.  An item refused
-        because the pool's own GPU holders are on the device withholds only
-        the rows behind it that demand a GPU (#1085, :data:`DRAIN_GPU_HOLDERS`).
-        CPU-only rows still require placement admission: on a GPU host #1526
-        leaves portable rows READY while eligible GPU work waits; hostname-pinned
-        rows remain exempt. A row this pass cannot
-        evaluate for a transient reason -- its transition lock held by another
-        loop, an unknown image inventory, an unreadable residency lead record
-        (:data:`WITHHOLD_CARRYING_REASONS`, #1143) -- keeps the withhold this
-        host last filed for it while that withhold's episode is live
-        (:meth:`_carried_withhold`).  It is still not claimed.
-        Placement is judged before a row's lock is taken, so a box that can
-        never place a row does not collide with the box that can.
-
-        A denied *foreground* item may also take the box back from an admitted
-        background holder -- see :meth:`_preempt_background_holder`, which
-        bounds that to one holder per pass whose release actually admits the
-        denied item.  The stop is asynchronous, so this pass ends exactly as it
-        did before and a later one makes the claim.
-
-        ``capacity`` is the box's offer *now*, not its configuration -- a
-        worker clamps it to what work the pool did not schedule has left free
-        (``prismabuild.box_capacity``).  The never-fits test above reads the
-        ledger's *total*, and the retire deletes free tokens only, so the two
-        cases part on whether anything is holding: a kind the clamp has taken
-        to zero with no holder drops the total under the demand and the item is
-        skipped, recording no ``passes`` on a box that cannot presently run it;
-        a kind whose holders keep the total at or above the demand is denied
-        and aged exactly as before, since from the item's side that is an
-        ordinary busy box.  Either way it unwinds by itself, because the offer
-        recovers as soon as the foreign work exits.
-        """
-
+        """Drive one ordered scan through T, canonical M/H, commit and publication."""
         scan_pass = self._start_claim_scan(
             tags=tags, has_gpu=has_gpu, owner=owner, capacity=capacity,
             cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
             ready=ready, observed_images=observed_images,
             container_class_policy=container_class_policy, container_inventory=container_inventory,
             admission_open=admission_open)
-        ready = scan_pass.ready
-        tagset = scan_pass.tags
-        has_gpu = scan_pass.has_gpu
-        owner = scan_pass.owner
-        capacity = scan_pass.capacity
-        cpu_tiers = scan_pass.cpu_tiers
-        controller = scan_pass.controller
-        gpu_controller = scan_pass.gpu_controller
-        observed_images = scan_pass.observed_images
-        container_class_policy = scan_pass.container_class_policy
-        container_inventory = scan_pass.container_inventory
-        admission_open = scan_pass.admission_open
-        withdrawn = scan_pass.withdrawn
-        released = scan_pass.released
-        placement = scan_pass.placement
-        ledger = scan_pass.ledger
-        host_gate = scan_pass.host_gate
-        total = scan_pass.total
-        gpu_first = scan_pass.gpu_first
-        ready_gpu = scan_pass.ready_gpu
-        host = scan_pass.host
-        ready_priority = scan_pass.ready_priority
-        copy_authority = scan_pass.copy_authority
-        interpreter_host = scan_pass.interpreter_host
-        dependency_host = scan_pass.dependency_host
-        image_host = scan_pass.image_host
-        reads = scan_pass.reads
-        pass_census = scan_pass.census
-        census_refusal = scan_pass.census_refusal
-        scan = candidate_policy.ScanOrder()
+        order = candidate_policy.ScanOrder()
         preempted = False
-        for item in ready:
-            key = str(item.get("action_key", ""))
-            measurement_suspended = False
-            takes_kind = (self._demands_withheld_kind(item, scan.withheld_kinds)
-                          if scan.withheld_for is not None and scan.withheld_kinds is not None
-                          else False)
-            held_back = scan.row_held_back(takes_kind=takes_kind)
-            reserving_gang = (self._gang_reservation_priority(
-                item, authority=reads.movement_authority(copy_authority))
-                if held_back and (scan.withheld_for in scan.measurement_withholds
-                                  or scan.withheld_for in scan.carried_measurement_withholds)
-                else None)
-            if reserving_gang is not None:
-                held_back = scan.row_held_back(
-                    takes_kind=takes_kind, reserving_priority=reserving_gang,
-                    withheld_priority=ready_priority.get(scan.withheld_for, 0))
-            producer = held_back and self._may_serve_a_producer(item)
-            opening = candidate_policy.row_before_placement(
-                scan, held_back=held_back, producer=producer)
-            if isinstance(opening, candidate_policy.CandidateDenial):
-                self.record_denial(item, opening.reason, opening.evidence)
+        for item in scan_pass.ready:
+            opening = self._opening_claim_row(item, order, scan_pass, holds=holds)
+            if opening is _ClaimHandled.REFUSED:
                 continue
-            matches = (self._placement_matches(item, tags=tagset, has_gpu=has_gpu)
-                       if key and key not in released else None)
-            next_opening = candidate_policy.row_after_placement(
-                item, opening, order=scan, key=key, released=released, matches=matches,
-                worker_tags=tagset, has_gpu=has_gpu, ready_gpu=ready_gpu, host=host)
-            if next_opening is candidate_policy.RowProbe.GPU_SCOPE:
-                takes_gpu = self._demands_withheld_kind(item, frozenset({"gpu"}))
-                opening = candidate_policy.row_after_gpu_scope(
-                    opening, order=scan, takes_gpu=takes_gpu, ready_gpu=ready_gpu,
-                    total=total)
-            else:
-                opening = next_opening
-            if isinstance(opening, candidate_policy.CandidateDenial):
-                self.record_denial(item, opening.reason, opening.evidence)
-                continue
-            held_back = opening.held_back
-            if (isinstance(item.get("produced_output_batch"), Mapping)
-                    and key
-                    and self.fail_dead_input_dependency(item, key,
-                                                        hints=reads.dead_input_hints,
-                                                        holds=holds)):
-                # Before the hold and any admission (#1184): the method
-                # serializes its own transition under this key's lock, so a
-                # concurrent publisher or claimant cannot interleave with
-                # the ending.  A box that can place the row is one box that
-                # can fail it; the prewarm loop reaches it on every box
-                # regardless, and an unprovable dependency answers False
-                # and claims exactly as before.
-                continue
-            with self._timed_transition_hold(key, holds) as acquired:
+            with self._timed_transition_hold(opening.key, holds) as acquired:
                 if not acquired:
-                    if key:
-                        # Another loop holds this key's lock, and may be
-                        # writing its reason ring: the entry waits (#991).
-                        # If this host's last word on the row was a withhold
-                        # still inside its episode, the row still withholds
-                        # for this pass (#1085): the loop holding the lock is
-                        # this box's sibling deciding the same row, or another
-                        # box deciding it for itself, and neither ends the
-                        # drain this box is holding it for.  When no live
-                        # episode is on file -- it expired past the carry
-                        # ceiling, as a long drain can, or none was ever
-                        # filed -- the row's kept room binds every row for
-                        # the rest of this pass, not only rows that demand
-                        # no GPU (#1217): a later row claiming now would take
-                        # the boundary it waited for, which is the inversion
-                        # the pool's band order exists to prevent.
-                        carried = None
-                        if not scan.whole_box_held:
-                            carried = self._carried_withhold(
-                                reads.verdicts(), item, host=socket.gethostname(), now=_now())
-                            scan = scan.carry(key, carried)
-                        # A GPU row moved ahead for the free GPU keeps its
-                        # room for the rows behind it (#1169): the loop
-                        # deciding it may be about to claim it.  A busy GPU
-                        # row with no live carry keeps its room whether or
-                        # not the pass moved it ahead (#1217, #1230 review):
-                        # ``gpu_first`` is read once, at the pass's start, and
-                        # is empty while a quantum holder still holds the
-                        # GPU -- a holder that releases mid-pass, exactly the
-                        # drain-boundary incident, must not strip the row of
-                        # the room its own claim would take.  The whole-box
-                        # signal is kept apart (#1230 review): a None carry
-                        # from a pass-wide withhold is not an expired
-                        # episode and binds nothing extra.  The room reads
-                        # only live facts -- free tokens, GPU sample, images,
-                        # residency -- so a row that does not fit answers
-                        # None on its own.
-                        room = None
-                        if scan.busy_room_needed(
-                                key, carried=carried, gpu_first=gpu_first,
-                                has_ledger=ledger is not None):
-                            # Unlike a ``gpu_first`` row, this one's demand
-                            # was never read this pass: a row the loop holding
-                            # it will refuse as malformed keeps no room here,
-                            # and must not end this pass for every row.
-                            try:
-                                host_demand, _tiers = storage_tiers.split_demand(
-                                    self.demand_of(item))
-                            except (TypeError, ValueError, pb.PrismaBuildError):
-                                host_demand = {}
-                            if host_demand.get("gpu"):
-                                room = self._ready_gpu_row_room(
-                                    item, ledger=ledger, total=total,
-                                    controller=controller,
-                                    gpu_controller=gpu_controller,
-                                    observed_images=observed_images,
-                                    container_class_policy=container_class_policy,
-                                    container_inventory=container_inventory)
-                        denial = candidate_policy.busy_denial(scan, key, carried=carried, room=room)
-                        scan = denial.order_before
-                        self.record_denial(item, denial.reason, denial.evidence)
+                    order = self._refuse_busy_row(item, opening, order, scan_pass)
                     continue
                 qualified = self._qualify_claim(
-                    item, key, scan, reads, tagset=tagset, has_gpu=has_gpu,
-                    withdrawn=withdrawn, capacity=capacity, ledger=ledger,
-                    controller=controller, gpu_controller=gpu_controller,
-                    interpreter_host=interpreter_host, dependency_host=dependency_host,
-                    image_host=image_host)
+                    item, opening.key, order, scan_pass.reads,
+                    tagset=scan_pass.tags, has_gpu=scan_pass.has_gpu,
+                    withdrawn=scan_pass.withdrawn, capacity=scan_pass.capacity,
+                    ledger=scan_pass.ledger, controller=scan_pass.controller,
+                    gpu_controller=scan_pass.gpu_controller,
+                    interpreter_host=scan_pass.interpreter_host,
+                    dependency_host=scan_pass.dependency_host, image_host=scan_pass.image_host)
                 if isinstance(qualified, candidate_policy.CandidateDenial):
-                    scan = qualified.order_before
+                    order = qualified.order_before
                     if qualified.evidence is None:
                         self.record_denial(item, qualified.reason)
                     else:
                         self.record_denial(item, qualified.reason, qualified.evidence)
                     continue
                 if isinstance(qualified, candidate_policy.ScanOrder):
-                    scan = qualified
+                    order = qualified
                     continue
-                demand = qualified.demand.host
                 reservation = qualified.reservation
                 host_claim = _HostAccepted(qualified, qualified.demand)
-                # From the reservation to ``commit_acquire`` the tokens exist
-                # only under a handle this frame holds: nothing else can name
-                # them, and no sweep will return them before
-                # ``LEASE_TIMEOUT_S``.  Every ending in that window therefore
-                # has to give them back -- including the ones this code does
-                # not author, which is what the bare ``except`` is for.
                 try:
-                    if ledger is not None and demand:
+                    if scan_pass.ledger is not None and qualified.demand.host:
                         prepared = self._prepare_host_claim(
-                            qualified, scan, total=total, has_gpu=has_gpu,
-                            controller=controller, gpu_controller=gpu_controller,
-                            placement=placement)
+                            qualified, order, total=scan_pass.total, has_gpu=scan_pass.has_gpu,
+                            controller=scan_pass.controller, gpu_controller=scan_pass.gpu_controller,
+                            placement=scan_pass.placement)
                         if isinstance(prepared, candidate_policy.CandidateDenial):
-                            scan = prepared.order_before
+                            order = prepared.order_before
                             if prepared.evidence is None:
                                 self.record_denial(item, prepared.reason)
                             else:
                                 self.record_denial(item, prepared.reason, prepared.evidence)
                             continue
                         if isinstance(prepared, candidate_policy.ScanOrder):
-                            scan = prepared
+                            order = prepared
                             continue
-                        gang_context = self._prepare_claim_gang(
-                            prepared, ledger=ledger, host_gate=host_gate)
-                        if gang_context is _ClaimHandled.REFUSED:
+                        gang = self._prepare_claim_gang(
+                            prepared, ledger=scan_pass.ledger, host_gate=scan_pass.host_gate)
+                        if gang is _ClaimHandled.REFUSED:
                             continue
                         from . import _measurement_reservation as measurement_reservation
-                        if census_refusal is not None:
-                            self.record_denial(item, "measurement_census_unavailable", census_refusal)
+                        if scan_pass.census_refusal is not None:
+                            self.record_denial(item, scan_pass.census_refusal.reason,
+                                               scan_pass.census_refusal.evidence)
                             continue
-                        census_guard = measurement_reservation.pass_admission_census(
-                            pass_census, self, ledger, host_gate)
-                        with census_guard as census:
-                            if "unavailable" in census:
-                                census_refusal = census
-                                self.record_denial(item, "measurement_census_unavailable", census)
-                                continue
+                        with measurement_reservation.pass_admission_census(
+                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate) as census:
                             host_claim = self._reserve_claim_host(
-                                prepared, gang_context, census, scan,
-                                ledger=ledger, total=total, copy_authority=copy_authority,
-                                tagset=tagset, has_gpu=has_gpu, placement=placement,
-                                controller=controller, gpu_controller=gpu_controller,
-                                cpu_tiers=cpu_tiers, held_back=held_back)
+                                prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:
                                 continue
                         if isinstance(host_claim, _HostRefusal):
                             accounted = self._account_host_refusal(
-                                host_claim, scan, preempted=preempted, ledger=ledger, total=total,
-                                controller=controller, gpu_controller=gpu_controller,
-                                cpu_tiers=cpu_tiers, copy_authority=copy_authority,
-                                tagset=tagset, has_gpu=has_gpu)
-                            scan, preempted = accounted.order, accounted.preempted
+                                host_claim, order, scan_pass, preempted=preempted)
+                            order = accounted.order
+                            preempted = accounted.preempted
                             continue
-                    tiers = self._take_claim_tiers(
-                        host_claim, ledger=ledger, cpu_tiers=cpu_tiers,
-                        placement=placement, reads=reads)
+                    tiers = self._take_claim_tiers(host_claim, scan_pass)
                     if tiers is _ClaimHandled.REFUSED:
                         continue
-                    committed = self._rename_and_commit_claim(
-                        tiers, ledger=ledger, owner=owner, tagset=tagset, has_gpu=has_gpu,
-                        admission_open=admission_open, image_host=image_host,
-                        container_class_policy=container_class_policy, reads=reads,
-                        pass_census=pass_census)
+                    committed = self._rename_and_commit_claim(tiers, scan_pass)
                     if committed is _ClaimHandled.REFUSED:
                         continue
                 except BaseException:
                     reservation.abandon(_ClaimExit.UNCERTAIN)
                     raise
-                claimed = self._persist_committed_claim(
-                    committed, ledger=ledger, cpu_tiers=cpu_tiers, owner=owner)
+                claimed = self._persist_committed_claim(committed, scan_pass)
                 if claimed is not None:
                     return claimed
         return None

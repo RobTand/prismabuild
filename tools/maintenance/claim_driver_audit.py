@@ -45,6 +45,20 @@ def claim_source_inventory(source):
             calls.append({"line": node.lineno, "owner": owner,
                           "call": claim_audit_label(node.func), "expression": claim_audit_label(node),
                           "guards": guards})
+        if isinstance(node, ast.BoolOp):
+            for index, value in enumerate(node.values):
+                earlier = node.values[:index]
+                condition = (" and " if isinstance(node.op, ast.And) else " or ").join(
+                    claim_audit_label(part) for part in earlier)
+                if condition and isinstance(node.op, ast.Or):
+                    condition = "not (" + condition + ")"
+                visit(value, (*guards, condition) if condition else guards, owner)
+            return
+        if isinstance(node, ast.IfExp):
+            visit(node.test, guards, owner)
+            visit(node.body, (*guards, claim_audit_label(node.test)), owner)
+            visit(node.orelse, (*guards, "else " + claim_audit_label(node.test)), owner)
+            return
         if isinstance(node, ast.If):
             visit(node.test, guards, owner)
             for child in node.body:
@@ -119,6 +133,20 @@ def main():
                        and symbol.get_name() not in known]
             if missing:
                 unknown_globals[function.get_name()] = missing
+    old_tree = ast.parse(claim_audit_git("show", args.base + ":" + POOL).decode())
+    new_tree = ast.parse((ROOT / POOL).read_text())
+    old_classes = {node.name: node for node in old_tree.body if isinstance(node, ast.ClassDef)}
+    new_classes = {node.name: node for node in new_tree.body if isinstance(node, ast.ClassDef)}
+    unchanged_contracts = {}
+    for name in ("_ClaimReservation", "_ClaimScanReads"):
+        unchanged_contracts[name] = ast.dump(old_classes[name], include_attributes=False) == ast.dump(
+            new_classes[name], include_attributes=False)
+    old_methods = {node.name: node for node in old_classes["PoolQueue"].body if isinstance(node, ast.FunctionDef)}
+    new_methods = {node.name: node for node in new_classes["PoolQueue"].body if isinstance(node, ast.FunctionDef)}
+    modified_existing = [name for name in old_methods if name in new_methods and
+                         ast.dump(old_methods[name], include_attributes=False) !=
+                         ast.dump(new_methods[name], include_attributes=False)]
+    removed_methods = sorted(set(old_methods) - set(new_methods))
     shape = current[POOL]["functions"]["_claim_pass"][0]
     diff = claim_audit_git("diff", "--numstat", args.base).decode().splitlines()
     report = {"head": claim_audit_git("rev-parse", "HEAD").decode().strip(),
@@ -126,6 +154,9 @@ def main():
               "dirty": claim_audit_git("status", "--porcelain=v1").decode().splitlines(),
               "base": args.base, "source_manifest": manifests,
               "unknown_globals": unknown_globals,
+              "unchanged_contracts": unchanged_contracts,
+              "modified_existing_methods": sorted(modified_existing),
+              "removed_methods": removed_methods,
               "owners": current, "baseline_pool": old, "callers": references,
               "source_delta_numstat": diff, "driver": shape,
               "limits_pass": shape["physical"] <= 240 and shape["statements"] < 100}
@@ -133,7 +164,7 @@ def main():
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"output": str(args.output), "head": report["head"],
                       "driver": shape, "limits_pass": report["limits_pass"]}))
-    if args.final and (not report["limits_pass"] or unknown_globals):
+    if args.final and (not report["limits_pass"] or unknown_globals or not all(unchanged_contracts.values())):
         raise SystemExit(1)
 
 
