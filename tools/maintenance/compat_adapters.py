@@ -5,6 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import runpy
 import socket
 import time
 
@@ -75,6 +76,12 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family.startswith("dc-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_domain_adapters.py")))["operate"]
+        return adapter(request, store, load)
+    if family.startswith("q-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_queue_adapters.py")))["operate"]
+        return adapter(request, store, load)
     path = store / "record.json"
     if not write:
         path.write_bytes(base64.b64decode(request["raw"]))

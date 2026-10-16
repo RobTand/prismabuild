@@ -20,7 +20,7 @@ def isolate(root):
         raise RuntimeError("compatibility consumer requires python -I -S")
     stdlib = {Path(sysconfig.get_path(name)).resolve() for name in ("stdlib", "platstdlib")}
     stdlib.update(path / "lib-dynload" for path in tuple(stdlib))
-    sys.path[:] = [str(root / "src"), str(root / "tools/fleet")]
+    sys.path[:] = [str(root / "src"), str(root / "tools/fleet"), str(root / "tools")]
     sys.path.extend(str(path) for path in sorted(stdlib))
     sys.dont_write_bytecode = True
     return stdlib
@@ -61,7 +61,8 @@ def main():
     args.store.mkdir(parents=True, exist_ok=True)
     output = {"isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site),
               "sys_path": list(sys.path), "driver_sha256": sha(Path(__file__)),
-              "adapters_sha256": sha(args.adapters), "request": request["case"]}
+              "adapters_sha256": {p.name: sha(p) for p in sorted(args.adapters.parent.glob("compat*adapters.py"))},
+              "request": request["case"]}
     code = 0
     calls = set()
 

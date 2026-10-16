@@ -15,6 +15,7 @@ class RecordKind:
     variants: tuple[str, ...]
     legacy: tuple[str, ...] = ()
     closed_sets: tuple[str, ...] = ()
+    negative_field: str = "schema"
 
 
 KINDS = (
@@ -45,10 +46,10 @@ KINDS = (
                "residency/<consumer>/<mover>.retiring.json", "closed",
                "prismabuild.reader_lease:retiring_for", ("prismabuild.reader_lease:write_retiring",),
                ("generation",), ("v1 never establishes generation-bound retirement",)),
-    RecordKind("move", "prismaquant.prismabuild.pool_move.v1", "moves/<key>.json", "additive",
+    RecordKind("move", "prismaquant.prismabuild.pool_move.v1", "movers/<key>.json", "additive",
                "prismabuild.pool:PoolQueue.move_record", ("prismabuild.pool:PoolQueue.record_move",),
                ("implicit", "explicit"), ("missing schema at write time becomes pool_move.v1",)),
-    RecordKind("egress", "prismaquant.prismabuild.pool_egress.v1", "moves/<key>.json", "additive",
+    RecordKind("egress", "prismaquant.prismabuild.pool_egress.v1", "movers/<key>.json", "additive",
                "prismabuild.pool:PoolQueue.move_record", ("prismabuild.pool:PoolQueue.record_move",),
                ("complete",), ("misstamped pre-1158 egress is never egress pricing evidence",)),
     RecordKind("prewarm", "prismaquant.prismabuild.pool_prewarm.v1", "prewarm/<key>.json", "additive",
@@ -67,6 +68,37 @@ KINDS = (
                "prismabuild.pool:PoolQueue.mover_report",
                ("prismabuild.progress:commit", "prismabuild.core:report_action_progress"),
                ("helper", "helper-unit", "core", "core-unit")),
+    RecordKind("dc-roster", "prismabuild.logical_task_roster.v1", "logical request roster", "closed",
+               "prismabuild.decomposition:validate_roster", ("prismabuild.decomposition:write_document",), ("ordered",)),
+    RecordKind("dc-policy", "prismabuild.roster_batch_policy.v1", "logical request batch_policy", "closed",
+               "prismabuild.decomposition:validate_batch_policy", ("prismabuild.decomposition:write_document",), ("priced",)),
+    RecordKind("dc-request", "prismabuild.logical_request.v1", "campaign request.json", "closed",
+               "prismabuild.decomposition:validate_logical_request", ("prismabuild.decomposition:write_document",), ("plain",)),
+    RecordKind("dc-frozen", "prismabuild.frozen_common.v1", "logical parent identity frozen_common", "closed",
+               "prismabuild.decomposition:validate_frozen_common", ("prismabuild.decomposition:freeze_common",), ("snapshot",)),
+    RecordKind("dc-plan", "prismabuild.decomposition_plan.v1", "cas/decompositions/<xx>/<parent>/plan.json", "closed",
+               "prismabuild.decomposition:_validate_plan", ("prismabuild.decomposition:write_document",), ("partitioned",),
+               ("retained reader is named validate_plan",)),
+    RecordKind("dc-publication", "prismabuild.decomposition_publication.v1", "cas/decompositions/<xx>/<parent>/publication.json", "closed",
+               "prismabuild.decomposition:_validate_publication_index", ("prismabuild.decomposition:publish_children",), ("children",),
+               ("retained reader is named validate_publication_index",)),
+    RecordKind("dc-child-result", "prismabuild.child_result_manifest.v1", "child declared result manifest", "closed",
+               "prismabuild.decomposition:_validate_child_result_manifest", ("prismabuild.decomposition:write_document",), ("cover",),
+               ("retained reader is named validate_child_result_manifest",)),
+    RecordKind("dc-task-data", "prismabuild.task_data_manifest.v1", "logical request task_data_manifest", "closed",
+               "prismabuild.decomposition:validate_task_data_policy", ("prismabuild.decomposition:write_document",), ("plain", "reader")),
+    RecordKind("q-funding", "prismabuild.tier_funding.v1", "tier-funding/<mover>.<tier>.funding.json", "closed",
+               "prismabuild.pool:PoolQueue.read_funding", ("prismabuild.pool:PoolQueue.write_funding",),
+               ("reserved", "transferring", "consumed", "released")),
+    RecordKind("q-output-funding", "prismabuild.tier_funding.output.v1", "tier-funding output binding", "closed",
+               "prismabuild.pool:PoolQueue.read_output_funding", ("prismabuild.pool:PoolQueue.write_output_funding",),
+               ("reserved", "transferring", "consumed", "released")),
+    RecordKind("q-denials", "prismabuild.claim_denials.v1", "host adaptive/claim-denials.json", "additive",
+               "prismabuild.pool:PoolQueue.latest_denials", ("prismabuild.pool:PoolQueue.record_denial",),
+               ("first", "repeat"), ("reader treats wrapper schema as diagnostic, not authority",), negative_field="records"),
+    RecordKind("q-denial-transitions", "prismabuild.denial_transitions.v1", "denial-transitions/<key>.json", "additive",
+               "prismabuild.pool:PoolQueue.denial_transitions", ("prismabuild.pool:PoolQueue.record_denial",),
+               ("first", "repeat"), ("reader treats wrapper schema as diagnostic, not authority",), negative_field="transitions"),
 )
 
 
