@@ -15,7 +15,7 @@ def box_window(store, load):
     window = load("prismabuild.box_window")
     directory = store / "csv"
     directory.mkdir(exist_ok=True)
-    (directory / "pqteld-compat-host-1970-01-01.s1.csv").write_text(
+    (directory / "pqteld-compat-host-19700101.s1.csv").write_text(
         "epoch_ms,power_draw_w,gpu_util\n95000,50,25\n")
     return window.read_window(90., 100., host="compat-host", csv_dir=directory, netdata_url=None,
         gpu_reference=lambda **kwargs: {"power_reference_w": 100., "power_reference_scope": "gpu-only", "power_reference_source": "fixture"})
@@ -32,9 +32,15 @@ def profile(store, scratch):
     os.fstatvfs = lambda fd: SimpleNamespace(f_fsid=2)
     counter = itertools.count()
     time.perf_counter = lambda: float(next(counter))
+    producer = os.environ.get("PRISMABUILD_ACTION_KEY")
+    os.environ["PRISMABUILD_ACTION_KEY"] = "c" * 64
     try:
         return scratch.record_profile({"root": str(root), "bytes": 8, "block_bytes": 8, "repetitions": 1})
     finally:
+        if producer is None:
+            os.environ.pop("PRISMABUILD_ACTION_KEY", None)
+        else:
+            os.environ["PRISMABUILD_ACTION_KEY"] = producer
         scratch._descriptor_identity, scratch.root_identity, os.fstat, os.fstatvfs, time.perf_counter = before
 
 
@@ -101,11 +107,12 @@ def operate(request, store, load):
         if not writing:
             return result
     else:
-        canary, gc = load("pbcanary"), load("pb_gc")
+        gc = load("pb_gc")
         namespace = store / "canary/compat-run"
         namespace.mkdir(parents=True)
         path = namespace / "run.json"
         if writing:
+            canary = load("pbcanary")
             original = datetime.datetime
             class Clock(original):
                 @classmethod

@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from record_compat import accepted, decode_wire, historical_absence, invoke, probe_wire, retained, write
+from record_compat import accepted, decode_wire, historical_absence, historical_writer, invoke, probe_wire, retained, write
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.digest_primitives import canonical_sha256
 
@@ -56,8 +56,14 @@ def generations():
         yield result
 
 
+@pytest.fixture(scope="module")
+def writer_sources():
+    with retained(DATA / "writer-sources", history_control=True) as result:
+        yield result
+
+
 @pytest.mark.parametrize("case", cases())
-def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(case, generations, tmp_path):
+def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(case, generations, writer_sources, tmp_path):
     label = case.replace("/", "-")
     current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"))
     assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
@@ -70,7 +76,9 @@ def test_supported_consumers_read_exact_production_writes_or_immutable_source_in
             continue
         historical = HISTORY[generation, case]
         assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
-        prior = write(old, case, tmp_path / generation / "old-writer", manifest=manifest,
+        writer_root, writer_manifest, provenance = historical_writer(kind, old, manifest, writer_sources)
+        assert historical.get("writer_source") == provenance
+        prior = write(writer_root, case, tmp_path / generation / "old-writer", manifest=writer_manifest,
                       evidence=evidence(generation + "/" + label + "-old-writer.json"))
         assert prior == decoded(historical), "historical writer did not reproduce captured bytes"
         for root, raw, direction, attestation in ((ROOT, prior, "forward", None),

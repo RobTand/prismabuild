@@ -30,7 +30,7 @@ def operate(request, store, load):
         path = session.exit_status_path
         if writing:
             argv = core.profile_exit_status_relay(["/compat/missing"] if variant == "launch-failed" else ["/bin/true"], path)
-            source = argv[2]
+            source = argv[4]
             assert source == core.PROFILE_RELAY_SOURCE
             # Execute the exact embedded production program. Only OS input
             # observations are supplied; old consumer code is never replaced.

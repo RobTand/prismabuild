@@ -240,6 +240,14 @@ def retained(directory=CAPTURE, *, history_control=False):
         yield result
 
 
+def historical_writer(kind, reader_root, reader_manifest, sources):
+    if kind.historical_writer_source is None:
+        return reader_root, reader_manifest, None
+    name, root, manifest = next(row for row in sources if row[0] == kind.historical_writer_source)
+    provenance = json.loads(manifest.read_bytes())
+    return root, manifest, {key: provenance[key] for key in ("generation", "commit", "tree", "receipt_sha256", "archive_sha256", "published")}
+
+
 def generate(output, selected=None):
     output.mkdir(parents=True, exist_ok=False)
     historical, goldens, failures, absences = [], [], [], []
@@ -258,7 +266,8 @@ def generate(output, selected=None):
         accepted(result)
         return True
 
-    with retained() as generations, tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
+    with retained() as generations, retained(ROOT / "tests/compat/writer-sources", history_control=True) as writer_sources, \
+            tempfile.TemporaryDirectory(prefix="compat-generate-") as tmp:
         for case in selected:
             kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
             phase = "input" if kind.caller_input else "source" if kind.fixture_source else "writer"
@@ -282,7 +291,8 @@ def generate(output, selected=None):
                     continue
                 prefix = output / "attestations" / generation
                 stores = Path(tmp) / generation
-                result = invoke(old, case, stores / (label + "-old"), manifest=manifest,
+                writer_root, writer_manifest, writer_provenance = historical_writer(kind, old, manifest, writer_sources)
+                result = invoke(writer_root, case, stores / (label + "-old"), manifest=writer_manifest,
                                 evidence=prefix / (label + "-old-" + phase + ".json"))
                 if not check(result, case, generation, phase):
                     continue
@@ -293,7 +303,8 @@ def generate(output, selected=None):
                              evidence=prefix / (label + "-reverse.json")), case, generation, "reverse")
                 historical.append({"case": case, "generation": generation,
                                    "receipt_sha256": json.loads(manifest.read_bytes())["receipt_sha256"],
-                                   "sha256": sha(prior), "raw": base64.b64encode(prior).decode(), **origin})
+                                   "sha256": sha(prior), "raw": base64.b64encode(prior).decode(),
+                                   **({"writer_source": writer_provenance} if writer_provenance else {}), **origin})
             print(case, "both directions accepted" if len(failures) == before else "RED; evidence retained", flush=True)
     for name, rows in (("goldens.jsonl", goldens), ("historical.jsonl", historical), ("absent-participants.jsonl", absences)):
         path = output / name

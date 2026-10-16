@@ -27,6 +27,7 @@ class RecordKind:
     older_input_absence: bool = False
     encoding: str = "json"
     older_participant_absence: bool = False
+    historical_writer_source: str | None = None
 
 
 KINDS = (
@@ -44,7 +45,8 @@ KINDS = (
                ("config boundary uses supplied downstream IO; malformed config grants no profiles",), caller_input=True, stable_paths=True),
     RecordKind("canary-run", "prismabuild.pbcanary.run.v1", "private canary namespace/run.json", "additive",
                "pb_gc:_survey_canary", ("pbcanary:build_run_record",), ("legacy", "generation"),
-               ("actual read-only GC survey classifies a private namespace; no sweep is executed",), stable_paths=True),
+               ("actual read-only GC survey classifies a private namespace; no sweep is executed",), stable_paths=True,
+               historical_writer_source="qualified-source-2a248e6364ee"),
     RecordKind("profile-route", "prismabuild.profile_container_route.v1", "private profile/container-route marker", "additive",
                "prismabuild.core:_ProfileSession.container_route",
                ("prismabuild.core:_ProfileSession._arm_container_route", "docker:_record_sample_route"), ("armed", "docker"),
@@ -52,7 +54,7 @@ KINDS = (
                variant_writers=(("armed", "prismabuild.core:_ProfileSession._arm_container_route"), ("docker", "docker:_record_sample_route"))),
     RecordKind("profile-exit", "prismabuild.profile_exit_status.v1", "private profile/exit_status from embedded relay", "additive",
                "prismabuild.core:_ProfileSession.exit_status", ("prismabuild.core:profile_exit_status_relay",), ("launch-failed", "launched", "ended"),
-               ("exact embedded source executes under isolated stdlib Python with supplied writer clock/process observations",)),
+               ("exact embedded source executes under isolated stdlib Python with supplied writer clock/process observations",), stable_paths=True),
     RecordKind("checkout-snapshot", "prismaquant.prismabuild.pbrun_checkout_snapshot.v2", "sealed action params.checkout_snapshot and CAS Git bundle", "closed",
                "prismabuild.core:validate_pbrun_checkout_snapshot", ("pbrun:build_git_checkout_snapshot",), ("clean", "dirty"),
                ("real private Git ancestry and CAS bundle bytes; no installed checkout mutation",), stable_paths=True),
