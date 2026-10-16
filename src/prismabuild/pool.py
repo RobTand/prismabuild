@@ -2649,52 +2649,6 @@ def _drain(
         return partial[0], partial[1], True
 
 
-def _scan(directory: Path):
-    """List a directory that another process may be deleting underneath us.
-
-    Every ledger scan walks entries a concurrent worker is free to remove --
-    ``release`` is documented safe to call twice, so two of them will have one
-    ``rmdir`` the directory the other is mid-iteration over.  At one worker per
-    box that never happens; at sixty it happens within minutes, and the worker
-    dies with ``FileNotFoundError`` on ``iterdir`` rather than losing a lease
-    gracefully.  A directory that vanished held nothing this caller can still
-    act on, so the honest answer is an empty listing, not an exception.
-    """
-
-    try:
-        return sorted(directory.iterdir())
-    except (FileNotFoundError, NotADirectoryError):
-        return []
-
-
-def _glob(directory: Path, pattern: str):
-    """``Path.glob`` with the same disappearing-directory contract as `_scan`."""
-
-    try:
-        return sorted(directory.glob(pattern))
-    except (FileNotFoundError, NotADirectoryError):
-        return []
-
-
-def _scan_visible(directory: Path):
-    """List a directory LOUDLY: every error propagates to the caller.
-
-    The counterpart to :func:`_scan` for authoritative censuses (mint
-    grow, dead-name reclaim): a holder this listing cannot read makes
-    the census unknown, and the caller must refuse the decision --
-    retain rather than mint -- instead of narrowing the view.  Reads
-    (``capacity``, ``available``) keep the tolerant :func:`_scan`, and a
-    holder they cannot read is counted as HELD, never as free (#936):
-    ``capacity`` becomes a lower bound, and the shrink
-    (``retire_free_capacity``) counts the holder as holding every minted
-    name that is neither free nor dead, because an under-counted held
-    total would retire too few.  Neither reads an unreadable holder's
-    tokens as free.
-    """
-
-    return sorted(directory.iterdir())
-
-
 def _holder_is_dir(path: Path) -> bool:
     """Whether a listed ``held/`` entry is a holder directory, error-visible.
 
