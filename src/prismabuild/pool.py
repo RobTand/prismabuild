@@ -22295,27 +22295,27 @@ class PoolQueue:
                                 census_refusal = census
                                 self.record_denial(item, "measurement_census_unavailable", census)
                                 continue
-                            host = self._reserve_claim_host(
+                            host_claim = self._reserve_claim_host(
                                 prepared, gang_context, census, scan,
                                 ledger=ledger, total=total, copy_authority=copy_authority,
                                 tagset=tagset, has_gpu=has_gpu, placement=placement,
                                 controller=controller, gpu_controller=gpu_controller,
                                 cpu_tiers=cpu_tiers, held_back=held_back)
-                            if host is _ClaimHandled.REFUSED:
+                            if host_claim is _ClaimHandled.REFUSED:
                                 continue
-                        if isinstance(host, _HostRefusal):
+                        if isinstance(host_claim, _HostRefusal):
                             accounted = self._account_host_refusal(
-                                host, scan, preempted=preempted, ledger=ledger, total=total,
+                                host_claim, scan, preempted=preempted, ledger=ledger, total=total,
                                 controller=controller, gpu_controller=gpu_controller,
                                 cpu_tiers=cpu_tiers, copy_authority=copy_authority,
                                 tagset=tagset, has_gpu=has_gpu)
                             scan, preempted = accounted.order, accounted.preempted
                             continue
-                        demand, reservation_demand = host.demand.host, host.demand.reservation
-                        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
-                        gang_backfill = host.arbitration.backfill
-                        backfill_binding = host.arbitration.backfill_binding
-                        _gang = host.arbitration.gang_api
+                        demand, reservation_demand = host_claim.demand.host, host_claim.demand.reservation
+                        adaptive, adaptive_gpu = host_claim.adaptive, host_claim.adaptive_gpu
+                        gang_backfill = host_claim.arbitration.backfill
+                        backfill_binding = host_claim.arbitration.backfill_binding
+                        _gang = host_claim.arbitration.gang_api
                     allocation = (ledger.cpu_allocation(reservation.host_handle, cpu_tiers)
                                   if ledger is not None and reservation.host_handle is not None and cpu_tiers is not None else None)
                     fallback_deferral = (self._defer_fallback(item, demand, placement=placement)
