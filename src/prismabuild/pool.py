@@ -942,20 +942,6 @@ class OfferTiming(NamedTuple):
     clock_skew_s: float | None
 
 
-def _residency_action_key(value: object) -> str:
-    """One action key, checked, because these two names index shared files.
-
-    The residency map and the frozen plan are named after the consumer; a
-    caller that passed a path fragment instead of a key would name a file
-    somewhere else under the shared mount.
-    """
-
-    if (not isinstance(value, str) or len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)):
-        raise PoolContractError("a residency file is named by a 64-character action key")
-    return value
-
-
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
     """Usable age and observed future skew, relative to the reader's clock.
 
