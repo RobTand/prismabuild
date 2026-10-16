@@ -50,7 +50,7 @@ def _measurement(tmp_path: Path):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = pbrun.seal_action_from_template(
         fx._template(measurement=True, command=["python", "stage_a.py"]))

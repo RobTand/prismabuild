@@ -131,7 +131,7 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     # The rows name ``SH / "cas"`` as their CAS; point it at this test's.
     monkeypatch.setattr(pbrun, "SH", tmp_path)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(_manifest()))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -208,7 +208,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
 
     decision = _denial(queue, consumer_key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
-    assert queue.item_path(pool.READY, consumer_key).exists()
+    assert queue.records.item_path(pool.record_store.READY, consumer_key).exists()
 
 
 def test_the_consumer_alone_is_still_held_to_an_idle_host(

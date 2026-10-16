@@ -51,7 +51,7 @@ def test_a_movement_node_launches_with_recompute() -> None:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 5})
     return q
 
@@ -60,7 +60,7 @@ def _publish(queue: pool.PoolQueue, key: str, **extra) -> dict[str, object]:
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={"cpu": 1, "mem_gb": 1}, **extra)
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
 
 
 def test_publish_stamps_recompute_only_when_asked(queue) -> None:
@@ -76,7 +76,7 @@ def test_recompute_survives_a_requeue(queue) -> None:
     record = dict(_publish(queue, "e" * 64, recompute=True))
     record.update({"claimed_by": "x", "claimed_unix": 1.0, "status": "failed"})
     queue._shape_as_ready_item(record, action_key="e" * 64)
-    assert pool._read_json(queue.item_path(pool.READY, "e" * 64))["recompute"] is True
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, "e" * 64))["recompute"] is True
 
 
 def _hexkey(seed: str) -> str:
@@ -128,7 +128,7 @@ def test_the_window_publishes_its_movers_as_movement_nodes(queue, tmp_path) -> N
     published = [e["action_key"] for e in events if e["event"] == "mover-published"]
     assert published == [_hexkey("mover0"), _hexkey("mover1")]
     for key in published:
-        assert pool._read_json(queue.item_path(pool.READY, key))["recompute"] is True
+        assert pool.record_store.require(queue.records.item(pool.record_store.READY, key))["recompute"] is True
 
 
 def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
@@ -148,5 +148,5 @@ def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
                              "mountpoint": str(tmp_path / "stage")}})
 
     assert [e["event"] for e in events if "egress" in e["event"]] == ["egress-published"]
-    item = pool._read_json(queue.item_path(pool.READY, _hexkey("egress0")))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, _hexkey("egress0")))
     assert item["recompute"] is True

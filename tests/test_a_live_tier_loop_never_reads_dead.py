@@ -103,7 +103,7 @@ class _Loop:
         self.clock = FakeClock()
         monkeypatch.setattr(pool, "_now", self.clock)
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.counts = bench.build_queue(self.queue, self.stage, _shape())
@@ -166,7 +166,7 @@ class _Loop:
         monkeypatch.setattr(stage_release, "prune_stale_mentions", prune)
 
     def age(self) -> float:
-        record = json.loads(self.queue.tier_record_path(bench.TIER).read_text())
+        record = json.loads(self.queue.records.tier_record_path(bench.TIER).read_text())
         return self.clock() - float(record["announced_unix"])
 
     def sample(self) -> None:
@@ -277,7 +277,7 @@ def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
         # The first census unit hangs past the bound: no step completes, so
         # nothing may write the record, and a reader must see a dead loop.
         if "dead_at" not in seen:
-            stamp = json.loads(loop.queue.tier_record_path(
+            stamp = json.loads(loop.queue.records.tier_record_path(
                 bench.TIER).read_text())["announced_unix"]
             while loop.clock() - stamp <= BOUND_S:
                 assert loop.queue._tier_loop_alive(bench.TIER,
@@ -286,7 +286,7 @@ def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
             seen["dead_at"] = loop.clock() - stamp
             seen["alive"] = loop.queue._tier_loop_alive(bench.TIER,
                                                         now=loop.clock())[0]
-            seen["rewritten"] = json.loads(loop.queue.tier_record_path(
+            seen["rewritten"] = json.loads(loop.queue.records.tier_record_path(
                 bench.TIER).read_text())["announced_unix"] != stamp
         return real_prune(*args, **kwargs)
 
