@@ -18046,8 +18046,8 @@ preserved through the counted write.
 The existing unreadable-error classes, same-instance uncaught errors,
 unmeasured finalization, clocks, holder-release observations and preemption
 order are retained. Fairness limits and admission authority keep their existing
-owners and defaults. Later candidate composition and claim-driver reduction
-remain unfinished C01 work.
+owners and defaults. The protocols below complete candidate composition and
+claim-driver reduction without changing those boundaries.
 
 
 ### Candidate qualification and pre-host preparation

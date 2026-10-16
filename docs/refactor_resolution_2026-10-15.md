@@ -40,6 +40,17 @@ its isolated source, not this accumulation. The
 [2026-10-16 follow-up](refactor_completion_followup_2026-10-16.md) records these
 limits; the frozen earlier audits remain unchanged.
 
+C01's completed driver and C28's complete captured-roster migration are now
+assembled at `c7c663e00dda210fd4cb3ac48a45717ed1d6eda1`. The 184-file combined
+consumer qualification passed 4,477 cases with eighteen existing privileged
+identity skips. All 4,495 observed nodes match the source-derived roster, all
+eight architecture cases pass, and all six primary chains are independently
+verified. C01's earlier assembled 479-file union separately passed 7,681 cases
+with nineteen existing skips. The follow-up records both scopes, the retained
+failures, two fixture repairs and shared JSON duplicate-key construction.
+Neither population is a new full-repository qualification. C03, C05, C31 and
+the other remaining requirements continue; the whole brief remains open.
+
 The earlier combined `5ee56bb83bb887749b2d47128566f18002f5911f` run remains
 failed: 14,817 passed, 24 skipped and two architecture checks failed. The
 correction removes a directory helper with no production callers, moves its

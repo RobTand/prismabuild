@@ -171,6 +171,15 @@ cleanup ownership and must be reconciled once. Issue-link check results do not
 qualify execution. The fresh exact metadata, diffs and recommendations are in
 the `open-pr-refresh` evidence directory; no GitHub state or deployment changed.
 
+The 2026-10-16 17:28 UTC refresh again found exactly twenty open PRs, with
+complete pagination. Their heads, bases, review metadata and check metadata are
+unchanged, and all twenty remain linked to this thread. The recommendations
+above remain pending their stated source, qualification and acceptance gates.
+The sixty retained diff, commit-list and file-list artifacts passed their
+recorded hash checks. Fresh metadata and exact-head dispositions are under
+`/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/open-pr-refresh/`.
+This read-only refresh provides no new PR-head execution qualification.
+
 ## Verification and decision trail
 
 Every test and equivalence run used the published PrismaBuild entrypoints at

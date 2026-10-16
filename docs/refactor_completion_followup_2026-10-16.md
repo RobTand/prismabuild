@@ -1,4 +1,4 @@
-# C26 and retirement follow-up
+# Refactor integration follow-up
 
 This records source changes after the complete configured-suite checkpoint
 `8dacf78510df19bdb746f581b5b30a49e630625c`. It does not replace the frozen
@@ -48,11 +48,105 @@ Its assembled closure passed 488 cases, while the wider inherited
 filesystem-dependent fixture failure remains recorded for correction.
 
 C01's wave-4 source `b1c51e3e160b7672f54b40a85c49b5c6afc197e7` separately
-passed its complete 381-file gate, with 6,464 passes and 19 skips. The remaining
-driver waves are still isolated work. Native C05 source `26d0c7532c6f` does not
-qualify: one historical digest fixture calls a removed Core API, and the
-stopped run left 253 files unexecuted. Neither result qualifies the later
-accumulation.
+passed its complete 381-file gate, with 6,464 passes and 19 skips. The completed
+driver and its later assembled qualification are recorded below. Native C05
+source `26d0c7532c6f` remains unqualified: a historical digest fixture called a
+removed Core API, and the stopped run left 253 files unexecuted. Corrected
+native N2 at `2c9886c0ec262a59b46fb54eac07cf5c9ae14f78` passed 1,066 cases with
+18 existing capability skips across 26 files. Its twenty primary chains were
+independently verified. N2 remains an isolated C05 step; the full RecordStore
+and explicit-trust migration continues separately.
+
+## Completed claim driver
+
+C01's completed owned source is `dea353d156b487d2116fdb5e11cfb845c6447bee`.
+The driver has 104 physical lines and 65 AST statements, with fourteen explicit
+queue-phase protocols. Candidate T, canonical sorted M/H acquisition,
+post-H accounting, tier reservation, rename, commit and publication retain
+their original boundaries. `_ClaimReservation` remains the resource owner.
+Its implementation and the four canonical census owners retain their accepted
+ASTs. Publication stays outside the existing uncertain-acquisition catch.
+
+That owned source passed its full 1,003-file suite: 14,723 passed, 23 skipped
+and six separate auxiliary subtests. The skips retain their actual capability,
+NFS and opt-in causes. This is the owned source's result, not a full-suite
+claim for the later accumulation.
+
+Assembly at `ad7497a9bcb1e6e94f5e99b2a07c5ba5af5f2849` preserves the canonical
+retirements and C26. Two review corrections remove unused passive field reads
+and bind two carried-denial fixtures explicitly to their claiming host. Its
+complete 479-file C01, C26 and B14 consumer union has 7,700 unique cases:
+7,681 passed, 19 existing capability skips and six separate auxiliary subtests.
+All eight success chains, source bundles, native populations and skip causes
+were independently verified. Three initially failed cohorts were rerun in
+full after disk-capacity recovery, with identical file and node sets. Their
+original failed records remain preserved; none supplies final pass credit.
+
+Real sibling-held transition histories were added in
+`test_candidate_scan_order.py`, `test_drain_boundary_order.py`,
+`test_a_refused_gpu_row_keeps_the_drain_boundary.py` and
+`test_gang_demand_fence_claims_1579.py`. This does not describe every busy-row
+test. `test_a_gpu_refused_row_is_not_overtaken_by_gpu_rows.py` and
+`test_claim_denials.py` retain their earlier fixtures outside this C01 change.
+
+## Completed roster ownership and integration corrections
+
+C28 migrates all thirteen readers to the standard-library-only `Roster` and
+`Box` owner. Each capture retains its path, exact bytes, digest and document.
+Publication validates new typed fields before consumers rely on them.
+Historical membership, rollback and role-log reads bind actual bytes to each
+qualified generation's manifest. Canonical lookup, recorder ambiguity,
+installer all-match role checks and historical rename unions retain their
+separate policies. Publication's permissive alias-shape policy is unchanged.
+
+The closed roster source `c23c26fbdb910d61432beb0f267c14c4a1ffac38` passed
+2,521 cases. All 2,477 baseline nodes are mapped, with one deliberate
+replacement for the now-refused `boxes: []` publication. All 3,578 existing
+assertions remain. The supervisor review correction at
+`e9817a681df2a39ee38517c035dfb60f502f08af` keeps the previous valid shape when
+typed loop fields are malformed. Three new real consumer controls first
+failed, then passed in its complete 109-file, 2,524-case qualification.
+
+The first combined gate exposed two architecture failures that the isolated
+roster population had omitted. The correction at
+`dc91c4c3b064650ca34319848fe1015accb65ae0` shares ordered JSON object construction
+through the existing digest owner across the roster, Core's strict decoder and
+RAM mount installer. Each keeps its exception class, message and other parsing
+policies. The maintenance generator's internal function is now
+`roster_references`. The duplication baseline and exception registry are
+unchanged. All 417 focused consumer and architecture cases passed. A production
+mutant that discards duplicate keys fails five actual cases across all three
+consumers. The installer now tests an otherwise valid duplicate policy, with
+an exact refusal and no effects, replacing a non-discriminating invalid-schema
+parameter.
+
+Two separate fixture repairs preserve the production behavior. The synthetic
+RAM-window fixture uses the existing supply-reader boundary instead of the
+host's actual free disk space. Its controlled zero-supply reproduction fails
+the original assertion; all nine corrected cases and all 51 assertions remain.
+The promotion-chunk fixture now creates private stage and RAM roots, checks
+actual discovered paths before registration and requires registered ownership.
+Its five original cases and assertions remain. The guarded old fixture fails
+before reaching the live roots. The bounded eleven-file census found no other
+fixture that needed the RAM supply correction.
+
+The final combined behavioral source is
+`c7c663e00dda210fd4cb3ac48a45717ed1d6eda1`. Its complete 184-file consumer union
+passed 4,477 cases with eighteen existing privileged `map_files` identity
+skips. The 4,495 observed nodes exactly match the source-derived roster,
+including the explicit installer-case replacement. All eight architecture
+cases passed. Every one of the six action chains has verified terminal cleanup,
+source, complete logs, request, producer, executable, runtime and CAS result.
+Collection, outcomes and finished teardown agree. This is a scoped combined
+qualification; the final repository suite remains open.
+
+Evidence and rerunnable source, population and receipt audits are under
+`/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/` in
+`c01-root-review/`, `c28-root-review/` and `c01-c28-root-integration/`.
+The earlier failures and mutations remain preserved. Acceptance now requires
+passing current-source architecture evidence whenever a production Python
+unit changes. C03, C05 and C31 continue in isolated worktrees, alongside the
+remaining original requirements.
 
 The final integrated suite, remaining source requirements, native ARM/NFS and
 paired-host drain proofs, compatibility corpus and deployment checks remain
