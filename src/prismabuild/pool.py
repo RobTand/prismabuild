@@ -2687,7 +2687,7 @@ def _holder_token_paths(
     as held and report it instead of treating it as empty.  A holder that
     vanished mid-scan was released and holds nothing, so it reads as an
     empty list with no error.  Tokens are matched exactly as
-    :func:`_glob_visible` matches them.
+    :func:`immutable_files.match_required` matches them.
     """
 
     try:
