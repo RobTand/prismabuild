@@ -194,14 +194,14 @@ def _run_mover(tmp_path: Path, queue: pool.PoolQueue, key: str,
     # the tier loop's next cycle copies it to each consumer that reads the
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
-    return mover, rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+    return mover, rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, key))
 
 
 def _fragment_paths(queue: pool.PoolQueue, key: str, mover: str) -> list[str]:
     """The entries one mover's own fragment vouches for, sorted."""
 
     fragment = rm.validate_fragment(json.loads(rm.fragment_path(
-        queue.root / pool.RESIDENCY, key, mover).read_text()))
+        queue.root / pool.record_store.RESIDENCY, key, mover).read_text()))
     return sorted(rm.parse_residency_map_key(item)[0]
                   for item in fragment["entries"])
 
@@ -387,8 +387,8 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
         **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "handoff", "after": edge}]}}
     assert "placed by the release" in refused(deferred_slot)
 
-    assert not queue.dir(pool.READY).exists() or not [
-        row for row in queue.dir(pool.READY).glob("*.json")
+    assert not queue.records.dir(pool.record_store.READY).exists() or not [
+        row for row in queue.records.dir(pool.record_store.READY).glob("*.json")
         if row.stem != producer], "nothing refused was queued"
     # Control: the placed manifest itself is accepted.
     assert _submit(work, monkeypatch, capsys, "--data-manifest",

@@ -82,10 +82,10 @@ def _key(tag: str) -> str:
 
 def _terminal(queue: pool.PoolQueue, state: str, key: str,
               age_s: float = pool.LEASE_TIMEOUT_S + 60) -> None:
-    path = queue.item_path(state, key)
+    path = queue.records.item_path(state, key)
     path.write_text(json.dumps(
         {"schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
-         "status": "executed" if state == pool.DONE else "failed",
+         "status": "executed" if state == pool.record_store.DONE else "failed",
          "published_unix": T0}) + "\n")
     stamp = time.time() - age_s
     os.utime(path, (stamp, stamp))
@@ -144,7 +144,7 @@ class _Loop:
 
     def __init__(self, tmp_path: Path) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.queue.mint_tier_capacity(TIER, {"stage_gib": 10})
@@ -180,8 +180,8 @@ def _history(loop: _Loop) -> dict[str, str]:
     terminal = _key("consumer-terminal")
     other = _key("consumer-other")
     live = _key("consumer-live")
-    _terminal(queue, pool.DONE, terminal)
-    _terminal(queue, pool.FAILED, other)
+    _terminal(queue, pool.record_store.DONE, terminal)
+    _terminal(queue, pool.record_store.FAILED, other)
     _ready(queue, live)
     return {
         "terminal": terminal, "other": other, "live": live,
@@ -280,7 +280,7 @@ def test_a_terminal_receipt_retires_and_every_pricing_output_is_unchanged(
     outcome = _sweep(plan)
     assert {str(row["key"]) for row in outcome["removed"]} == candidates
     for key in candidates:
-        assert not queue.move_path(key).is_file(), key
+        assert not queue.records.move_path(key).is_file(), key
 
     after_records = _records(queue)
     assert [str(record["action_key"]) for record in after_records] == [
@@ -309,7 +309,7 @@ def test_an_identity_move_and_return_preserves_the_fold(tmp_path: Path) -> None:
 
     plan = _survey(loop.queue)
     _sweep(plan)
-    assert not loop.queue.move_path(keys["r1"]).is_file()
+    assert not loop.queue.records.move_path(keys["r1"]).is_file()
 
     moved = _fresh(loop, IDENTITY_B)["fill_supply"]
     assert moved != before
@@ -330,7 +330,7 @@ def test_equal_and_late_unix_order_is_reproduced_exactly(tmp_path: Path) -> None
     queue = loop.queue
     terminal = _key("terminal")
     live = _key("live")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     _ready(queue, live)
     a = _move(queue, "a", consumer=terminal, unix=T0,
               delivered=300.0, sealed=500, file_side=200.0)
@@ -366,12 +366,12 @@ def test_an_active_replacement_after_retirement_overrides_the_projection(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "replaced", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     plan = _survey(queue)
     _sweep(plan)
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
 
     replacement = {
         "schema": pool.POOL_MOVE_SCHEMA_V1, "consumer_action_key": terminal,
@@ -398,7 +398,7 @@ def test_a_receipt_replaced_after_the_survey_is_not_deleted(tmp_path: Path) -> N
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "raced", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     plan = _survey(queue)
@@ -429,7 +429,7 @@ def test_a_receipt_replaced_after_the_survey_is_not_deleted(tmp_path: Path) -> N
     second = _survey(queue)
     assert _candidates(second) == {key}
     _sweep(second)
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
     assert _outputs(_records(queue), loop.stage) == _outputs(
         [{**replacement, "action_key": key}], loop.stage)
 
@@ -440,7 +440,7 @@ def test_a_live_mover_or_held_token_keeps_the_receipt(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     plain = _move(queue, "plain", consumer=terminal, unix=T0,
                   delivered=300.0, sealed=500, file_side=200.0)
     queued = _move(queue, "queued-retry", consumer=terminal, unix=T0 + 1.0,
@@ -465,15 +465,15 @@ def test_a_missing_or_truncated_checkpoint_fails_closed(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "retired", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
     before = _records(queue)
 
-    checkpoint = queue.mover_retirement_checkpoint_path()
-    state = queue.mover_retirement_state_path()
+    checkpoint = queue.records.mover_retirement_checkpoint_path()
+    state = queue.records.mover_retirement_state_path()
     assert checkpoint.is_file() and state.is_file()
     good_checkpoint = checkpoint.read_bytes()
     good_state = state.read_bytes()
@@ -509,7 +509,7 @@ def test_a_missing_or_truncated_checkpoint_fails_closed(tmp_path: Path) -> None:
     # invent history it cannot see.  (An operator deleting every trace is
     # outside what any checkpoint can detect; the contract keeps each piece
     # until all three are gone together, which no code path does.)
-    for path in queue.mover_archive_dir().glob("*.json"):
+    for path in queue.records.mover_archive_dir().glob("*.json"):
         path.unlink()
     assert _records(queue) == []
 
@@ -521,12 +521,12 @@ def test_a_tampered_checkpoint_projection_or_revision_fails_closed(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "tampered", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
-    checkpoint = queue.mover_retirement_checkpoint_path()
-    state = queue.mover_retirement_state_path()
+    checkpoint = queue.records.mover_retirement_checkpoint_path()
+    state = queue.records.mover_retirement_state_path()
     good_checkpoint = checkpoint.read_bytes()
     good_state = state.read_bytes()
     before = _records(queue)
@@ -563,14 +563,14 @@ def test_a_corrupt_active_receipt_never_falls_back_to_the_archive(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "shadowed", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
     archived = queue.move_record(key)
     assert archived is not None
 
-    active = queue.move_path(key)
+    active = queue.records.move_path(key)
     active.write_text("")                 # present but empty: unknown state
     assert queue.move_record(key) is None
     active.write_text("{not json\n")      # malformed active: raise, as before
@@ -584,7 +584,7 @@ def test_a_named_tier_lock_failure_retains_the_receipt(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _key("bad-tier")
     queue.record_move(key, {
         "schema": pool.POOL_MOVE_SCHEMA_V1, "consumer_action_key": terminal,
@@ -597,12 +597,12 @@ def test_a_named_tier_lock_failure_retains_the_receipt(tmp_path: Path) -> None:
         "pool_identity": IDENTITY_A, "manifest_sha256": MANIFEST,
     })
     assert _candidates(_survey(queue)) == set()
-    info = queue.move_path(key).stat()
+    info = queue.records.move_path(key).stat()
     version = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
                int(info.st_ctime_ns))
     reason = queue.retire_move_receipt(key, expected_version=version)
     assert reason, "a named tier's lock failure must retain the receipt"
-    assert queue.move_path(key).is_file()
+    assert queue.records.move_path(key).is_file()
     assert queue.move_record(key)["tier_id"] == "bad@tier"
 
 
@@ -612,11 +612,11 @@ def test_a_corrupt_archive_fails_direct_lookup_closed(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "archived", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
-    for path in queue.mover_archive_dir().glob("*.json"):
+    for path in queue.records.mover_archive_dir().glob("*.json"):
         path.write_text("{corrupt\n")
     with pytest.raises(pool.PoolContractError):
         queue.move_record(key)
@@ -629,7 +629,7 @@ def test_a_restored_receipt_is_retired_again_without_duplication(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "crash-prefix", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     before_records = _records(queue)
@@ -643,7 +643,7 @@ def test_a_restored_receipt_is_retired_again_without_duplication(
     queue.record_move(key, body)
     assert _candidates(_survey(queue)) == {key}
     _sweep(_survey(queue))
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
     records = _records(queue)
     assert len([r for r in records
                 if r.get("action_key") == key]) == 1
@@ -659,7 +659,7 @@ def test_retirement_preserves_every_output_over_generated_histories(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     live = _key("live")
     _ready(queue, live)
     for index in range(10):
@@ -714,19 +714,19 @@ def test_a_holder_after_the_survey_stops_the_prepare(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "holder-late", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     assert _candidates(_survey(queue)) == {key}
 
     assert queue.tier_ledger(TIER).acquire(key, {"stage_gib": 1})
-    version = _version(queue.move_path(key))
+    version = _version(queue.records.move_path(key))
     outcome = queue.prepare_move_retirement(key, expected_version=version)
     assert isinstance(outcome, str), (
         "a holder acquired after the survey was archived anyway")
-    assert queue.move_path(key).is_file()
-    assert not queue.mover_archive_dir().exists() or not list(
-        queue.mover_archive_dir().glob("*.json")), "the body was archived"
+    assert queue.records.move_path(key).is_file()
+    assert not queue.records.mover_archive_dir().exists() or not list(
+        queue.records.mover_archive_dir().glob("*.json")), "the body was archived"
 
 
 def test_a_holder_after_the_commit_stops_the_unlink(tmp_path: Path) -> None:
@@ -735,11 +735,11 @@ def test_a_holder_after_the_commit_stops_the_unlink(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "holder-restored", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     baseline = queue.begin_mover_retirement_batch()
-    version = _version(queue.move_path(key))
+    version = _version(queue.records.move_path(key))
     entry = queue.prepare_move_retirement(key, expected_version=version)
     assert isinstance(entry, dict)
     _keys, identity, reason = queue.commit_move_retirements(
@@ -750,7 +750,7 @@ def test_a_holder_after_the_commit_stops_the_unlink(tmp_path: Path) -> None:
     why = queue.unlink_retired_move(key, expected_version=version, entry=entry,
                                     commit_identity=identity)
     assert why, "a holder restored after the commit was unlinked anyway"
-    assert queue.move_path(key).is_file()
+    assert queue.records.move_path(key).is_file()
     # The active record still overrides the retired projection exactly, with
     # no duplicate fold input.
     assert queue.read_mover_retirements()[key] == entry["projection"]
@@ -765,12 +765,12 @@ def test_an_unlistable_archive_directory_refuses_to_reset_history(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "unlistable", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
-    queue.mover_retirement_checkpoint_path().unlink()
-    queue.mover_retirement_state_path().unlink()
+    queue.records.mover_retirement_checkpoint_path().unlink()
+    queue.records.mover_retirement_state_path().unlink()
 
     real_scandir = os.scandir
 
@@ -778,14 +778,14 @@ def test_an_unlistable_archive_directory_refuses_to_reset_history(
         # An integer is a directory descriptor: ``shutil.rmtree`` walks by
         # descriptor on current Pythons, and pytest's tmp_path cleanup does it
         # while this wrapper is still installed (#1506, as #1588).
-        if isinstance(path, (str, os.PathLike)) and Path(path) == queue.mover_archive_dir():
+        if isinstance(path, (str, os.PathLike)) and Path(path) == queue.records.mover_archive_dir():
             raise PermissionError("denied")
         return real_scandir(path)
 
     monkeypatch.setattr(os, "scandir", denied)
     with pytest.raises(pool.PoolContractError):
         queue.begin_mover_retirement_batch()
-    assert not queue.mover_retirement_checkpoint_path().exists()
+    assert not queue.records.mover_retirement_checkpoint_path().exists()
 
 
 def test_an_unexpected_archive_entry_refuses_to_reset_history(
@@ -795,17 +795,17 @@ def test_an_unexpected_archive_entry_refuses_to_reset_history(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "unexpected", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
-    version = _version(queue.move_path(key))
+    version = _version(queue.records.move_path(key))
     entry = queue.prepare_move_retirement(key, expected_version=version)
     assert isinstance(entry, dict)       # archived, active file still filed
-    (queue.mover_archive_dir() / "notes.txt").write_text("operator notes\n")
+    (queue.records.mover_archive_dir() / "notes.txt").write_text("operator notes\n")
     with pytest.raises(pool.PoolContractError):
         queue.begin_mover_retirement_batch()
-    assert not queue.mover_retirement_checkpoint_path().exists()
-    assert queue.move_path(key).is_file()
+    assert not queue.records.mover_retirement_checkpoint_path().exists()
+    assert queue.records.move_path(key).is_file()
 
 
 def test_retirement_is_an_explicit_opt_in(tmp_path: Path) -> None:
@@ -818,7 +818,7 @@ def test_retirement_is_an_explicit_opt_in(tmp_path: Path) -> None:
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "opt-in", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     plan = _survey(queue)
@@ -828,7 +828,7 @@ def test_retirement_is_an_explicit_opt_in(tmp_path: Path) -> None:
     assert outcome["removed"] == []
     assert any(pb_gc.MISSING_RETIREMENT_OPT_IN in str(why)
                for _row, why in outcome["skipped"]), outcome["skipped"]
-    assert queue.move_path(key).is_file()
+    assert queue.records.move_path(key).is_file()
     assert _candidates(_survey(queue)) == {key}
 
     assert {str(row["key"]) for row in _sweep(_survey(queue))["removed"]} == {key}
@@ -841,23 +841,23 @@ def test_a_crash_between_checkpoint_and_state_is_repaired_on_retry(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     first = _move(queue, "first", consumer=terminal, unix=T0,
                   delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
 
     second = _move(queue, "second", consumer=terminal, unix=T0 + 1.0,
                    delivered=250.0, sealed=500, file_side=210.0)
-    version = _version(queue.move_path(second))
+    version = _version(queue.records.move_path(second))
     baseline = queue.begin_mover_retirement_batch()
     entry = queue.prepare_move_retirement(second, expected_version=version)
     assert isinstance(entry, dict)
     committed, _identity, reason = queue.commit_move_retirements(
         [entry], expected_baseline=baseline)
     assert reason == "" and committed == [second]
-    checkpoint_path = queue.mover_retirement_checkpoint_path()
-    state_path = queue.mover_retirement_state_path()
-    revision = pool._read_json(checkpoint_path)["revision"]
+    checkpoint_path = queue.records.mover_retirement_checkpoint_path()
+    state_path = queue.records.mover_retirement_state_path()
+    revision = pool.record_store.read_queue_record(checkpoint_path)["revision"]
 
     # The crash the review names: the checkpoint has the entry, the state
     # marker was never written, and the active receipt is still filed.
@@ -865,12 +865,12 @@ def test_a_crash_between_checkpoint_and_state_is_repaired_on_retry(
     assert set(queue.read_mover_retirements()) == {first, second}
 
     assert queue.retire_move_receipt(second, expected_version=version) == ""
-    assert not queue.move_path(second).is_file()
-    state = pool._read_json(state_path)
+    assert not queue.records.move_path(second).is_file()
+    state = pool.record_store.read_queue_record(state_path)
     assert state["revision"] == revision
-    assert state["checkpoint_sha256"] == pool._read_json(
+    assert state["checkpoint_sha256"] == pool.record_store.read_queue_record(
         checkpoint_path)["checkpoint_sha256"]
-    assert pool._read_json(checkpoint_path)["revision"] == revision
+    assert pool.record_store.read_queue_record(checkpoint_path)["revision"] == revision
     assert set(queue.read_mover_retirements()) == {first, second}
 
 
@@ -887,10 +887,10 @@ def test_first_write_archive_orphans_must_be_exact_active_copies(
 
     clean = _Loop(tmp_path / "clean")
     terminal = _key("terminal")
-    _terminal(clean.queue, pool.DONE, terminal)
+    _terminal(clean.queue, pool.record_store.DONE, terminal)
     key = _move(clean.queue, "first-write", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
-    version = _version(clean.queue.move_path(key))
+    version = _version(clean.queue.records.move_path(key))
     baseline = clean.queue.begin_mover_retirement_batch()
     entry = clean.queue.prepare_move_retirement(key, expected_version=version)
     assert isinstance(entry, dict)
@@ -900,17 +900,17 @@ def test_first_write_archive_orphans_must_be_exact_active_copies(
     assert clean.queue.unlink_retired_move(
         key, expected_version=version, entry=entry,
         commit_identity=identity) == ""
-    assert not clean.queue.move_path(key).is_file()
+    assert not clean.queue.records.move_path(key).is_file()
     assert clean.queue.move_record(key) is not None
 
     lost = _Loop(tmp_path / "lost")
     terminal = _key("terminal")
-    _terminal(lost.queue, pool.DONE, terminal)
+    _terminal(lost.queue, pool.record_store.DONE, terminal)
     retired = _move(lost.queue, "retired", consumer=terminal, unix=T0,
                     delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(lost.queue))
-    lost.queue.mover_retirement_checkpoint_path().unlink()
-    lost.queue.mover_retirement_state_path().unlink()
+    lost.queue.records.mover_retirement_checkpoint_path().unlink()
+    lost.queue.records.mover_retirement_state_path().unlink()
     with pytest.raises(pool.PoolContractError):
         lost.queue.read_mover_retirements()
     assert _candidates(_survey(lost.queue)) == set()
@@ -919,13 +919,13 @@ def test_first_write_archive_orphans_must_be_exact_active_copies(
 
     later = _move(lost.queue, "later", consumer=terminal, unix=T0 + 1.0,
                   delivered=250.0, sealed=500, file_side=210.0)
-    version = _version(lost.queue.move_path(later))
+    version = _version(lost.queue.records.move_path(later))
     entry = lost.queue.prepare_move_retirement(later, expected_version=version)
     assert isinstance(entry, dict)
     with pytest.raises(pool.PoolContractError):
         lost.queue.begin_mover_retirement_batch()
-    assert lost.queue.move_path(later).is_file()
-    assert not lost.queue.mover_retirement_checkpoint_path().exists()
+    assert lost.queue.records.move_path(later).is_file()
+    assert not lost.queue.records.mover_retirement_checkpoint_path().exists()
 
 
 def test_a_read_during_preparation_sees_an_exact_empty_checkpoint(
@@ -942,7 +942,7 @@ def test_a_read_during_preparation_sees_an_exact_empty_checkpoint(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     keys = [_move(queue, f"window-{index}", consumer=terminal,
                   unix=T0 + index, delivered=300.0, sealed=500,
                   file_side=200.0) for index in range(3)]
@@ -950,11 +950,11 @@ def test_a_read_during_preparation_sees_an_exact_empty_checkpoint(
     assert queue.read_mover_retirements() == {}
 
     prepared = [queue.prepare_move_retirement(
-        key, expected_version=_version(queue.move_path(key))) for key in keys]
+        key, expected_version=_version(queue.records.move_path(key))) for key in keys]
     assert all(isinstance(entry, dict) for entry in prepared)
     assert queue.read_mover_retirements() == {}
     _fresh(loop)                       # a reader during the prepare window
-    assert queue.move_path(keys[0]).is_file()
+    assert queue.records.move_path(keys[0]).is_file()
 
     committed, identity, reason = queue.commit_move_retirements(
         prepared, expected_baseline=baseline)
@@ -962,7 +962,7 @@ def test_a_read_during_preparation_sees_an_exact_empty_checkpoint(
     assert identity is not None
     for key, entry in zip(keys, prepared):
         assert queue.unlink_retired_move(
-            key, expected_version=_version(queue.move_path(key)), entry=entry,
+            key, expected_version=_version(queue.records.move_path(key)), entry=entry,
             commit_identity=identity) == ""
     assert set(queue.read_mover_retirements()) == set(keys)
 
@@ -985,11 +985,11 @@ def test_a_steady_reading_cycle_reuses_the_validated_checkpoint(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "cached", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
 
     calls = {"projection": 0, "checkpoint": 0}
     real_projection = pool._projection_sha256
@@ -1021,7 +1021,7 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     keys = [_move(queue, f"batched-{index}", consumer=terminal,
                   unix=T0 + index, delivered=float(100 + index % 200),
                   sealed=500, file_side=float(90 + index % 150))
@@ -1043,9 +1043,9 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     assert {str(row["key"]) for row in outcome["removed"]} == set(keys)
     # One initialization before the first archive plus one commit for the
     # whole batch: two checkpoint writes and two markers, not 6,000.
-    assert written.count(pool.MOVERS_RETIREMENT_CHECKPOINT) == 2, written
-    assert written.count(pool.MOVERS_RETIREMENT_STATE) == 2, written
-    checkpoint = pool._read_json(queue.mover_retirement_checkpoint_path())
+    assert written.count(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT) == 2, written
+    assert written.count(pool.record_store.MOVERS_RETIREMENT_STATE) == 2, written
+    checkpoint = pool.record_store.read_queue_record(queue.records.mover_retirement_checkpoint_path())
     assert checkpoint["revision"] == 1
     assert set(checkpoint["entries"]) == set(keys)
     assert set(queue.read_mover_retirements()) == set(keys)
@@ -1066,7 +1066,7 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "warm-tamper", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(queue))
@@ -1076,7 +1076,7 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
         kept_reads, '_object_filesystem_type',
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: None)
-    checkpoint = queue.mover_retirement_checkpoint_path()
+    checkpoint = queue.records.mover_retirement_checkpoint_path()
     body = json.loads(checkpoint.read_text())
     body["entries"][key]["projection"]["disk_pacing"][
         "mean_pool_read_mb_s"] += 1.0
@@ -1100,11 +1100,11 @@ def test_a_stale_batch_never_overwrites_a_newer_retirement(
     loop = _Loop(tmp_path)
     queue = loop.queue
     terminal = _key("terminal")
-    _terminal(queue, pool.DONE, terminal)
+    _terminal(queue, pool.record_store.DONE, terminal)
     key = _move(queue, "raced", consumer=terminal, unix=T0,
                 delivered=300.0, sealed=500, file_side=200.0)
     baseline = queue.begin_mover_retirement_batch()
-    version_a = _version(queue.move_path(key))
+    version_a = _version(queue.records.move_path(key))
     entry_a = queue.prepare_move_retirement(key, expected_version=version_a)
     assert isinstance(entry_a, dict)
 
@@ -1120,7 +1120,7 @@ def test_a_stale_batch_never_overwrites_a_newer_retirement(
         "pool_identity": IDENTITY_A, "manifest_sha256": MANIFEST,
     }
     queue.record_move(key, replacement)
-    version_b = _version(queue.move_path(key))
+    version_b = _version(queue.records.move_path(key))
     entry_b = queue.prepare_move_retirement(key, expected_version=version_b)
     assert isinstance(entry_b, dict)
     keys, identity, reason = queue.commit_move_retirements(
@@ -1129,14 +1129,14 @@ def test_a_stale_batch_never_overwrites_a_newer_retirement(
     assert queue.unlink_retired_move(
         key, expected_version=version_b, entry=entry_b,
         commit_identity=identity) == ""
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
 
     keys, identity, reason = queue.commit_move_retirements(
         [entry_a], expected_baseline=baseline)
     assert keys == [] and identity is None and reason, (
         "a stale batch overwrote a newer retirement")
     assert queue.read_mover_retirements()[key]["mb_per_s_file_side"] == 275.0
-    assert not queue.move_path(key).is_file()
+    assert not queue.records.move_path(key).is_file()
 
 
 def test_a_retirement_cache_never_merges_another_queue(tmp_path: Path) -> None:
@@ -1150,7 +1150,7 @@ def test_a_retirement_cache_never_merges_another_queue(tmp_path: Path) -> None:
     for loop, label, key in ((first, "first", first_key),
                              (second, "second", second_key)):
         terminal = _key(f"terminal-{label}")
-        _terminal(loop.queue, pool.DONE, terminal)
+        _terminal(loop.queue, pool.record_store.DONE, terminal)
         _move(loop.queue, label, consumer=terminal, unix=T0,
               delivered=300.0, sealed=500, file_side=200.0)
     _sweep(_survey(first.queue))
@@ -1158,10 +1158,10 @@ def test_a_retirement_cache_never_merges_another_queue(tmp_path: Path) -> None:
     cache = tier_loop.ReceiptCache()
     # Neither read names a queue: the cache derives the root from the
     # directories each time, so the second one must not keep the first.
-    rows_first = cache.read([first.queue.root / pool.PREWARM,
-                             first.queue.root / pool.MOVERS])
-    rows_second = cache.read([second.queue.root / pool.PREWARM,
-                              second.queue.root / pool.MOVERS])
+    rows_first = cache.read([first.queue.root / pool.record_store.PREWARM,
+                             first.queue.root / pool.record_store.MOVERS])
+    rows_second = cache.read([second.queue.root / pool.record_store.PREWARM,
+                              second.queue.root / pool.record_store.MOVERS])
     assert any(record.get("action_key") == first_key for record in rows_first)
     assert not any(record.get("action_key") == first_key
                    for record in rows_second), rows_second

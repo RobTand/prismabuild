@@ -510,10 +510,10 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
     """The record beside the lock, and what a reader can check of it."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
-    path = queue.stage_ownership_holder_path(stage)
-    assert path.parent == queue.root / pool.STAGE_OWNERSHIP_HOLDERS
+    path = queue.records.stage_ownership_holder_path(stage)
+    assert path.parent == queue.root / pool.record_store.STAGE_OWNERSHIP_HOLDERS
     assert queue.stage_ownership_holder(stage) == {
         "recorded": False, "live": None, "why": "no holder record"}
 
