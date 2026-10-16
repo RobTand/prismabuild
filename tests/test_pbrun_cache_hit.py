@@ -66,7 +66,7 @@ def test_a_key_with_no_done_record_gets_a_cache_hit_record(
 ) -> None:
     _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64})
     filed = json.loads(
-        (tmp_path / "queue" / pool.DONE / f"{KEY}.json").read_text())
+        (tmp_path / "queue" / pool.record_store.DONE / f"{KEY}.json").read_text())
     assert filed["status"] == "cache_hit"
     assert filed["transport"] == "slurm"
     assert filed["attempts"] == 0
@@ -74,13 +74,13 @@ def test_a_key_with_no_done_record_gets_a_cache_hit_record(
     assert filed["resources"] == {"cpu": 2, "mem_gb": 8}
     assert filed["detail"]["receipt_published"] is True
     assert filed["detail"]["result_digest"] == "d" * 64
-    assert not (tmp_path / "queue" / pool.FAILED).exists()
+    assert not (tmp_path / "queue" / pool.record_store.FAILED).exists()
 
 
 def test_the_runs_own_done_record_is_left_as_it_was(
     monkeypatch, tmp_path: Path
 ) -> None:
-    done = tmp_path / "queue" / pool.DONE
+    done = tmp_path / "queue" / pool.record_store.DONE
     done.mkdir(parents=True)
     original = json.dumps({"status": "executed", "action_key": KEY,
                            "detail": {"slurm": {"job_id": "41"}}})

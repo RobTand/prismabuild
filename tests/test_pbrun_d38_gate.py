@@ -913,7 +913,7 @@ def test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed(
     d38_config.write_text('{"d38_enforce": true}', encoding="utf-8")
     events = de.dr.release_tick(queue)
     assert de._released(events) == [], events
-    assert list(queue.dir(pool.READY).glob("*.json")) == [], (
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == [], (
         "the consumer was published without D38 evidence")
     # The control: the same pending record releases once the gate is off, so the
     # gate, and nothing else, held it back.

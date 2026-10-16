@@ -80,7 +80,7 @@ def test_pool_item_carries_the_same_container_owner(tmp_path: Path) -> None:
         worker_script="/worker.py",
         container_owner=owner,
     )
-    item = json.loads(queue.item_path(pool.READY, "b" * 64).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, "b" * 64).read_text())
     assert item["container_owner"] == owner
 
 

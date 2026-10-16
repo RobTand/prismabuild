@@ -59,7 +59,7 @@ def _sealed_request(tmp_path: Path, key: str) -> dict:
 
 
 def _item(tmp_path: Path, key: str) -> dict:
-    path = tmp_path / "pb-queue" / pool.READY / f"{key}.json"
+    path = tmp_path / "pb-queue" / pool.record_store.READY / f"{key}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -113,7 +113,7 @@ def test_no_offers_at_all_refuses_an_image_declaration_fail_closed(
                    "--container-image", REF_A)
     assert REF_A in str(exc.value)
     assert "no worker offers on record" in str(exc.value)
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_a_mutable_tag_is_an_argument_error(tmp_path, monkeypatch, capsys):
@@ -123,7 +123,7 @@ def test_a_mutable_tag_is_an_argument_error(tmp_path, monkeypatch, capsys):
                    "--container-image", "stage-a:latest")
     assert exc.value.code == 2
     assert "immutable" in capsys.readouterr().err
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_the_slurm_lane_cannot_declare_an_image(tmp_path, monkeypatch, capsys):
@@ -290,7 +290,7 @@ def test_a_submission_without_images_keeps_its_legacy_shape(tmp_path, monkeypatc
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
-    key = json.loads(next((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    key = json.loads(next((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
                      .read_text())["action_key"]
     request = _sealed_request(tmp_path, key)
     assert "container_images" not in request["params"]
@@ -299,7 +299,7 @@ def test_a_submission_without_images_keeps_its_legacy_shape(tmp_path, monkeypatc
     assert CAPABILITY not in item["tags"]
     # Re-running the identical submission answers with the same key.
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
-    again = json.loads(next((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    again = json.loads(next((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
                        .read_text())["action_key"]
     assert again == key
 
@@ -345,7 +345,7 @@ def test_a_producer_submitting_a_sealed_action_keeps_the_requirement(tmp_path):
         queue_root=tmp_path / "pb-queue",
     )
     item = json.loads(
-        (tmp_path / "pb-queue" / pool.READY / f"{'c' * 64}.json").read_text())
+        (tmp_path / "pb-queue" / pool.record_store.READY / f"{'c' * 64}.json").read_text())
     assert item["container_images"] == [REF_A]
     assert CAPABILITY in item["tags"]
 
