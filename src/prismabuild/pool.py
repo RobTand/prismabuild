@@ -2710,7 +2710,7 @@ def held_names_visible(ledger, key: str) -> set[str]:
     tolerant scans: a key that holds nothing holds nothing.  Every other
     listing failure -- an unreadable holder directory above all -- raises,
     because an authoritative mutation cannot tell "holds nothing" from
-    "cannot see it holding" and must retain (:func:`_glob_visible` is the
+    "cannot see it holding" and must retain (:func:`immutable_files.match_required` is the
     accepted #742 census semantics this reuses; ``Path.glob`` hides
     ``EACCES`` as an empty listing, which is the trap this exists for).
     """
