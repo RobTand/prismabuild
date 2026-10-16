@@ -53,7 +53,7 @@ def _payload() -> bytes:
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -95,7 +95,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -114,7 +114,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     composed = residency_map.compose(fragments)
     entries = composed["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -124,7 +124,7 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
 def _sidecar_identity(queue: pool.PoolQueue, consumer: str,
                       mover: str) -> dict:
     sidecar = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
     assert isinstance(sidecar, dict)
     entries = sidecar["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -140,7 +140,7 @@ def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
     first = _staged_path(queue, CONSUMER_A)
     before = os.stat(first)
     sidecar_a = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, CONSUMER_A, MOVER_A)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A, MOVER_A)
     assert isinstance(sidecar_a, dict)
 
     # A second independent consumer stages the identical bytes.
@@ -196,7 +196,7 @@ def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -409,7 +409,7 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
 
     # Hold back the proof: the bytes stay, the vouch goes away, and a
     # background thread re-files it after 4 s -- past the old interval.
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     saved_entries = dict(
         residency_map.compose(
             residency_map.read_fragments(residency, CONSUMER_A))["entries"])
@@ -478,7 +478,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
     before = os.stat(staged)
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     # Unpublish the bytes without touching them, then fake an in-flight
     # sibling copy that never finishes.
     (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
@@ -512,7 +512,7 @@ def test_unreadable_proof_state_refuses(tmp_path: Path) -> None:
     staged = _staged_path(queue, CONSUMER_A)
     before = os.stat(staged)
 
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     tainted = residency / CONSUMER_C / f"{MOVER_C}.json"
     tainted.parent.mkdir(parents=True, exist_ok=True)
     tainted.write_text("{not-json")
