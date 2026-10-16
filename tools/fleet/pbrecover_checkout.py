@@ -26,7 +26,11 @@ class _JSONParser(argparse.ArgumentParser):
 
 def _pbrecover_checkout_read(path: Path):
     return pb.digest_primitives.decode_strict_json(
-        pb.immutable_files.read_stable_file(path.absolute(), where='checkout recovery CLI JSON', max_bytes=recovery.MAX_JSON_BYTES),
+        pb.immutable_files.read_stable_file(
+            path.absolute(),
+            where='checkout recovery CLI JSON',
+            max_bytes=recovery.MAX_JSON_BYTES,
+        ),
         where='checkout recovery CLI JSON',
     )
 

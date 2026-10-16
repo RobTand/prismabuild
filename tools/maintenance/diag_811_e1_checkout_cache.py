@@ -428,7 +428,10 @@ def verify_entry(
                     "idx_sha256": cached["idx_sha256"]}
         memo.pop(str(entry), None)
         manifest = core.digest_primitives.decode_strict_json(
-            core.immutable_files.read_stable_file(entry / "manifest.json", where="entry publication manifest"),
+            core.immutable_files.read_stable_file(
+                entry / "manifest.json",
+                where="entry publication manifest",
+            ),
             where="entry publication manifest",
         )
         if not isinstance(manifest, dict):

@@ -248,7 +248,7 @@ def test_peer_original_price_expiry_during_real_view_read_ends_yield(fleet, monk
             assert 0 <= fleet.clock[0] - fleet.profiles[SLOW][0]["measured_unix"] <= max_age
         return value
 
-    monkeypatch.setattr(pool.record_store, '_read_json', delayed_peer_ledger_observation)
+    monkeypatch.setattr(pool.record_store, "_read_json", delayed_peer_ledger_observation)
     claimed = fleet.claim(SLOW)
     assert reads == [str(peer_map)], "fixture did not reach the genuine peer view read"
     assert fleet.declaration["max_profile_age_s"] == max_age

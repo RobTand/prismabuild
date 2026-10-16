@@ -1096,7 +1096,9 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pb.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
+                      for path in pb.immutable_files.scan_optional(
+                          queue.records.dir(pool.record_store.CLAIMED),
+                      ))
     except OSError as exc:
         return paths, [f"claimed: {exc}"], own_paths
     records: list[tuple[str, dict[str, object]]] = []
@@ -1950,7 +1952,9 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pb.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
+                      for path in pb.immutable_files.scan_optional(
+                          queue.records.dir(pool.record_store.CLAIMED),
+                      ))
     except OSError as exc:
         return paths, [f"claimed: {exc}"]
     records: list[tuple[str, dict[str, object]]] = []
@@ -3037,7 +3041,9 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         nonlocal retained_reason
         try:
             current = residency_map.validate_fragment(
-                json.loads(pb.immutable_files.read_stable_file(fragment_path, where="stale-mention fragment")),
+                json.loads(
+                    pb.immutable_files.read_stable_file(fragment_path, where="stale-mention fragment"),
+                ),
             )
         except (OSError, ValueError, pb.PrismaBuildError) as exc:
             errors.append(f"ownership uncertain: {exc}")
@@ -3545,7 +3551,10 @@ def _metadata_absent(path: Path) -> bool:
 def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     """Read a regular, identity-bound queue outcome; filenames are not proof."""
     record = json.loads(
-        pb.immutable_files.read_stable_file(queue.records.item_path(state, key), where="dead-owner outcome"),
+        pb.immutable_files.read_stable_file(
+            queue.records.item_path(state, key),
+            where="dead-owner outcome",
+        ),
     )
     if (not isinstance(record, dict)
             or record.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1
@@ -3601,7 +3610,10 @@ def _partial_done_receipt_matches(queue, consumer: str, mover: str,
     A complete or unknown copy is outside this narrow recovery contract.
     """
     record = json.loads(
-        pb.immutable_files.read_stable_file(queue.records.move_path(mover), where="partial DONE move receipt"),
+        pb.immutable_files.read_stable_file(
+            queue.records.move_path(mover),
+            where="partial DONE move receipt",
+        ),
     )
     if not isinstance(record, dict):
         raise pool.PoolContractError("partial DONE receipt is not an object")
@@ -4124,7 +4136,9 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                         if not done and not _metadata_absent(queue.records.move_path(mover)):
                             continue
                         current = residency_map.validate_fragment(
-                            json.loads(pb.immutable_files.read_stable_file(residency_map.fragment_path(root, consumer, mover), where="dead-owner fragment")),
+                            json.loads(
+                                pb.immutable_files.read_stable_file(residency_map.fragment_path(root, consumer, mover), where="dead-owner fragment"),
+                            ),
                         )
                         if current != observed:
                             continue  # adoption/republication won discovery

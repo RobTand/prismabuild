@@ -142,7 +142,7 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
         SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"status": "submitted", "action_key": next(keys)})))
     monkeypatch.setattr(module.pool, "PoolQueue", lambda path:
         SimpleNamespace(records=module.pool.record_store.RecordStore(tmp_path / "queue")))
-    monkeypatch.setattr(module.pool.record_store, '_read_json', lambda path: {})
+    monkeypatch.setattr(module.pool.record_store, "_read_json", lambda path: {})
     monkeypatch.setattr(module._gang, "publish_group", lambda *args, **kwargs:
         {"skew_s": 1.25, "priority": 7})
 
