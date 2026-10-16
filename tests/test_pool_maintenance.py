@@ -25,12 +25,12 @@ def test_maintenance_after_claim_returns_capacity_without_burning_attempt(tmp_pa
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
     assert queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True) is None
-    ready = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert ready['attempts'] == 0
     assert 'claimed_by' not in ready
     assert queue.ledger().held() == {}
-    assert not queue.lease_path(KEY).exists()
-    assert not list((queue.root / pool.ATTEMPTS).rglob('*.json'))
+    assert not queue.records.lease_path(KEY).exists()
+    assert not list((queue.root / pool.record_store.ATTEMPTS).rglob('*.json'))
 
 
 def test_maintenance_deferral_never_overwrites_a_later_submission(tmp_path, monkeypatch):
@@ -41,7 +41,7 @@ def test_maintenance_deferral_never_overwrites_a_later_submission(tmp_path, monk
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
     assert queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True) is None
-    ready = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert ready['priority'] == 9 and ready['attempts'] == 0
     assert queue.ledger().held() == {}
 
@@ -54,7 +54,7 @@ def test_ordinary_broker_failure_is_not_misreported_as_maintenance(tmp_path, mon
     monkeypatch.setattr(queue, 'execute', execute)
     with pytest.raises(OSError, match='disconnected'):
         queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True)
-    assert queue.item_path(pool.FAILED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY).exists()
 
 
 def test_same_commit_new_generation_exits_before_any_queue_access(tmp_path, monkeypatch):

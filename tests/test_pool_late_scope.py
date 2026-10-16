@@ -12,8 +12,8 @@ def _replaced_scope(scoped, monkeypatch):
     queue._start_resource_scope(first)
     # Reproduce an old runtime/operator handoff that discarded the claim
     # without releasing the predecessor's separately owned broker scope.
-    queue.item_path(pool.CLAIMED, key).unlink()
-    queue.lease_path(key).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
+    queue.records.lease_path(key).unlink()
     queue.ledger().release(key)
     queue.publish(action_key=key, cas_root=first['cas_root'],
                   checkout_root=first['checkout_root'], worker_script=first['worker_script'],
@@ -49,7 +49,7 @@ def _replaced_scope(scoped, monkeypatch):
     resource_scope._atomic_json(telemetry.with_suffix('.termination.json'),
                                 {'scope_unit': newer['resource_scope']['scope_id']})
     saved = {path: path.read_bytes() for path in (
-        queue.item_path(pool.CLAIMED, key), queue.lease_path(key),
+        queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key),
         telemetry, telemetry.with_suffix('.termination.json'), authority,
     )}
     return queue, first, newer, observed, saved
@@ -60,9 +60,9 @@ def _assert_successor_untouched(queue, newer, observed, saved):
     assert queue.ledger().held() == newer['resources']
     assert not any(nonce == newer['resource_scope']['nonce'] for nonce, _ in observed)
     key = newer['action_key']
-    assert not queue.item_path(pool.DONE, key).exists()
-    assert not queue.item_path(pool.FAILED, key).exists()
-    assert not queue.item_path(pool.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_late_finisher_releases_its_scope_without_touching_the_live_attempt(scoped, monkeypatch):
@@ -78,7 +78,7 @@ def test_late_finisher_releases_its_scope_without_touching_the_live_attempt(scop
     assert archived['status'] == 'executed'
     cleanup = archived['detail']['resource_scope_cleanup']
     assert cleanup['complete'] is True and cleanup['nonce'] == old
-    assert not list(queue.dir(pool.CLAIMED).glob('*' + pool.LATE_FINISH_SUFFIX))
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX))
 
 
 @pytest.mark.parametrize('operation', ['stop', 'release'])
@@ -103,7 +103,7 @@ def test_late_scope_refusal_retains_authority_and_reaper_retries_after_finisher_
     assert pending['container_cleanup_pending']['complete'] is False
     assert 'broker operation unavailable' in pending['container_cleanup_pending']['error']
     assert pending['container_cleanup_attempts'] == 1
-    assert not queue.attempt_path(first, 1).exists()
+    assert not queue.records.attempt_path(first, 1).exists()
     _assert_successor_untouched(queue, newer, observed, saved)
 
     # A new queue instance represents the surviving worker's later sweep;
@@ -114,7 +114,7 @@ def test_late_scope_refusal_retains_authority_and_reaper_retries_after_finisher_
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', request)
     assert recovered.sweep_finish_tombstones(grace_s=-1) == [first['action_key']]
     assert not pending_path.exists()
-    result = json.loads(queue.attempt_path(first, 1).read_text())
+    result = json.loads(queue.records.attempt_path(first, 1).read_text())
     assert result['status'] == 'executed' and result['detail']['returncode'] == 0
     assert result['detail']['resource_scope_cleanup']['complete'] is True
     _assert_successor_untouched(queue, newer, observed, saved)
@@ -145,9 +145,9 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
     key = first["action_key"]
-    claim_path = queue.item_path(pool.CLAIMED, key)
-    lease_path = queue.lease_path(key)
-    read = pool._read_json
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    lease_path = queue.records.lease_path(key)
+    read = pool.record_store.read_queue_record
     request = resource_scope.ResourceScope._request
 
     if phase == "after_create":
@@ -169,7 +169,7 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
         return reply
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_read_json",
+        patch.setattr(pool.record_store, '_read_json',
                       lambda path: dict(first) if path == claim_path else read(path))
         patch.setattr(resource_scope.ResourceScope, "_request", broker)
         with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
@@ -198,8 +198,8 @@ def test_stale_create_recovery_preserves_successor_before_lease_refusal(
     if reused_owner:
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    claim_path = queue.item_path(pool.CLAIMED, first["action_key"])
-    read = pool._read_json
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, first["action_key"])
+    read = pool.record_store.read_queue_record
     request = resource_scope.ResourceScope._request
 
     def broker(scope, op, **extra):
@@ -208,7 +208,7 @@ def test_stale_create_recovery_preserves_successor_before_lease_refusal(
 
     monkeypatch.setattr(resource_scope.ResourceScope, "_request", broker)
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_read_json",
+        patch.setattr(pool.record_store, '_read_json',
                       lambda path: dict(first) if path == claim_path else read(path))
         result = queue.cleanup_action_containers(first, scope_only=True)
     assert result["complete"] is False
@@ -229,12 +229,12 @@ def test_cleanup_preserves_an_existing_immutable_attempt_and_retains_its_proof(s
     queue, first, newer, observed, saved = _replaced_scope(scoped, monkeypatch)
     queue.archive_attempt(first, attempt=1, status='lease_lost',
                           disposition='requeued', detail={'reason': 'old reaper verdict'})
-    path = queue.attempt_path(first, 1)
+    path = queue.records.attempt_path(first, 1)
     original = path.read_bytes()
     assert queue.finish(first['action_key'], status='executed',
                         detail={'returncode': 0}, claim_snapshot=first) == path
     assert path.read_bytes() == original
-    evidence = list(queue.superseded_dir().glob('*.late-finish.json'))
+    evidence = list(queue.records.superseded_dir().glob('*.late-finish.json'))
     assert len(evidence) == 1
     cleanup = json.loads(evidence[0].read_text())['resource_scope_cleanup']
     assert cleanup['complete'] and cleanup['nonce'] == first['resource_scope']['nonce']
@@ -255,7 +255,7 @@ def test_crash_before_stop_leaves_a_record_only_the_owner_host_can_recover(scope
         with pytest.raises(ProcessDied):
             queue.finish(first['action_key'], status='executed',
                          detail={'returncode': 0}, claim_snapshot=first)
-    paths = list(queue.dir(pool.CLAIMED).glob('*' + pool.LATE_FINISH_SUFFIX))
+    paths = list(queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX))
     assert len(paths) == 1
     before = paths[0].read_bytes()
     with monkeypatch.context() as patch:
@@ -281,7 +281,7 @@ def test_pending_late_cleanup_blocks_a_new_claim_without_changing_its_ready_byte
                            detail={'returncode': 0}, claim_snapshot=first)
     queue.finish(newer['action_key'], status='failed', detail={'returncode': 1},
                  claim_snapshot=newer)
-    ready_path = queue.item_path(pool.READY, newer['action_key'])
+    ready_path = queue.records.item_path(pool.record_store.READY, newer['action_key'])
     ready = ready_path.read_bytes()
     assert queue.claim(owner='third-attempt', capacity=newer['resources']) is None
     assert ready_path.read_bytes() == ready and pending.exists()
@@ -332,7 +332,7 @@ def test_repeated_late_finish_uses_pending_authority_after_successor_concludes(s
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', request)
     path = queue.finish(first['action_key'], status='executed',
                         detail={'returncode': 0}, claim_snapshot=first)
-    assert path == queue.attempt_path(first, 1) and not pending.exists()
+    assert path == queue.records.attempt_path(first, 1) and not pending.exists()
     assert terminal.read_bytes() == original
     assert json.loads(path.read_text())['detail']['resource_scope_cleanup']['complete']
 
@@ -349,14 +349,14 @@ def test_same_host_stale_claim_cannot_clean_up_or_replace_successor(
         # timestamp must distinguish them even when owner and host agree.
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    read = pool._read_json
-    claim_path = queue.item_path(pool.CLAIMED, key)
+    read = pool.record_store.read_queue_record
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
 
     def stale_claim(path):
         return dict(first) if path == claim_path else read(path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_read_json", stale_claim)
+        patch.setattr(pool.record_store, '_read_json', stale_claim)
         with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
             queue.finish(key, status=status, detail={"returncode": 0 if status == "executed" else 7},
                          claim_snapshot=first)
@@ -374,14 +374,14 @@ def test_stale_heartbeat_cannot_erase_successor_lease_evidence(
     if reused_owner:
         first["claimed_by"] = newer["claimed_by"]
         first["published_unix"] = newer["published_unix"]
-    read = pool._read_json
-    claim_path = queue.item_path(pool.CLAIMED, key)
+    read = pool.record_store.read_queue_record
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
 
     def stale_claim(path):
         return dict(first) if path == claim_path else read(path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_read_json", stale_claim)
+        patch.setattr(pool.record_store, '_read_json', stale_claim)
         with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
             queue.write_lease(
                 key, owner=first["claimed_by"], child_pid=123456,

@@ -26,17 +26,17 @@ def _conflicting_claim(queue, tmp_path):
         max_attempts=2,
         retry_safe=True,
     )
-    queue.item_path(pool.READY, KEY).replace(queue.item_path(pool.CLAIMED, KEY))
+    queue.records.item_path(pool.record_store.READY, KEY).replace(queue.records.item_path(pool.record_store.CLAIMED, KEY))
     ledger = _reservation(queue)
-    claim = pool._read_json(queue.item_path(pool.CLAIMED, KEY))
+    claim = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, KEY))
     claim.update({
         "claimed_by": "owner",
         "claimed_unix": pool._now() - 10_000,
         "claimed_host": WRONG,
         "reserved_on": WRONG,
     })
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, KEY), claim)
-    pool._write_json_atomic(queue.lease_path(KEY), {
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), claim)
+    pool._write_json_atomic(queue.records.lease_path(KEY), {
         "action_key": KEY,
         "owner": "owner",
         "host": WRONG,
@@ -47,9 +47,9 @@ def _conflicting_claim(queue, tmp_path):
 
 def test_widowed_lease_retains_conflicting_host_evidence(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = _reservation(queue)
-    pool._write_json_atomic(queue.lease_path(KEY), {
+    pool._write_json_atomic(queue.records.lease_path(KEY), {
         "action_key": KEY,
         "host": WRONG,
         "heartbeat_unix": pool._now() - 10_000,
@@ -58,7 +58,7 @@ def test_widowed_lease_retains_conflicting_host_evidence(tmp_path):
     swept = queue.sweep_widowed_leases(timeout_s=60)
     assert {
         "swept": swept,
-        "lease_exists": queue.lease_path(KEY).exists(),
+        "lease_exists": queue.records.lease_path(KEY).exists(),
         "held": ledger.held(),
     } == {
         "swept": [],
@@ -74,9 +74,9 @@ def test_stale_claim_retains_conflicting_host_evidence(tmp_path):
     reaped = queue.reap_stale(timeout_s=60)
     assert {
         "reaped": reaped,
-        "claimed_exists": queue.item_path(pool.CLAIMED, KEY).exists(),
-        "ready_exists": queue.item_path(pool.READY, KEY).exists(),
-        "lease_exists": queue.lease_path(KEY).exists(),
+        "claimed_exists": queue.records.item_path(pool.record_store.CLAIMED, KEY).exists(),
+        "ready_exists": queue.records.item_path(pool.record_store.READY, KEY).exists(),
+        "lease_exists": queue.records.lease_path(KEY).exists(),
         "held": ledger.held(),
     } == {
         "reaped": [],
@@ -95,11 +95,11 @@ def test_finish_retains_a_claim_when_its_host_contradicts_the_ledger(tmp_path):
         queue.finish(KEY, status="executed", detail={"returncode": 0},
                      claim_snapshot=claim)
 
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
-    assert queue.lease_path(KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert queue.records.lease_path(KEY).exists()
     assert ledger.held() == {"cpu": 1}
-    assert not queue.item_path(pool.DONE, KEY).exists()
-    assert not queue.item_path(pool.FAILED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY).exists()
 
 
 def test_unstarted_deferral_retains_contradictory_ownership(tmp_path):
@@ -109,10 +109,10 @@ def test_unstarted_deferral_retains_contradictory_ownership(tmp_path):
     with pytest.raises(pool.AmbiguousClaimHolder, match="contradictory claim holder"):
         queue._defer_unstarted_claim(claim)
 
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
-    assert queue.lease_path(KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert queue.records.lease_path(KEY).exists()
     assert ledger.held() == {"cpu": 1}
-    assert not queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 def test_withdraw_refuses_before_recording_a_contradictory_holder(tmp_path):
@@ -122,16 +122,16 @@ def test_withdraw_refuses_before_recording_a_contradictory_holder(tmp_path):
     with pytest.raises(pool.AmbiguousClaimHolder, match="contradictory claim holder"):
         queue.withdraw(KEY, by="operator", reason="test", signal_child=False)
 
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
-    assert queue.lease_path(KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert queue.records.lease_path(KEY).exists()
     assert ledger.held() == {"cpu": 1}
-    assert not queue.item_path(pool.WITHDRAWN, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY).exists()
     assert queue.withdrawal_decisions(KEY) == []
 
 
 def test_recorded_host_remains_the_no_ledger_legacy_fallback(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     assert queue.resolve_claim_holder(KEY, {"claimed_host": WRONG}) == WRONG
     assert queue.resolve_claim_holder(KEY, {"host": WRONG}) == WRONG

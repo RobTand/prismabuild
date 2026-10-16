@@ -27,7 +27,7 @@ KEY_A = "a" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -62,31 +62,31 @@ def test_a_late_finisher_does_not_conclude_the_newer_retry(
     )
 
     # The retry is untouched: its claim, its lease and its reservation.
-    live_path = queue.item_path(pool.CLAIMED, KEY_A)
+    live_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     assert live_path.exists()
     live = json.loads(live_path.read_text())
     assert live["claimed_by"] == "attempt-2"
     assert live["attempts"] == 1
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held() == {"cpu": 1}
     assert queue.ledger().held_keys() == [KEY_A]
 
     # The generation is still running: no terminal record was filed for it.
-    assert not queue.item_path(pool.DONE, KEY_A).exists()
-    assert not queue.item_path(pool.FAILED, KEY_A).exists()
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
     # Attempt 1's slot still describes attempt 1. The reaper filed the lease
     # loss there first, and an immutable outcome is first-writer-wins, so this
     # late result did not overwrite it.
-    assert result == queue.attempt_path(first, 1)
+    assert result == queue.records.attempt_path(first, 1)
     assert result.exists()
     archived = json.loads(result.read_text())
     assert archived["attempt"] == 1
     assert archived["claimed_by"] == "attempt-1"
     assert archived["status"] == "lease_lost"
     # And nothing was filed under attempt 2, which this worker never ran.
-    assert not queue.attempt_path(first, 2).exists()
+    assert not queue.records.attempt_path(first, 2).exists()
 
 
 def test_a_late_result_is_archived_when_its_attempt_is_free(
@@ -100,8 +100,8 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
     # A second claim of the same key without a reaper in between: the claim
     # was concluded by an operator's reset and re-claimed, so no attempt was
     # archived for attempt 1.
-    queue.item_path(pool.CLAIMED, KEY_A).unlink()
-    queue.lease_path(KEY_A).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()
+    queue.records.lease_path(KEY_A).unlink()
     queue.ledger().release(KEY_A)
     _publish(queue, max_attempts=3, retry_safe=True)
     retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
@@ -113,7 +113,7 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
         claim_snapshot=first,
     )
 
-    assert result == queue.attempt_path(first, 1)
+    assert result == queue.records.attempt_path(first, 1)
     archived = json.loads(result.read_text())
     assert archived["claimed_by"] == "attempt-1"
     assert archived["status"] == "failed"
@@ -121,7 +121,7 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
     assert archived["detail"]["late_finisher"]["live_claimed_by"] == "attempt-2"
     # Its own generation, so the live generation's history is not touched.
     assert archived["published_unix"] == first["published_unix"]
-    live = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text())
     assert live["claimed_by"] == "attempt-2"
     assert "attempt_history" not in live
     assert queue.ledger().held() == {"cpu": 1}
@@ -139,11 +139,11 @@ def test_the_finisher_of_its_own_claim_is_not_treated_as_late(
         KEY_A, status="executed", detail={"returncode": 0},
         claim_snapshot=claimed,
     )
-    assert result == queue.item_path(pool.DONE, KEY_A)
+    assert result == queue.records.item_path(pool.record_store.DONE, KEY_A)
     assert json.loads(result.read_text())["claimed_by"] == "attempt-1"
     assert queue.ledger().held() == {}
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_a_rewritten_claimed_record_is_still_the_same_claim(
@@ -154,7 +154,7 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
     _publish(queue)
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
-    live_path = queue.item_path(pool.CLAIMED, KEY_A)
+    live_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     record = json.loads(live_path.read_text())
     # What withdraw's poison and a pending stop both do to a live claim.
     record["max_attempts"] = 1
@@ -167,5 +167,5 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
         KEY_A, status="failed", detail={"returncode": 1},
         claim_snapshot=claimed,
     )
-    assert result == queue.item_path(pool.FAILED, KEY_A)
+    assert result == queue.records.item_path(pool.record_store.FAILED, KEY_A)
     assert queue.ledger().held() == {}
