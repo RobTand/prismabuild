@@ -68,7 +68,7 @@ def _tiers(capacity: dict) -> dict:
 
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
                    capacity=GB10, observed_capacity=GB10)
     queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
@@ -142,7 +142,7 @@ def test_the_offer_clock_is_the_only_freshness_that_gates_placement(
     assert pool.cpu_admission.MAX_SAMPLE_AGE_S < pool.OFFER_TIMEOUT_S
 
     # Older than the sample window, younger than the offer window: still placeable.
-    offer = queue.root / pool.WORKERS / "dl380g10.json"
+    offer = queue.root / pool.record_store.WORKERS / "dl380g10.json"
     record = json.loads(offer.read_text())
     record["announced_unix"] = time.time() - 30.0
     offer.write_text(json.dumps(record))

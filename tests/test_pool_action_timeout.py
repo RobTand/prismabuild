@@ -83,10 +83,10 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     queue, item = _claimed(tmp_path, 5)
     item['published_unix'] = 1
     item['claimed_unix'] = 1
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, item['action_key']), item)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']), item)
     # Age the same ownership generation in both records; a contradictory lease
     # tests stale-owner refusal instead of execution-budget accounting.
-    lease_path = queue.lease_path(item['action_key'])
+    lease_path = queue.records.lease_path(item['action_key'])
     lease = json.loads(lease_path.read_text())
     lease.update(published_unix=1, claimed_unix=1)
     pool._write_json_atomic(lease_path, lease)
@@ -129,7 +129,7 @@ def test_prelaunch_delay_does_not_consume_execution_budget(tmp_path, monkeypatch
         monkeypatch.setattr(queue, '_start_resource_scope', start_scope)
     else:
         original = Path.unlink
-        status_path = queue.action_status_path(item['action_key'])
+        status_path = queue.records.action_status_path(item['action_key'])
 
         def unlink(path, *args, **kwargs):
             if path == status_path and not delayed:

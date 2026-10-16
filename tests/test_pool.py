@@ -35,14 +35,14 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
 @pytest.fixture()
 def plain_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -69,12 +69,12 @@ def test_action_key_must_be_a_digest(plain_queue: pool.PoolQueue) -> None:
 
 def test_publish_then_claim_moves_between_directories(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A)
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     item = queue.claim()
     assert item is not None and item["action_key"] == KEY_A
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
 
 
 def test_claim_returns_none_on_empty_queue(queue: pool.PoolQueue) -> None:
@@ -155,7 +155,7 @@ def test_priority_then_age_orders_the_queue(
 def test_intent_is_written_before_the_claim(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A)
     queue.claim()
-    intent = json.loads(queue.item_path(pool.INTENT, KEY_A).read_bytes())
+    intent = json.loads(queue.records.item_path(pool.record_store.INTENT, KEY_A).read_bytes())
     assert intent["schema"] == pool.POOL_CLAIM_INTENT_SCHEMA_V1
     assert intent["action_key"] == KEY_A
 
@@ -165,8 +165,8 @@ def test_stale_lease_is_requeued(queue: pool.PoolQueue) -> None:
     queue.claim()
     assert queue.reap_stale(timeout_s=1e6) == []          # fresh lease: untouched
     assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]    # expired: back to ready
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
@@ -197,16 +197,16 @@ def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
     )
     # Deliberately leave claimed + lease + reservation behind: this is the
     # observed NFS/supervisor aftermath, not a normal sequential ``finish``.
-    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+    queue.records.item_path(pool.record_store.DONE, KEY_A).write_text(json.dumps(terminal))
 
     assert queue.reap_stale(timeout_s=-1.0) == []
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held_keys() == []
-    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    assert json.loads(queue.records.item_path(pool.record_store.DONE, KEY_A).read_text()) == terminal
     dropped = list(
-        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+        queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
     assert len(dropped) == 1
     assert json.loads(dropped[0].read_text())["terminal_status"] == "executed"
@@ -238,13 +238,13 @@ def test_a_late_copy_of_a_terminal_generation_cannot_be_claimed(
             "finished_unix": float(claimed["published_unix"]) + 1.0,
         }
     )
-    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+    queue.records.item_path(pool.record_store.DONE, KEY_A).write_text(json.dumps(terminal))
 
     assert queue.claim() is None
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert json.loads(queue.records.item_path(pool.record_store.DONE, KEY_A).read_text()) == terminal
     dropped = list(
-        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+        queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
     assert len(dropped) == 1
     assert json.loads(dropped[0].read_text())["status"] == "dropped"
@@ -261,7 +261,7 @@ def test_an_older_terminal_generation_does_not_block_a_fresh_submission(
     queue.finish(KEY_A, status="executed")
 
     _publish(queue, KEY_A)
-    fresh_path = queue.item_path(pool.READY, KEY_A)
+    fresh_path = queue.records.item_path(pool.record_store.READY, KEY_A)
     fresh = json.loads(fresh_path.read_text())
     fresh["published_unix"] = float(first["published_unix"]) + 1.0
     fresh_path.write_text(json.dumps(fresh))
@@ -283,8 +283,8 @@ def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
 
     _publish(queue, KEY_A)
     queue.claim()
-    queue.lease_path(KEY_A).unlink()
-    path = queue.item_path(pool.CLAIMED, KEY_A)
+    queue.records.lease_path(KEY_A).unlink()
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     record = json.loads(path.read_bytes())
     record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
     path.write_text(json.dumps(record))
@@ -297,10 +297,10 @@ def test_heartbeat_refresh_keeps_a_claim_alive(queue: pool.PoolQueue) -> None:
 
     _publish(queue, KEY_A)
     item = queue.claim()
-    first = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    first = json.loads(queue.records.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
     time.sleep(0.01)
     queue.write_lease(KEY_A, owner=str(item["claimed_by"]))
-    second = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    second = json.loads(queue.records.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
     assert second > first
     assert queue.reap_stale(timeout_s=1.0) == []
 
@@ -309,15 +309,15 @@ def test_finish_routes_to_done_or_retry(queue: pool.PoolQueue) -> None:
     """Success is terminal; a first failure is a retry, not a verdict."""
 
     for key, status, state in (
-        (KEY_A, "executed", pool.DONE),
-        (KEY_B, "failed", pool.READY),
+        (KEY_A, "executed", pool.record_store.DONE),
+        (KEY_B, "failed", pool.record_store.READY),
     ):
         _publish(queue, key)
         queue.claim()
         queue.finish(key, status=status)
-        assert queue.item_path(state, key).exists()
-        assert not queue.item_path(pool.CLAIMED, key).exists()
-        assert not queue.lease_path(key).exists()
+        assert queue.records.item_path(state, key).exists()
+        assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+        assert not queue.records.lease_path(key).exists()
 
 
 def test_a_failure_retries_until_its_attempts_are_spent(queue: pool.PoolQueue) -> None:
@@ -327,14 +327,14 @@ def test_a_failure_retries_until_its_attempts_are_spent(queue: pool.PoolQueue) -
     for attempt in (1, 2):
         assert queue.claim() is not None
         queue.finish(KEY_A, status="failed")
-        requeued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+        requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
         assert requeued["attempts"] == attempt
         # A requeued item must not carry the dead claimant's identity forward.
         assert "claimed_by" not in requeued
     assert queue.claim() is not None
     queue.finish(KEY_A, status="failed")
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_max_attempts_of_one_is_terminal_on_the_first_failure(
@@ -343,7 +343,7 @@ def test_max_attempts_of_one_is_terminal_on_the_first_failure(
     _publish(queue, KEY_A, max_attempts=1)
     queue.claim()
     queue.finish(KEY_A, status="failed")
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
 
 def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
@@ -352,7 +352,7 @@ def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="cache_hit")
-    assert queue.item_path(pool.DONE, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
 def test_worker_argv_uses_canonical_run_local_launch() -> None:
@@ -412,7 +412,7 @@ def test_serve_once_executes_and_records(queue: pool.PoolQueue, tmp_path: Path) 
     assert outcome is not None and outcome["status"] == "executed"
     assert outcome["returncode"] == 0
     assert marker.read_text().startswith("run-local --action")
-    assert queue.item_path(pool.DONE, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
 def test_serve_once_records_a_failing_worker_as_failed(
@@ -423,7 +423,7 @@ def test_serve_once_records_a_failing_worker_as_failed(
     _publish(queue, KEY_A, worker_script=str(stub), max_attempts=1)
     outcome = queue.serve_once()
     assert outcome["status"] == "failed" and outcome["returncode"] == 3
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
 
 def _test_checkout_snapshot(
@@ -731,7 +731,7 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     # ignored checkout_snapshot and used it. Persist the same claim identity
     # that execute's heartbeat validates.
     item["checkout_root"] = str(source)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, item["action_key"]), item)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]), item)
     mutated: list[bool] = []
 
     def mutate_after_preflight() -> None:
@@ -776,10 +776,10 @@ def test_execute_refreshes_the_lease_across_a_slow_action(
     stub.write_text("import time; time.sleep(0.6)\n")
     _publish(queue, KEY_A, worker_script=str(stub))
     item = queue.claim()
-    before = queue.lease_path(KEY_A).stat().st_mtime_ns
+    before = queue.records.lease_path(KEY_A).stat().st_mtime_ns
     outcome = queue.execute(item, heartbeat_s=0.15)
     assert outcome["status"] == "executed"
-    assert queue.lease_path(KEY_A).stat().st_mtime_ns > before
+    assert queue.records.lease_path(KEY_A).stat().st_mtime_ns > before
 
 
 def test_execute_times_out_and_kills_the_child(
@@ -1076,7 +1076,7 @@ def test_timeout_bounds_a_real_worker_running_a_real_action(
     # writer cannot take is a field that loses the action, not just the note.
     queue.finish(key, status="timeout", detail=outcome)
     filed = json.loads(
-        queue.item_path(pool.FAILED, key).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.FAILED, key).read_text(encoding="utf-8")
     )
     assert filed["detail"]["launcher_returncode"] == 128 + signal.SIGTERM
     assert filed["detail"]["action_survived_kill"] is False
@@ -1101,9 +1101,9 @@ def test_a_crashing_execute_never_leaves_a_dangling_claim(
         queue.serve_once()
     # The invariant is that the claim is gone, not where it went: an unexpected
     # crash still has retries left, so it is requeued rather than condemned.
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_reap_then_reclaim_is_the_self_healing_path(queue: pool.PoolQueue) -> None:
@@ -1154,14 +1154,14 @@ def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
     key = item["action_key"]
 
     # Reproduce the window exactly: claimed, lease not yet written.
-    queue.lease_path(key).unlink()
+    queue.records.lease_path(key).unlink()
     assert queue.lease_age(key) is None
 
     assert queue.reap_stale() == []
     assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is None
 
     # A claim old enough to be genuinely dead is still reaped.
-    stale = queue.item_path(pool.CLAIMED, key)
+    stale = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(stale.read_text())
     record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
     stale.write_text(json.dumps(record))
@@ -1222,7 +1222,7 @@ def test_admission_refuses_when_the_box_is_full(queue: pool.PoolQueue) -> None:
     assert queue.claim(capacity=capacity) is not None
     # One token, one running action: the second is denied, and stays ready.
     assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_finishing_an_action_returns_its_capacity(queue: pool.PoolQueue) -> None:
@@ -1259,7 +1259,7 @@ def test_losing_the_claim_race_releases_the_tokens(queue: pool.PoolQueue) -> Non
     original = os.rename
 
     def steal(src: object, dst: object) -> None:
-        if str(src).endswith(f"{KEY_A}.json") and pool.READY in str(src):
+        if str(src).endswith(f"{KEY_A}.json") and pool.record_store.READY in str(src):
             raise FileNotFoundError(src)
         original(src, dst)
 
@@ -1322,7 +1322,7 @@ def test_a_starved_background_item_cannot_withhold_the_host_from_foreground_work
 
     taken = queue.claim(capacity=capacity)
     assert taken is not None and taken["action_key"] == KEY_A
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
@@ -1346,14 +1346,14 @@ def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
         taken = queue.claim(capacity=capacity)
         assert taken is not None and taken["action_key"] == KEY_B
         queue.finish(KEY_B, status="executed")
-        queue.item_path(pool.DONE, KEY_B).unlink()
+        queue.records.item_path(pool.record_store.DONE, KEY_B).unlink()
         _publish(queue, KEY_B, resources={"gpu": 1})
 
     assert queue.passes(KEY_A) >= pool.STARVATION_FLOOR - 1
     queue.record_pass(KEY_A)
     # Now the floor is reached: the host is withheld rather than handed to KEY_B.
     assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
@@ -1390,8 +1390,8 @@ def test_admission_requires_explicit_capacity(
 
     _publish(plain_queue, KEY_A, resources={"gpu": 99})
     assert plain_queue.claim() is None
-    assert plain_queue.item_path(pool.READY, KEY_A).exists()
-    assert not plain_queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert plain_queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not plain_queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert not plain_queue.ledger().held_keys()
 
 
@@ -1417,7 +1417,7 @@ def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
 
     assert queue.ledger("other-box").available().get("gpu", 0) == 2
     assert queue.ledger("other-box").held_keys() == []
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
@@ -1432,7 +1432,7 @@ def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger("box")
     ledger.ensure_capacity({"mem_gb": 16, "gpu": 2})
     assert ledger.capacity() == {"mem_gb": 16, "gpu": 2}
@@ -1527,8 +1527,8 @@ def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
 
     _publish(queue, KEY_A)
     assert queue.claim() is not None
-    claimed_path = queue.item_path(pool.CLAIMED, KEY_A)
-    real_read = pool._read_json
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
+    real_read = pool.record_store.read_queue_record
 
     def vanishing_read(path: object) -> object:
         if pathlib.Path(str(path)) == claimed_path:
@@ -1536,10 +1536,10 @@ def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
             return None
         return real_read(path)
 
-    monkeypatch.setattr(pool, "_read_json", vanishing_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', vanishing_read)
 
     assert queue.reap_stale(timeout_s=-1.0) == []
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
 
 
 def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
@@ -1556,18 +1556,18 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     """
 
     _publish(queue, KEY_A)
-    stub = queue.item_path(pool.READY, KEY_B)
+    stub = queue.records.item_path(pool.record_store.READY, KEY_B)
     stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
 
     assert queue.claim() is None                         # incomplete census
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert not queue.ledger().held_keys()
     assert queue.quarantine_orphans() == [KEY_B]
     assert queue.claim() is not None                      # KEY_A still runnable
     assert queue.quarantine_orphans() == []
     assert not stub.exists()
 
-    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, KEY_B).read_text())
     assert filed["status"] == "orphaned_stub"
     assert filed["action_key"] == KEY_B
     assert "reap_stale" in filed["detail"]["reason"]
@@ -1662,12 +1662,12 @@ def test_finish_does_not_republish_a_payloadless_stub(
 
     _publish(queue, KEY_A)
     assert queue.claim() is not None
-    queue.item_path(pool.CLAIMED, KEY_A).unlink()          # the reaper won
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()          # the reaper won
 
     landed = queue.finish(KEY_A, status="failed", detail={"exception": "boom"})
 
-    assert landed == queue.item_path(pool.FAILED, KEY_A)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert landed == queue.records.item_path(pool.record_store.FAILED, KEY_A)
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
     filed = json.loads(landed.read_text())
     assert filed["status"] == "finish_lost_race"
     assert filed["detail"]["worker_detail"] == {"exception": "boom"}
@@ -1680,8 +1680,8 @@ def test_finish_losing_the_race_does_not_overwrite_the_winners_record(
 
     _publish(queue, KEY_A)
     assert queue.claim() is not None
-    queue.item_path(pool.CLAIMED, KEY_A).unlink()
-    winner = queue.item_path(pool.FAILED, KEY_A)
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()
+    winner = queue.records.item_path(pool.record_store.FAILED, KEY_A)
     winner.write_text(json.dumps({"action_key": KEY_A, "status": "the winner"}))
 
     queue.finish(KEY_A, status="failed")
@@ -1701,15 +1701,15 @@ def test_a_ready_record_a_worker_cannot_execute_is_quarantined(
     """
 
     _publish(queue, KEY_A)
-    stub = queue.item_path(pool.READY, KEY_B)
+    stub = queue.records.item_path(pool.record_store.READY, KEY_B)
     stub.write_text(json.dumps({"action_key": KEY_B, "attempts": 0}))
 
     assert queue.quarantine_orphans() == [KEY_B]
-    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, KEY_B).read_text())
     assert filed["status"] == "orphaned_stub"
     assert "worker_script" in filed["detail"]["reason"]
     # The healthy item is untouched.
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_lease_whose_record_is_gone_is_swept(tmp_path) -> None:
@@ -1724,10 +1724,10 @@ def test_a_lease_whose_record_is_gone_is_swept(tmp_path) -> None:
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger("box").ensure_capacity({"gpu": 1})
     assert queue.ledger("box").acquire(KEY_A, {"gpu": 1}) is True
-    lease = queue.lease_path(KEY_A)
+    lease = queue.records.lease_path(KEY_A)
     lease.parent.mkdir(parents=True, exist_ok=True)
     lease.write_text(json.dumps({
         "action_key": KEY_A, "host": "box", "pid": 1,
@@ -1746,8 +1746,8 @@ def test_a_lease_written_moments_ago_is_left_alone(tmp_path) -> None:
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
-    lease = queue.lease_path(KEY_B)
+    queue.records.ensure_layout()
+    lease = queue.records.lease_path(KEY_B)
     lease.parent.mkdir(parents=True, exist_ok=True)
     lease.write_text(json.dumps({"action_key": KEY_B, "heartbeat_unix": time.time()}))
 
@@ -1763,15 +1763,15 @@ def test_a_lease_beside_its_record_is_never_swept(tmp_path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish(queue, KEY_A)
     assert queue.claim() is not None
-    old = json.loads(queue.lease_path(KEY_A).read_text())
+    old = json.loads(queue.records.lease_path(KEY_A).read_text())
     old["heartbeat_unix"] = time.time() - 10_000.0
-    queue.lease_path(KEY_A).write_text(json.dumps(old))
+    queue.records.lease_path(KEY_A).write_text(json.dumps(old))
 
     assert queue.sweep_widowed_leases(timeout_s=60.0) == []
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
 
 
 def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
@@ -1802,14 +1802,14 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
         queue.record_pass(KEY_A)
     # Inside the ceiling: the host is withheld, exactly as before this change.
     assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
     # Age the block itself past the ceiling -- and only the block.  ``passes``
     # is untouched, which is the property under test.
-    record = json.loads(queue.passes_path(KEY_A).read_text())
+    record = json.loads(queue.records.passes_path(KEY_A).read_text())
     before = record["passes"]
     record["first_unix"] -= pool.WITHHOLD_CEILING_S + 1.0
-    queue.passes_path(KEY_A).write_text(json.dumps(record))
+    queue.records.passes_path(KEY_A).write_text(json.dumps(record))
     assert queue.withhold_age(KEY_A) > pool.WITHHOLD_CEILING_S
 
     taken = queue.claim(capacity=capacity)
@@ -1819,7 +1819,7 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     assert queue.passes(KEY_A) >= before, (
         "the starved item must keep its passes, and so its place in the ordering"
     )
-    assert queue.item_path(pool.READY, KEY_A).exists(), "it is still queued, not dropped"
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists(), "it is still queued, not dropped"
 
 
 def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
@@ -1833,10 +1833,10 @@ def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
 
     _publish(queue, KEY_A, resources={"gpu": 4})
     queue.record_pass(KEY_A)
-    stamped = json.loads(queue.passes_path(KEY_A).read_text())
+    stamped = json.loads(queue.records.passes_path(KEY_A).read_text())
     stamped["first_unix"] -= 600.0
     stamped["updated_unix"] -= 600.0
-    queue.passes_path(KEY_A).write_text(json.dumps(stamped))
+    queue.records.passes_path(KEY_A).write_text(json.dumps(stamped))
 
     queue.record_pass(KEY_A)          # denied again, right now
     assert queue.withhold_age(KEY_A) >= 600.0, (

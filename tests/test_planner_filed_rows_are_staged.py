@@ -95,7 +95,7 @@ def _planner_row(fleet: Fleet, seed: str, *,
     fleet.queue.mint_tier_capacity(TIER, {"stage_gib": 16})
     plan = _plan(fleet.queue, key)
     residency_plan.freeze(fleet.queue, plan)
-    item = json.loads(fleet.queue.item_path(pool.READY, key).read_text())
+    item = json.loads(fleet.queue.records.item_path(pool.record_store.READY, key).read_text())
     assert "residency" not in item      # the planner's row stays bare
     return key, plan
 
@@ -103,10 +103,10 @@ def _planner_row(fleet: Fleet, seed: str, *,
 def _claim(fleet: Fleet, key: str, *, claimed_unix: float = 1000.0) -> None:
     """Move the ready record into ``claimed/`` as a claim leaves it."""
 
-    ready = fleet.queue.item_path(pool.READY, key)
+    ready = fleet.queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(ready.read_text())
     item.update({"claimed_by": "sparklina", "claimed_unix": claimed_unix})
-    claimed = fleet.queue.item_path(pool.CLAIMED, key)
+    claimed = fleet.queue.records.item_path(pool.record_store.CLAIMED, key)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps(item))
     ready.unlink()
@@ -124,7 +124,7 @@ def test_a_claimed_planner_row_is_one_consumer_not_two_with_its_lease(tmp_path):
     fleet = Fleet(tmp_path)
     key, _plan_ = _planner_row(fleet, "row-lease")
     _claim(fleet, key)
-    fleet.queue.lease_path(key).write_text(json.dumps({
+    fleet.queue.records.lease_path(key).write_text(json.dumps({
         "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": key,
         "owner": "sparklina", "claimed_unix": 1000.0,
         "heartbeat_unix": 1000.0}))
@@ -165,9 +165,9 @@ def test_the_window_stages_a_planner_rows_first_phase_before_its_claim(tmp_path)
                  if e["event"] == "mover-published" and e["consumer"] == key]
     lead = residency_plan.leads_for(plan)[0]
     assert lead in published, events
-    assert fleet.queue.item_path(pool.READY, lead).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, lead).exists()
     # Still ready: staging happened ahead of the claim, not because of it.
-    assert fleet.queue.item_path(pool.READY, key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_the_sweep_counts_a_planner_rows_movers_as_wanted(tmp_path):
@@ -283,7 +283,7 @@ def test_the_receipt_says_landed_when_the_verdict_reads_resident(tmp_path, monke
 
     tier = fleet.queue.prewarm(key)["tier"]
     assert tier["status"] == "landed"
-    assert tier["consumer_state"] == pool.READY
+    assert tier["consumer_state"] == pool.record_store.READY
     assert tier["observed_unix"] == 5000.0
     assert tier["phases"] == 3                  # the planner's fields survive
     assert asked and asked[0]["leads"] == residency_plan.leads_for(_plan_)
