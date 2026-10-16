@@ -3826,7 +3826,7 @@ class ResourceLedger:
                 or len(cpus) != len(set(cpus))):
             raise PoolContractError("CPU tiers must contain distinct nonnegative CPU IDs")
         path = self.base / "cpu-map.json"
-        existing = _read_json(path)
+        existing = record_store.read_queue_record(path)
         if existing is None:
             if not initialize:
                 return None
