@@ -65,7 +65,7 @@ def test_a_claimed_row_past_arc_grace_keeps_its_receipt(tmp_path):
     assert event["claimed_reserved_keys"] == []
     assert event["claimed_reserved_bytes"] == 0
     assert fleet.queue.prewarm(key) == original
-    assert {row["action_key"]: row["reason"] for row in event["pruned"]}[key] == "live"
+    assert event["pruned"] == []
 
 
 def test_the_configured_storage_arguments_still_parse():
@@ -109,6 +109,7 @@ sys.addaudithook(audit)
         sys.executable, str(root / "tools/fleet/prewarm_loop.py"), option,
         "--pool-root", str(forbidden / "queue"),
         "--cas-root", str(forbidden / "cas"),
+        "--mount-map", f"{forbidden}={forbidden}",
         "--log", str(forbidden / "cycle.jsonl")],
         capture_output=True, text=True, env=environment, timeout=20)
     assert result.returncode == 2, result.stderr
