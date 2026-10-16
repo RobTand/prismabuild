@@ -1,0 +1,32 @@
+{
+  "capture_name": "tier-and-pin-capture-01",
+  "capture_report_sha256": "f3cf2262148a1d0d84a4b2b6ad64671177e1a797285f60cc85385577317ed693",
+  "excluded_cases": [],
+  "files": {
+    "goldens-tier-and-pin.jsonl": "3fd4d2221b9b86b3a0ad5568fe355dc92bc82a21fcdaaf2795964a9e41173a89",
+    "historical-tier-and-pin.jsonl": "64e51f35c5ee8fb114879cf3335796361c8bd11ed7bb7d69e78452d753b0599c"
+  },
+  "finished_at": "2026-10-16T22:20:20.066557+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "plan-superseded/initial",
+    "plan-superseded/replay",
+    "residency-block/ram",
+    "residency-block/stage",
+    "resident-pin/held",
+    "storage-tier/arc",
+    "storage-tier/stage"
+  ],
+  "source_git": {
+    "parents": [
+      "3252578a9af43d3024a0257d47cc20271ff5f819"
+    ],
+    "snapshot": "d681cfcd68be5ea072f79ae6a77f012957a3c9c7",
+    "tree": "72835c79ecbdfb48049e879430a43a8ec04e0fe7"
+  },
+  "started_at": "2026-10-16T22:19:08.939048+00:00"
+}
