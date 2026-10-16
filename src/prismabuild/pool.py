@@ -675,7 +675,6 @@ MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
 #: write a ready item is never.  The prewarm runs while the item is still in
 #: ``ready``, so writing its result into the item would race the claim that
 #: may already have moved it and resurrect a claimed action.
-PREWARM = "prewarm"
 
 #: The claim record's pointer at that sidecar, and the digest it must still
 #: name when the terminal record resolves it.  The claim carries a reference
