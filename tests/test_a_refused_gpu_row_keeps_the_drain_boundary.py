@@ -126,7 +126,7 @@ def box(tmp_path: Path, monkeypatch):
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
     gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -212,7 +212,7 @@ def test_the_refused_exclusive_row_keeps_the_boundary_its_holder_releases(
         assert waited["evidence"]["gpu_row"] == ldlq[:12]
         assert waited["evidence"]["room"] == LDLQ
         assert waited["evidence"]["kept_for"] == verdict
-    assert queue.item_path(pool.READY, g2).exists()
+    assert queue.records.item_path(pool.record_store.READY, g2).exists()
 
     # The next pass decides the +1 row first, on the released GPU.
     tick()
@@ -382,7 +382,7 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
 
     cpu_sampler = sample
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def publish(key, resources, **kw):
         now[0] += 0.001

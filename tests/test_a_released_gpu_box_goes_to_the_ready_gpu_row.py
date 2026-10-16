@@ -86,7 +86,7 @@ def idle_host(clock, monkeypatch):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -212,10 +212,10 @@ def test_a_released_gpu_goes_to_the_ready_gpu_row_not_the_cpu_row_ahead_of_it(
     queue.finish(holder, status="executed")
     assert claim() == gpu_row, (
         "a CPU-only row took the room the ready GPU row needs on the released GPU")
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
     # The shard does not fit beside the row, and nothing is evicted.
     assert claim() is None
-    assert queue.item_path(pool.CLAIMED, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, gpu_row).exists()
 
 
 @pytest.mark.parametrize("adaptive", [False, True], ids=["ledger", "adaptive_cpu"])
@@ -243,7 +243,7 @@ def test_a_gpu_row_whose_lock_is_busy_still_keeps_its_room(
         assert claim() is None, (
             "a CPU-only row took the released GPU's room while the ready GPU "
             "row's lock was busy")
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
     denial = _denial(queue, shard)
     assert denial["reason"] == "deferred_for_ready_gpu_row"
     assert denial["evidence"]["gpu_row"] == gpu_row[:12]
@@ -277,7 +277,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
                        cas_root=cas_root, checkout_root=checkout)
     # Fixture concession: the produced-output reference ``publish`` writes
     # for a Stage B row, which is what makes the claim ask for its allowance.
-    path = queue.item_path(pool.READY, gpu_row)
+    path = queue.records.item_path(pool.record_store.READY, gpu_row)
     record = json.loads(path.read_text())
     record["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
                                  "template_id": "fixture", "template_sha256": "0" * 64}
@@ -291,7 +291,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
     assert _denial(queue, shard)["evidence"]["room"]["mem_gb"] == 97
     assert claim() == gpu_row
     assert queue.ledger().holder_tokens(gpu_row).get("mem_gb") == 97
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
 
 
 @pytest.mark.parametrize(("demand", "measured_slots"), [
@@ -307,7 +307,7 @@ def test_a_gpu_producers_room_and_claim_omit_an_allowance_that_exceeds_capacity(
     producer = _publish(queue, clock, key, demand,
                         cas_root=cas_root, checkout_root=checkout)
     # Use the produced-output reference from the existing room fixture.
-    path = queue.item_path(pool.READY, producer)
+    path = queue.records.item_path(pool.record_store.READY, producer)
     row = json.loads(path.read_text())
     row["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
                              "template_id": "fixture", "template_sha256": "0" * 64}

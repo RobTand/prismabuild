@@ -52,7 +52,7 @@ POISON = "c" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -75,7 +75,7 @@ def _poison(queue: pool.PoolQueue, key: str, field: str, value: object) -> Path:
     """
 
     _publish(queue, key)
-    path = queue.item_path(pool.READY, key)
+    path = queue.records.item_path(pool.record_store.READY, key)
     record = json.loads(path.read_text())
     record[field] = value
     path.write_text(json.dumps(record))
@@ -161,9 +161,9 @@ def test_the_poison_record_is_filed_rather_than_left_resident(
 
     assert queue.quarantine_orphans() == [POISON]
 
-    assert not queue.item_path(pool.READY, POISON).exists()
-    assert queue.item_path(pool.READY, GOOD).exists()
-    filed = json.loads(queue.item_path(pool.FAILED, POISON).read_text())
+    assert not queue.records.item_path(pool.record_store.READY, POISON).exists()
+    assert queue.records.item_path(pool.record_store.READY, GOOD).exists()
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, POISON).read_text())
     assert filed["status"] == "orphaned_stub"
     assert filed["detail"]["unorderable_field"] == "priority"
     assert filed["detail"]["unorderable_value"] == repr("high")
@@ -176,7 +176,7 @@ def test_the_filed_record_names_a_foreign_published_unix_too(
 
     assert queue.quarantine_orphans() == [POISON]
 
-    filed = json.loads(queue.item_path(pool.FAILED, POISON).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, POISON).read_text())
     assert filed["detail"]["unorderable_field"] == "published_unix"
 
 
@@ -188,4 +188,4 @@ def test_an_executable_record_is_not_filed_by_this_guard(
     _publish(queue, GOOD, priority=-10)
 
     assert queue.quarantine_orphans() == []
-    assert queue.item_path(pool.READY, GOOD).exists()
+    assert queue.records.item_path(pool.record_store.READY, GOOD).exists()

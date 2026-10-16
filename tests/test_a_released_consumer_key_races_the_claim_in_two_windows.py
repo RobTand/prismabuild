@@ -152,17 +152,17 @@ class _ClaimScan:
 
 
 def _row_is_ready(queue: pool.PoolQueue, key: str) -> None:
-    assert queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
     standing = RecordStore(queue.root).standing(key)
     assert isinstance(standing, Present)
     assert isinstance(standing.value, QueueRow)
-    assert standing.value.state == pool.READY
+    assert standing.value.state == pool.record_store.READY
 
 
 def _assert_held_by_the_live_consumer(queue, key: str, origin: Path) -> None:
     """The race's consequence: claimed and reading ``live``, batch waits."""
 
-    assert queue.item_path(pool.CLAIMED, key).exists(), (
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists(), (
         "the released row was not claimed")
     assert po._consumer_state(queue, key) == "live"
     assert _events(queue, RETIRED) == []
@@ -253,7 +253,7 @@ def test_a_scan_listing_before_the_entry_is_still_refused(
     try:
         scan.run(queue)
         assert scan.snapshot == set()
-        assert not list(queue.released_origin_consumers_dir().glob(
+        assert not list(queue.records.released_origin_consumers_dir().glob(
             f"{key}.*.json")), (
                 "the index entry must not exist when the scan lists it")
 
