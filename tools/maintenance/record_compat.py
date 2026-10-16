@@ -54,7 +54,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
             raise RuntimeError("stable-path writer fixture requires qualified bubblewrap; no fallback")
         store.mkdir(parents=True, exist_ok=True)
         stable = Path("/opt/prismabuild-compat")
-        namespace = [bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/opt",
+        namespace = [bwrap, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/opt",
                      "--ro-bind", str(root), str(stable / "generation"),
                      "--ro-bind", str(HERE), str(stable / "driver"),
                      "--bind", str(store), str(stable / "store")]
@@ -75,7 +75,15 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
     if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
         result["returncode"] = 2
         result["attestation_error"] = "private namespace did not preserve PB CPU affinity"
-    references = kind.writers + kind.legacy_writers if raw is None else (kind.reader,) + kind.legacy_readers
+    if raw is None:
+        writer = dict(kind.variant_writers).get(case.split("/", 1)[1])
+        if writer is None:
+            if len(kind.writers) != 1:
+                raise ValueError("each variant of a multi-writer kind must name its actual writer")
+            writer = kind.writers[0]
+        references = (writer,) + kind.legacy_writers
+    else:
+        references = (kind.reader,) + kind.legacy_readers
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
         result["returncode"] = 3
@@ -201,13 +209,19 @@ def main():
     parser.add_argument("--generate", type=Path, required=True)
     parser.add_argument("--expect-machine")
     parser.add_argument("--case", action="append")
+    parser.add_argument("--kind", action="append", help="capture every scenario of a named record kind")
     args = parser.parse_args()
     if args.expect_machine and platform.machine() != args.expect_machine:
         parser.error(f"expected {args.expect_machine}, observed {platform.machine()}")
     print(json.dumps({"machine": platform.machine(), "python": sys.version}), flush=True)
     if args.case and set(args.case) - set(cases()):
         parser.error("unknown catalogue case")
-    generate(args.generate, args.case)
+    if args.kind and set(args.kind) - {kind.name for kind in KINDS}:
+        parser.error("unknown catalogue kind")
+    selected = set(args.case or ())
+    if args.kind:
+        selected.update(case for case in cases() if case.split("/")[0] in args.kind)
+    generate(args.generate, [case for case in cases() if case in selected] if selected else None)
 
 
 if __name__ == "__main__":

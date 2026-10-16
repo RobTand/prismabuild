@@ -80,7 +80,10 @@ def operate(request, store, load):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_domain_adapters.py")))["operate"]
         return adapter(request, store, load)
     if family.startswith("q-"):
-        adapter = runpy.run_path(str(Path(__file__).with_name("compat_queue_adapters.py")))["operate"]
+        filename = ("compat_pool_wire_adapters.py" if family in ("q-item", "q-offer", "q-intent", "q-lease", "q-attempt",
+                                                                "q-outcome", "q-tier-commitment", "q-stage-holder")
+                    else "compat_queue_adapters.py")
+        adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]
         return adapter(request, store, load)
     if family.startswith("core-"):
         filename = ("compat_receipt_adapters.py" if family in ("core-receipt", "core-attestation", "core-runtime")
@@ -99,6 +102,9 @@ def operate(request, store, load):
         return adapter(request, store, load)
     if family.startswith("gang-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_gang_adapters.py")))["operate"]
+        return adapter(request, store, load)
+    if family.startswith("pg-"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_prelaunch_adapters.py")))["operate"]
         return adapter(request, store, load)
     path = store / "record.json"
     if not write:

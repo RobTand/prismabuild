@@ -132,6 +132,7 @@ def main():
     private_writes_only(args.store)
     output = {"isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site),
               "affinity": sorted(os.sched_getaffinity(0)),
+              "pid": os.getpid(),
               "sys_path": list(sys.path), "driver_sha256": sha(Path(__file__)),
               "python": sys.version, "machine": platform.machine(),
               "adapters_sha256": {p.name: sha(p) for p in sorted(args.adapters.parent.glob("compat*adapters.py"))},
