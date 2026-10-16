@@ -75,7 +75,7 @@ def _detach(tmp_path: Path, *, queue_root: Path, cas: pb.PrismaBuildCAS,
 def _terminal(queue_root: Path, key: str) -> tuple[str, dict] | None:
     """The ending filed for this key under any of the three states."""
 
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         path = queue_root / state / f"{key}.json"
         if path.exists():
             return state, json.loads(path.read_text(encoding="utf-8"))
@@ -117,7 +117,7 @@ def test_a_job_that_ends_with_nobody_watching_is_filed_by_the_sweeper(
     filed = _terminal(queue_root, key)
     assert filed is not None
     state, record = filed
-    assert state == pool.DONE
+    assert state == pool.record_store.DONE
     assert record["status"] == "executed"
     assert record["transport"] == "slurm"
     assert record["detail"]["receipt_published"] is True
@@ -186,7 +186,7 @@ def test_a_forgotten_job_with_a_receipt_is_filed_as_executed(
 
     assert [row["disposition"] for row in rows] == [sl.SWEPT]
     state, record = _terminal(queue_root, job.action_key)
-    assert state == pool.DONE
+    assert state == pool.record_store.DONE
     assert record["status"] == "executed"
     assert record["detail"]["receipt_published"] is True
     assert record["detail"]["slurm"]["state"] == sl.UNKNOWN_STATE
@@ -276,10 +276,10 @@ def test_a_sweeper_and_a_poller_racing_on_one_key_file_one_record(
     assert failed_once.is_set()
     filed = sorted(
         f"{state}/{path.name}"
-        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
+        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
         for path in (queue_root / state).glob("*.json")
     )
-    assert filed == [f"{pool.DONE}/{job.action_key}.json"]
+    assert filed == [f"{pool.record_store.DONE}/{job.action_key}.json"]
     _, record = _terminal(queue_root, job.action_key)
     assert record["status"] == "executed"
     assert record["published_unix"] == submission["published_unix"]
@@ -315,7 +315,7 @@ def test_a_newer_runs_ending_is_not_replaced_by_an_older_submission(
 
     assert [row["disposition"] for row in rows] == [sl.SUPERSEDED]
     state, record = _terminal(queue_root, job.action_key)
-    assert (state, record["status"]) == (pool.FAILED, "failed")
+    assert (state, record["status"]) == (pool.record_store.FAILED, "failed")
 
 
 def test_the_tool_reports_by_default_and_files_only_under_apply(
@@ -345,7 +345,7 @@ def test_the_tool_reports_by_default_and_files_only_under_apply(
     assert _terminal(queue_root, job.action_key) is None
 
     assert pbsweep.main([*argv, "--apply"]) == 0
-    assert _terminal(queue_root, job.action_key)[0] == pool.DONE
+    assert _terminal(queue_root, job.action_key)[0] == pool.record_store.DONE
 
 
 def test_the_tool_says_which_keys_it_could_not_resolve(

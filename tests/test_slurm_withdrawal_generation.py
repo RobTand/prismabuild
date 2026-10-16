@@ -93,7 +93,7 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     queue = tmp_path / "pb-queue"
     lane = tmp_path / "lane"
     fleet = _Fleet()
-    marker = queue / pool.WITHDRAWN / f"{KEY}.json"
+    marker = queue / pool.record_store.WITHDRAWN / f"{KEY}.json"
     published = sl._write_json_atomic
     withdrawn: list[int] = []
 
@@ -120,14 +120,14 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     assert fleet.submitted == ["2001"]
     assert fleet.cancelled == ["2001"]
     assert marker.exists()
-    assert not (queue / pool.FAILED / f"{KEY}.json").exists()
+    assert not (queue / pool.record_store.FAILED / f"{KEY}.json").exists()
     ending = json.loads(
-        (queue / pool.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8"))
+        (queue / pool.record_store.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8"))
     assert ending["status"] == "withdrawn"
     assert ending["withdrawn_by"] == "audit-operator"
     assert ending["reason"] == "stop this generation"
     assert not list(
-        (queue / pool.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
+        (queue / pool.record_store.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
 
 
 def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
@@ -146,7 +146,7 @@ def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
     lane = tmp_path / "lane"
     fleet = _Fleet()
     directory = sl.lane_directory(KEY, root=lane)
-    marker = queue / pool.WITHDRAWN / f"{KEY}.json"
+    marker = queue / pool.record_store.WITHDRAWN / f"{KEY}.json"
     # An earlier run of this key was withdrawn; that decision is stale and a
     # submission is what retires it.
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -190,4 +190,4 @@ def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
     assert kept["published_unix"] == crossed[0]
     assert kept["withdrawn_by"] == "audit-operator"
     assert not list(
-        (queue / pool.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
+        (queue / pool.record_store.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))

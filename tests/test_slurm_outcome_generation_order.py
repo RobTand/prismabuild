@@ -49,7 +49,7 @@ def _file(queue_root: Path, generation: float, *, status: str = "failed"):
 
 
 def _failed(queue_root: Path) -> Path:
-    return queue_root / pool.FAILED / f"{KEY}.json"
+    return queue_root / pool.record_store.FAILED / f"{KEY}.json"
 
 
 def test_an_older_waiter_does_not_replace_a_newer_generations_ending(
@@ -223,5 +223,5 @@ def test_older_failure_cannot_be_filed_beside_newer_success(tmp_path: Path) -> N
     assert _file(tmp_path, 200.0, status="executed") is not None
     assert _file(tmp_path, 100.0, status="failed") is None
     assert not _failed(tmp_path).exists()
-    done = tmp_path / pool.DONE / f"{KEY}.json"
+    done = tmp_path / pool.record_store.DONE / f"{KEY}.json"
     assert json.loads(done.read_text())["published_unix"] == 200.0
