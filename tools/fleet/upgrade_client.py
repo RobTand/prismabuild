@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import ModuleType
+from typing import NamedTuple
 import uuid
 
 MEMBERS = {
@@ -28,7 +30,11 @@ MEMBERS = {
 }
 # This reader must converge fleet-wide in a bridge generation before a
 # broker starts requiring a newly listed optional module.
-OPTIONAL_MEMBERS = {'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py'}
+OPTIONAL_MEMBERS = {
+    'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py',
+    'park_proof.py': 'src/prismabuild/park_proof.py',
+}
+UPDATER_ONLY_MEMBERS = frozenset({'upgrade_client.py', 'park_proof.py'})
 SERVICE = 'prismabuild-resource-broker.service'
 #: The holder this agent claims on a drain it opens. It must stay stable across
 #: client generations: a transaction opens a drain under one generation and can
@@ -42,35 +48,12 @@ MAINTENANCE_UNOWNED = 'unattributed'
 #: states whether a drain is open but not when it opened, and the marker names
 #: a parked loop leaves are keyed on when.
 MAINTENANCE_GATE = '/run/prismabuild/maintenance.json'
-#: What can still claim or prewarm work from the shared queue on this box, matched on the
-#: basename of any argv element.
-#:
-#: Not on a generation-store prefix. A supervised loop carries the resolved
-#: generation path, because the supervisor resolves it before spawning, but
-#: `worker.py` is run by hand -- from the stable symlink, or from a checkout --
-#: and it reaches the same live queue regardless, because the queue root is
-#: written into the file. A prefix match would see every supervised loop and
-#: miss every one-shot, which is the one this agent most needs to see.
-#:
-#: A basename match has false positives: an editor, a grep, a test named after
-#: the file. Each one leaves this box reading as still admitting, and something
-#: waiting on the drain keeps waiting, which is the direction to be wrong in.
-SERVING_NAMES = frozenset({'worker_loop.py', 'worker.py', 'prewarm_loop.py'})
-#: Mirrors park_proof._KEY_SAFE. The two modules cannot import each other --
-#: the loop runs unprivileged out of a published generation, this runs as root
-#: out of the install directory -- so the spelling is asserted between them by
-#: test rather than shared.
-_KEY_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyz'
-                      'ABCDEFGHIJKLMNOPQRSTUVWXYZ._')
-#: Hostnames legitimately carry hyphens (`gx10-6b77`), and a marker name in the
-#: rollout tree is parsed on dots, so a hyphen costs nothing there. That is the
-#: whole reason this is a different set from the park marker's, which is parsed
-#: on hyphens and must not contain one.
-_NAME_SAFE = _KEY_SAFE | frozenset('-')
+_NAME_SAFE = frozenset('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-')
 MAX_MEMBER = 4 * 1024 * 1024
 MAX_EXPORT = 32 * 1024 * 1024
 MAX_MARKER = 64 * 1024
 CLIENT_UPGRADE_PROTOCOL = 2
+CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2
 MAINTENANCE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_ROLLOUT_PROTOCOL = 1
@@ -329,6 +312,128 @@ def bounded_read(path, limit):
     return data
 
 
+class ProofFileMetadata(NamedTuple):
+    uid: int
+    gid: int
+    mode: int
+
+
+class ProofFileSnapshot(NamedTuple):
+    data: bytes
+    metadata: ProofFileMetadata
+
+
+class InstalledClientSnapshot(NamedTuple):
+    member_bytes: dict[str, bytes | None]
+    proof_file: ProofFileSnapshot | None
+
+
+def read_proof_file(path):
+    """Known absence or bounded regular bytes and metadata from one no-follow FD."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('installed proof member is not a regular file')
+        data = stream.read(MAX_MEMBER + 1)
+        if len(data) > MAX_MEMBER:
+            raise ValueError('oversized installed proof member')
+        after = os.fstat(stream.fileno())
+        fields = ('st_dev', 'st_ino', 'st_uid', 'st_gid', 'st_mode',
+                  'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if (any(getattr(before, name) != getattr(after, name) for name in fields)
+                or len(data) != after.st_size):
+            raise ValueError('installed proof member changed during snapshot')
+    return ProofFileSnapshot(data, ProofFileMetadata(
+        before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)))
+
+
+
+class InstalledParkProof(NamedTuple):
+    sha256: str
+    module: ModuleType
+
+
+
+class HostParkObservation(NamedTuple):
+    proof: InstalledParkProof
+    gate: dict | None
+    census: list
+    markers: set[str]
+    acknowledgements: object
+
+    def as_host_evidence(self, active_scopes):
+        acknowledgements = self.acknowledgements
+        return {
+            'drained': (acknowledgements.complete
+                        and type(active_scopes) is int and active_scopes == 0),
+            'unparked': list(acknowledgements.unparked),
+            'active_scopes': active_scopes,
+            **({'evidence_errors': list(acknowledgements.unknown)}
+               if acknowledgements.unknown else {}),
+        }
+
+def load_installed_park_proof(install: Path) -> InstalledParkProof:
+    """Compile only the coherent root-trusted sibling bytes captured this call."""
+    path = trusted(install) / 'park_proof.py'
+    snapshot = read_proof_file(path)
+    if snapshot is None:
+        raise ValueError('installed park proof is missing')
+    metadata = snapshot.metadata
+    if metadata.uid != 0 or metadata.mode & 0o022:
+        raise ValueError('installed park proof is not root-trusted')
+    sha256 = digest(snapshot.data)
+    name = f'_prismabuild_installed_park_proof_{sha256}_{uuid.uuid4().hex}'
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    try:
+        exec(compile(snapshot.data, str(path), 'exec'), module.__dict__)
+        for entrypoint in ('drain_identity', 'process_identity', 'acknowledgements',
+                           'park_marker_filename', 'parked_markers', 'read_gate'):
+            function = getattr(module, entrypoint, None)
+            if not callable(function) or getattr(function, '__globals__', None) is not module.__dict__:
+                raise ValueError(f'installed park proof lacks its strict {entrypoint}')
+        if (not isinstance(getattr(module, 'ProofUnknown', None), type)
+                or module.ProofUnknown.__module__ != name
+                or not isinstance(getattr(module, 'HOST_QUIESCENT', None), frozenset)
+                or not module.HOST_QUIESCENT
+                or any(not isinstance(role, str) or not role for role in module.HOST_QUIESCENT)):
+            raise ValueError('installed park proof lacks its strict domain types/profile')
+    except Exception as exc:
+        raise ValueError(f'installed park proof is unavailable: {exc}') from exc
+    finally:
+        sys.modules.pop(name, None)
+    return InstalledParkProof(sha256, module)
+
+def previous_proof_metadata(transaction, previous):
+    """Parse proof-specific rollback facts before service or filesystem mutation."""
+    if 'park_proof.py' not in previous:
+        desired_version = transaction.get('desired')
+        desired_files = desired_version.get('files') if isinstance(desired_version, dict) else None
+        if isinstance(desired_files, dict) and 'park_proof.py' in desired_files:
+            raise ValueError('previous proof member presence is unavailable')
+        return None
+    if 'previous_proof_file' not in transaction:
+        raise ValueError('previous proof file metadata is unavailable')
+    value = transaction['previous_proof_file']
+    if previous['park_proof.py'] is None:
+        if value is not None:
+            raise ValueError('absent previous proof file has metadata')
+        return None
+    if not isinstance(value, dict) or set(value) != {'uid', 'gid', 'mode'}:
+        raise ValueError('invalid previous proof file metadata fields')
+    if any(type(value[name]) is not int or not 0 <= value[name] < 2**32 - 1
+           for name in ('uid', 'gid')):
+        raise ValueError('invalid previous proof file owner')
+    if type(value['mode']) is not int or not 0 <= value['mode'] <= 0o7777:
+        raise ValueError('invalid previous proof file mode')
+    return ProofFileMetadata(**value)
+
+
 def desired(config):
     # Root enrollment explicitly delegates publication authority to this store.
     # The manifest hashes detect mixed copies; they are not signatures.
@@ -425,24 +530,6 @@ def request(endpoint, operation, **fields):
     return reply
 
 
-def gate_changed_unix(path):
-    """When the drain in force closed admission, or None when that is unknown.
-
-    A gate that is absent, unreadable, unparsable, not an object, or states no
-    open drain all answer None. None is not "no drain": it is "no key", and a
-    caller with no key matches no park marker, so the box reads as still
-    admitting. That is the safe direction and it is why this reader does not
-    restate the loop's fail-closed rules -- it cannot fail open.
-    """
-    try:
-        value = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(value, dict) or value.get('draining') is not True:
-        return None
-    return value.get('changed_unix')
-
-
 def sanitized(value, safe):
     """`value` with every character outside `safe` replaced, never dropped.
 
@@ -450,16 +537,6 @@ def sanitized(value, safe):
     cannot collapse onto one name.
     """
     return ''.join(c if c in safe else '_' for c in str(value))
-
-
-def park_marker_name(pid, starttime, changed_unix):
-    """The name a loop parked on `changed_unix` writes for itself.
-
-    The start time is field 22 of the process's stat, so a marker left by a pid
-    that has since been reused names the earlier process and not this one.
-    """
-    key = 'unknown' if changed_unix is None else sanitized(changed_unix, _KEY_SAFE)
-    return f'{pid}-{starttime}-{key}'
 
 
 def proc_census(root='/proc'):
@@ -511,37 +588,14 @@ def proc_census(root='/proc'):
     return census
 
 
-def serving(census, names=SERVING_NAMES):
-    """The (pid, starttime) of everything in `census` that could claim work."""
+def serving(census, names):
+    """Select the explicit profile by argv basename, including checkout one-shots.
+
+    Matching a generation prefix would miss an operator's unversioned worker.
+    Conservative basename false positives keep the host waiting for proof.
+    """
     return [(pid, starttime) for pid, starttime, argv in census
             if any(PurePosixPath(part).name in names for part in argv)]
-
-
-def drained(census, markers, changed_unix, active_scopes, names=SERVING_NAMES):
-    """Whether this box has stopped admitting, and which processes have not.
-
-    Two conditions, and neither is a clock. Every claimant and storage reader has
-    left a park marker for this drain, and the broker holds no active scope.
-
-    A loop holding a claim is inside serve_once, not at the top of its poll
-    where the marker is written, so a marker for every serving process already
-    means no loop here holds one. Reading the shared queue would add nothing
-    and would spend the resource this whole design conserves.
-
-    `worker.py` writes no marker at all, so a live one-shot leaves this box
-    un-drained whatever else is true, which is what stops it claiming under a
-    generation the fleet is halfway through leaving.
-
-    The storage role records the same marker after its active cycle finishes.
-    Legacy readers without that boundary stay unparked until they exit. This
-    observation does not gate ordinary client convergence, which waits for
-    broker scopes independently of these process markers.
-    """
-    unparked = [pid for pid, starttime in serving(census, names)
-                if changed_unix is None
-                or park_marker_name(pid, starttime, changed_unix) not in markers]
-    return (changed_unix is not None and not unparked
-            and type(active_scopes) is int and active_scopes == 0), unparked
 
 
 def rollout_root(config):
@@ -1064,41 +1118,30 @@ class Upgrader:
             return False
         return True
 
-    def parked(self):
-        try:
-            return {entry.name for entry in self.parked_root.iterdir()}
-        except OSError:
-            return set()
+    def observe_host_park(self) -> HostParkObservation:
+        """One installed rule owner and bracketed physical facts, without receipts."""
+        proof = load_installed_park_proof(self.install)
+        api = proof.module
+        before = api.read_gate(self.gate)
+        census = self.procs()
+        markers = {path.name for path in api.parked_markers(self.parked_root, before)}
+        after = api.read_gate(self.gate)
+        acknowledgements = api.acknowledgements(
+            processes=serving(census, api.HOST_QUIESCENT), markers=markers,
+            gate_before=before, gate_after=after)
+        return HostParkObservation(proof, before, census, markers, acknowledgements)
 
-    def drain_evidence(self, status, *, rollout=False):
-        """What this box can still admit, given the drain `status` reports.
-
-        Observation only. Nothing here opens or closes a drain, and nothing
-        here decides anything: it puts the answer where a person and, later, a
-        rollout coordinator can read it.
-
-        An admitting box owes no proof, and the census costs a walk of /proc,
-        so a box that is not draining is not asked.
-        """
+    def drain_evidence(self, status):
+        """Physical quiescence plus the broker's independent zero-scope fact."""
         if status.get('draining') is not True:
             return {}
-        changed = gate_changed_unix(self.gate)
         try:
-            census = self.procs()
-            markers = self.parked()
+            observation = self.observe_host_park()
         except (OSError, ValueError) as error:
             return {'drained': False, 'unparked': [],
                     'active_scopes': status.get('active_scopes'),
-                    'evidence_errors': [f'process census incomplete: {error}']}
-        if changed is None or gate_changed_unix(self.gate) != changed:
-            return {'drained': False, 'unparked': [],
-                    'active_scopes': status.get('active_scopes'),
-                    'evidence_errors': ['maintenance gate missing or changed during census']}
-        names = (SERVING_NAMES | {'prewarm_loop.py'}) if rollout else SERVING_NAMES
-        settled, unparked = drained(census, markers, changed,
-                                    status.get('active_scopes'), names)
-        return {'drained': settled, 'unparked': unparked,
-                'active_scopes': status.get('active_scopes')}
+                    'evidence_errors': [f'host park observation unavailable: {error}']}
+        return observation.as_host_evidence(status.get('active_scopes'))
 
     def _local_rollout(self):
         try:
@@ -1162,33 +1205,37 @@ class Upgrader:
         return existing
 
     def rotation_evidence(self, status, generation):
-        """Fresh proof that every local admission process uses one generation."""
+        """Fresh physical proof plus the existing versioned-role requirements."""
         if (status.get('health') is not True or status.get('draining') is not True
                 or type(status.get('active_scopes')) is not int
                 or status.get('active_scopes') != 0 or not self.loaded_matches(status)):
             return {'rotated': False, 'rotation_errors': ['broker proof is incomplete']}
-        changed = gate_changed_unix(self.gate)
-        if changed is None:
-            return {'rotated': False, 'rotation_errors': ['maintenance gate identity is unknown']}
         try:
-            census = self.procs()
-            markers = self.parked()
+            observation = self.observe_host_park()
         except (OSError, ValueError) as exc:
             return {'rotated': False,
-                    'rotation_errors': [f'process census incomplete: {exc}']}
+                    'rotation_errors': [f'host park observation unavailable: {exc}']}
+        api = observation.proof.module
+        drain = api.drain_identity(observation.gate)
+        if isinstance(drain, api.ProofUnknown):
+            return {'rotated': False, 'rotation_errors': [drain.reason]}
         expected_root = Path(self.config['generation_store']) / generation
         roles = {'worker_loop.py': 'worker', 'worker.py': 'one-shot-worker',
                  'supervise.py': 'supervisor', 'prewarm_loop.py': 'prewarmer'}
         observed = []
-        errors = []
+        errors = list(observation.acknowledgements.unknown)
         counts = {role: 0 for role in roles.values()}
-        for pid, starttime, argv in census:
+        for pid, starttime, argv in observation.census:
             named = [(PurePosixPath(part).name, part) for part in argv
                      if PurePosixPath(part).name in roles]
             if not named:
                 continue
             if len(named) != 1:
                 errors.append(f'pid {pid} has ambiguous admission argv')
+                continue
+            process = api.process_identity(pid, starttime)
+            if isinstance(process, api.ProofUnknown):
+                errors.append(process.reason)
                 continue
             basename, part = named[0]
             path = Path(part)
@@ -1202,8 +1249,8 @@ class Upgrader:
             if not path.is_absolute() or '..' in relative.parts or relative.name != basename:
                 errors.append(f'pid {pid} {role} has an untrusted generation path')
                 continue
-            parked = park_marker_name(pid, starttime, changed) in markers
-            if role in {'worker', 'one-shot-worker', 'prewarmer'} and not parked:
+            parked = api.park_marker_filename(process, drain) in observation.markers
+            if role in {'worker', 'one-shot-worker', 'prewarmer'} and pid in observation.acknowledgements.unparked:
                 errors.append(f'pid {pid} {role} is not parked on this drain')
             observed.append({'pid': pid, 'starttime': starttime, 'role': role,
                              'path': part, 'parked': parked})
@@ -1211,10 +1258,10 @@ class Upgrader:
             errors.append('expected exactly one versioned supervisor')
         if counts['worker'] < 1:
             errors.append('no versioned worker loops were observed')
-        if gate_changed_unix(self.gate) != changed:
+        if api.drain_identity(api.read_gate(self.gate)) != drain:
             errors.append('maintenance gate changed during rotation census')
         return {'rotated': not errors, 'generation': generation,
-                'gate_changed_unix': changed, 'processes': observed,
+                'gate_changed_unix': observation.gate['changed_unix'], 'processes': observed,
                 **({'rotation_errors': errors} if errors else {})}
 
     def _refresh_epoch(self, snapshot):
@@ -1291,28 +1338,42 @@ class Upgrader:
         holder = self.held_elsewhere(status)
         if holder is not None:
             return self.report('held', epoch=intent['epoch'], drain_owner=holder,
-                               **self.drain_evidence(status, rollout=True))
+                               **self.drain_evidence(status))
         if status.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
             raise ValueError('rollout requires durable maintenance protocol 1')
         if status.get('draining') is not True:
             raise RuntimeError('broker failed to retain rollout drain')
         if status.get('health') is not True or not self.loaded_matches(status):
             raise RuntimeError('broker is unhealthy or stale while entering rollout drain')
-        drained_evidence = self.drain_evidence(status, rollout=True)
+        try:
+            observation = self.observe_host_park()
+        except (OSError, ValueError) as exc:
+            return self.report(
+                'rollout_draining', epoch=intent['epoch'], drained=False,
+                unparked=[], active_scopes=status.get('active_scopes'),
+                evidence_errors=[f'host park observation unavailable: {exc}'])
+        drained_evidence = observation.as_host_evidence(status.get('active_scopes'))
         if not drained_evidence.get('drained'):
             return self.report('rollout_draining', epoch=intent['epoch'],
                                **drained_evidence)
-        changed = gate_changed_unix(self.gate)
-        drained_marker = make_marker(
-            intent, 'drained', host=host, generation=intent['from_generation'],
-            posted_unix=time.time(), active_scopes=0, drain_changed_unix=changed,
-            rollout_protocol=CLIENT_UPGRADE_ROLLOUT_PROTOCOL)
         if marker_name(host, 'drained') not in snapshot['markers']:
             snapshot = self._refresh_epoch(snapshot)
             if snapshot['live_generation'] != intent['from_generation']:
                 return self._rollout_transitioning(
                     intent, snapshot, version,
                     expected=intent['from_generation'], boundary='before-drained-proof')
+        api = observation.proof.module
+        drain = api.drain_identity(observation.gate)
+        if api.drain_identity(api.read_gate(self.gate)) != drain:
+            return self.report(
+                'rollout_draining', epoch=intent['epoch'],
+                **{**drained_evidence, 'drained': False,
+                   'evidence_errors': ['maintenance gate changed before drained publication']})
+        drained_marker = make_marker(
+            intent, 'drained', host=host, generation=intent['from_generation'],
+            posted_unix=time.time(), active_scopes=0,
+            drain_changed_unix=observation.gate['changed_unix'],
+            rollout_protocol=CLIENT_UPGRADE_ROLLOUT_PROTOCOL)
         self._post_epoch_marker(snapshot, drained_marker)
         snapshot = self._refresh_epoch(snapshot)
 
@@ -1414,7 +1475,7 @@ class Upgrader:
             if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
                 raise ValueError('invalid installed client hash or absent required member')
 
-    def copy_files(self, source, files):
+    def copy_files(self, source, files, *, proof_metadata=None):
         self.validate_files(files)
         for name, expected in files.items():
             target = self.install / name
@@ -1426,18 +1487,28 @@ class Upgrader:
             data = (source / name).read_bytes()
             if digest(data) != expected:
                 raise RuntimeError(f'staged client hash mismatch: {name}')
-            temporary = self.install / ('.' + name + '.upgrade')
-            with temporary.open('wb') as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.chmod(0o644)
-            os.replace(temporary, target)
+            fd, temporary_name = tempfile.mkstemp(prefix='.' + name + '.upgrade-',
+                                                 dir=self.install)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(data)
+                    stream.flush()
+                    if name == 'park_proof.py' and proof_metadata is not None:
+                        os.fchown(stream.fileno(), proof_metadata.uid, proof_metadata.gid)
+                        os.fchmod(stream.fileno(), proof_metadata.mode)
+                    else:
+                        os.fchmod(stream.fileno(), 0o644)
+                    os.fsync(stream.fileno())
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
         sync_dir(self.install)
 
     def recover(self, transaction, *, keep_drain=False):
         previous = transaction.get('previous')
         self.validate_files(previous)
+        proof_metadata = previous_proof_metadata(transaction, previous)
         actual = {name: digest((self.state / 'previous' / name).read_bytes())
                   if expected is not None else None for name, expected in previous.items()}
         if actual != previous:
@@ -1452,7 +1523,7 @@ class Upgrader:
             if status.get('active_scopes') != 0 or status.get('draining') is not True:
                 raise RuntimeError('rollback deferred: broker still owns active work')
             self.ctl('stop')
-        self.copy_files(self.state / 'previous', previous)
+        self.copy_files(self.state / 'previous', previous, proof_metadata=proof_metadata)
         if self.installed(previous) != previous:
             raise RuntimeError('restored client hash mismatch')
         self.ctl('start')
@@ -1466,21 +1537,33 @@ class Upgrader:
 
     def loaded_matches(self, reply):
         expected = {name: value for name, value in self.installed().items()
-                    if name != 'upgrade_client.py'}
+                    if name not in UPDATER_ONLY_MEMBERS}
         return reply.get('installed_sha256') == expected
 
-    def installed(self, names=None):
+    def read_installed_snapshot(self, names=None):
+        """Capture member bytes once, retaining proof metadata from the same FD."""
         if names is None:
-            names = [*MEMBERS, *(name for name in OPTIONAL_MEMBERS
-                                if (self.install / name).exists())]
+            names = [*MEMBERS, *OPTIONAL_MEMBERS]
         result = {}
+        proof_file = None
         for name in names:
             path = self.install / name
-            if name in OPTIONAL_MEMBERS and not path.exists():
+            if name == 'park_proof.py':
+                proof_file = read_proof_file(path)
+                result[name] = proof_file.data if proof_file is not None else None
+                continue
+            try:
+                result[name] = bounded_read(path, MAX_MEMBER)
+            except FileNotFoundError:
+                if name not in OPTIONAL_MEMBERS:
+                    raise
                 result[name] = None
-            else:
-                result[name] = digest(path.read_bytes())
-        return result
+        return InstalledClientSnapshot(result, proof_file)
+
+    def installed(self, names=None):
+        return {name: digest(data) if data is not None else None
+                for name, data in self.read_installed_snapshot(names).member_bytes.items()
+                if data is not None or names is not None}
 
     def run(self):
         self.active_rollout = None
@@ -1544,7 +1627,7 @@ class Upgrader:
             if holder is not None:
                 return self.report('held', epoch=rollout['intent']['epoch'],
                                    drain_owner=holder,
-                                   **self.drain_evidence(held, rollout=True))
+                                   **self.drain_evidence(held))
             if (held.get('draining') is not True
                     or held.get('maintenance_durable_protocol')
                     != MAINTENANCE_DURABLE_PROTOCOL):
@@ -1565,13 +1648,19 @@ class Upgrader:
                                    installed=result.get('installed'), error=failed['error'])
             return result
         version, blobs = self.reader(self.config)
-        installed = self.installed()
+        installed_snapshot = self.read_installed_snapshot()
+        installed_bytes = installed_snapshot.member_bytes
+        installed = {name: digest(data) for name, data in installed_bytes.items()
+                     if data is not None}
         if rollout is not None:
             outcome = self._rollout_status(
                 rollout, local_rollout, version, installed, blobs)
             if outcome is not None:
                 return outcome
-        if installed == version['files']:
+        proof_file = installed_snapshot.proof_file
+        proof_metadata_safe = (proof_file is None or (
+            proof_file.metadata.uid == 0 and proof_file.metadata.mode & 0o022 == 0))
+        if installed == version['files'] and proof_metadata_safe:
             # Recover a crash after drain began but before a transaction existed.
             status = self.call('status')
             if status.get('health') is not True or not self.loaded_matches(status):
@@ -1618,7 +1707,7 @@ class Upgrader:
         # bridge generation has converged.
         durable_marker = rb'(?m)^MAINTENANCE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
         updater_marker = rb'(?m)^CLIENT_UPGRADE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if re.search(durable_marker, (self.install / 'resource_broker.py').read_bytes()) is not None:
+        if re.search(durable_marker, installed_bytes['resource_broker.py']) is not None:
             running = self.call('status')
             if running.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
                 raise ValueError('durable maintenance broker capability is missing or stale')
@@ -1626,7 +1715,7 @@ class Upgrader:
                     or re.search(updater_marker, blobs['upgrade_client.py']) is None):
                 raise ValueError('durable maintenance broker refuses non-durable candidate')
         rollout_marker = rb'(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if (re.search(rollout_marker, (self.install / 'upgrade_client.py').read_bytes())
+        if (re.search(rollout_marker, installed_bytes['upgrade_client.py'])
                 is not None and re.search(rollout_marker, blobs['upgrade_client.py']) is None):
             raise ValueError('rollout-aware updater refuses an epoch-unaware candidate')
         # Keep an explicit union so additions and removals both carry their
@@ -1638,10 +1727,15 @@ class Upgrader:
             # during a transaction that records optional member existence.
             pattern = rb'(?m)^CLIENT_UPGRADE_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
             for code in (blobs['upgrade_client.py'],
-                         (self.install / 'upgrade_client.py').read_bytes()):
+                         installed_bytes['upgrade_client.py']):
                 if re.search(pattern, code) is None:
                     raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
-        previous = self.installed(names)
+        if 'park_proof.py' in names:
+            pattern = rb'(?m)^CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
+            for code in (blobs['upgrade_client.py'], installed_bytes['upgrade_client.py']):
+                if re.search(pattern, code) is None:
+                    raise ValueError('proof client transaction requires proof-member recovery protocol 2')
+        previous = {name: installed.get(name) for name in names}
         target_files = {name: version['files'].get(name) for name in names}
         self.validate_files(target_files)
         for directory in ('staged', 'previous'):
@@ -1653,7 +1747,7 @@ class Upgrader:
                 if hashes[name] is None:
                     target.unlink(missing_ok=True)
                     continue
-                data = blobs[name] if directory == 'staged' else (self.install / name).read_bytes()
+                data = blobs[name] if directory == 'staged' else installed_bytes[name]
                 with target.open('wb') as stream:
                     stream.write(data)
                     stream.flush()
@@ -1678,6 +1772,9 @@ class Upgrader:
         transaction = {'desired': version, 'previous': previous,
                        **({'rollout_epoch': rollout['intent']['epoch']}
                           if rollout is not None else {})}
+        if 'park_proof.py' in names:
+            transaction['previous_proof_file'] = (
+                proof_file.metadata._asdict() if proof_file is not None else None)
         atomic(self.journal, transaction)
         try:
             self.ctl('stop')

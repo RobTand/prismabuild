@@ -1,0 +1,119 @@
+{
+  "schema": "prismabuild.proof_test_execution.v1",
+  "root": {
+    "files": {
+      "tests/test_park_proof_real_writer.py": 20,
+      "tests/test_required_park_identity.py": 25,
+      "tests/test_park_epoch_injectivity.py": 15,
+      "tests/test_installed_host_proof.py": 13,
+      "tests/test_client_proof_prior_trust.py": 8,
+      "tests/test_client_proof_metadata.py": 22,
+      "tests/test_client_proof_current_trust.py": 3,
+      "tests/test_installed_park_proof_loader.py": 2,
+      "tests/test_host_drain_evidence.py": 11,
+      "tests/test_rollout_participant.py": 26
+    },
+    "cpus": 1,
+    "memory_gib": 4,
+    "container_memory_gib": 3,
+    "native_threads": 1,
+    "image": "sha256:df18428df8a0f9189c84e7424d214b4c50092af1f9dca5842a00c41c39bda316",
+    "python": "/home/rob/venvs/pb-cpu/bin/python",
+    "tooling": {
+      "site_packages": "/home/rob/venvs/pb-cpu/lib/python3.14/site-packages",
+      "packages": [
+        "pytest-9.1.1.dist-info",
+        "pluggy-1.6.0.dist-info",
+        "packaging-26.3.dist-info",
+        "iniconfig-2.3.0.dist-info",
+        "pygments-2.21.0.dist-info"
+      ],
+      "files": 497
+    }
+  },
+  "native_family": {
+    "files": {
+      "tests/test_park_proof_identity.py": 40,
+      "tests/test_client_proof_member_bridge.py": 6,
+      "tests/test_client_proof_bridge_recovery.py": 32,
+      "tests/test_agent_proves_the_box_stopped.py": 12,
+      "tests/test_prewarm_rollout.py": 14
+    },
+    "cpus": 1,
+    "memory_gib": 2,
+    "native_threads": 1,
+    "python": "/home/rob/venvs/pb-cpu/bin/python"
+  },
+  "process_test_moves": {
+    "test_actual_writer_acknowledges_only_the_exact_census_and_current_gate": {
+      "from": "tests/test_park_proof_identity.py",
+      "to": "tests/test_park_proof_real_writer.py",
+      "cases": 1,
+      "ast_sha256": "366a29e844171c6711f5eee34ffa986b4ef47a8e9acf9f8a30e357076c355baf"
+    },
+    "test_member_reader_rejects_malformed_retained_process_names": {
+      "from": "tests/test_park_proof_identity.py",
+      "to": "tests/test_park_proof_real_writer.py",
+      "cases": 5,
+      "ast_sha256": "dd104759e9ecd52df3950266361ae4bf172f95fd9f3e3694f46309eae975b6a2"
+    }
+  },
+  "artifact_corpus": {
+    "path": "tests/fixtures/proof-readers.tar.gz",
+    "format": "ustar+gzip",
+    "bytes": 92405,
+    "sha256": "02f96d28e3ec6f0ffeec18634868ec7fef88c895d814888415e6cae6123eef3e",
+    "raw_source_bytes": 376155,
+    "raw_source_lines": 7692
+  },
+  "artifacts": [
+    {
+      "name": "prebridge-upgrader.py",
+      "revision": "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf",
+      "path": "tools/fleet/upgrade_client.py",
+      "sha256": "b737d703c622a851f31e90ced5c9fca487597ee1e0adb38b52db44bef54c16e9",
+      "bytes": 87764,
+      "source_lines": 1773
+    },
+    {
+      "name": "protocol-one-upgrader.py",
+      "revision": "f834a061b448e2bbfed686e5ef00ca21f6b2b65c",
+      "path": "tools/fleet/upgrade_client.py",
+      "sha256": "be33c1ad42df95da03322aa73ccd48d0ee086ed24829a9975871662cf0acdb1e",
+      "bytes": 88812,
+      "source_lines": 1792
+    },
+    {
+      "name": "protocol-two-upgrader.py",
+      "revision": "79c6a3669a60b1edf4d66e40e576bd59e438e914",
+      "path": "tools/fleet/upgrade_client.py",
+      "sha256": "6c9a23238b861931d57bea52a631348309d290ebc685c536369b7af40993579d",
+      "bytes": 92723,
+      "source_lines": 1877
+    },
+    {
+      "name": "latest-proof-upgrader.py",
+      "revision": "b36ceb258b20f0710c48d7fe7fefbe9ff2d0179a",
+      "path": "tools/fleet/upgrade_client.py",
+      "sha256": "1a331460abc28eddcc5c36d9a6f724872d7159e8ea157af5b6caf9828f5f2f0a",
+      "bytes": 92883,
+      "source_lines": 1879
+    },
+    {
+      "name": "strict-proof.py",
+      "revision": "52b803d3bf637c6e3d45a87abacf13020c15cf22",
+      "path": "src/prismabuild/park_proof.py",
+      "sha256": "772fa28b24b3d0cc6ad2edca803b63ae5965c0ee85f30c56cc113e214aabf68d",
+      "bytes": 9003,
+      "source_lines": 242
+    },
+    {
+      "name": "legacy-proof.py",
+      "revision": "30ca9a6f6041f6d31dd5db1c5c4bdcc97a3a7edf",
+      "path": "src/prismabuild/park_proof.py",
+      "sha256": "7b951734fe4471ab012fe715cda238be1dd4c7d83c8f15c39447e1b75009bfe7",
+      "bytes": 4970,
+      "source_lines": 129
+    }
+  ]
+}

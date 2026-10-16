@@ -64,7 +64,9 @@ sys.path.insert(0, str(SRC_ROOT))
 from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import park_proof, role_session  # noqa: E402
-from prismabuild.park_proof import read_gate  # noqa: E402
+from prismabuild.park_proof import (  # noqa: E402
+    expected_markers, parked_markers, read_gate,
+)
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
 
@@ -145,7 +147,10 @@ def supervisor_incarnation() -> tuple[str | None, str | None]:
     _, _, rest = line.rpartition(")")
     fields = rest.split()
     starttime = fields[19] if len(fields) > 19 else "unknown"
-    return f"{host}:supervisor-{pid}:{starttime}", None
+    identity = park_proof.process_identity(pid, starttime)
+    if isinstance(identity, park_proof.ProofUnknown):
+        return None, f"supervisor pid {pid} identity unknown: {identity.reason}"
+    return f"{host}:supervisor-{identity.pid}:{identity.starttime}", None
 
 
 def roster_entry(host: str, roster_path: Path | None = None) -> dict[str, Any] | None:
@@ -412,38 +417,11 @@ def live_loop_census(
         return [], f"loop census unavailable: {exc}"
     census: list[tuple[int, str]] = []
     for pid in pids:
-        try:
-            line = Path(f"/proc/{pid}/stat").read_text()
-        except OSError as exc:
-            return [], f"loop pid {pid} not observable: {exc}"
-        _, _, rest = line.rpartition(")")
-        fields = rest.split()
-        starttime = fields[19] if len(fields) > 19 else "unknown"
-        census.append((pid, starttime))
+        identity = park_proof.process_identity(pid, park_proof.process_starttime(pid))
+        if isinstance(identity, park_proof.ProofUnknown):
+            return [], f"loop pid {pid} not observable: {identity.reason}"
+        census.append((identity.pid, identity.starttime))
     return census, None
-
-
-def parked_markers(parked_root: Path, gate: dict[str, Any] | None) -> list[Path]:
-    """Markers naming exactly this drain epoch (old epochs never count)."""
-    if gate is None:
-        return []
-    key = gate_label(gate)
-    if not parked_root.is_dir():
-        return []
-    try:
-        return sorted(p for p in parked_root.glob(f"*-{key}") if p.is_file())
-    except OSError:
-        return []
-
-
-def expected_markers(
-    census: list[tuple[int, str]], gate: dict[str, Any] | None
-) -> set[str]:
-    """Full marker names each live loop must post (pid + starttime + epoch)."""
-    if gate is None:
-        return set()
-    key = gate_label(gate)
-    return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
 
 
 def terminal_of(
@@ -1158,7 +1136,7 @@ def resign(
         return {"status": "refused", "phase": "maintenance_begin", "host": host,
                 "owner": owner, "reason": "gate open after begin",
                 "broker": began}
-    epoch = gate_epoch(gate_now)
+    drain = park_proof.drain_identity(gate_now)
     key = gate_label(gate_now)
     if queue_root is None:
         return {"status": "resigning", "host": host, "owner": owner,
@@ -1181,7 +1159,14 @@ def resign(
         # anyone else's drain, or a supervisor replacement, ends this
         # resignation's authority to declare completeness.
         gate_check = read_gate(gate_path)
-        if gate_check is None or gate_epoch(gate_check) != epoch:
+        current_drain = park_proof.drain_identity(gate_check)
+        if isinstance(drain, park_proof.ProofUnknown):
+            pending_note = f"maintenance gate identity unknown: {drain.reason}"
+            break
+        if isinstance(current_drain, park_proof.ProofUnknown):
+            pending_note = f"maintenance gate identity unknown: {current_drain.reason}"
+            break
+        if current_drain != drain:
             pending_note = "gate epoch moved under this resignation; stopping"
             break
         incarnation, incarnation_error = supervisor_incarnation()
@@ -1301,9 +1286,8 @@ def resign(
                 scopes = (broker_now.get("active_scopes")
                           if isinstance(broker_now, dict) else None)
                 census, census_error = live_loop_census(live)
-                parked = parked_markers(parked_root, gate_now)
+                parked = parked_markers(parked_root, gate_check)
                 parked_names = {p.name for p in parked}
-                acks = expected_markers(census, gate_now) <= parked_names
                 # Proof census: owned claims UNION handled-but-no-longer-claimed
                 # attempts. A handled attempt whose claim left (finished,
                 # entombed, reaped) still owes its exact terminal proof;
@@ -1371,7 +1355,7 @@ def resign(
                         else:
                             pending_note = ("attempts without exact terminal: "
                                             + ", ".join(missing))
-                    elif not isinstance(scopes, int):
+                    elif type(scopes) is not int:
                         armed = False
                         pending_note = f"broker scope census unknown: {broker_now}"
                     elif scopes != 0:
@@ -1386,17 +1370,21 @@ def resign(
                         refs_drained = refs_pack["drained"]
                         refs_state = refs_pack["state"]
                         refs_detail = refs_pack["detail"]
+                        acks = park_proof.acknowledgements(
+                            processes=census, markers=parked_names,
+                            gate_before=gate_check, gate_after=read_gate(gate_path))
                         if not refs_drained:
                             armed = False
                             pending_note = (
                                 f"reader refs not drained: {refs_state}; "
                                 f"{refs_detail}")
-                        elif not acks:
+                        elif not acks.complete:
                             armed = False
-                            want = sorted(expected_markers(census, gate_now))
-                            pending_note = ("parked acks incomplete "
-                                            f"({len(parked_names & set(want))}/{len(want)} "
-                                            f"for epoch {key})")
+                            pending_note = (
+                                "parked acks unknown: " + "; ".join(acks.unknown)
+                                if acks.unknown else "parked acks incomplete "
+                                f"({len(census) - len(acks.unparked)}/{len(census)} "
+                                f"for epoch {key})")
                         else:
                             # Bracketed proof: acks complete in this round AND the
                             # previous one, with an identical live set and epoch

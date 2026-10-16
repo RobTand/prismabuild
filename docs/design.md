@@ -4228,6 +4228,45 @@ prewarm processes parked on the current drain. Its executing and installed updat
 hashes must match the intent. Existing actions finish naturally; this protocol
 does not interrupt or requeue them.
 
+The host's physical proof rules are loaded lazily from its root-trusted installed
+`park_proof.py` sibling. A single no-follow regular FD supplies bounded coherent
+bytes and uid/gid/mode; the updater hashes and compiles those exact bytes in a
+fresh temporary module. Its actual strict API owns `HOST_QUIESCENT`, finite
+injective drain identity, process identity and acknowledgements. No package,
+shared-runtime, bytecode or module-cache fallback can authorize a drain. Missing
+or unsafe code and unknown gates cannot certify even an empty selected census.
+Gate observations bracket the census and regular marker reads; a rollout checks
+the same captured owner's exact key again after epoch refresh before posting.
+The positive rollout wire timestamp restriction remains separate from the
+finite physical identity domain. Rotation keeps its additional generation-path,
+versioned-supervisor and worker requirements; resign keeps its distinct checks.
+Ordinary owned zero-scope client repair remains independent of physical proof or
+receipt MATCH, including when the installed proof leaf itself requires repair.
+This is source contract work, not deployment or whole-fleet qualification.
+
+The private `qualify_rollout.py` adapter runs each admitted actor inside a
+native Python container. Its updater, proof sibling, enrollment, state and fake
+gate live under container-private `/var/lib` with real root ownership. The
+participant imports that installed updater and uses its actual permanent-drop
+runtime reader, rollout reader and marker writer subprocesses. Fixture creation
+and coordinator operations use the admitted worker's effective UID and GID.
+Only installation and participant ticks restore container root. These credential
+scopes require a single-threaded process and restore credentials after errors.
+
+Each actor checks the real host UTS identity, exact PB job slice, native machine,
+source hashes and admitted CPU affinity across the container boundary. The
+ordinary Docker shim supplies containment and ownership. The container has no
+network or live broker mount. The source is read-only, and only the private
+worker-owned campaign subtree is shared writable storage. Campaign rows declare
+their already-local immutable native image, CPU1, memory3GiB, GPU0, native
+threads1 and priority -10. The container memory limit is 2GiB within that total.
+Manifest rows omit `cwd`, so admitted emission never captures a disposable worker
+checkout. Run `pbcampaign.py` from the pinned coordinator candidate checkout.
+The campaign's default working directory selects that source tree for sealing.
+The fake broker, systemctl and process census remain simulated. Source support
+does not establish ARM reader/NFS qualification or the four distinct-host
+scenario outcomes. Those gates remain required before public integration.
+
 The epoch records and `repo` pointer publish atomically but are read separately.
 If a valid pointer move falls between an updater's desired-receipt read and its
 next epoch refresh, the updater keeps its durable drain and retries with a fresh
@@ -4604,12 +4643,47 @@ that same Event to its readers. Worker loops remain multi-instance. Storage,
 tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
 `generation_receipt` owns receipt parsing and identity comparison, while the
-stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
-behavior and the roles required by each drain observer remain unchanged by
-this ownership change.
+stdlib-only `park_proof` owns gate parsing, marker bytes and physical park
+acceptance. A known drain requires an explicitly closed gate and finite
+numeric `changed_unix`, excluding booleans. Its exact filename key is the
+identity, so integer `1` and float `1.0` remain distinct. Ordinary decimal
+bytes remain unchanged, including the leading-minus underscore and `-0.0`.
+Scientific exponent minus and plus encode as `m` and `p`; ambiguous legacy
+exponent keys never acknowledge a drain. Process proof requires a positive
+integer PID and ASCII decimal start ticks, including zero. Unknown or changed
+required facts never certify an empty census. Receipt availability is not a
+physical proof input. Unknown receipt authorization remains a separate change.
+The named current profiles are `HOST_QUIESCENT` for `worker_loop.py`,
+`worker.py`, and `prewarm_loop.py`, and `MEMBER_LOOPS` for ownership-proved
+`worker_loop.py` processes. Membership retains its terminal, handoff, reader,
+supervisor and two-round census requirements. Root host acceptance still uses
+the installed updater reader until its separately qualified reader bridge and
+consumer migration; strict package proof does not claim that migration.
 The public `park_proof.gate_key` and `park_proof.process_starttime` operations
 are imported directly from that owner. `role_session` does not re-export them.
 Worker, tier, local tier and prewarm admission use typed receipt observations.
+The privileged client can transport `park_proof.py` as an optional installed
+sibling under a non-consuming bridge. Its separate proof-member protocol 2
+requires both captured previous and verified candidate updater capability;
+the main GPU/optional-member protocol 2 alone is insufficient. The unpublished
+proof-member protocol 1 intermediate is not a capable rollback reader.
+One bounded previous byte map supplies all
+capability checks, digests and backups. The leaf remains updater-owned and is
+excluded from exact broker loaded-member equality. This transport bridge does
+not establish strict root proof acceptance or change ordinary repair gates.
+The proof leaf's bytes and uid/gid/mode come from the same no-follow regular
+file descriptor. Its required `previous_proof_file` journal field distinguishes
+known absence from metadata, and missing legacy facts refuse recovery before
+service I/O. Rollback restores ownership then permission mode on a fresh
+exclusive temporary file before fsync and replacement, preserving prior trust
+at interruption cuts. Unavailable, oversized or nonregular installed proof
+files refuse before journal/service mutation. Bounded worker-controlled regular
+files retain ordinary owned-zero-scope repair without receipt or physical proof.
+Equal byte digests do not make unsafe captured proof ownership/write mode current;
+those files take the same repair path. Trusted equal-byte clients retain the
+current fast path without staging or service restart.
+Production callers read generation identities through `loaded_generation()`
+and `published_generation_name()`, alongside the commit readers.
 Tier, prewarm and local tier retain their runtime-moved diagnostics without
 adding a drift-record writer. Worker refusals and supervisor role restarts own
 the immutable incident records.

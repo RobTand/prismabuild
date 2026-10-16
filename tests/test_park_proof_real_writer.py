@@ -16,6 +16,12 @@ import pytest
 import fleet_membership
 import supervise
 import upgrade_client
+from prismabuild import park_proof
+
+from client_proof_bridge_fixture import fixed_source_artifact
+from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256, tmp_path
+from test_installed_park_proof_loader import installed_leaf
+from test_prewarm_rollout import load, role
 
 ROOT = Path(__file__).resolve().parents[1]
 WRITER = """\
@@ -61,6 +67,18 @@ def parked_role(tmp_path):
     missing_receipt = tmp_path / "missing-loaded.json"
     malformed_receipt = tmp_path / "malformed-published.json"
     malformed_receipt.write_text("{not JSON")
+    install = tmp_path / "installed"
+    install.mkdir(mode=0o755)
+    install.chmod(0o755)
+    proof = install / "park_proof.py"
+    proof_bytes = fixed_source_artifact(
+        "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
+    assert proof_bytes == (ROOT / "src/prismabuild/park_proof.py").read_bytes()
+    proof.write_bytes(proof_bytes)
+    proof.chmod(0o644)
+    info = proof.lstat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (0, 0, 0o644)
+    assert upgrade_client.trusted(proof) == proof
 
     def set_gate(stamp):
         gate.write_text(json.dumps({"draining": True, "changed_unix": stamp}))
@@ -184,7 +202,7 @@ def test_existing_host_and_member_profiles_select_different_roles(
         parked_role, script, host_requires, member_requires):
     with parked_role(script) as role:
         pid, start, _ = role.census[0]
-        assert upgrade_client.serving(role.census) == (
+        assert upgrade_client.serving(role.census, park_proof.HOST_QUIESCENT) == (
             [(pid, start)] if host_requires else [])
         assert supervise._is_fleet_loop(pid, [role.runtime]) is member_requires
 
@@ -197,3 +215,66 @@ def test_unrelated_missing_and_malformed_receipts_do_not_block_physical_park_pro
         role.post()
         assert _observations(role) == (
             {"drained": True, "unparked": [], "active_scopes": 0}, True)
+
+
+def test_work_already_running_holds_the_drain_open(parked_role):
+    with parked_role() as role:
+        role.post()
+        assert role.client.drain_evidence({"draining": True, "active_scopes": 1}) == {
+            "drained": False, "unparked": [], "active_scopes": 1}
+
+
+def test_actual_writer_acknowledges_only_the_exact_census_and_current_gate(parked_role):
+    with parked_role() as role:
+        name = role.post()
+        assert name is not None
+        gate = park_proof.read_gate(role.gate)
+        pid, start, _ = role.census[0]
+        def observe(processes, *, after=gate):
+            return park_proof.acknowledgements(
+                processes=processes, markers={name},
+                gate_before=gate, gate_after=after)
+
+        assert observe([(pid, start)]).complete is True
+        replaced = observe([(pid, str(int(start) + 1))])
+        assert replaced.complete is False and replaced.unparked == (pid,)
+        foreign = observe([(pid + 1, start)])
+        assert foreign.complete is False and foreign.unparked == (pid + 1,)
+        unknown = observe([(pid, "unknown")])
+        assert unknown.complete is False and unknown.unknown
+        assert observe([(True, start)]).complete is False
+        assert observe([(pid, start)], after=None).complete is False
+
+
+@pytest.mark.parametrize("pid,start", [("True", "1"), ("0", "1"), ("01", "1"),
+                                       ("1", "unknown"), ("1", "١")])
+def test_member_reader_rejects_malformed_retained_process_names(parked_role, pid, start):
+    with parked_role() as role:
+        name = role.post()
+        assert name is not None
+        marker = role.parked / name
+        inode = marker.stat().st_ino
+        retained = role.parked / f"{pid}-{start}-101.5"
+        marker.rename(retained)
+        assert retained.stat().st_ino == inode
+        assert park_proof.parked_markers(role.parked, park_proof.read_gate(role.gate)) == []
+
+
+@pytest.mark.usefixtures("installed_leaf")
+def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
+    loop, gate, parked, current, calls, argv, stop = role
+    upgrade = load('upgrade_client')
+    gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
+    # Read the process identity independently of the marker writer.
+    start = Path('/proc/self/stat').read_text().rpartition(')')[2].split()[19]
+    client = upgrade.Upgrader({
+        'install_dir': str(gate.parent / 'installed'),
+        'state_dir': str(gate.parent / 'state'),
+        'maintenance_gate': str(gate),
+    }, procs=lambda: [(os.getpid(), start, ['python3', str(ROOT / 'tools/fleet/prewarm_loop.py')])])
+    status = {'draining': True, 'active_scopes': 0}
+    assert client.drain_evidence(status)['unparked'] == [os.getpid()]
+    assert loop.main(argv + ['--once']) == 75
+    assert calls == []
+    assert client.drain_evidence(status) == {
+        'drained': True, 'unparked': [], 'active_scopes': 0}
