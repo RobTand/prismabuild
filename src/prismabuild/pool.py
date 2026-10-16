@@ -3737,7 +3737,7 @@ class ResourceLedger:
 
         reader = self._names_reader()
         if reader is None:
-            return _scan_visible(directory) if strict else _scan(directory)
+            return immutable_files.scan_required(directory) if strict else immutable_files.scan_optional(directory)
         try:
             if optional and directory.name not in reader(directory.parent):
                 return []
