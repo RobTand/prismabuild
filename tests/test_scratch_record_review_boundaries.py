@@ -50,11 +50,14 @@ def test_scope_creation_keeps_its_original_transition_exclusion(runtime, monkeyp
 def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
     create, calls = runtime
     queue, item, variables = create()
-    original = pool._write_json_atomic
+    original = pool.record_store._write_json
     transitions = []
 
     def guarded(path, value):
-        if path == queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]) and "resource_scope_intent" in value:
+        if path == queue.records.item_path(
+            pool.record_store.CLAIMED,
+            item["action_key"],
+        ) and "resource_scope_intent" in value:
             def successor():
                 replacement = dict(live_record(queue, item))
                 replacement["published_unix"] += 10
@@ -62,7 +65,7 @@ def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
             transitions.append(other_actor_takes_key(queue, item["action_key"], successor))
         return original(path, value)
 
-    monkeypatch.setattr(pool, "_write_json_atomic", guarded)
+    monkeypatch.setattr(pool.record_store, '_write_json', guarded)
     queue._start_resource_scope(item)
     assert transitions and not any(transitions), "startup allowed a successor transition before intent write"
     assert live_record(queue, item)["published_unix"] == item["published_unix"]
@@ -95,13 +98,15 @@ def test_scope_contradiction_in_lease_is_retained_not_overwritten(runtime, monke
     if field == "resource_scope":
         lease[field]["scope_id"] = "prismabuild-job" + hashlib.sha256(
             (item["action_key"] + nonce).encode()).hexdigest()[:32] + ".slice"
-    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
-    claim_before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes()
+    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
+    claim_before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    )
     lease_before = queue.records.lease_path(item["action_key"]).read_bytes()
     held = queue.ledger().held()
     with pytest.raises((client.LocalScratchError, pool.PoolContractError)):
         record(queue, item)
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == claim_before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    ) == claim_before
     assert queue.records.lease_path(item["action_key"]).read_bytes() == lease_before
     assert queue.ledger().held() == held
 
@@ -118,7 +123,7 @@ def test_idempotent_recording_preserves_worker_heartbeat_authority(runtime, monk
                  progress_observation={"phase": "payload", "quiet_s": 0.25})
     if needs_repair:
         lease.pop(FIELD)
-    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
+    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
     before = queue.records.lease_path(item["action_key"]).read_bytes()
     evidence = record(queue, item)
     after = json.loads(queue.records.lease_path(item["action_key"]).read_text())
@@ -134,14 +139,18 @@ def test_cancelled_before_recording_reap_keeps_later_declaration_evidence(runtim
     queue, item, variables = create()
     queue._start_resource_scope(item)
     queue.withdraw(item["action_key"], signal_child=False)
-    decision = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, item["action_key"]))
+    decision = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, item["action_key"]),
+    )
     assert decision is not None and FIELD not in decision
     evidence = record(queue, item)
     # Cancellation concludes a claim; unlike a retry, it is not returned in
     # reap_stale's list of keys requeued. Check the actual removal/evidence.
     assert queue.reap_stale(timeout_s=-1) == []
     assert not queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists()
-    archived = [json.loads(path.read_text()) for path in queue.records.superseded_dir().glob("*.json")]
+    archived = [json.loads(path.read_text()) for path in queue.records.superseded_dir().glob(
+        "*.json",
+    )]
     assert any(value.get(FIELD) == evidence for value in archived), (
         "cancelled reaping discarded later declaration evidence")
     assert not queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists()

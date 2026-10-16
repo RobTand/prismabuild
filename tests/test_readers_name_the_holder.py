@@ -105,7 +105,7 @@ def test_an_ending_with_no_claimant_still_names_a_box(tmp_path: Path) -> None:
 
     q = pool.PoolQueue(tmp_path / "queue")
     q.records.ensure_layout()
-    pool._write_json_atomic(q.records.item_path(pool.record_store.DONE, KEY), {
+    pool.record_store._write_json(q.records.item_path(pool.record_store.DONE, KEY), {
         "action_key": KEY, "status": "cache_hit", "transport": "slurm",
         "finished_host": REAPED_BY, "finished_unix": pool._now(),
         "detail": {"elapsed_s": 0.0, "returncode": 0},

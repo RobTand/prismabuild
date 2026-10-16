@@ -111,7 +111,9 @@ def context(item):
 
 
 def live_record(queue, item):
-    return json.loads(queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_text())
+    return json.loads(
+        queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_text(),
+    )
 
 
 def record(queue, item):
@@ -219,7 +221,8 @@ def test_stale_snapshot_cannot_write_successor(runtime, monkeypatch, change):
     lease = queue.records.lease_path(item["action_key"]).read_bytes()
     with pytest.raises((client.LocalScratchError, pool.PoolContractError)):
         record(queue, stale)
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    ) == before
     assert queue.records.lease_path(item["action_key"]).read_bytes() == lease
 
 
@@ -237,7 +240,9 @@ def test_ending_archives_declarations_but_does_not_delete_or_carry_to_retry(
     sentinel.write_bytes(b"audit-only, not cleanup ownership")
     outcome = {"status": "executed" if returncode == 0 else "failed", "returncode": returncode}
     queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
-    ending = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE if returncode == 0 else pool.record_store.READY, item["action_key"]))
+    ending = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.DONE if returncode == 0 else pool.record_store.READY, item["action_key"]),
+    )
     assert ending is not None
     history = ending["attempt_history"]
     assert isinstance(history, list) and isinstance(history[-1], dict)
@@ -253,21 +258,21 @@ def test_mirror_failure_prevents_launch_and_replay_repairs_existing_claim(runtim
     queue, item, variables = create()
     launched = []
     process(monkeypatch, lambda *_: launched.append(True))
-    original = pool._write_json_atomic
+    original = pool.record_store._write_json
 
     def fail_mirror(path, value):
         if path == queue.records.lease_path(item["action_key"]) and FIELD in value:
             raise OSError("fixture lease mirror unavailable")
         return original(path, value)
 
-    monkeypatch.setattr(pool, "_write_json_atomic", fail_mirror)
+    monkeypatch.setattr(pool.record_store, '_write_json', fail_mirror)
     with pytest.raises(OSError, match="fixture lease mirror unavailable"):
         queue.execute(item, containment=True)
     evidence = live_record(queue, item)[FIELD]
     assert FIELD not in json.loads(queue.records.lease_path(item["action_key"]).read_text())
     assert not launched and "release" not in calls
     held = queue.ledger().held()
-    monkeypatch.setattr(pool, "_write_json_atomic", original)
+    monkeypatch.setattr(pool.record_store, '_write_json', original)
     assert record(pool.PoolQueue(queue.root), item) == evidence
     assert json.loads(queue.records.lease_path(item["action_key"]).read_text())[FIELD] == evidence
     assert queue.ledger().held() == held
@@ -280,12 +285,16 @@ def test_conflicting_stored_declaration_refuses_without_overwrite(runtime, monke
     queue.execute(item, containment=True)
     live = live_record(queue, item)
     live[FIELD]["declarations"][0]["name"] = "other-valid-name"
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]), live)
+    pool.record_store._write_json(
+        queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]),
+        live,
+    )
     before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes()
     lease = queue.records.lease_path(item["action_key"]).read_bytes()
     with pytest.raises(client.LocalScratchError, match="conflicting"):
         record(queue, item)
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    ) == before
     assert queue.records.lease_path(item["action_key"]).read_bytes() == lease
 
 
@@ -296,12 +305,13 @@ def test_successor_lease_refuses_before_registration_write(runtime, monkeypatch)
     queue.execute(item, containment=True)
     lease = json.loads(queue.records.lease_path(item["action_key"]).read_text())
     lease["published_unix"] += 1
-    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
+    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
     before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes()
     after = queue.records.lease_path(item["action_key"]).read_bytes()
     with pytest.raises(pool.PoolContractError):
         record(queue, item)
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    ) == before
     assert queue.records.lease_path(item["action_key"]).read_bytes() == after
 
 
@@ -324,7 +334,9 @@ def test_payload_cleanup_failure_preserves_declarations_and_completed_result(run
     monkeypatch.setattr(resource_scope.ResourceScope, "release", original)
     queue.finish(item["action_key"], status="executed", detail={"returncode": 0},
                  claim_snapshot=item)
-    terminal = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, item["action_key"]))
+    terminal = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.DONE, item["action_key"]),
+    )
     assert terminal is not None
     details = terminal["detail"]
     assert isinstance(details, dict) and details[FIELD] == evidence
@@ -338,7 +350,9 @@ def test_stale_reap_archives_old_declarations_and_strips_retry(runtime, monkeypa
     queue.execute(item, containment=True)
     evidence = live_record(queue, item)[FIELD]
     assert queue.reap_stale(timeout_s=-1) == [item["action_key"]]
-    ready = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, item["action_key"]))
+    ready = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, item["action_key"]),
+    )
     assert ready is not None and FIELD not in ready
     details = ready["detail"]
     assert isinstance(details, dict) and details[FIELD] == evidence

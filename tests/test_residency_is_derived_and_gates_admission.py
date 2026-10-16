@@ -339,7 +339,13 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
     dropped = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, MOVER))
     assert dropped is not None
     queue.records.item_path(pool.record_store.READY, MOVER).unlink()
-    queue._file_superseded(dropped, key=MOVER, kind="dropped", status="dropped")
+    queue.records.file_superseded(
+        dropped,
+        key=MOVER,
+        kind="dropped",
+        status="dropped",
+        when=pool._now(),
+    )
 
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None

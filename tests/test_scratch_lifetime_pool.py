@@ -54,7 +54,9 @@ def launch(lifetime, monkeypatch, returncode=0):
     def inspect(*args):
         evidence = live_record(queue, item)[FIELD]
         assert evidence["registration_complete"] is True
-        assert json.loads(queue.records.lease_path(item["action_key"]).read_text())[FIELD] == evidence
+        assert json.loads(
+            queue.records.lease_path(item["action_key"]).read_text(),
+        )[FIELD] == evidence
         assert leaf(item).is_dir()
         (leaf(item) / "temp").write_bytes(b"temporary")
 
@@ -69,13 +71,18 @@ def test_finish_deletes_only_ephemeral_and_archives_before_capacity_release(
     queue, item, variables, outcome = launch(lifetime, monkeypatch, returncode)
     old_leaf = leaf(item)
     result = queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
-    assert result != queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]), live_record(queue, item)
+    assert result != queue.records.item_path(
+        pool.record_store.CLAIMED,
+        item["action_key"],
+    ), live_record(queue, item)
     assert not old_leaf.exists()
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
     assert queue.ledger().held() == {}
     state = pool.record_store.DONE if returncode == 0 else pool.record_store.READY
     ending = pool.record_store.value_or_raise(queue.records.item(state, item["action_key"]))
-    archived = pool.record_store.read_document(queue.root / ending["attempt_history"][-1]["outcome"])
+    archived = pool.record_store.read_document(
+        queue.root / ending["attempt_history"][-1]["outcome"],
+    )
     assert all(entry["cleaned"] for entry in archived["detail"][FIELD]["entries"])
     if returncode:
         assert FIELD not in ending
@@ -86,7 +93,7 @@ def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
         lifetime, monkeypatch, fault):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     original = scratch._clean_scratch_directory
-    write = pool._write_json_atomic
+    write = pool.record_store._write_json
     if fault == "partial":
         def partial(declaration, identity):
             (leaf(item) / "temp").unlink()
@@ -105,7 +112,7 @@ def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
             if record and record["entries"][0]["cleaned"]:
                 raise OSError("fixture cleanup commit failed")
             return write(path, value)
-        monkeypatch.setattr(pool, "_write_json_atomic", fail_commit)
+        monkeypatch.setattr(pool.record_store, '_write_json', fail_commit)
     held = queue.ledger().held()
     path = queue.finish(item["action_key"], status=outcome["status"], detail=outcome,
                         claim_snapshot=item)
@@ -116,7 +123,7 @@ def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
         assert (leaf(item) / "foreign").read_bytes() == b"replacement"
         return  # Explicitly ambiguous ownership needs repair, never adoption.
     monkeypatch.setattr(scratch, "_clean_scratch_directory", original)
-    monkeypatch.setattr(pool, "_write_json_atomic", write)
+    monkeypatch.setattr(pool.record_store, '_write_json', write)
     monkeypatch.setattr(resource_scope.ResourceScope, "export_stopped_verdict", lambda s: {
         "ok": True, "scope_id": s.unit, "stopped": True, "empty": True,
         "released": True, "retired": False, "settled": True,
@@ -150,7 +157,8 @@ def test_successor_snapshot_refuses_registration_write(lifetime, monkeypatch):
     with pytest.raises((scratch.LocalScratchError, pool.PoolContractError)):
         queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=stale,
                                        env={})
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    ) == before
 
 
 def test_versioned_request_requires_worker_capability(lifetime):
@@ -162,7 +170,7 @@ def test_killed_launcher_existing_reaper_cleans_and_requeues(lifetime, monkeypat
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     lease = pool.record_store.read_document(queue.records.lease_path(item["action_key"]))
     lease["heartbeat_unix"] = 1.0
-    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
+    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
     queue.reap_stale(timeout_s=1)
     assert not leaf(item).exists() and queue.ledger().held() == {}
     assert queue.records.item_path(pool.record_store.READY, item["action_key"]).exists()
@@ -184,7 +192,8 @@ def test_unrecorded_created_leaf_after_registration_crash_is_not_adopted(lifetim
     assert pending[FIELD]["registration_complete"] is False
     assert pending[FIELD]["entries"][0]["identity"] is None
     queue.finish(item["action_key"], status="failed", detail={}, claim_snapshot=pending)
-    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists() and queue.ledger().held()
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists(
+    ) and queue.ledger().held()
 
 
 def test_old_worker_cannot_claim_versioned_retry(lifetime, monkeypatch):
@@ -209,7 +218,8 @@ def test_predecessor_late_finish_never_deletes_successor_scratch(lifetime, monke
     held = queue.ledger().held()
     queue.finish(old["action_key"], status="failed", detail=outcome, claim_snapshot=old)
     assert sentinel.read_bytes() == b"successor owns this"
-    assert queue.records.item_path(pool.record_store.CLAIMED, old["action_key"]).read_bytes() == before
+    assert queue.records.item_path(pool.record_store.CLAIMED, old["action_key"]).read_bytes(
+    ) == before
     assert queue.records.lease_path(old["action_key"]).read_bytes() == lease
     assert queue.ledger().held() == held
 
@@ -243,7 +253,7 @@ def test_diagnostic_publish_before_successor_registration_passes_payload_spy(
     snapshot = pool.cpu_admission.adaptive_snapshot
     base = pool.cpu_admission.local_state_base(queue.ledger().base)
     (base / "publisher-result.json").unlink(missing_ok=True)
-    pool._write_json_atomic(base / "publisher-owner.json", {
+    pool.record_store._write_json(base / "publisher-owner.json", {
         "started_monotonic": time.monotonic() - 60.0})
     assert snapshot.publish(base, queue.ledger().base / "adaptive") is not None
     assert seen == []
@@ -271,7 +281,7 @@ def test_uncommitted_completion_in_snapshot_cannot_bypass_actual_cleanup(lifetim
 def test_registration_mirror_failure_prevents_launch_and_can_replay(
         lifetime, monkeypatch, phase):
     queue, item, variables, calls = lifetime
-    write = pool._write_json_atomic
+    write = pool.record_store._write_json
     launched = []
 
     def fail(path, value):
@@ -284,12 +294,12 @@ def test_registration_mirror_failure_prevents_launch_and_can_replay(
                 raise OSError("fixture mirror interruption")
         return write(path, value)
 
-    monkeypatch.setattr(pool, "_write_json_atomic", fail)
+    monkeypatch.setattr(pool.record_store, '_write_json', fail)
     process(monkeypatch, lambda *args: launched.append(True))
     with pytest.raises(OSError, match="fixture mirror interruption"):
         queue.execute(item, containment=True)
     assert not launched and queue.ledger().held()
-    monkeypatch.setattr(pool, "_write_json_atomic", write)
+    monkeypatch.setattr(pool.record_store, '_write_json', write)
     scope = item["resource_scope"]
     evidence = queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=item, env={
         "PRISMABUILD_ACTION_KEY": item["action_key"], "PRISMABUILD_ACTION_NONCE": scope["nonce"],
@@ -308,26 +318,30 @@ def test_crash_before_leaf_creation_can_settle_without_deletion_authority(lifeti
     pending = live_record(queue, item)
     assert pending[FIELD]["entries"][0]["parent_identity"] is not None
     queue.finish(item["action_key"], status="failed", detail={}, claim_snapshot=pending)
-    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.READY, item["action_key"]).exists()
+    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.READY, item["action_key"]).exists(
+    )
 
 
 def test_cleanup_mirror_failure_keeps_capacity_until_repaired(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
-    write = pool._write_json_atomic
+    write = pool.record_store._write_json
 
     def fail(path, value):
         record = value.get(FIELD)
-        if path == queue.records.lease_path(item["action_key"]) and record and record["entries"][0]["cleaned"]:
+        if path == queue.records.lease_path(
+            item["action_key"],
+        ) and record and record["entries"][0]["cleaned"]:
             raise OSError("fixture cleanup mirror interruption")
         return write(path, value)
 
-    monkeypatch.setattr(pool, "_write_json_atomic", fail)
+    monkeypatch.setattr(pool.record_store, '_write_json', fail)
     queue.finish(item["action_key"], status="executed", detail=outcome, claim_snapshot=item)
     assert not leaf(item).exists() and queue.ledger().held()
     assert live_record(queue, item)[FIELD]["entries"][0]["cleaned"] is True
-    monkeypatch.setattr(pool, "_write_json_atomic", write)
+    monkeypatch.setattr(pool.record_store, '_write_json', write)
     queue.reap_stale()
-    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.DONE, item["action_key"]).exists()
+    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.DONE, item["action_key"]).exists(
+    )
 
 
 def test_replay_rechecks_private_namespace_permissions_before_launch(lifetime, monkeypatch):
@@ -342,7 +356,9 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     key = item["action_key"]
     queue.withdraw(key, signal_child=False)
-    withdrawn = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
+    withdrawn = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, key),
+    )
     decision = queue.records.withdrawal_decision_path(withdrawn)
     decision_bytes = decision.read_bytes()
     with monkeypatch.context() as fault:
@@ -350,14 +366,19 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
                       (_ for _ in ()).throw(OSError("fixture withdrawal before release")))
         with pytest.raises(OSError, match="fixture withdrawal before release"):
             queue.finish(key, status="withdrawn", detail=outcome, claim_snapshot=item)
-    tombstones = list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    tombstones = list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert len(tombstones) == 1 and queue.ledger().held()
-    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists(
+    )
     monkeypatch.setattr(scratch, "_clean_scratch_directory", lambda *a:
                         pytest.fail("durably consumed scratch must not be revisited"))
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not tombstones[0].exists() and queue.ledger().held() == {}
-    completed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
+    completed = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, key),
+    )
     assert all(field in completed and completed[field] == value for field, value in withdrawn.items())
     assert decision.read_bytes() == decision_bytes
     assert completed["resource_scope_cleanup"]["complete"] is True
@@ -366,13 +387,16 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
 
 
-@pytest.mark.parametrize("returncode,state", [(0, pool.record_store.DONE), (1, pool.record_store.READY)])
+@pytest.mark.parametrize(
+    "returncode,state",
+    [(0, pool.record_store.DONE), (1, pool.record_store.READY)],
+)
 def test_published_ending_tombstone_recovers_without_rewriting_ending(
         lifetime, monkeypatch, returncode, state):
     queue, item, variables, outcome = launch(lifetime, monkeypatch, returncode=returncode)
     key = item["action_key"]
     ending = queue.records.item_path(state, key)
-    write = pool._write_json_atomic
+    write = pool.record_store._write_json
     link = pool.os.link
 
     def interrupt(path, value):
@@ -389,14 +413,18 @@ def test_published_ending_tombstone_recovers_without_rewriting_ending(
         if state == pool.record_store.READY:
             fault.setattr(pool.os, "link", interrupt_link)
         else:
-            fault.setattr(pool, "_write_json_atomic", interrupt)
+            fault.setattr(pool.record_store, '_write_json', interrupt)
         with pytest.raises(OSError, match="fixture after ending publication"):
             queue.finish(key, status=outcome["status"], detail=outcome, claim_snapshot=item)
     before = ending.read_bytes()
-    assert list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert ending.read_bytes() == before and queue.ledger().held() == {}
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    )
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
 
@@ -413,7 +441,8 @@ def test_widowed_scratch_lease_retains_charge_until_exact_cleanup_recovers(lifet
     assert (leaf(item) / "temp").read_bytes() == b"temporary"
     assert queue.sweep_widowed_leases(timeout_s=-1) == [key]
     assert queue.ledger().held() == {} and not queue.records.lease_path(key).exists()
-    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists(
+    )
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
 
 
@@ -428,7 +457,7 @@ def test_widowed_scratch_lease_refuses_contradictory_owner_before_scope_stop(
         lease["owner"] = "foreign-worker"
     else:
         lease["resource_scope"]["nonce"] = "e" * 32
-    pool._write_json_atomic(queue.records.lease_path(key), lease)
+    pool.record_store._write_json(queue.records.lease_path(key), lease)
     before = queue.records.lease_path(key).read_bytes()
     held = queue.ledger().held()
     monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
@@ -441,9 +470,11 @@ def test_widowed_scratch_lease_refuses_contradictory_owner_before_scope_stop(
 def test_recovery_owner_cannot_override_a_live_claim(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     key = item["action_key"]
-    tombstone = queue.records.dir(pool.record_store.CLAIMED) / f"{key}.fixture{pool.record_store.TOMBSTONE_SUFFIX}"
+    tombstone = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{key}.fixture{pool.record_store.TOMBSTONE_SUFFIX}"
     saved = live_record(queue, item)
-    pool._write_json_atomic(tombstone, saved)
+    pool.record_store._write_json(tombstone, saved)
     before = queue.records.item_path(pool.record_store.CLAIMED, key).read_bytes()
     held = queue.ledger().held()
     monkeypatch.setattr(resource_scope.ResourceScope, "terminate_owned", lambda *a, **k:
@@ -465,7 +496,7 @@ def test_tombstone_refuses_invalid_or_mismatched_owner_without_touching_ready_su
     successor = copy.deepcopy(item)
     successor["published_unix"] += 1
     ready = queue._shape_as_ready_item(successor, action_key=key)
-    pool._write_json_atomic(ready, successor)
+    pool.record_store._write_json(ready, successor)
     ready_bytes = ready.read_bytes()
     broken = pool.record_store.read_document(tombstone)
     if contradiction == "nonce":
@@ -474,7 +505,7 @@ def test_tombstone_refuses_invalid_or_mismatched_owner_without_touching_ready_su
         broken["published_unix"] += 2
     else:
         broken[FIELD]["schema"] = "unknown"
-    pool._write_json_atomic(tombstone, broken)
+    pool.record_store._write_json(tombstone, broken)
     before = tombstone.read_bytes()
     lease = queue.records.lease_path(key).read_bytes()
     held = queue.ledger().held()
@@ -497,8 +528,10 @@ def test_old_tombstone_never_mutates_a_claimed_successors_scratch_or_capacity(li
     queue.execute(successor, containment=True)
     sentinel = leaf(successor) / "successor"
     sentinel.write_bytes(b"successor owns this")
-    tombstone = queue.records.dir(pool.record_store.CLAIMED) / f"{key}.old-fixture{pool.record_store.TOMBSTONE_SUFFIX}"
-    pool._write_json_atomic(tombstone, saved)
+    tombstone = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{key}.old-fixture{pool.record_store.TOMBSTONE_SUFFIX}"
+    pool.record_store._write_json(tombstone, saved)
     before = queue.records.item_path(pool.record_store.CLAIMED, key).read_bytes()
     lease = queue.records.lease_path(key).read_bytes()
     held = queue.ledger().held()
