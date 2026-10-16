@@ -40,7 +40,7 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     ledger = queue.tier_ledger(base.RAM_TIER)
     target = base._movers(plan, 'ram_mover_row')[1]
     assert ledger.holder_tokens(grant) == {'ram_gib': 1}
-    assert not queue.item_path(base.pool.READY, target).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, target).exists()
     assert queue.read_funding(target, base.RAM_TIER) is None
 
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
@@ -49,13 +49,13 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
 
     land_source(queue, plan, 1)
     base.tier_loop.ram_residency_window(queue, tiers=base._ram_tiers(tmp_path))
-    assert queue.item_path(base.pool.READY, target).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, target).exists()
     assert ledger.holder_tokens(grant) == {}
     assert ledger.holder_tokens(target) == {'ram_gib': 1}
     assert queue.read_funding(target, base.RAM_TIER)['state'] == 'transferring'
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert ledger.holder_tokens(target) == {'ram_gib': 1}, 'epoch sweep erased bound advance'
-    row = base.pool._read_json(queue.item_path(base.pool.READY, target))
+    row = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, target))
     claim = queue.claim(ready=[row], tags=['dl380g10'], owner='ram-advance-proof',
                         capacity={'cpu': 4, 'mem_gb': 8})
     assert claim and claim['action_key'] == target
@@ -71,9 +71,9 @@ def test_known_dead_or_missing_plan_reclaims_blind_grant(tmp_path, ending):
     if ending == 'terminal':
         queue.withdraw(base.CONSUMER, reason='finished private fixture')
     elif ending == 'vanished':
-        queue.item_path(base.pool.READY, base.CONSUMER).unlink()
+        queue.records.item_path(base.pool.record_store.READY, base.CONSUMER).unlink()
     else:
-        queue.residency_plan_path(base.CONSUMER).unlink()
+        queue.records.residency_plan_path(base.CONSUMER).unlink()
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {}
 
@@ -82,12 +82,12 @@ def test_known_dead_or_missing_plan_reclaims_blind_grant(tmp_path, ending):
 def test_unknown_credit_evidence_retains_and_reports(tmp_path, corruption):
     queue, plan, grant = blind_window(tmp_path)
     if corruption == 'plan':
-        path = queue.residency_plan_path(base.CONSUMER)
+        path = queue.records.residency_plan_path(base.CONSUMER)
         path.unlink()  # The immutable private fixture file cannot be overwritten.
         path.write_text('{bad')
     else:
         target = base._movers(plan, 'ram_mover_row')[1]
-        path = queue.funding_path(target, base.RAM_TIER)
+        path = queue.records.funding_path(target, base.RAM_TIER)
         path.parent.mkdir(exist_ok=True)
         path.write_text('{bad')
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))

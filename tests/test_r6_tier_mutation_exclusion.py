@@ -88,7 +88,7 @@ def _shaped_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
     Returns the queue and the dead name.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 3})
     assert ledger.acquire(HOLDER_H, {KIND: 1}) is True
@@ -119,7 +119,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
     """Run one mint with a real held->free release armed between the
     reclaim's two listings, a prefix free snapshot plus a real claim
     right after the reclaim, and report the observed outcome."""
-    free_dir = queue.root / pool.TIER_RESERVATIONS / TIER / "free"
+    free_dir = queue.root / pool.record_store.TIER_RESERVATIONS / TIER / "free"
     fired = {"glob": False}
     helper_done = threading.Event()
     helper_attempted = threading.Event()
@@ -133,7 +133,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         queue.tier_ledger(TIER).release(HOLDER_H)
         helper_done.set()
 
-    real_glob = pool._glob
+    real_glob = pool.immutable_files.match_optional
 
     def _observe_free_scan(path, pattern, result):
         if (not fired["glob"] and str(path) == str(free_dir)
@@ -153,21 +153,21 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
     def _hooked_glob(path, pattern):
         return _observe_free_scan(path, pattern, real_glob(path, pattern))
 
-    monkeypatch.setattr(pool, "_glob", _hooked_glob)
+    monkeypatch.setattr(pool.immutable_files, 'match_optional', _hooked_glob)
     # The fixed minter uses the strict census. Interrupt the same actual
     # headroom scan on both revisions, before either scans held tokens.
     if hasattr(pool, "_glob_visible"):
-        real_visible = pool._glob_visible
+        real_visible = pool.immutable_files.match_required
 
         def _hooked_visible(path, pattern):
             return _observe_free_scan(path, pattern, real_visible(path, pattern))
 
-        monkeypatch.setattr(pool, "_glob_visible", _hooked_visible)
+        monkeypatch.setattr(pool.immutable_files, 'match_required', _hooked_visible)
     real_reclaim = pool.PoolQueue._reclaim_dead_markers
 
     def _hooked_reclaim(self, ledger, wanted):
         outcome = real_reclaim(self, ledger, wanted)
-        if str(ledger.base) == str(queue.root / pool.TIER_RESERVATIONS / TIER):
+        if str(ledger.base) == str(queue.root / pool.record_store.TIER_RESERVATIONS / TIER):
             probe_ledger = self.tier_ledger(TIER)
             observed["prefix_free"] = int(
                 probe_ledger.available().get(KIND, 0))
@@ -424,7 +424,7 @@ def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
         queue.mint_tier_capacity(TIER, {KIND: 1})
     assert sick.available() == {"cpu": 1, "mem_gb": 4}
     assert well.available() == {"cpu": 1, "mem_gb": 4}
-    report = pool._read_json(sick.census_report_path)
+    report = pool.record_store.read_queue_record(sick.census_report_path)
     assert report["kinds_asked"] == ["cpu"]
     assert report["retired"] == {"cpu": 4}
     assert report["unreadable"] == [_eio(sick.held_dir / key)]
@@ -643,7 +643,7 @@ def test_r6_dead_path_enotdir_refuses_dead_decision(tmp_path: Path) -> None:
     refuses the dead decision instead of crashing the mint; free and
     held stay exact and the healed retry is exact."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 2})
     assert ledger.acquire(HOLDER_H, {KIND: 1}) is True
@@ -670,12 +670,12 @@ def test_r6_visible_enumeration_contract(tmp_path: Path) -> None:
         pytest.skip("strict census absent pre-R6")
     probe = tmp_path / "probe"
     probe.write_text("")
-    assert pool._scan(probe) == []
+    assert pool.immutable_files.scan_optional(probe) == []
     with pytest.raises(OSError):
-        pool._scan_visible(probe)
-    assert pool._glob(probe, "*-*") == []
+        pool.immutable_files.scan_required(probe)
+    assert pool.immutable_files.match_optional(probe, "*-*") == []
     with pytest.raises(OSError):
-        pool._glob_visible(probe, "*-*")
+        pool.immutable_files.match_required(probe, "*-*")
 
 
 def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
@@ -712,7 +712,7 @@ def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
 
 def _host_ledger(tmp_path: Path, host: str = "atomic-host"):
     queue = pool.PoolQueue(tmp_path / "host-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue, queue.ledger(host)
 
 
@@ -923,7 +923,7 @@ def test_host_transfer_cannot_hide_a_token_mid_holder_census(
     assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
     started, completed = threading.Event(), threading.Event()
     errors, workers = [], []
-    real_glob = pool._glob
+    real_glob = pool.immutable_files.match_optional
     fired = False
 
     def transfer():
@@ -946,7 +946,7 @@ def test_host_transfer_cannot_hide_a_token_mid_holder_census(
             assert not completed.wait(timeout=0.1), "transfer hid a captured holder's token"
         return real_glob(directory, pattern)
 
-    monkeypatch.setattr(pool, "_glob", holder_names)
+    monkeypatch.setattr(pool.immutable_files, 'match_optional', holder_names)
     try:
         with ledger._mutation_locked():
             assert ledger.held() == {"spool_gb": 1}

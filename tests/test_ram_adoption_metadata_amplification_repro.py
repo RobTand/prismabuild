@@ -141,8 +141,8 @@ def _fixture(tmp_path: Path, *, destinations: int = N_DESTS,
     The promoting mover itself has no fragment yet -- mid-run.
     """
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    residence = tmp_path / "queue" / pool.RESIDENCY
+    queue.records.ensure_layout()
+    residence = tmp_path / "queue" / pool.record_store.RESIDENCY
     ram_root = tmp_path / "ram" / "prewarm"
     ram_root.mkdir(parents=True)
     src_root = tmp_path / "src"

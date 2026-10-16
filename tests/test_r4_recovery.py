@@ -83,7 +83,7 @@ def _terminal_transferring(q: pool.PoolQueue, gib: int = 3
     assert q.advance_funding_state(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True
-    done = q.item_path(pool.DONE, mover)
+    done = q.records.item_path(pool.record_store.DONE, mover)
     done.parent.mkdir(parents=True, exist_ok=True)
     return ledger, mover, name, done
 
@@ -194,7 +194,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
     ledger = q.tier_ledger(TIER)
     mover = _hexkey("r4-corrupt-mover")
     assert ledger.acquire(mover, {"stage_gib": 1}) is True
-    path = q.funding_path(mover, TIER)
+    path = q.records.funding_path(mover, TIER)
     path.parent.mkdir(parents=True, exist_ok=True)
     grant = window_credit.grant_key(
         _hexkey("r4-corrupt-consumer"), TIER, "mover_row", "phase-r4")
