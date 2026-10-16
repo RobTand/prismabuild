@@ -14,7 +14,7 @@ def test_window_bounds_ready_work_and_reports_unsubmitted_suffix(
     assert pbcampaign.main([
         "--transport", "pool", "--max-inflight", "2", "--wait-s", "0", manifest,
     ]) == pbcampaign.pbwait.GAVE_UP_EXIT
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
     output = capsys.readouterr()
     assert "not_submitted" in output.out
     assert "row 2" in output.err and "row 3" in output.err
@@ -29,20 +29,20 @@ def test_window_resumes_attached_prefix_and_replays_receipts(
     manifest = _manifest(tmp_path, [_row(work, f"printf resume-{i}") for i in range(3)])
     flags = ["--transport", "pool", "--max-inflight", "2"]
     assert pbcampaign.main([*flags, "--wait-s", "0", manifest]) == 75
-    before = {p.stem for p in queue.dir(pool.READY).glob("*.json")}
+    before = {p.stem for p in queue.records.dir(pool.record_store.READY).glob("*.json")}
     assert len(before) == 2
     capsys.readouterr()
     assert pbcampaign.main([*flags, "--wait-s", "0", manifest]) == 75
     assert "attached" in capsys.readouterr().err
-    assert {p.stem for p in queue.dir(pool.READY).glob("*.json")} == before
+    assert {p.stem for p in queue.records.dir(pool.record_store.READY).glob("*.json")} == before
     assert _campaign_against_a_worker(queue, manifest, rows=3, argv=flags) == 0
     capsys.readouterr()
-    done = {p.stem for p in queue.dir(pool.DONE).glob("*.json")}
+    done = {p.stem for p in queue.records.dir(pool.record_store.DONE).glob("*.json")}
     assert len(done) == 3 and before <= done
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert pbcampaign.main([*flags, manifest]) == 0
     assert capsys.readouterr().out.count("cache_hit") == 3
-    assert {p.stem for p in queue.dir(pool.DONE).glob("*.json")} == done
+    assert {p.stem for p in queue.records.dir(pool.record_store.DONE).glob("*.json")} == done
 
 
 def _window_fakes(monkeypatch, statuses, *, submitted_status="submitted"):
@@ -93,7 +93,7 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
         {0: "cache_hit"}, {0: "cache_hit"}, {1: "cache_hit"},
     ], submitted_status="cache_hit")
     queue = pool.PoolQueue(pbcampaign.pbrun.SH / "pb-queue")
-    path = queue.item_path(pool.CLAIMED, keys[0])
+    path = queue.records.item_path(pool.record_store.CLAIMED, keys[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
     monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
@@ -105,7 +105,7 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
     assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
 
 
-@pytest.mark.parametrize("suffix", [pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX])
+@pytest.mark.parametrize("suffix", [pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX])
 def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
     monkeypatch, tmp_path, suffix,
 ):
@@ -119,7 +119,7 @@ def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
         {0: "executed"}, {0: "executed", 1: "executed"}, {1: "executed"},
     ])
     queue = pool.PoolQueue(pbcampaign.pbrun.SH / "pb-queue")
-    path = queue.dir(pool.CLAIMED) / f"{keys[0]}.1.sparky.7.abcdef01{suffix}"
+    path = queue.records.dir(pool.record_store.CLAIMED) / f"{keys[0]}.1.sparky.7.abcdef01{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
     monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
@@ -133,14 +133,14 @@ def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
 
 def test_only_this_keys_finish_records_occupy_its_slot(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key, other = "a" * 64, "b" * 64
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     assert pbcampaign._pool_slot_occupied(queue, key) is False
-    (claimed / f"{other}.1.h.1.x{pool.TOMBSTONE_SUFFIX}").write_text("{}")
+    (claimed / f"{other}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text("{}")
     (claimed / f"{key}.lease").write_text("{}")
     assert pbcampaign._pool_slot_occupied(queue, key) is False
-    for suffix in (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX):
+    for suffix in (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX):
         record = claimed / f"{key}.1.h.1.y{suffix}"
         record.write_text("not json")
         # Occupancy is the name, exactly as the pool's claim gate reads it.

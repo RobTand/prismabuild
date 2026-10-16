@@ -188,7 +188,7 @@ def test_a_staged_row_publishes_the_request_and_plan_pbrun_publishes(
     assert "ram_tier_id" not in plan, "residency_ram off did not reach pbrun"
     assert plan["reader"] == {"prefetch_depth_bytes": 8 * storage_tiers.GIB,
                               "read_mb_s": 400}
-    row = json.loads(queue.item_path(pool.READY, key).read_text())
+    row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert row["residency"]["tier_id"] == TIER
     assert row["resources"]["cpu"] == 4
     request = (tmp_path / "cas" / "requests" / key[:2] / f"{key}.json").read_bytes()
@@ -213,6 +213,6 @@ def test_a_staged_row_publishes_the_request_and_plan_pbrun_publishes(
     assert by_hand is not None
     assert ({k: v for k, v in by_hand.items() if k != "demand_source"}
             == {k: v for k, v in plan.items() if k != "demand_source"})
-    by_hand_row = json.loads(queue.item_path(pool.READY, key).read_text())
+    by_hand_row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert by_hand_row["residency"] == row["residency"]
     assert by_hand_row["resources"] == row["resources"]

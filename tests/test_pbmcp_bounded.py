@@ -127,8 +127,8 @@ def test_a_record_read_that_blocks_on_the_mount_is_bounded(
     """
 
     fleet = fx.build(tmp_path)
-    record = fleet.record(pool.DONE, fx.DONE_KEY)
-    outcome = fleet.queue.attempt_path(record, 1)
+    record = fleet.record(pool.record_store.DONE, fx.DONE_KEY)
+    outcome = fleet.queue.records.attempt_path(record, 1)
     outcome.chmod(0o644)
     outcome.unlink()
     os.mkfifo(outcome, 0o444)
@@ -154,8 +154,8 @@ def test_the_server_still_answers_after_a_section_timed_out(
     """A bounded read must end a call, never a session."""
 
     fleet = fx.build(tmp_path)
-    record = fleet.record(pool.DONE, fx.DONE_KEY)
-    outcome = fleet.queue.attempt_path(record, 1)
+    record = fleet.record(pool.record_store.DONE, fx.DONE_KEY)
+    outcome = fleet.queue.records.attempt_path(record, 1)
     outcome.chmod(0o644)
     outcome.unlink()
     os.mkfifo(outcome, 0o444)
@@ -289,7 +289,7 @@ def test_a_stale_handle_on_the_record_is_not_a_missing_action(
     def stale(path, **kwargs):
         raise OSError(errno.ESTALE, "Stale file handle", str(path))
 
-    monkeypatch.setattr(pbmcp.pool, "_read_json", stale)
+    monkeypatch.setattr(pbmcp.pool.record_store, '_read_json', stale)
     body = session.call("pb_action", {"key_prefix": fx.DONE_KEY[:12]})
 
     assert body["complete"] is False

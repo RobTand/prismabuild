@@ -94,7 +94,7 @@ def test_gpu_budget_row_seals_the_same_action_as_pbrun(
     manifest = _manifest(tmp_path, [row])
     assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
     campaign_key = _one_json_line(capsys.readouterr())["action_key"]
-    record = json.loads((queue.dir(pool.READY) / f"{campaign_key}.json").read_text())
+    record = json.loads((queue.records.dir(pool.record_store.READY) / f"{campaign_key}.json").read_text())
     request = Path(record["cas_root"]) / "requests" / campaign_key[:2] / f"{campaign_key}.json"
     params = json.loads(request.read_text())["params"]
     assert params["gpu_memory_gb"] == float(budget)
@@ -129,7 +129,7 @@ def test_invalid_gpu_budget_refuses_manifest_before_any_submission(
     ])
     with pytest.raises(SystemExit, match="row 1: gpu_memory_gb"):
         pbcampaign.main(["--transport", "pool", "--detach", manifest])
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 @pytest.mark.parametrize("transport,fields,reason", [
@@ -148,7 +148,7 @@ def test_unsupported_gpu_budget_refuses_manifest_before_any_submission(
     ])
     with pytest.raises(SystemExit, match=f"row 1:.*{reason}"):
         pbcampaign.main(["--transport", transport, "--detach", manifest])
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_exclusive_row_implies_gpu_demand_for_memory_budget(tmp_path):
@@ -271,14 +271,14 @@ def test_re_running_the_same_manifest_runs_nothing(
     first_statuses = [line.split()[1] for line in first.splitlines()[1:]]
     assert len(first_statuses) == 2
     assert all(status in {"executed", "cache_hit"} for status in first_statuses)
-    published_before = len(list(queue.dir(pool.DONE).glob("*.json")))
+    published_before = len(list(queue.records.dir(pool.record_store.DONE).glob("*.json")))
 
     assert pbcampaign.main([manifest]) == 0
     again = capsys.readouterr().out
     assert [line.split()[1] for line in again.splitlines()[1:]] == [
         "cache_hit", "cache_hit"], again
-    assert not list(queue.dir(pool.READY).glob("*.json"))
-    assert len(list(queue.dir(pool.DONE).glob("*.json"))) == published_before
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
+    assert len(list(queue.records.dir(pool.record_store.DONE).glob("*.json"))) == published_before
 
 
 def test_detach_prints_the_keys_and_does_not_wait(
@@ -295,7 +295,7 @@ def test_detach_prints_the_keys_and_does_not_wait(
              if line.strip()]
     assert [line["status"] for line in lines] == ["submitted", "submitted"]
     assert len({line["action_key"] for line in lines}) == 2
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
 
 # --------------------------------------------------------------------------
@@ -317,7 +317,7 @@ def test_an_unknown_field_is_refused_before_anything_is_sealed(
         pbcampaign.main([manifest])
     assert "timeout" in str(raised.value)
     # Nothing was submitted: the refusal is at load, not at row two.
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_a_row_pbrun_refuses_does_not_stop_the_others(
@@ -336,7 +336,7 @@ def test_a_row_pbrun_refuses_does_not_stop_the_others(
     captured = capsys.readouterr()
     assert len([line for line in captured.out.splitlines() if line.strip()]) == 2
     assert "row 1 refused" in captured.err
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
 
 # --------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def test_a_measurement_without_a_host_class_is_refused_before_anything_is_sealed
 
     assert "row 1" in str(raised.value)
     assert "--measurement requires --host-class" in str(raised.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_a_host_class_row_is_refused_on_the_pull_queue(tmp_path: Path) -> None:
