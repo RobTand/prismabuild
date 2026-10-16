@@ -475,10 +475,6 @@
    "src/prismabuild/slurm_lane.py",
    "src/prismabuild/storage_tiers.py"
   ],
-  "_scan": [
-   "src/prismabuild/pool.py",
-   "tools/fleet/require_pool.py"
-  ],
   "_seed": [
    "tools/fleet/pbcanary_legs/leg3.py",
    "tools/fleet/pbcanary_legs/leg4.py"

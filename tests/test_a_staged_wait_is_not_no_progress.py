@@ -403,7 +403,8 @@ def test_staged_wait_process_adapter_is_scoped_and_finite(
         return delegated
 
     path = tmp_path / "selected.progress"
-    queue = SimpleNamespace(action_progress_path=lambda key: path, _box_window=None)
+    queue = SimpleNamespace(
+        records=SimpleNamespace(action_progress_path=lambda key: path), _box_window=None)
     with monkeypatch.context() as patch:
         patch.setattr(pool, "subprocess", SimpleNamespace(
             **{**vars(subprocess), "Popen": fallback}))
