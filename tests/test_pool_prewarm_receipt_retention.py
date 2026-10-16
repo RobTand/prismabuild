@@ -34,14 +34,14 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
 def _publish(queue: pool.PoolQueue, key: str) -> dict:
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py")
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
 
 
 def _receipt(queue: pool.PoolQueue, key: str, **overrides) -> None:
@@ -56,7 +56,7 @@ def _receipt(queue: pool.PoolQueue, key: str, **overrides) -> None:
 
 
 def _receipt_path(queue: pool.PoolQueue, key: str) -> Path:
-    return queue.root / pool.PREWARM / f"{key}.json"
+    return queue.root / pool.record_store.PREWARM / f"{key}.json"
 
 
 # -- retention ------------------------------------------------------------
@@ -202,7 +202,7 @@ def test_a_successor_generation_reads_as_superseded_not_live(
     # A successor generation holds the claim now: the old stamp is gone.
     successor = dict(live_claim)
     successor["published_unix"] = float(item["published_unix"]) + 1000.0
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(successor))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(successor))
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "superseded"
 
@@ -221,7 +221,7 @@ def test_a_key_nowhere_is_unknown_not_terminal(
 
     key = _key()
     item = _publish(queue, key)
-    (queue.item_path(pool.READY, key)).unlink()
+    (queue.records.item_path(pool.record_store.READY, key)).unlink()
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "unknown"
 
@@ -242,6 +242,6 @@ def test_an_unreadable_record_is_unknown_not_terminal(
     def failing(path, **kwargs):
         raise OSError("stale handle")
 
-    monkeypatch.setattr(pool, "_read_json", failing)
+    monkeypatch.setattr(pool.record_store, '_read_json', failing)
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "unknown"

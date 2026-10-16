@@ -18,7 +18,7 @@ def queue_and_record(tmp_path):
     q = pool.PoolQueue(tmp_path / 'queue')
     q.publish(action_key=KEY, cas_root=q.root / 'cas', checkout_root=q.root / 'co',
               worker_script=q.root / 'worker.py', resources={'cpu': 1})
-    ready = q.item_path(pool.READY, KEY)
+    ready = q.records.item_path(pool.record_store.READY, KEY)
     return q, ready, json.loads(ready.read_text())
 
 
@@ -60,7 +60,7 @@ def test_a_taken_valid_record_is_recovered_after_interruption(tmp_path, monkeypa
     q.reap_stale()
     assert ready.exists(), 'a valid record remains invisible after recovery'
     assert json.loads(ready.read_text()) == original
-    assert not q.item_path(pool.FAILED, KEY).exists()
+    assert not q.records.item_path(pool.record_store.FAILED, KEY).exists()
 
 
 def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monkeypatch):
@@ -69,7 +69,7 @@ def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monk
     real_publish = immutable_files.publish_immutable
 
     def publish(path, *args, **kwargs):
-        if Path(path) == q.item_path(pool.FAILED, KEY):
+        if Path(path) == q.records.item_path(pool.record_store.FAILED, KEY):
             raise OSError(errno.ENOSPC, 'terminal publication interrupted')
         return real_publish(path, *args, **kwargs)
 
@@ -80,7 +80,7 @@ def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monk
     later = pool._now() + pool.LEASE_TIMEOUT_S * 2
     monkeypatch.setattr(pool, '_now', lambda: later)
     q.reap_stale()
-    ending = q.item_path(pool.FAILED, KEY)
+    ending = q.records.item_path(pool.record_store.FAILED, KEY)
     assert ending.exists(), 'the owned stub lost its observable ending on a crash'
     assert json.loads(ending.read_text())['status'] == 'orphaned_stub'
 
@@ -110,7 +110,7 @@ def test_recovery_does_not_replace_a_new_publication(tmp_path, monkeypatch):
     q.sweep_ready_transitions()
     assert json.loads(ready.read_text()) == replacement
     assert not list((q.root / 'ready-transitions').glob('*.json'))
-    assert list(q.superseded_dir().glob('*.ready-source'))
+    assert list(q.records.superseded_dir().glob('*.ready-source'))
 
 
 def test_an_old_terminal_does_not_retire_a_later_captured_request(tmp_path, monkeypatch):
@@ -118,10 +118,10 @@ def test_an_old_terminal_does_not_retire_a_later_captured_request(tmp_path, monk
     stranded_capture(q, ready, monkeypatch)
     prior = {**original, 'published_unix': original['published_unix'] - 1,
              'status': 'executed', 'schema': pool.POOL_OUTCOME_SCHEMA_V1}
-    pool._write_json_atomic(q.item_path(pool.DONE, KEY), prior)
+    pool._write_json_atomic(q.records.item_path(pool.record_store.DONE, KEY), prior)
     q.sweep_ready_transitions()
     assert json.loads(ready.read_text()) == original
-    assert json.loads(q.item_path(pool.DONE, KEY).read_text()) == prior
+    assert json.loads(q.records.item_path(pool.record_store.DONE, KEY).read_text()) == prior
 
 
 def test_recovery_retains_source_while_terminal_listing_is_unavailable(tmp_path, monkeypatch):
@@ -130,7 +130,7 @@ def test_recovery_retains_source_while_terminal_listing_is_unavailable(tmp_path,
     original_listdir = os.listdir
 
     def listdir(path):
-        if Path(path) == q.dir(pool.DONE):
+        if Path(path) == q.records.dir(pool.record_store.DONE):
             raise OSError(errno.ESTALE, 'unavailable terminal census')
         return original_listdir(path)
 
@@ -159,7 +159,7 @@ def test_recovery_defers_while_the_original_key_transition_is_active(tmp_path, m
 def test_empty_terminal_keeps_the_captured_record_for_recovery(tmp_path, monkeypatch):
     q, ready, original = queue_and_record(tmp_path)
     stranded_capture(q, ready, monkeypatch)
-    ending = q.item_path(pool.DONE, KEY)
+    ending = q.records.item_path(pool.record_store.DONE, KEY)
     ending.write_bytes(b'')
     assert q.sweep_ready_transitions() == []
     assert not ready.exists()

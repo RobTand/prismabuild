@@ -39,7 +39,7 @@ STAGE = f"stage_gib@{TIER}"
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -74,8 +74,8 @@ def _rewrite_resources(q: pool.PoolQueue, key: str, resources: object) -> None:
     exists to demand.
     """
 
-    path = q.item_path(pool.READY, key)
-    item = pool._read_json(path)
+    path = q.records.item_path(pool.record_store.READY, key)
+    item = pool.record_store.read_queue_record(path)
     assert item is not None
     item["resources"] = resources
     pool._write_json_atomic(path, item)
@@ -124,7 +124,7 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
     assert f"stage_gib@{bad_tier}" in denial["evidence"]["demand"]
     # A denial is not a removal and not an ageing: the record stays for an
     # operator to look at, and this box spent no pass and no token on it.
-    assert queue.item_path(pool.READY, POISON).exists()
+    assert queue.records.item_path(pool.record_store.READY, POISON).exists()
     assert queue.passes(POISON) == 0
     assert queue.tier_holdings(POISON) == {}
     assert queue.ledger().held() == {"cpu": 1}
@@ -154,7 +154,7 @@ def test_a_foreign_resources_block_is_a_denial_and_the_poll_carries_on(
     denial = _denial(queue, POISON)
     assert denial is not None and denial["reason"] == "malformed_demand"
     assert denial["evidence"]["error"]
-    assert queue.item_path(pool.READY, POISON).exists()
+    assert queue.records.item_path(pool.record_store.READY, POISON).exists()
     assert queue.passes(POISON) == 0
     assert queue.ledger().held() == {"cpu": 1}
 
@@ -167,7 +167,7 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
 ) -> None:
     # A foreign writer truncated the mover's done record: the bytes parse to
     # nothing, and the consumer naming that lead must not take the loop down.
-    _write_foreign_bytes(queue.item_path(pool.DONE, MOVER), b'{"status": "execut')
+    _write_foreign_bytes(queue.records.item_path(pool.record_store.DONE, MOVER), b'{"status": "execut')
     _publish_consumer(queue, [MOVER])
     _publish(queue, GOOD, {"cpu": 1})
 
@@ -178,7 +178,7 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert "not valid JSON" in str(denial["evidence"]["error"])
     assert denial["evidence"]["leads"] == [MOVER]
-    assert queue.item_path(pool.READY, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     assert queue.passes(CONSUMER) == 0
     assert queue.ledger().held() == {"cpu": 1}
 
@@ -194,9 +194,9 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
     item gets a denial naming the error, and the loop moves on.
     """
 
-    done_path = queue.item_path(pool.DONE, MOVER)
+    done_path = queue.records.item_path(pool.record_store.DONE, MOVER)
     pool._write_json_atomic(done_path, {"status": "executed"})
-    real_read_json = pool._read_json
+    real_read_json = pool.record_store.read_queue_record
 
     def stale_for_the_done_path(
         path: Path, *, tolerate_stale: bool = False,
@@ -205,7 +205,7 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
             raise OSError(errno.ESTALE, "Stale file handle")
         return real_read_json(path, tolerate_stale=tolerate_stale)
 
-    monkeypatch.setattr(pool, "_read_json", stale_for_the_done_path)
+    monkeypatch.setattr(pool.record_store, '_read_json', stale_for_the_done_path)
     _publish_consumer(queue, [MOVER])
     _publish(queue, GOOD, {"cpu": 1})
 
@@ -216,6 +216,6 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert "Stale file handle" in str(denial["evidence"]["error"])
     assert denial["evidence"]["leads"] == [MOVER]
-    assert queue.item_path(pool.READY, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     assert queue.passes(CONSUMER) == 0
     assert queue.ledger().held() == {"cpu": 1}

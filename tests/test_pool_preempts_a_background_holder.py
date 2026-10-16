@@ -43,7 +43,7 @@ OTHER = uuid.uuid4().hex + uuid.uuid4().hex
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -103,7 +103,7 @@ def test_a_foreground_denial_preempts_the_background_holder_and_requeues_it(
 
     # Requeued at its own priority, with its passes, as a fresh generation the
     # cancellation does not cover.
-    requeued = json.loads(queue.item_path(pool.READY, BACKGROUND).read_text())
+    requeued = json.loads(queue.records.item_path(pool.record_store.READY, BACKGROUND).read_text())
     assert requeued["priority"] == -10
     assert requeued["preempted_by"] == FOREGROUND
     assert requeued["resources"] == {"gpu": 1}
@@ -114,7 +114,7 @@ def test_a_foreground_denial_preempts_the_background_holder_and_requeues_it(
     assert queue.passes(BACKGROUND) == 1
 
     # The holder's claim still owns the token, so nothing may run yet.
-    assert queue.item_path(pool.CLAIMED, BACKGROUND).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, BACKGROUND).exists()
     assert queue.claim(capacity=capacity) is None
 
     # The holder concludes the withdrawal and the token comes back.
@@ -146,8 +146,8 @@ def test_a_background_denial_never_preempts_a_background_holder(
     assert queue.claim(capacity=capacity) is None
 
     assert _decisions(queue, BACKGROUND) == []
-    assert queue.item_path(pool.CLAIMED, BACKGROUND).exists()
-    assert queue.item_path(pool.READY, OTHER).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, BACKGROUND).exists()
+    assert queue.records.item_path(pool.record_store.READY, OTHER).exists()
     assert queue.ledger().held() == {"gpu": 1}
 
 
@@ -167,7 +167,7 @@ def test_a_foreground_holder_is_never_preempted_by_foreground_work(
     assert queue.claim(capacity=capacity) is None
 
     assert _decisions(queue, OTHER) == []
-    assert queue.item_path(pool.CLAIMED, OTHER).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, OTHER).exists()
     assert queue.ledger().held() == {"gpu": 1}
 
 
@@ -196,7 +196,7 @@ def test_a_holder_whose_release_would_still_not_fit_is_left_alone(
     assert queue.claim(capacity=capacity) is None
 
     assert _decisions(queue, BACKGROUND) == []
-    assert queue.item_path(pool.CLAIMED, BACKGROUND).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, BACKGROUND).exists()
 
 
 def test_preemption_never_cascades_while_a_release_is_already_in_flight(
@@ -252,7 +252,7 @@ def test_a_holder_that_finished_first_is_not_requeued(
     original = pool.PoolQueue.withdraw
 
     def finish_then_withdraw(self, key, *args, **kwargs):
-        if key == BACKGROUND and queue.item_path(pool.CLAIMED, key).exists():
+        if key == BACKGROUND and queue.records.item_path(pool.record_store.CLAIMED, key).exists():
             queue.finish(BACKGROUND, status="executed",
                          detail={"returncode": 0}, claim_snapshot=holder)
         return original(self, key, *args, **kwargs)
@@ -261,8 +261,8 @@ def test_a_holder_that_finished_first_is_not_requeued(
 
     queue.claim(capacity=capacity)
 
-    assert queue.item_path(pool.DONE, BACKGROUND).exists()
-    assert not queue.item_path(pool.READY, BACKGROUND).exists()
+    assert queue.records.item_path(pool.record_store.DONE, BACKGROUND).exists()
+    assert not queue.records.item_path(pool.record_store.READY, BACKGROUND).exists()
     assert _decisions(queue, BACKGROUND) == []
 
 
@@ -293,6 +293,6 @@ def test_a_contradictory_holder_does_not_end_the_claim_pass(
     monkeypatch.setattr(pool.PoolQueue, "withdraw", refuse)
 
     assert queue.claim(capacity=capacity) is None
-    assert not queue.item_path(pool.READY, BACKGROUND).exists()
-    assert queue.item_path(pool.CLAIMED, BACKGROUND).exists()
+    assert not queue.records.item_path(pool.record_store.READY, BACKGROUND).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, BACKGROUND).exists()
     assert queue.ledger().held() == {"gpu": 1}
