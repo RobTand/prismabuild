@@ -401,10 +401,11 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
     states: dict[int, str] = {}
     for other in record["members"]:  # type: ignore[union-attr]
         state = "absent"
-        for name, directory in (("claimed", pool.record_store.CLAIMED), ("done", pool.record_store.DONE),
-                                ("failed", pool.record_store.FAILED), ("withdrawn", pool.record_store.WITHDRAWN),
-                                ("ready", pool.record_store.READY)):
-            row = _gang_read(queue.records.item_path(directory, other["action_key"]))
+        for observation in queue.records.gang_member_slots(other["action_key"]):
+            if isinstance(observation.result, pool.record_store.Unknown):
+                raise GangContractError(f"non-object gang record: {observation.address.path}")
+            row = pool.record_store.value_or_raise(observation.result)
+            name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
                     and float(row.get("published_unix", other["published_unix"]))
                     == float(other["published_unix"])):

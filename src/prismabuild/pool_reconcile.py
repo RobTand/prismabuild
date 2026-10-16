@@ -33,10 +33,8 @@ def _number(value: object) -> bool:
         return False
 
 
-def _read(path: Path, *, readonly: bool = False) -> tuple[dict, bytes]:
-    reader = (immutable_files.read_immutable_file if readonly
-              else immutable_files.read_stable_file)
-    raw = reader(
+def _read_request(path: Path) -> tuple[dict, bytes]:
+    raw = immutable_files.read_immutable_file(
         path,
         where="pool reconciliation evidence",
     )
@@ -46,26 +44,12 @@ def _read(path: Path, *, readonly: bool = False) -> tuple[dict, bytes]:
 
 
 def _absent(path: Path, reason: str) -> None:
-    # lstat refuses symlinks and unreadable entries as well as ordinary files;
-    # neither a corrupt active record nor an unreadable mount means absence.
-    try:
-        # Enumeration refreshes shared-directory knowledge before relying on
-        # NFS's per-name negative cache, as the queue's withdrawal reader does.
-        if any(entry.name == path.name for entry in path.parent.iterdir()):
-            raise pool.PoolContractError(reason)
-    except FileNotFoundError:
-        pass
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return
-    raise pool.PoolContractError(reason)
+    _require(immutable_files.refreshed_absence(path), reason)
 
 
 def _quiescent(q: pool.PoolQueue, key: str, record: dict | None = None) -> None:
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.WITHDRAWN):
-        _absent(q.records.item_path(state, key), f"conflicting {state} record for this action")
-    _absent(q.records.lease_path(key), "action still has a lease")
+    for reason, observation in q.records.reconciliation_slots(key):
+        _require(pool.record_store.value_or_raise(observation) is None, reason)
     reservations = q.root / pool.RESERVATIONS
     _require(stat.S_ISDIR(reservations.lstat().st_mode), "reservation root is not a directory")
     for host in reservations.iterdir():
@@ -77,7 +61,7 @@ def _quiescent(q: pool.PoolQueue, key: str, record: dict | None = None) -> None:
         # Claim intent normally survives finish. Only the intent of this
         # already-finished claimant is harmless; a newer one is a conflict.
         try:
-            intent, _ = _read(q.records.item_path(pool.record_store.INTENT, key))
+            intent, _ = q.records.reconciliation_intent(key)
         except FileNotFoundError:
             return
         declared = intent.get("intent_unix")
@@ -159,7 +143,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
     with q._transition_locked(key):
         _quiescent(q, key)
         terminal_path = q.records.item_path(pool.record_store.FAILED, key)
-        record, terminal_raw = _read(terminal_path)
+        record, terminal_raw = q.records.reconciliation_row_at(terminal_path)
         _require(record.get("schema") == pool.POOL_OUTCOME_SCHEMA_V1
                  and record.get("action_key") == key and record.get("status") == "failed",
                  "selected ending is not a failed pool execution")
@@ -212,7 +196,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         cleanup = _cleanup(record, detail)
         _quiescent(q, key, record)
         request_path = Path(cas.root) / "requests" / key[:2] / f"{key}.json"
-        action, action_raw = _read(request_path, readonly=True)
+        action, action_raw = _read_request(request_path)
         action = pb.validate_action(action)
         _require(action["action_key"] == key and action_raw == pb._canonical_file_bytes(action),
                  "sealed action is not the canonical request for this key")
@@ -221,7 +205,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         receipt = cas.lookup(action)  # Full manifest, producer attestation and blob verification.
         _require(receipt is not None, "no verified canonical receipt for this action")
         attempt_path = q.records.attempt_path(record, attempt)
-        _, attempt_raw = _read(attempt_path, readonly=True)
+        _, attempt_raw = q.records.reconciliation_history_at(attempt_path)
         supplement_path = attempt_path.with_name(f"{attempt:08d}.receipt-reconciliation.json")
         body = {
             "schema": SCHEMA, "action_key": key, "generation": generation, "attempt": attempt,
@@ -243,8 +227,8 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         # Retain a final readback against unsupported concurrent/manual writers
         # too; an earlier CAS read is no license to reconcile a changed ending.
         _quiescent(q, key, record)
-        _require(_read(terminal_path)[1] == terminal_raw, "ending changed during reconciliation")
+        _require(q.records.reconciliation_row_at(terminal_path)[1] == terminal_raw, "ending changed during reconciliation")
         q.records.file_receipt_reconciliation_at(supplement_path, supplement)
-        observed, raw = _read(supplement_path, readonly=True)
+        observed, raw = q.records.reconciliation_history_at(supplement_path)
         _require(raw == pb._canonical_file_bytes(supplement), "reconciliation readback differs")
         return {**observed, "reconciliation_path": str(supplement_path)}

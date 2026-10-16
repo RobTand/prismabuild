@@ -155,7 +155,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 if not name.endswith(".json") and not is_mark:
                     continue  # leases/status/progress are not publications
                 key = name[:64]
-                if not pool._is_hex64(key):
+                if not pool.record_store.key_shaped(key):
                     raise CensusUnavailable(f"unaddressable publication: {entry.path}")
                 record = _read(Path(entry.path))
                 if record is None:
@@ -406,7 +406,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         raise CensusUnavailable("measurement refresh record cap exceeded")
     selections: dict[str, dict] = {}
     for name in pass_names:
-        if not name.endswith(".json") or not pool_mod._is_hex64(name[:-5]):
+        if not name.endswith(".json") or not pool_mod.record_store.key_shaped(name[:-5]):
             continue
         try:
             record = _read(queue.root / pool_mod.record_store.PASSES / name)

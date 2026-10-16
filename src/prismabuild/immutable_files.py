@@ -829,3 +829,57 @@ def publish_mutable(
         return True
     finally:
         temporary.unlink(missing_ok=True)
+
+def refreshed_absence(path: Path) -> bool:
+    """Enumerate the parent before relying on the name's negative lookup."""
+    try:
+        if any(entry.name == path.name for entry in path.parent.iterdir()):
+            return False
+    except FileNotFoundError:
+        pass
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def scan_custodied(directory: Path, *, error_type=ActionContractError):
+    """Sorted native entries after refusing symlinked parent components."""
+    try:
+        for component in reversed((directory, *directory.parents)):
+            if stat.S_ISLNK(os.lstat(component).st_mode):
+                raise error_type(f"refusing symlinked store directory: {component}")
+        with os.scandir(directory) as scan:
+            return sorted(scan, key=lambda entry: entry.name)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as exc:
+        raise error_type(f"cannot list {directory}: {exc}") from exc
+
+def confirmed_metadata_absence(path: Path) -> bool:
+    """Positive absence with strict close-to-open NFS revalidation.
+
+    Opening the parent follows the queue's ``_read_json_fresh`` discipline,
+    without its best-effort fallback or another full directory listing for
+    each candidate. Any object at the address retains, including symlinks;
+    unreadable/non-directory parents raise instead of becoming absence.
+    """
+    try:
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY
+                             | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        # The parent can itself have a negatively cached lookup. Revalidate
+        # its parent before concluding that this subtree does not exist.
+        if confirmed_metadata_absence(path.parent):
+            return True
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY
+                             | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+

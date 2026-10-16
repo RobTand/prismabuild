@@ -1358,6 +1358,265 @@ class RecordStore:
             conflict_error=PoolContractError)
 
 
+    def item_presence(self, state: str, key: str) -> ReadResult[bool]:
+        return self._presence_at(self.item_path(state, key), "slot-unreadable")
+
+    def lease_presence(self, key: str) -> ReadResult[bool]:
+        return self._presence_at(self.lease_path(key), "lease-unreadable")
+
+    def plan_presence(self, key: str) -> ReadResult[bool]:
+        return self._presence_at(self.residency_plan_path(key), "plan-unreadable")
+
+    def funding_presence(self, mover: str, tier: str) -> ReadResult[bool]:
+        return self._presence_at(self.funding_path(mover, tier), "funding-unreadable")
+
+    def attempt_presence(self, record: JsonRecord, attempt: int) -> ReadResult[bool]:
+        return self._presence_at(self.attempt_path(record, attempt), "attempt-unreadable")
+
+    @staticmethod
+    def _presence_at(path: Path, reason: str) -> ReadResult[bool]:
+        try:
+            present = path.exists()
+        except OSError as exc:
+            return Unknown(reason, path, exc)
+        return Present(True) if present else Absent()
+
+    def ready_first_live_row(self, key: str) -> ReadResult[JsonRecord]:
+        for state in (READY, CLAIMED):
+            result = self.item(state, key)
+            if not isinstance(result, Absent):
+                return result
+        return Absent()
+
+    def bindable_mover(self, key: str) -> ReadResult[JsonRecord]:
+        for state in (READY, CLAIMED):
+            presence = self.item_presence(state, key)
+            if isinstance(presence, Unknown):
+                return presence
+            if isinstance(presence, Absent):
+                continue
+            path = self.item_path(state, key)
+            try:
+                record = read_document(path)
+            except (OSError, ValueError, PoolContractError) as exc:
+                return Unknown("binding-row-unreadable", path, exc)
+            if record is not None:
+                return Present(record)
+        return Absent()
+
+    def advisory_live_rows(self) -> tuple[dict[str, tuple[str, JsonRecord]], list[str]]:
+        """Best-effort rows, keyed by embedded key, including hidden JSON names."""
+        live: dict[str, tuple[str, JsonRecord]] = {}
+        errors: list[str] = []
+        for state in (READY, CLAIMED):
+            try:
+                names = sorted(os.listdir(self.dir(state)))
+            except OSError as exc:
+                errors.append(f"{state}: {exc!r}")
+                continue
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                try:
+                    record = value_or_raise(self.listed_record(self.dir(state) / name))
+                except (OSError, PoolContractError):
+                    continue
+                if isinstance(record, dict):
+                    live[str(record.get("action_key", ""))] = (state, record)
+        return live, errors
+
+    def retention_live_rows(self) -> QueueCensus:
+        """Visible READY then CLAIMED rows; stop before reading past an unknown."""
+        rows: list[RecordObservation] = []
+        for state in (READY, CLAIMED):
+            directory = self.dir(state)
+            try:
+                names = sorted(os.listdir(directory))
+            except OSError as exc:
+                return QueueCensus(tuple(rows), (Unknown(f"{state} rows", directory, exc),))
+            for name in names:
+                if not name.endswith(".json") or name.startswith("."):
+                    continue
+                path = directory / name
+                try:
+                    record = read_document(path)
+                except (OSError, ValueError, PoolContractError) as exc:
+                    return QueueCensus(tuple(rows), (Unknown(f"{state}/{name}", path, exc),))
+                if isinstance(record, dict):
+                    rows.append(RecordObservation(
+                        QueueAddress(path, state, name[:-len(".json")]), Present(record)))
+        return QueueCensus(tuple(rows))
+
+    def active_pair(self, key: str) -> ReadResult[str]:
+        """CLAIMED then READY stat; refresh both missing names in that order."""
+        for state in (CLAIMED, READY):
+            path = self.item_path(state, key)
+            try:
+                path.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return Unknown(f"its {state} record could not be read: {exc}", path, exc)
+            return Present(state)
+        try:
+            for state in (CLAIMED, READY):
+                names = {path.stem for path in immutable_files.scan_optional(self.dir(state))}
+                if key in names:
+                    return Present(state)
+        except OSError as exc:
+            return Unknown(f"the queue could not be listed: {exc}", self.dir(state), exc)
+        return Absent()
+
+    def gang_member_slots(self, key: str) -> Iterator[RecordObservation]:
+        """Stable strict 64 KiB slots in gang membership's original priority."""
+        for state in (CLAIMED, DONE, FAILED, WITHDRAWN, READY):
+            path = self.item_path(state, key)
+            address = QueueAddress(path, state, key)
+            try:
+                raw = immutable_files.read_stable_file(
+                    path, where="gang record", max_bytes=64 * 1024)
+            except FileNotFoundError:
+                yield RecordObservation(address, Absent())
+                continue
+            value = digest_primitives.decode_strict_json(raw, where="gang record")
+            if not isinstance(value, dict):
+                yield RecordObservation(address, Unknown("non-object-gang-record", path))
+                continue
+            yield RecordObservation(address, Present(value))
+
+    def reconciliation_slots(self, key: str) -> Iterator[tuple[str, ReadResult[bool]]]:
+        """Fresh parent enumeration before each conflicting slot's lstat."""
+        for state in (READY, CLAIMED, DONE, WITHDRAWN):
+            path = self.item_path(state, key)
+            try:
+                absent = immutable_files.refreshed_absence(path)
+            except OSError as exc:
+                result = Unknown("slot-unreadable", path, exc)
+            else:
+                result = Absent() if absent else Present(True)
+            yield f"conflicting {state} record for this action", result
+        path = self.lease_path(key)
+        try:
+            absent = immutable_files.refreshed_absence(path)
+        except OSError as exc:
+            result = Unknown("lease-unreadable", path, exc)
+        else:
+            result = Absent() if absent else Present(True)
+        yield "action still has a lease", result
+
+    def reconciliation_intent(self, key: str) -> tuple[JsonRecord, bytes]:
+        path = self.item_path(INTENT, key)
+        raw = immutable_files.read_stable_file(path, where="pool reconciliation evidence")
+        value = digest_primitives.decode_strict_json(raw, where="pool reconciliation evidence")
+        if not isinstance(value, dict):
+            raise PoolContractError(f"evidence is not an object: {path}")
+        return value, raw
+
+    @staticmethod
+    def maintenance_live_key(name: str) -> str | None:
+        key = name[:64]
+        return key if len(key) == 64 and set(key) <= set("0123456789abcdef") else None
+
+    def maintenance_key_live(self, key: str, *, error_type) -> bool:
+        return any(self.maintenance_live_key(entry.name) == key
+                   for state in (READY, CLAIMED)
+                   for entry in immutable_files.scan_custodied(self.root / state, error_type=error_type))
+
+    def maintenance_key_states(self, *, error_type) -> tuple[set[str], dict[str, float]]:
+        live: set[str] = set()
+        for state in (READY, CLAIMED):
+            for entry in immutable_files.scan_custodied(self.root / state, error_type=error_type):
+                key = self.maintenance_live_key(entry.name)
+                if key is not None:
+                    live.add(key)
+        terminal: dict[str, float] = {}
+        for state in (DONE, FAILED, WITHDRAWN):
+            for entry in immutable_files.scan_custodied(self.root / state, error_type=error_type):
+                key = entry.name[:-5]
+                if not (entry.name.endswith(".json") and len(key) == 64
+                        and set(key) <= set("0123456789abcdef")):
+                    continue
+                try:
+                    mtime = entry.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                terminal[key] = max(terminal.get(key, 0.0), mtime)
+        return live, terminal
+
+
+    def retirement_presence_at(self, path: Path) -> ReadResult[bool]:
+        """Refreshed nofollow metadata at a held canonical retirement address."""
+        try:
+            absent = immutable_files.confirmed_metadata_absence(path)
+        except OSError as exc:
+            return Unknown("retirement-slot-unreadable", path, exc)
+        return Absent() if absent else Present(True)
+
+    def retirement_candidate(self, state: str, key: str) -> object:
+        raw = immutable_files.read_stable_file(
+            self.item_path(state, key), where="dead-owner outcome")
+        return json.loads(raw)
+
+    def reconciliation_row_at(self, path: Path) -> tuple[JsonRecord, bytes]:
+        raw = immutable_files.read_stable_file(path, where="pool reconciliation evidence")
+        return _reconciliation_document(path, raw), raw
+
+    def reconciliation_history_at(self, path: Path) -> tuple[JsonRecord, bytes]:
+        raw = immutable_files.read_immutable_file(path, where="pool reconciliation evidence")
+        return _reconciliation_document(path, raw), raw
+
+
+    def mover_archive_coverage(self) -> ReadResult[bool]:
+        """Whether every archived body is an exact active receipt's bytes.
+
+        The only writer that may see archives without a checkpoint is one
+        whose own crash landed an archive before the commit; its active
+        receipt is still filed, byte for byte.  Any archive that no active
+        receipt reproduces may be already-retired history, and starting from
+        an empty checkpoint would silently reset it, so it refuses.  The
+        listing is an explicit ``os.scandir``: ``Path.glob`` suppresses some
+        listing failures, and an archive directory that cannot be read is
+        unknown history, never empty history.  An entry that is not a
+        plain ``<sha256>.json`` regular file is refused conservatively too.
+        """
+
+        root = self.mover_archive_dir()
+        try:
+            with os.scandir(root) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except FileNotFoundError:
+            return Present(True)
+        except OSError as exc:
+            return Unknown(f"cannot list the retirement archives: {exc}", root)
+        for entry in entries:
+            if (not entry.name.endswith(".json")
+                    or not key_shaped(entry.name[:-len(".json")])):
+                return Unknown(f"unexpected entry in the retirement archives: {entry.name}", root)
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    return Unknown(("an archived entry is not a regular file: "
+                            f"{entry.name}"), root)
+                body = Path(entry.path).read_bytes()
+            except OSError as exc:
+                return Unknown(f"an archived body is unreadable: {exc}", root)
+            try:
+                record = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return Unknown(f"an archived body is not JSON: {entry.name}", root)
+            key = record.get("action_key") if isinstance(record, dict) else None
+            if not isinstance(key, str) or not key:
+                return Unknown(f"an archived body names no key: {entry.name}", root)
+            try:
+                active = self.move_path(key).read_bytes()
+            except OSError:
+                return Unknown(("an archived body is not covered by an active "
+                        "receipt; retired history may be missing"), root)
+            if active != body:
+                return Unknown(("an archived body differs from its active receipt; "
+                        "retired history may be missing"), root)
+        return Present(True)
+
+
 def _write_json(
     path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
     trailing_newline: bool = False, text: str = "canonical",
@@ -1444,3 +1703,16 @@ def replace_event_tail(path: Path, limit: int) -> int:
         stream.writelines(kept)
     os.replace(temporary, path)
     return len(kept)
+
+
+def _reconciliation_document(path: Path, raw: bytes) -> JsonRecord:
+    value = digest_primitives.decode_strict_json(raw, where="pool reconciliation evidence")
+    if not isinstance(value, dict):
+        raise PoolContractError(f"evidence is not an object: {path}")
+    return value
+
+
+def key_shaped(value: object) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value))
+
