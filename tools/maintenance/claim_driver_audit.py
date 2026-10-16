@@ -147,6 +147,14 @@ def main():
                          ast.dump(old_methods[name], include_attributes=False) !=
                          ast.dump(new_methods[name], include_attributes=False)]
     removed_methods = sorted(set(old_methods) - set(new_methods))
+    packed_phase_bindings = [
+        {"owner": name, "line": node.lineno, "binding": claim_audit_label(node)}
+        for name in new_methods.keys() - old_methods.keys()
+        for node in ast.walk(new_methods[name])
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Tuple) and isinstance(node.value, ast.Tuple)
+        and all(isinstance(value, ast.Attribute) for value in node.value.elts)
+    ]
     driver = new_methods["_claim_pass"]
     uncertain = [node for node in ast.walk(driver) if isinstance(node, ast.Try)
                  and any(isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
@@ -198,6 +206,7 @@ def main():
               "unchanged_contracts": unchanged_contracts,
               "modified_existing_methods": sorted(modified_existing),
               "removed_methods": removed_methods,
+              "packed_phase_bindings": packed_phase_bindings,
               "driver_scope_checks": scope_checks, "canonical_census_unchanged": canonical_census,
               "owners": current, "baseline_pool": old, "callers": references,
               "source_delta_numstat": diff, "driver": shape,
@@ -206,7 +215,8 @@ def main():
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"output": str(args.output), "head": report["head"],
                       "driver": shape, "limits_pass": report["limits_pass"]}))
-    if args.final and (not report["limits_pass"] or unknown_globals or not all(unchanged_contracts.values())
+    if args.final and (not report["limits_pass"] or unknown_globals or packed_phase_bindings
+                       or not all(unchanged_contracts.values())
                        or not all(scope_checks.values()) or not all(canonical_census.values())):
         raise SystemExit(1)
 

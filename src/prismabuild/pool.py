@@ -5835,7 +5835,7 @@ class _HostClaimRequest:
 
 
 class _ClaimHandled(Enum):
-    """This protocol already published the refusal, unlike CandidateDenial."""
+    """The refusal or ending is already published; the driver only continues."""
 
     REFUSED = "refused"
 
@@ -21662,26 +21662,35 @@ class PoolQueue:
         self, request: _HostClaimRequest, gang_context: _ClaimGang, census, scan,
         scan_pass: _ClaimScan, *, held_back,
     ) -> _HostAccepted | _HostRefusal | _ClaimHandled:
-        ledger, total = scan_pass.ledger, scan_pass.total
-        copy_authority, tagset, has_gpu = scan_pass.copy_authority, scan_pass.tags, scan_pass.has_gpu
-        placement, controller = scan_pass.placement, scan_pass.controller
-        gpu_controller, cpu_tiers = scan_pass.gpu_controller, scan_pass.cpu_tiers
+        ledger = scan_pass.ledger
+        total = scan_pass.total
+        copy_authority = scan_pass.copy_authority
+        tagset = scan_pass.tags
+        has_gpu = scan_pass.has_gpu
+        placement = scan_pass.placement
+        controller = scan_pass.controller
+        gpu_controller = scan_pass.gpu_controller
+        cpu_tiers = scan_pass.cpu_tiers
         if "unavailable" in census:
             scan_pass.census_refusal = candidate_policy.CandidateDenial(
                 "measurement_census_unavailable", census, scan)
             self.record_denial(request.candidate.item, "measurement_census_unavailable", census)
             return _ClaimHandled.REFUSED
         qualified = request.candidate
-        item, key = qualified.item, qualified.key
+        item = qualified.item
+        key = qualified.key
         demand = qualified.demand.host
         reservation_demand = qualified.demand.reservation
         sealed_host_demand = qualified.demand.sealed_host
         reservation = qualified.reservation
         canary_exempt = qualified.canary_exempt
         scratch_intent = qualified.scratch_intent
-        identity, allowance = request.identity, request.allowance
-        dependent_owner, contract = request.dependent_owner, request.contract
-        scratch_evidence, scratch_boundary = request.scratch_evidence, request.scratch_boundary
+        identity = request.identity
+        allowance = request.allowance
+        dependent_owner = request.dependent_owner
+        contract = request.contract
+        scratch_evidence = request.scratch_evidence
+        scratch_boundary = request.scratch_boundary
         adaptive = adaptive_gpu = None
         scratch_changed = scratch_expired = refused = False
         refusal_source = room_taken = None
@@ -21835,24 +21844,37 @@ class PoolQueue:
     def _account_host_refusal(
         self, refusal: _HostRefusal, scan, scan_pass: _ClaimScan, *, preempted,
     ) -> _RefusalAccounting:
-        ledger, total = scan_pass.ledger, scan_pass.total
-        controller, gpu_controller, cpu_tiers = scan_pass.controller, scan_pass.gpu_controller, scan_pass.cpu_tiers
-        copy_authority, tagset, has_gpu = scan_pass.copy_authority, scan_pass.tags, scan_pass.has_gpu
+        ledger = scan_pass.ledger
+        total = scan_pass.total
+        controller = scan_pass.controller
+        gpu_controller = scan_pass.gpu_controller
+        cpu_tiers = scan_pass.cpu_tiers
+        copy_authority = scan_pass.copy_authority
+        tagset = scan_pass.tags
+        has_gpu = scan_pass.has_gpu
         host = refusal.host
-        qualified, request = host.candidate, host.request
-        item, key = qualified.item, qualified.key
-        demand, reservation_demand = host.demand.host, host.demand.reservation
+        qualified = host.candidate
+        request = host.request
+        item = qualified.item
+        key = qualified.key
+        demand = host.demand.host
+        reservation_demand = host.demand.reservation
         reservation = qualified.reservation
-        identity, dependent_owner = request.identity, request.dependent_owner
+        identity = request.identity
+        dependent_owner = request.dependent_owner
         gang = host.gang.declaration
         gang_record = host.gang.record
         _gang = host.arbitration.gang_api
         measurement_suspended = host.arbitration.measurement_suspended
-        scratch_changed, scratch_expired = refusal.scratch_changed, refusal.scratch_expired
-        refused, refusal_source = refusal.refused, refusal.source
+        scratch_changed = refusal.scratch_changed
+        scratch_expired = refusal.scratch_expired
+        refused = refusal.refused
+        refusal_source = refusal.source
         room_taken = refusal.room_taken
-        cpu_decision, gpu_decision = refusal.cpu_decision, refusal.gpu_decision
-        free_at_refusal, asked = refusal.free_at_refusal, refusal.asked
+        cpu_decision = refusal.cpu_decision
+        gpu_decision = refusal.gpu_decision
+        free_at_refusal = refusal.free_at_refusal
+        asked = refusal.asked
         token_shortage = refusal.token_shortage
         scratch_refusal = local_scratch.admission_refusal(
             changed=scratch_changed, expired=scratch_expired)
@@ -21975,12 +21997,17 @@ class PoolQueue:
     def _take_claim_tiers(
         self, host: _HostAccepted, scan_pass: _ClaimScan,
     ) -> _TakenClaimTiers | _ClaimHandled:
-        ledger, cpu_tiers = scan_pass.ledger, scan_pass.cpu_tiers
-        placement, reads = scan_pass.placement, scan_pass.reads
+        ledger = scan_pass.ledger
+        cpu_tiers = scan_pass.cpu_tiers
+        placement = scan_pass.placement
+        reads = scan_pass.reads
         qualified = host.candidate
-        item, key = qualified.item, qualified.key
-        sealed_demand, tier_demand = host.demand.sealed, host.demand.tiers
-        demand, reservation = host.demand.host, qualified.reservation
+        item = qualified.item
+        key = qualified.key
+        sealed_demand = host.demand.sealed
+        tier_demand = host.demand.tiers
+        demand = host.demand.host
+        reservation = qualified.reservation
         adaptive = host.adaptive
         dependent_owner = (host.request.dependent_owner if host.request is not None
                            else qualified.dependent_owner)
@@ -22062,16 +22089,25 @@ class PoolQueue:
     def _rename_and_commit_claim(
         self, tiers: _TakenClaimTiers, scan_pass: _ClaimScan,
     ) -> _CommittedClaim | _ClaimHandled:
-        ledger, owner, tagset, has_gpu = scan_pass.ledger, scan_pass.owner, scan_pass.tags, scan_pass.has_gpu
-        admission_open, image_host = scan_pass.admission_open, scan_pass.image_host
-        container_class_policy, reads, pass_census = scan_pass.container_class_policy, scan_pass.reads, scan_pass.census
+        ledger = scan_pass.ledger
+        owner = scan_pass.owner
+        tagset = scan_pass.tags
+        has_gpu = scan_pass.has_gpu
+        admission_open = scan_pass.admission_open
+        image_host = scan_pass.image_host
+        container_class_policy = scan_pass.container_class_policy
+        reads = scan_pass.reads
+        pass_census = scan_pass.census
         host = tiers.host
         qualified = host.candidate
-        item, key = qualified.item, qualified.key
+        item = qualified.item
+        key = qualified.key
         reservation = qualified.reservation
-        demand, reservation_demand = host.demand.host, host.demand.reservation
+        demand = host.demand.host
+        reservation_demand = host.demand.reservation
         sealed_demand = host.demand.sealed
-        declared_images, class_verdict = qualified.declared_images, qualified.class_verdict
+        declared_images = qualified.declared_images
+        class_verdict = qualified.class_verdict
         scratch_intent = qualified.scratch_intent
         scratch_evidence = host.request.scratch_evidence if host.request is not None else None
         gang = host.gang.declaration if host.gang is not None else None
@@ -22215,11 +22251,15 @@ class PoolQueue:
         self, tiers: _TakenClaimTiers, moved_ready: _MovedReady, class_verdict, *, ledger,
     ) -> _CommittedClaim | _ClaimHandled:
         host = tiers.host
-        item, key = host.candidate.item, host.candidate.key
+        item = host.candidate.item
+        key = host.candidate.key
         reservation = host.candidate.reservation
-        tier_demand, reservation_demand = host.demand.tiers, host.demand.reservation
-        tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
-        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+        tier_demand = host.demand.tiers
+        reservation_demand = host.demand.reservation
+        tier_borrowed = tiers.borrowed
+        tier_fill_waived = tiers.fill_waived
+        adaptive = host.adaptive
+        adaptive_gpu = host.adaptive_gpu
         src, dst, moved = moved_ready
         # Tier handles commit first: a failure here leaves the host
         # handle uncommitted, so the guard below still abandons it,
@@ -22435,18 +22475,24 @@ class PoolQueue:
     def _build_claim_record(
         self, committed: _CommittedClaim, scan_pass: _ClaimScan,
     ) -> dict[str, object]:
-        ledger, cpu_tiers, owner = scan_pass.ledger, scan_pass.cpu_tiers, scan_pass.owner
+        ledger = scan_pass.ledger
+        cpu_tiers = scan_pass.cpu_tiers
+        owner = scan_pass.owner
         tiers = committed.tiers
         host = tiers.host
         qualified = host.candidate
         key = qualified.key
         moved = committed.moved.record
-        demand, tier_demand = host.demand.host, host.demand.tiers
-        residency, class_verdict = qualified.residency, committed.class_verdict
+        demand = host.demand.host
+        tier_demand = host.demand.tiers
+        residency = qualified.residency
+        class_verdict = committed.class_verdict
         scratch_evidence = host.request.scratch_evidence if host.request is not None else None
         gang_backfill = host.arbitration.backfill if host.arbitration is not None else []
-        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
-        tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
+        adaptive = host.adaptive
+        adaptive_gpu = host.adaptive_gpu
+        tier_borrowed = tiers.borrowed
+        tier_fill_waived = tiers.fill_waived
         # From ``moved``, not from ``item``: past the rename the bytes in
         # ``claimed`` are the item, and the scan's copy may be a generation
         # ``publish`` has already replaced.  Rebuilding the claim from the
@@ -22519,14 +22565,20 @@ class PoolQueue:
     def _persist_committed_claim(
         self, committed: _CommittedClaim, scan_pass: _ClaimScan,
     ) -> dict[str, object] | None:
-        ledger, cpu_tiers, owner = scan_pass.ledger, scan_pass.cpu_tiers, scan_pass.owner
+        ledger = scan_pass.ledger
+        cpu_tiers = scan_pass.cpu_tiers
+        owner = scan_pass.owner
         host = committed.tiers.host
-        item, key = host.candidate.item, host.candidate.key
+        item = host.candidate.item
+        key = host.candidate.key
         reservation = host.candidate.reservation
         reservation_demand = host.demand.reservation
-        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+        adaptive = host.adaptive
+        adaptive_gpu = host.adaptive_gpu
         src, dst, moved = committed.moved
-        filed, tier_filed, tier_wanted = committed.filed, committed.tier_filed, committed.tier_wanted
+        filed = committed.filed
+        tier_filed = committed.tier_filed
+        tier_wanted = committed.tier_wanted
         terminal = self.terminal_outcome_covers(moved, action_key=key)
         if terminal is not None:
             # A stale reaper can put a generation back in ``ready`` after
@@ -22681,7 +22733,8 @@ class PoolQueue:
             # can still fail, and I/O failure keeps the entitlement
             # (records stay ``transferring``) for the next attempt.
             sealed = self._seal_claim_funding(committed)
-            funding_sealed, failed_tier = sealed.sealed, sealed.failed_tier
+            funding_sealed = sealed.sealed
+            failed_tier = sealed.failed_tier
             if not funding_sealed:
                 reservation.abandon(_ClaimExit.PERSISTED_RETRY,
                                     moved=_MovedReady(src, dst, moved))
@@ -22819,7 +22872,7 @@ class PoolQueue:
         #: ten loops hammered the one fence, and 80 dependents of a running
         #: measurement stayed READY behind 'reader busy'.  Refusing never
         #: authorizes anything; the next pass takes the fence afresh.
-        census_refusal: dict[str, object] | None = None
+        census_refusal: candidate_policy.CandidateDenial | None = None
         #: One successful census this pass reuses for later candidates
         #: (#1571): with a free fence each candidate otherwise paid two
         #: bounded-child scans, the discovery read and the refresh read.
@@ -22862,10 +22915,15 @@ class PoolQueue:
         )
 
     def _opening_claim_row(self, item, scan, scan_pass: _ClaimScan, *, holds):
-        tagset, has_gpu = scan_pass.tags, scan_pass.has_gpu
-        released, ready_gpu, host = scan_pass.released, scan_pass.ready_gpu, scan_pass.host
-        total, ready_priority = scan_pass.total, scan_pass.ready_priority
-        reads, copy_authority = scan_pass.reads, scan_pass.copy_authority
+        tagset = scan_pass.tags
+        has_gpu = scan_pass.has_gpu
+        released = scan_pass.released
+        ready_gpu = scan_pass.ready_gpu
+        host = scan_pass.host
+        total = scan_pass.total
+        ready_priority = scan_pass.ready_priority
+        reads = scan_pass.reads
+        copy_authority = scan_pass.copy_authority
         key = str(item.get("action_key", ""))
         takes_kind = (self._demands_withheld_kind(item, scan.withheld_kinds)
                       if scan.withheld_for is not None and scan.withheld_kinds is not None
@@ -22919,8 +22977,12 @@ class PoolQueue:
 
     def _refuse_busy_row(self, item, opening: _OpenClaimRow, scan, scan_pass: _ClaimScan):
         key = opening.key
-        reads, gpu_first, ledger = scan_pass.reads, scan_pass.gpu_first, scan_pass.ledger
-        total, controller, gpu_controller = scan_pass.total, scan_pass.controller, scan_pass.gpu_controller
+        reads = scan_pass.reads
+        gpu_first = scan_pass.gpu_first
+        ledger = scan_pass.ledger
+        total = scan_pass.total
+        controller = scan_pass.controller
+        gpu_controller = scan_pass.gpu_controller
         observed_images = scan_pass.observed_images
         container_class_policy = scan_pass.container_class_policy
         container_inventory = scan_pass.container_inventory

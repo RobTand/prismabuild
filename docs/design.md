@@ -18073,7 +18073,8 @@ and census even when the moved record later refuses.
 `_HostAccepted`, `_HostRefusal`, `_TakenClaimTiers` and `_CommittedClaim` retain
 original mapping references across these boundaries. They own no resources or
 future observations. `CandidateDenial` is pending publication; `_ClaimHandled`
-means the protocol already filed that row's refusal. Cached census refusals
+means the protocol already filed that row's refusal or terminal ending, so the
+driver only continues. Cached census refusals
 retain their original evidence mapping. Ordinary gang paths retain `None` for
 the unread module, and `_gang.elected_elsewhere` retains the existing missing
 or foreign-election predicate. These are the wave4 names accepted at review.
