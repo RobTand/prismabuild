@@ -29,8 +29,8 @@ from test_local_scratch_measured_placement import (
 def test_actual_fairness_starved_gpu_refusal_ends_measured_yield(tmp_path, monkeypatch):
     fleet: Any = ScratchFleet(tmp_path, monkeypatch)
     fleet.publish()
-    ready = _record(fleet.queue.item_path(pool.READY, fleet.key))
-    offer = _record(fleet.queue.root / pool.WORKERS / f"{FAST}.json")
+    ready = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
+    offer = _record(fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json")
     profile = offer["observed_detail"][PROFILES][0]
     current = offer["observed_detail"][DEVICES][fleet.scratch]
     assert profile["profile_contract"] == CONTRACT and profile["method"] == METHOD
@@ -65,7 +65,7 @@ def test_actual_fairness_starved_gpu_refusal_ends_measured_yield(tmp_path, monke
         assert fleet.queue.passes(fleet.key) == count
         assert not fleet.queue.ledger(FAST).held_keys()
         assert fleet.queue.ledger(FAST).available() == CAPACITY
-        assert _record(fleet.queue.item_path(pool.READY, fleet.key))["attempts"] == 0
+        assert _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))["attempts"] == 0
     retained = observations[-1]
     assert retained["reason"] == "adaptive_gpu_refused_starved", observations
     assert retained["evidence"]["withhold"]["eligible"] is True

@@ -152,7 +152,7 @@ def test_max_depth_config_contains_actual_decoder_boundary(fleet):
 @pytest.mark.parametrize("mode", ["peer", "own"], ids=["peer-devices", "own-devices"])
 def test_real_announced_truthy_device_list_is_excluded_or_unspent(fleet, mode):
     fleet.publish()
-    path = fleet.queue.root / pool.WORKERS / f"{FAST}.json"
+    path = fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json"
     original = _record(path)
     detail = deepcopy(original["observed_detail"])
     detail[DEVICES] = ["malformed"]
@@ -179,7 +179,7 @@ def test_real_announced_truthy_device_list_is_excluded_or_unspent(fleet, mode):
 @pytest.mark.parametrize("unknown_field", ["complete", "attributed"])
 def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monkeypatch, unknown_field):
     fleet.publish()
-    current = _record(fleet.queue.item_path(pool.READY, fleet.key))
+    current = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     actual_sample = fleet.gpu_sample
     invalid = [True]
 
@@ -204,7 +204,7 @@ def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monke
     # The actual FAST controller refusal already records a shared fairness pass
     # through the unchanged ordinary admission path. The later measured yield
     # must preserve it, not require its absence or spend another pass.
-    passes = fleet.queue.passes_path(fleet.key)
+    passes = fleet.queue.records.passes_path(fleet.key)
     assert passes.is_file()
     before_passes = passes.read_bytes()
     # Restore low-level evidence only. No new FAST evaluation/offer or edited
@@ -213,9 +213,9 @@ def test_real_unknown_gpu_refusal_cannot_authorize_measured_pass_on(fleet, monke
     assert gpu_observation()["complete"] is True and gpu_observation()["attributed"] is True
     claimed = fleet.claim(SLOW, gpu_sampler=gpu_sampler)
     assert claimed is None, "unknown GPU observation was treated as measured policy pass-on"
-    assert _record(fleet.queue.item_path(pool.READY, fleet.key)) == current
-    assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
-    assert not fleet.queue.lease_path(fleet.key).exists()
+    assert _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key)) == current
+    assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).exists()
+    assert not fleet.queue.records.lease_path(fleet.key).exists()
     assert passes.read_bytes() == before_passes
     for host in (SLOW, FAST):
         assert not fleet.queue.ledger(host).held_keys()
@@ -234,7 +234,7 @@ def test_peer_original_price_expiry_during_real_view_read_ends_yield(fleet, monk
     fleet.publish(max_age=max_age)
     peer_map = fleet.queue.ledger(FAST).base / "cpu-map.json"
     assert peer_map.is_file() and fleet.queue.ledger(FAST).available() == CAPACITY
-    read_json = pool._read_json
+    read_json = pool.record_store.read_queue_record
     reads = []
 
     def delayed_peer_ledger_observation(path, *args, **kwargs):
@@ -248,7 +248,7 @@ def test_peer_original_price_expiry_during_real_view_read_ends_yield(fleet, monk
             assert 0 <= fleet.clock[0] - fleet.profiles[SLOW][0]["measured_unix"] <= max_age
         return value
 
-    monkeypatch.setattr(pool, "_read_json", delayed_peer_ledger_observation)
+    monkeypatch.setattr(pool.record_store, '_read_json', delayed_peer_ledger_observation)
     claimed = fleet.claim(SLOW)
     assert reads == [str(peer_map)], "fixture did not reach the genuine peer view read"
     assert fleet.declaration["max_profile_age_s"] == max_age

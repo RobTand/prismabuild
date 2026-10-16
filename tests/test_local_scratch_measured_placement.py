@@ -65,7 +65,7 @@ def _canonical(body):
 
 
 def _record(path) -> dict[str, Any]:
-    record = pool._read_json(path)
+    record = pool.record_store.read_queue_record(path)
     assert isinstance(record, dict), f"missing durable queue record: {path}"
     return cast(dict[str, Any], record)
 
@@ -108,7 +108,7 @@ class ScratchFleet:
         self.scratch = str(root / "scratch")
         Path(self.scratch).mkdir()
         self.queue = pool.PoolQueue(root / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.cas = pb.PrismaBuildCAS(root / "cas")
         # Independent current-device observations; profile mutation never updates these.
         self.devices = {host: {"filesystem": f"fixture-fs-{host}",
@@ -219,11 +219,11 @@ class ScratchFleet:
                                 gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
 
     def ready_unspent(self):
-        item = _record(self.queue.item_path(pool.READY, self.key))
+        item = _record(self.queue.records.item_path(pool.record_store.READY, self.key))
         assert item["attempts"] == 0
-        assert not self.queue.item_path(pool.CLAIMED, self.key).exists()
-        assert not self.queue.lease_path(self.key).exists()
-        assert not self.queue.passes_path(self.key).exists()
+        assert not self.queue.records.item_path(pool.record_store.CLAIMED, self.key).exists()
+        assert not self.queue.records.lease_path(self.key).exists()
+        assert not self.queue.records.passes_path(self.key).exists()
         for host in (SLOW, FAST):
             assert not self.queue.ledger(host).held_keys()
             assert self.queue.ledger(host).available() == CAPACITY
@@ -250,7 +250,7 @@ class ScratchFleet:
     def receipt(self, claimed, host):
         # Called only AFTER the actual behavioral assertion/claim. No injected receipt.
         assert claimed is not None and claimed["claimed_host"] == host
-        persisted = _record(self.queue.item_path(pool.CLAIMED, self.key))
+        persisted = _record(self.queue.records.item_path(pool.record_store.CLAIMED, self.key))
         evidence = persisted[PLACEMENT]
         assert claimed[PLACEMENT] == evidence
         assert evidence["schema"] == PLACEMENT_SCHEMA
@@ -292,7 +292,7 @@ def test_199gb_scratch_yields_slower_host_and_claims_faster_with_measured_receip
         assert claimed["claimed_host"] == SLOW
         assert fleet.queue.ledger(SLOW).held()["spool_gb"] == 186
         assert fleet.queue.ledger(SLOW).held()["gpu"] == 1
-        assert fleet.queue.item_path(pool.CLAIMED, fleet.key).is_file()
+        assert fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).is_file()
     assert claimed is None, "capacity-only placement actually CLAIMED the slower host"
     fleet.ready_unspent()
     denial = fleet.denial(SLOW)
@@ -446,7 +446,7 @@ def test_unavailable_faster_host_ends_yield_but_preserves_real_admission(fleet, 
     elif why == "incompatible":
         fleet.announce(FAST, tags=["x86", CAPABILITY])
     else:
-        (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+        (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     _, candidates = fleet.receipt(fleet.claim(SLOW), SLOW)
     if why in {"full", "draining"}:
         assert candidates[FAST]["fit"] is False
@@ -508,8 +508,8 @@ def test_transition_busy_on_faster_host_is_not_an_admission_refusal(fleet):
 
 def test_profile_expiry_during_slow_offer_read_is_rechecked_before_tokens(fleet, monkeypatch):
     fleet.publish(max_age=1.)
-    read_json = pool._read_json
-    peer = fleet.queue.root / pool.WORKERS / f"{FAST}.json"
+    read_json = pool.record_store.read_queue_record
+    peer = fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json"
     delayed = []
 
     def delayed_observation(path, *args, **kwargs):
@@ -519,7 +519,7 @@ def test_profile_expiry_during_slow_offer_read_is_rechecked_before_tokens(fleet,
             fleet.clock[0] += 2.                 # shared read delay, not a decision patch
         return value
 
-    monkeypatch.setattr(pool, "_read_json", delayed_observation)
+    monkeypatch.setattr(pool.record_store, '_read_json', delayed_observation)
     assert fleet.claim(SLOW) is None
     assert delayed, "fixture did not exercise the actual offer read"
     fleet.ready_unspent()
@@ -559,7 +559,7 @@ def test_measured_preference_cannot_override_existing_freshness_or_gpu_safety(
     fleet.gpu_fault = fault.removeprefix("gpu-")
     assert fleet.claim(FAST) is None
     assert not fleet.queue.ledger(FAST).held_keys()
-    assert fleet.queue.item_path(pool.READY, fleet.key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, fleet.key).exists()
     assert fleet.denial(FAST)["reason"].startswith("adaptive_gpu_refused")
 
 
@@ -664,7 +664,7 @@ def test_direct_unsealed_publication_cannot_forge_the_capability(fleet):
 @pytest.mark.parametrize("fault", ["erase", "erase-and-untag", "traffic", "resources"])
 def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, fault):
     fleet.publish()
-    path = fleet.queue.item_path(pool.READY, fleet.key)
+    path = fleet.queue.records.item_path(pool.record_store.READY, fleet.key)
     item = _record(path)
     if fault.startswith("erase"):
         item.pop(IO_ENV)
@@ -980,7 +980,7 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
 def test_local_fallback_without_preferred_or_alternative_reaches_real_admission(
         tmp_path, monkeypatch, opted_in):
     fleet = ScratchFleet(tmp_path, monkeypatch, cpu_tiers={"preferred": [], "fallback": [0, 1, 2, 3]})
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     fleet.publish(opted_in=opted_in)
     assert fleet.queue.ledger(SLOW).free_preferred(fleet.tiers) == 0
     assert fleet.queue.ledger(SLOW).available() == CAPACITY
@@ -996,7 +996,7 @@ def test_local_fallback_without_preferred_or_alternative_reaches_real_admission(
 def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
         tmp_path, monkeypatch, opted_in):
     fleet = ScratchFleet(tmp_path, monkeypatch, cpu_tiers={"preferred": [0], "fallback": [1, 2, 3]})
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     holder = _normal_cpu_publication(fleet)
     first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder
@@ -1029,7 +1029,7 @@ def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
 
 @pytest.mark.parametrize("opted_in", [False, True], ids=["old-priority-gate", "measured-priority-gate"])
 def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in):
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True)
     first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder
@@ -1052,7 +1052,7 @@ def test_local_token_shortage_still_reaches_real_background_preemption(fleet, op
 
 def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdict(fleet):
     fleet.publish()
-    a = _record(fleet.queue.item_path(pool.READY, fleet.key))
+    a = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     fleet.gpu_fault = "foreign"
     assert fleet.claim(FAST) is None
     fleet.mirror_real_denial(FAST, "adaptive_gpu_refused")
@@ -1070,10 +1070,10 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
         # Actual private pre-rename token reservation, not a vacuous zero.
         assert ledger.capacity()["spool_gb"] == 186
         assert ledger.held()["spool_gb"] == 186
-        assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
+        assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).exists()
         fleet.clock[0] += 1.
         fleet.queue.publish(**fleet.publication)   # real publication B, same sealed action/demand
-        b = _record(fleet.queue.item_path(pool.READY, fleet.key))
+        b = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
         assert b["published_unix"] > a["published_unix"]
         assert b["resources"] == a["resources"] and b["action_key"] == a["action_key"]
         replacements.append(b)
@@ -1089,13 +1089,13 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
         assert claimed["published_unix"] == replacements[0]["published_unix"]
         assert claimed[PLACEMENT]["published_unix"] == claimed["published_unix"]
     assert claimed is None, "publication B inherited A's evaluated peer-refusal placement"
-    b = _record(fleet.queue.item_path(pool.READY, fleet.key))
+    b = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     assert b["published_unix"] == replacements[0]["published_unix"]
     assert not fleet.queue.ledger(SLOW).held_keys()
     assert fleet.queue.ledger(SLOW).available() == CAPACITY
-    assert not fleet.queue.lease_path(fleet.key).exists()
-    assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
-    assert not fleet.queue.item_path(pool.DONE, fleet.key).exists()
+    assert not fleet.queue.records.lease_path(fleet.key).exists()
+    assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).exists()
+    assert not fleet.queue.records.item_path(pool.record_store.DONE, fleet.key).exists()
     assert b.get("attempt_history", []) == [] and PLACEMENT not in b
 
 
@@ -1119,7 +1119,7 @@ def test_refusal_sample_total_age_cannot_authorize_measured_pass_on(fleet, monke
     fleet.gpu_fault = None
     fleet.clock[0] += 4.9
     # Do NOT reannounce FAST: that would independently invalidate its denial.
-    offer = _record(fleet.queue.root / pool.WORKERS / f"{FAST}.json")
+    offer = _record(fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json")
     assert offer["announced_unix"] <= denial["denied_unix"]
     assert fleet.clock[0] - offer["observed_detail"]["observed_unix"] < pool.box_capacity.GPU_SAMPLE_MAX_AGE_S
     assert fleet.queue.ledger(FAST).available() == CAPACITY
