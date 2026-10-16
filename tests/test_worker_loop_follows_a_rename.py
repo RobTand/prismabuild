@@ -134,7 +134,7 @@ def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=Fal
             actual_queue.publish(action_key=key, cas_root=private_root / "cas",
                                  checkout_root=private_root, worker_script="worker.py",
                                  resources={"cpu": 1, "mem_gb": 1})
-            ready = actual_queue.item_path(pool.READY, key).read_bytes()
+            ready = actual_queue.records.item_path(pool.record_store.READY, key).read_bytes()
             queue_type = pool.PoolQueue
         inventory = module.container_images.InventoryCache
         trusted_sample = module.gpu_admission.trusted_sample
@@ -158,9 +158,9 @@ def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=Fal
          mock.patch.object(sys, "argv", argv):
             assert module.main() == (0 if generation else 75)
         if actual_queue is not None:
-            assert actual_queue.item_path(pool.READY, key).read_bytes() == ready
+            assert actual_queue.records.item_path(pool.record_store.READY, key).read_bytes() == ready
             assert actual_queue.terminal_keys() == frozenset()
-            assert list(actual_queue.dir(pool.CLAIMED).iterdir()) == []
+            assert list(actual_queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
             assert actual_queue.offers() == []
             assert list((actual_queue.root / "generation-drift").glob("*.json")) == []
     return calls

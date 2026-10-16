@@ -110,7 +110,7 @@ def _run(tmp_path: Path, argv: list[str]):
 
 def _drifted(tmp_path: Path, host: str, capacity: dict[str, int]):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger(host).ensure_capacity(capacity)
     return queue
 

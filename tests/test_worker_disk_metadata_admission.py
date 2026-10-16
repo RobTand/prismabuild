@@ -125,7 +125,7 @@ def _fixture_worker(monkeypatch, tmp_path, *, assume_idle, metadata_capacity=1):
     monkeypatch.setattr(worker, "build_parser", lambda: parser)
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if not assume_idle:
         # Seed the sampler's prior kernel counters, not a fabricated admission
         # verdict. Controller.sample computes and persists its own fresh delta;
@@ -173,7 +173,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
                 assert release.wait(WAIT_S), "sibling checks did not release execution"
             else:
                 assert key == SECOND
-                assert not queue.item_path(pool.CLAIMED, FIRST).exists()
+                assert not queue.records.item_path(pool.record_store.CLAIMED, FIRST).exists()
                 assert not (ledger.held_dir / FIRST).exists()
             # No payload, scope or Docker marker was created. This is admission
             # component evidence, not a broker waiver or containment proof.
@@ -208,7 +208,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert ledger.held_keys() == [FIRST]
             assert ledger.held() == DEMAND
             assert ledger.available() == {"cpu": 1, "mem_gb": 7}
-            claimed = _read(queue.item_path(pool.CLAIMED, FIRST))
+            claimed = _read(queue.records.item_path(pool.record_store.CLAIMED, FIRST))
             assert claimed["resources"] == DEMAND
             assert claimed["claimed_host"] == host
             claim_args = {"tags": offer["tags"],
@@ -221,8 +221,8 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert denial["evidence"]["demand"] == DEMAND
             assert denial["evidence"]["token_shortage"] == {
                 "resource": KIND, "requested": 1, "available": 0}
-            assert queue.item_path(pool.READY, SECOND).exists()
-            assert not queue.item_path(pool.CLAIMED, SECOND).exists()
+            assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
+            assert not queue.records.item_path(pool.record_store.CLAIMED, SECOND).exists()
             assert ledger.holder_tokens(FIRST) == DEMAND
 
             # A new, higher-priority ordinary row is scanned normally before
@@ -236,7 +236,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert ledger.available().get("cpu", 0) == 0
             sibling.finish(ORDINARY, status="executed", claim_snapshot=ordinary)
             ordinary = None
-            assert _read(queue.item_path(pool.DONE, ORDINARY))["status"] == "executed"
+            assert _read(queue.records.item_path(pool.record_store.DONE, ORDINARY))["status"] == "executed"
             assert ledger.holder_tokens(FIRST) == DEMAND
             assert ledger.available() == {"cpu": 1, "mem_gb": 7}
         except BaseException as exc:
@@ -279,7 +279,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
         assert KIND not in offer["observed_capacity"]
         assert executions == []
         assert ledger.held_keys() == []
-        assert all(queue.item_path(pool.READY, key).exists() for key in (FIRST, SECOND))
+        assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in (FIRST, SECOND))
         pytest.fail(
             "worker.main never entered execution: both real claims denied "
             "never_fits_capacity for disk_metadata=1; persisted declared/live "
@@ -289,11 +289,11 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     # serve_once must actually finish FIRST before the other queue reacquires
     # the SAME metadata token for SECOND; no raw release or acquire helper.
     assert executions == [FIRST]
-    terminal = _read(queue.item_path(pool.DONE, FIRST))
+    terminal = _read(queue.records.item_path(pool.record_store.DONE, FIRST))
     assert terminal["status"] == "executed"
     assert terminal["claimed_host"] == host
     assert terminal["claimed_unix"] == first_claim[0]["claimed_unix"]
-    assert not queue.lease_path(FIRST).exists()
+    assert not queue.records.lease_path(FIRST).exists()
     assert ledger.held_keys() == []
     assert ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
 
@@ -303,9 +303,9 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     if failures:
         raise failures[0]
     assert executions == [FIRST, SECOND]
-    assert _read(queue.item_path(pool.DONE, SECOND))["status"] == "executed"
-    assert not queue.item_path(pool.CLAIMED, SECOND).exists()
-    assert not queue.lease_path(SECOND).exists()
+    assert _read(queue.records.item_path(pool.record_store.DONE, SECOND))["status"] == "executed"
+    assert not queue.records.item_path(pool.record_store.CLAIMED, SECOND).exists()
+    assert not queue.records.lease_path(SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == {"cpu": 2, "mem_gb": 8, KIND: 1}
     assert ledger.available() == ledger.capacity()
@@ -385,14 +385,14 @@ def test_disabled_worker_admits_ordinary_and_refuses_tagged_work(
     if failures:
         raise failures[0]
     assert executions == [ORDINARY]
-    assert _read(queue.item_path(pool.DONE, ORDINARY))["status"] == "executed"
+    assert _read(queue.records.item_path(pool.record_store.DONE, ORDINARY))["status"] == "executed"
     assert worker.main() == 0
     _assert_disabled_offer(queue)
     assert _denial(queue, SECOND)["reason"] == "never_fits_capacity"
-    assert queue.item_path(pool.READY, SECOND).exists()
+    assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8}
-    assert not queue.lease_path(ORDINARY).exists()
+    assert not queue.records.lease_path(ORDINARY).exists()
 
 
 @pytest.mark.parametrize("held_on_disable", [False, True],
@@ -450,7 +450,7 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     if failures:
         raise failures[0]
     assert ledger.held_keys() == []
-    assert _read(queue.item_path(pool.DONE, FIRST))["status"] == "executed"
+    assert _read(queue.records.item_path(pool.record_store.DONE, FIRST))["status"] == "executed"
     # Real finish returned the token even if a sibling offered zero while it
     # was held. The next disabled poll, not a raw release/resize helper, removes it.
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
@@ -464,7 +464,7 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     assert worker.main() == 0
     _assert_disabled_offer(queue)
     assert _denial(queue, SECOND)["reason"] == "never_fits_capacity"
-    assert queue.item_path(pool.READY, SECOND).exists()
+    assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8}
     assert ledger.held_keys() == []
 
@@ -473,8 +473,8 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     if failures:
         raise failures[0]
     assert executions == [FIRST, ORDINARY, SECOND]
-    assert _read(queue.item_path(pool.DONE, SECOND))["status"] == "executed"
-    assert not queue.item_path(pool.READY, SECOND).exists()
+    assert _read(queue.records.item_path(pool.record_store.DONE, SECOND))["status"] == "executed"
+    assert not queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
-    assert all(not queue.lease_path(key).exists() for key in (FIRST, ORDINARY, SECOND))
+    assert all(not queue.records.lease_path(key).exists() for key in (FIRST, ORDINARY, SECOND))

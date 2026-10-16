@@ -65,8 +65,8 @@ def record(name, value):
         stream.write(json.dumps(value) + "\\n")
 def execute(self, item, **kwargs):
     key = item["action_key"]
-    assert json.loads(self.item_path(pool.CLAIMED, key).read_text())["action_key"] == key
-    assert self.lease_path(key).is_file()
+    assert json.loads(self.records.item_path(pool.record_store.CLAIMED, key).read_text())["action_key"] == key
+    assert self.records.lease_path(key).is_file()
     assert kwargs.get("containment") is True
     assert os.sched_getaffinity(0) == affinity
     record("executions.jsonl", key)
@@ -133,8 +133,8 @@ def _assert_paused(queue, tmp_path):
     assert _lines(tmp_path / "executions.jsonl") == []
     assert _lines(tmp_path / "outcomes.jsonl") == []
     assert queue.terminal_keys() == frozenset()
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
-    assert sorted(path.stem for path in queue.dir(pool.READY).glob("*.json")) == KEYS
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
+    assert sorted(path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")) == KEYS
     assert list((queue.root / "generation-drift").glob("*.json")) == []
 
 
@@ -143,9 +143,9 @@ def _assert_one_completed(queue, tmp_path):
     assert _lines(tmp_path / "outcomes.jsonl") == [
         {"action_key": KEYS[0], "status": "executed", "returncode": 0}]
     assert queue.terminal_keys() == frozenset([KEYS[0]])
-    assert json.loads(queue.item_path(pool.DONE, KEYS[0]).read_text())["status"] == "executed"
-    assert queue.item_path(pool.READY, KEYS[1]).is_file()
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
+    assert json.loads(queue.records.item_path(pool.record_store.DONE, KEYS[0]).read_text())["status"] == "executed"
+    assert queue.records.item_path(pool.record_store.READY, KEYS[1]).is_file()
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
     assert list((queue.root / "generation-drift").glob("*.json")) == []
     assert [offer["runtime_commit"] for offer in queue.offers()] == [KNOWN["commit"]]
 
@@ -169,7 +169,7 @@ def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
         assert queue.terminal_keys() == frozenset()
         assert _lines(tmp_path / "executions.jsonl") == []
         assert _lines(tmp_path / "outcomes.jsonl") == []
-        assert sorted(path.stem for path in queue.dir(pool.READY).glob("*.json")) == KEYS
+        assert sorted(path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")) == KEYS
         records = list((queue.root / "generation-drift").glob("*.json"))
         assert len(records) == 1
         assert json.loads(records[0].read_text())["loaded_commit"] == KNOWN["commit"]

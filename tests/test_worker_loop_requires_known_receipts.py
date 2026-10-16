@@ -47,7 +47,7 @@ def test_once_requires_known_matching_receipts(tmp_path, loaded, published, verd
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                       checkout_root=str(tmp_path), worker_script="worker.py",
                       resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
-    ready_before = {key: queue.item_path(pool.READY, key).read_bytes() for key in keys}
+    ready_before = {key: queue.records.item_path(pool.record_store.READY, key).read_bytes() for key in keys}
     for name, kind in (("loaded.json", loaded), ("published.json", published)):
         if RECEIPTS[kind] is not None:
             (tmp_path / name).write_text(RECEIPTS[kind])
@@ -86,10 +86,10 @@ def record(name, value):
         stream.write(json.dumps(value) + "\\n")
 def execute(self, item, **kwargs):
     key = item["action_key"]
-    claimed = json.loads(self.item_path(pool.CLAIMED, key).read_text())
+    claimed = json.loads(self.records.item_path(pool.record_store.CLAIMED, key).read_text())
     assert self.root == root / "pb-queue"
     assert claimed["action_key"] == key
-    assert self.lease_path(key).is_file()
+    assert self.records.lease_path(key).is_file()
     assert kwargs.get("containment") is True
     record("executions.jsonl", key)
     return {{"action_key": key, "status": "executed", "returncode": 0}}
@@ -133,16 +133,16 @@ raise SystemExit(code)
             "schema", "actor", "pid", "host", "loaded_commit", "loaded_generation",
             "published_commit", "published_generation")})
         drifts[-1]["mode"] = stat.S_IMODE(path.stat().st_mode)
-    done = [json.loads(path.read_text()) for path in queue.dir(pool.DONE).glob("*.json")]
+    done = [json.loads(path.read_text()) for path in queue.records.dir(pool.record_store.DONE).glob("*.json")]
     observed = {
         "exit": child.returncode,
         "executions": _json_lines(tmp_path / "executions.jsonl"),
         "outcomes": _json_lines(tmp_path / "outcomes.jsonl"),
         "done": [(record["action_key"], record["status"]) for record in done],
-        "failed": sorted(path.stem for path in queue.dir(pool.FAILED).glob("*.json")),
+        "failed": sorted(path.stem for path in queue.records.dir(pool.record_store.FAILED).glob("*.json")),
         "terminal_keys": sorted(queue.terminal_keys()),
-        "claimed": sorted(path.name for path in queue.dir(pool.CLAIMED).iterdir()),
-        "ready": {path.stem: path.read_bytes() for path in queue.dir(pool.READY).glob("*.json")},
+        "claimed": sorted(path.name for path in queue.records.dir(pool.record_store.CLAIMED).iterdir()),
+        "ready": {path.stem: path.read_bytes() for path in queue.records.dir(pool.record_store.READY).glob("*.json")},
         "drifts": drifts,
     }
     expected = {
