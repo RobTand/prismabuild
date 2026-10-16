@@ -236,7 +236,7 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     for other in record["members"]:  # type: ignore[union-attr]
         if other["index"] == entry["index"]:
             continue
-        claimed = _gang_read(queue.item_path(pool.CLAIMED, other["action_key"]))
+        claimed = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]))
         if (claimed is not None and claimed.get("action_key") == other["action_key"]
                 and float(claimed.get("published_unix", math.nan)) == float(other["published_unix"])):
             other_host = claimed.get("claimed_host")
@@ -338,7 +338,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     from . import pool
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        mark = pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES)
+        mark = pool.record_store.read_confirmed_document(path, max_bytes=MAX_RECORD_BYTES)
     except (GangContractError, OSError, ValueError, core.PrismaBuildError):
         mark = None
     stamp = mark.get("first_seen_unix") if isinstance(mark, Mapping) else None
@@ -367,7 +367,7 @@ def clear_terminal(queue, group: str, key: str) -> bool:
         if group not in os.listdir(root(queue)):
             return True
         path.unlink(missing_ok=True)
-        return pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES) is None
+        return pool.record_store.read_confirmed_document(path, max_bytes=MAX_RECORD_BYTES) is None
     except (OSError, core.PrismaBuildError):
         return False
 
@@ -395,10 +395,10 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
     states: dict[int, str] = {}
     for other in record["members"]:  # type: ignore[union-attr]
         state = "absent"
-        for name, directory in (("claimed", pool.CLAIMED), ("done", pool.DONE),
-                                ("failed", pool.FAILED), ("withdrawn", pool.WITHDRAWN),
-                                ("ready", pool.READY)):
-            row = _gang_read(queue.item_path(directory, other["action_key"]))
+        for name, directory in (("claimed", pool.record_store.CLAIMED), ("done", pool.record_store.DONE),
+                                ("failed", pool.record_store.FAILED), ("withdrawn", pool.record_store.WITHDRAWN),
+                                ("ready", pool.record_store.READY)):
+            row = _gang_read(queue.records.item_path(directory, other["action_key"]))
             if (row is not None and row.get("action_key") == other["action_key"]
                     and float(row.get("published_unix", other["published_unix"]))
                     == float(other["published_unix"])):
@@ -431,7 +431,7 @@ def backfill_holders(queue, election: Mapping[str, object]) -> dict[str, dict]:
     from . import pool
     found = {}
     for key in queue.ledger(str(election["host"])).held_keys():
-        holder = _gang_read(queue.item_path(pool.CLAIMED, key))
+        holder = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, key))
         if (holder is not None and holder.get("claimed_host") == election["host"]
                 and backfill_matches(holder, election)):
             found[key] = holder
@@ -525,11 +525,11 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
     for timing in (standing or {}).get("backfill_preemptions", []):
         if timing.get("tokens_returned_unix") is not None:
             continue
-        archive = queue.superseded_dir() / (
+        archive = queue.records.superseded_dir() / (
             f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json")
         finished = _gang_read(archive)
         if finished is None:
-            finished = _gang_read(queue.item_path(pool.WITHDRAWN, str(timing["holder"])))
+            finished = _gang_read(queue.records.item_path(pool.record_store.WITHDRAWN, str(timing["holder"])))
         release = (finished or {}).get("gang_backfill_release")
         if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
                 and release.get("tokens_returned_unix") is not None):

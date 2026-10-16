@@ -159,30 +159,34 @@ def _selections(entries: object, local: Path, bank: Path) -> list[dict]:
 
 
 def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> tuple[dict, dict]:
-    for state in (pool.READY, pool.CLAIMED):
-        path = queue.item_path(state, key)
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        path = queue.records.item_path(state, key)
         try:
             path.lstat()
         except FileNotFoundError:
             pass
         else:
             _checkout_recovery_refuse(f'{key} is present in {state}')
-    readable, unreadable = queue.read_terminal_candidates(key, max_bytes=MAX_JSON_BYTES)
-    ending = queue.resolve_ending(readable, unreadable)
+    capture = queue.records.terminal_candidates(key, max_bytes=MAX_JSON_BYTES)
+    ending = queue.resolve_ending(capture)
+    unreadable = ending["unreadable"]
     if unreadable:
         reasons = "; ".join(str(entry["reason"]) for entry in unreadable)
         _checkout_recovery_refuse(f"{key} terminal evidence is unreadable: {reasons}")
     if (ending['ambiguous'] or ending['state'] not in
-            (pool.DONE, pool.FAILED, pool.WITHDRAWN) or ending['generation'] is None):
+            (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN) or ending['generation'] is None):
         _checkout_recovery_refuse(f'{key} has no complete unambiguous terminal generation')
     record = ending['record']
     if (record.get('schema') != pool.POOL_OUTCOME_SCHEMA_V1
             or record.get('action_key') != key or not isinstance(record.get('status'), str)
             or not record['status'] or type(record.get('attempts')) is not int
             or record['attempts'] < 0 or not _finite(record.get(
-                'withdrawn_unix' if ending['state'] == pool.WITHDRAWN else 'finished_unix'))):
+                'withdrawn_unix' if ending['state'] == pool.record_store.WITHDRAWN else 'finished_unix'))):
         _checkout_recovery_refuse(f'{key} has incomplete or malformed terminal metadata')
-    for other, (_, candidate) in readable.items():
+    for observation in capture.candidates:
+        if not isinstance(observation.result, pool.record_store.Present):
+            continue
+        other, candidate = observation.address.state, observation.result.value
         if candidate.get('action_key') != key or not _finite(candidate.get('published_unix')):
             _checkout_recovery_refuse(f'{key} has malformed {other} terminal authority')
     snapshot = pb.validate_pbrun_checkout_snapshot(record.get('checkout_snapshot'))
@@ -200,7 +204,7 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
     lifetime = dict(cas_root=str(cas_root), request_sha256=request_sha, bundle_path=str(bundle),
                     bundle_identity=_checkout_recovery_identity(bundle.lstat()), lease=None, pids=[])
     try:
-        lease, lease_sha = _json(queue.lease_path(key), 'claim lease')
+        lease, lease_sha = _json(queue.records.lease_path(key), 'claim lease')
     except FileNotFoundError:
         lease = None
     if lease is not None:
@@ -210,7 +214,7 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
                 or float(heartbeat) > time.time() - pool.LEASE_TIMEOUT_S):
             _checkout_recovery_refuse('present lease is malformed or live')
         lifetime['lease'] = dict(sha256=lease_sha,
-                                identity=_checkout_recovery_identity(queue.lease_path(key).lstat()))
+                                identity=_checkout_recovery_identity(queue.records.lease_path(key).lstat()))
     pids = set()
     for source in (record, lease or {}):
         for field in ('pid', 'child_pid'):

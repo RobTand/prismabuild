@@ -133,12 +133,12 @@ def _scan_publications(queue: PoolQueue) -> dict:
     count = 0
     ready_versions: set[tuple[str, float]] = set()
     claimed_versions: set[tuple[str, float]] = set()
-    for state in (pool.READY, pool.CLAIMED, "passes"):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED, "passes"):
         directory = queue.root / state
         try:
             entries = os.scandir(directory)
         except FileNotFoundError:
-            if state == pool.PASSES:
+            if state == pool.record_store.PASSES:
                 continue  # the existing sidecar directory is created lazily
             raise
         with entries:
@@ -147,7 +147,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 if count > MAX_RECORDS:
                     raise CensusUnavailable("measurement census record cap exceeded")
                 name = entry.name
-                is_mark = state == pool.CLAIMED and name.endswith((pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX))
+                is_mark = state == pool.record_store.CLAIMED and name.endswith((pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX))
                 if not name.endswith(".json") and not is_mark:
                     continue  # leases/status/progress are not publications
                 key = name[:64]
@@ -165,10 +165,10 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             raise CensusUnavailable("selection sidecar key mismatch")
                         selected[key] = chosen
                 else:
-                    queue.attempt_generation(record)  # strict publication identity
+                    queue.records.attempt_generation(record)  # strict publication identity
                     if type(record.get("priority", 0)) is not int:
                         unorderable_field = pool.PoolQueue._unorderable_queue_field(record)
-                        if (state == pool.READY and unorderable_field is not None
+                        if (state == pool.record_store.READY and unorderable_field is not None
                                 and unorderable_field[0] == "priority"):
                             # A READY record the queue itself cannot order
                             # holds no tokens and runs nothing, and the queue
@@ -198,11 +198,11 @@ def _scan_publications(queue: PoolQueue) -> dict:
                     except (TypeError, ValueError):
                         version = None
                     if version is not None:
-                        if state == pool.CLAIMED and not is_mark:
+                        if state == pool.record_store.CLAIMED and not is_mark:
                             claimed_versions.add(version)
-                        elif state == pool.READY:
+                        elif state == pool.record_store.READY:
                             ready_versions.add(version)
-                    if state == pool.CLAIMED and not is_mark:
+                    if state == pool.record_store.CLAIMED and not is_mark:
                         # Every claimed action is an incumbent; only a sealed
                         # deadline contributes a finite opportunity (#1419).
                         governed, requested = pool._declared_run_bound(record, max_bytes=MAX_RECORD_BYTES)
@@ -210,7 +210,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
                             "host": record.get("claimed_host"),
                             "requested": requested if governed == "deadline" else None,
                             "claimed_unix": record.get("claimed_unix"),
-                            "generation": queue.attempt_generation(record)}
+                            "generation": queue.records.attempt_generation(record)}
     measurements: dict[str, list[dict]] = {}
     movements: dict[str, list[dict]] = {}
     from . import movement_actions
@@ -231,7 +231,7 @@ def _scan_publications(queue: PoolQueue) -> dict:
     elections: dict[str, dict] = {}
     for key, chosen in selected.items():
         versions = rows.get(key, [])
-        same = [row for row in versions if queue.attempt_generation(row) == chosen["generation"]]
+        same = [row for row in versions if queue.records.attempt_generation(row) == chosen["generation"]]
         if same:
             if key not in measurements:
                 raise CensusUnavailable("elected measurement sealed identity unavailable")
@@ -241,19 +241,19 @@ def _scan_publications(queue: PoolQueue) -> dict:
         # publication under this key may retire it, but marks/claims of the
         # old generation above take precedence over any success/cancellation.
         endings = []
-        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
-            row = _read(queue.item_path(state, key), optional=True)
+        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+            row = _read(queue.records.item_path(state, key), optional=True)
             if row is None:
                 continue
-            stamp = row.get("withdrawn_unix" if state == pool.WITHDRAWN else "finished_unix")
+            stamp = row.get("withdrawn_unix" if state == pool.record_store.WITHDRAWN else "finished_unix")
             if (row.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1 or row.get("action_key") != key
                     or not isinstance(row.get("status"), str) or not row["status"]
-                    or (state == pool.WITHDRAWN and row["status"] != "withdrawn")
+                    or (state == pool.record_store.WITHDRAWN and row["status"] != "withdrawn")
                     or not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
                     or not math.isfinite(stamp)):
                 raise CensusUnavailable("incomplete measurement retirement proof")
             endings.append(row)
-        if any(queue.attempt_generation(row) == chosen["generation"] for row in endings):
+        if any(queue.records.attempt_generation(row) == chosen["generation"] for row in endings):
             continue
         if versions and all(float(row["published_unix"]) > chosen["published_unix"] for row in versions):
             continue
@@ -390,7 +390,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         groups[group] = record
     try:
         pass_names = sorted(
-            entry.name for entry in os.scandir(queue.root / pool_mod.PASSES))
+            entry.name for entry in os.scandir(queue.root / pool_mod.record_store.PASSES))
     except FileNotFoundError:
         pass_names = []
     count += len(pass_names)
@@ -401,7 +401,7 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
         if not name.endswith(".json") or not pool_mod._is_hex64(name[:-5]):
             continue
         try:
-            record = _read(queue.root / pool_mod.PASSES / name)
+            record = _read(queue.root / pool_mod.record_store.PASSES / name)
         except PublicationDisappeared:
             continue
         if record.get("action_key") != name[:-5]:
@@ -421,16 +421,16 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
             if key in members:
                 continue
             rows: list = []
-            for state in (pool_mod.READY, pool_mod.CLAIMED):
+            for state in (pool_mod.record_store.READY, pool_mod.record_store.CLAIMED):
                 count += 1
                 if count > MAX_RECORDS:
                     raise CensusUnavailable("measurement refresh record cap exceeded")
-                row = _read(queue.item_path(state, key), optional=True)
+                row = _read(queue.records.item_path(state, key), optional=True)
                 if row is None:
                     continue
-                queue.attempt_generation(row)
+                queue.records.attempt_generation(row)
                 version = (key, float(row["published_unix"]))
-                (ready_versions if state == pool_mod.READY else claimed_versions).add(version)
+                (ready_versions if state == pool_mod.record_store.READY else claimed_versions).add(version)
                 rows.append({"published_unix": version[1], "resources": row.get("resources")})
             members[key] = rows
     gangs: dict[str, dict] = {}
@@ -1093,11 +1093,11 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
           has_gpu: bool = False) -> dict | None:
     """Choose a host once; a finite incumbent *opportunity* is metadata, not a bound."""
     from . import pool
-    generation = queue.attempt_generation(item)
+    generation = queue.records.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
         authority = authority and movement_drained(
             census, queue, tags=tags, has_gpu=has_gpu, host=ledger.base.name)
-        prior = _read(queue.passes_path(item["action_key"]), optional=True) or {}
+        prior = _read(queue.records.passes_path(item["action_key"]), optional=True) or {}
         chosen = selection(prior)
         if chosen is not None and chosen["generation"] == generation:
             return chosen
@@ -1128,7 +1128,7 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         if (verdict.get("withhold") is not True or verdict.get("why") != "draining_for_measurement"
                 or not isinstance(holders, list) or not holders):
             return None
-        if not any(queue.attempt_generation(row) == generation
+        if not any(queue.records.attempt_generation(row) == generation
                    for row in census["measurements"].get(item["action_key"], [])):
             raise CensusUnavailable("measurement publication changed before election")
         # Re-read sealed incumbent opportunities while H serializes admission.
@@ -1163,5 +1163,5 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
                   "opportunity_unix": max([pool._now(), *ends])}
         prior[FIELD] = chosen
         prior["action_key"] = item["action_key"]
-        pool._write_json_atomic(queue.passes_path(item["action_key"]), prior)
+        pool._write_json_atomic(queue.records.passes_path(item["action_key"]), prior)
         return chosen

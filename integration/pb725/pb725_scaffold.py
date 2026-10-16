@@ -114,7 +114,7 @@ def move_manifest(runtime, tmp_path, monkeypatch, *, entries, origin, tier, scop
     manifest_file = tmp_path / "manifest.json"
     manifest_file.write_bytes(raw)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     consumer = hashlib.sha256((str(tmp_path) + ":consumer").encode()).hexdigest()
     mover = hashlib.sha256((str(tmp_path) + ":mover").encode()).hexdigest()
     stage = tmp_path / "stage"
@@ -129,7 +129,7 @@ def move_manifest(runtime, tmp_path, monkeypatch, *, entries, origin, tier, scop
              "claimed_host": host, "cas_root": str(cas),
              "residency": {"manifest_sha256": manifest_sha, "manifest_bytes": len(raw)},
              "resource_scope": {"action_key": consumer, "nonce": nonce, "scope_id": scope}}
-    queue.item_path(pool.CLAIMED, consumer).write_text(json.dumps(claim))
+    queue.records.item_path(pool.CLAIMED, consumer).write_text(json.dumps(claim))
     args = runtime.stage_move.build_parser().parse_args([
         "--pool-root", str(queue.root), "--cas-root", str(cas),
         "--action-key", mover, "--consumer-action-key", consumer,
