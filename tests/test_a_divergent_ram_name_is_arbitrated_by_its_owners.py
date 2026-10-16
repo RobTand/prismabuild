@@ -41,7 +41,7 @@ def _foreign_owner(tmp_path: Path, state: str):
     """
 
     queue, args, _body, paths, epoch, manifest_sha = ram._promoted(tmp_path)
-    residence = queue.root / pool.RESIDENCY
+    residence = queue.root / pool.record_store.RESIDENCY
     fragment = residency_map.read_fragments(residence, ram.CONSUMER)
     [fragment] = [row for row in fragment
                   if row.get("mover_action_key") == ram.RAM_MOVER]
@@ -161,7 +161,7 @@ def test_an_unproven_ending_keeps_the_retryable_refusal(
                       max_attempts=1, recompute=True)
     else:
         # The consumer's outcome record is gone: #798's legacy shape.
-        queue.item_path(pool.FAILED, consumer).unlink()
+        queue.records.item_path(pool.record_store.FAILED, consumer).unlink()
     before = ram._identities(paths)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
 
@@ -182,7 +182,7 @@ def test_an_unprovable_ending_ends_the_promotion_at_the_bound(
     """#1004 item 2 on the ram leg: the count is filed, and it ends the loop."""
 
     queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "failed")
-    queue.item_path(pool.FAILED, consumer).unlink()
+    queue.records.item_path(pool.record_store.FAILED, consumer).unlink()
     before = ram._identities(paths)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
     monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)

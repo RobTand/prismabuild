@@ -83,7 +83,7 @@ def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
 
 
 def item_of(queue, key):
-    return json.loads(queue.item_path(pool.READY, key).read_text(encoding="utf-8"))
+    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8"))
 
 
 def denials(queue):
@@ -110,13 +110,13 @@ def test_publish_refuses_the_capability_without_a_requirement(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="container_images"):
         publish(queue, KEY_A, tags=[contracts.CONTAINER_IMAGE_TAG])
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_record_requiring_the_capability_without_refs_is_denied(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
-    path = queue.item_path(pool.READY, KEY_A)
+    path = queue.records.item_path(pool.record_store.READY, KEY_A)
     record = json.loads(path.read_text(encoding="utf-8"))
     record["tags"] = [*record["tags"], contracts.CONTAINER_IMAGE_TAG]
     path.write_text(json.dumps(record), encoding="utf-8")
@@ -130,7 +130,7 @@ def test_a_mutable_tag_is_refused_at_publication(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="immutable"):
         publish(queue, KEY_A, container_images=["stage-a:replicate"])
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_refused_publication_retires_no_withdrawal(tmp_path):
@@ -144,7 +144,7 @@ def test_a_refused_publication_retires_no_withdrawal(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A)
     queue.withdraw(KEY_A, by="rob", reason="not needed", signal_child=False)
-    marker = queue.item_path(pool.WITHDRAWN, KEY_A)
+    marker = queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A)
     before = marker.read_bytes()
 
     with pytest.raises(pool.PoolContractError, match="container_images"):
@@ -158,8 +158,8 @@ def test_a_refused_publication_retires_no_withdrawal(tmp_path):
     # capture), which is what a live cancellation losing its authority leaves
     # behind.
     assert not list(
-        queue.superseded_dir().glob(f"{KEY_A}*.withdrawal-source"))
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+        queue.records.superseded_dir().glob(f"{KEY_A}*.withdrawal-source"))
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_an_action_without_images_has_no_field_and_no_requirement(tmp_path):
@@ -317,14 +317,14 @@ def test_an_unknown_inventory_denies_fail_closed(tmp_path):
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_presence_unknown"
     assert denial["evidence"]["required"] == [REF_A]
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.passes(KEY_A) == 0
 
 
 def test_a_malformed_item_field_is_a_denial_not_a_poll_failure(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
-    path = queue.item_path(pool.READY, KEY_A)
+    path = queue.records.item_path(pool.record_store.READY, KEY_A)
     record = json.loads(path.read_text(encoding="utf-8"))
     record["container_images"] = "sha256:" + "a" * 64      # not a list
     path.write_text(json.dumps(record), encoding="utf-8")
@@ -340,7 +340,7 @@ def test_presence_does_not_bypass_a_resource_gate(tmp_path):
     # decides, and the item is not claimed.
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 16}, has_gpu=True,
                        tags=CLAIM_TAGS, observed_images=[REF_A]) is None
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.claim(capacity=CAPACITY, has_gpu=True, tags=CLAIM_TAGS,
                        observed_images=[REF_A])["action_key"] == KEY_A
 
