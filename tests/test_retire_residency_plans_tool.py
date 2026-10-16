@@ -47,14 +47,14 @@ def test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan(
     # A live (ready) consumer is not a candidate.
     assert tool.candidates(queue) == []
     # Conclude it the old way: the terminal file appears with no plan retirement.
-    queue.item_path(pool.READY, key).unlink()
+    queue.records.item_path(pool.record_store.READY, key).unlink()
     assert tool.candidates(queue) == [key]
 
     assert tool.retire_concluded_plans(queue, apply=False)["would_retire"] == [key]
-    assert queue.residency_plan_path(key).exists()
+    assert queue.records.residency_plan_path(key).exists()
 
     assert tool.retire_concluded_plans(queue, apply=True)["retired"] == [key]
-    assert not queue.residency_plan_path(key).exists()
+    assert not queue.records.residency_plan_path(key).exists()
     assert tool.candidates(queue) == []
 
 
