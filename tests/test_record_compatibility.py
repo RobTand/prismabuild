@@ -141,7 +141,8 @@ def test_pythonpath_poison_cannot_supply_a_retained_dependency(generations, tmp_
 
 def test_setup_reader_cannot_stand_in_for_the_old_consumer(generations, tmp_path):
     driver = tmp_path / "setup_only.py"
-    driver.write_text('''def operate(request, store, load):
+    driver.write_text('''import base64
+def operate(request, store, load):
     module = load("prismabuild.residency_map")
     path = store / "landing.json"
     path.write_bytes(base64.b64decode(request["raw"]))
@@ -196,3 +197,16 @@ def test_a_missing_adapter_cannot_hide_an_existing_wire_kind(generations, tmp_pa
     synthetic.write_text(json.dumps(receipt))
     with pytest.raises(AssertionError, match="missing adapter module does not prove"):
         historical_absence(altered, "input-d38-plan/target", synthetic)
+
+
+def test_introduced_publication_namespace_is_not_a_codec_pass_for_an_old_queue_reader(generations, tmp_path):
+    adapter = ROOT / "tests/compat/support/compat_absence_adapters.py"
+    for generation, old, manifest in generations:
+        store = tmp_path / generation
+        store.mkdir()
+        (store / "introduced-ending.json").write_bytes(decoded(GOLDENS["publication-ending/initial"]))
+        observed = invoke(old, "q-item/plain", store, raw=decoded(GOLDENS["q-item/plain"]),
+                          manifest=manifest, adapter_path=adapter,
+                          evidence=evidence(generation + "/introduced-publication-namespace.json"))
+        result = accepted(observed)
+        assert result["ready_keys"] and result["ending_codec_credit"] is False

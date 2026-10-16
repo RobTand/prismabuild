@@ -46,7 +46,8 @@ def operate(request, store, load):
         directory.mkdir(mode=0o700)
     directory = local / (key[:12] + ".compat00")
     checkout = directory / "checkout"
-    checkout.mkdir(parents=True, mode=0o700)
+    directory.mkdir(mode=0o700)
+    checkout.mkdir(mode=0o700)
     bundle = cas.input_path(snapshot["input"])
     subprocess.run(["git", "clone", "--bare", "--quiet", "--template=", str(bundle), str(checkout / ".git")],
                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
