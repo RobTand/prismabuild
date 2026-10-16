@@ -25,6 +25,8 @@ def template(po, variant):
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family in ("out-consumer", "out-release", "out-release-index"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_consumer_adapters.py")))["operate"](request, store, load)
     if family in ("out-batch", "out-descriptor", "out-ref", "out-batch-ref", "out-origin-ref"):
         return runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["operate"](request, store, load)
     po, core = load("prismabuild.produced_output"), load("prismabuild.core")

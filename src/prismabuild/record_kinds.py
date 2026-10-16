@@ -26,6 +26,15 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("out-consumer", "prismabuild.produced_output_origin_consumer.v1", "private output instance/consumers/<batch>/<key>.json", "additive",
+               "prismabuild.produced_output:_declared_consumers", ("prismabuild.produced_output:declare_origin_consumer",),
+               ("first", "repeated"), ("retain batches write no declaration; exact ref remains closed",), stable_paths=True),
+    RecordKind("out-release", "prismabuild.produced_output_origin_consumer_release.v1", "private output instance/released-consumers/<batch>/<key>.json", "additive",
+               "prismabuild.produced_output:_consumer_release", ("prismabuild.produced_output:release_origin_consumer",),
+               ("failed", "withdrawn", "unpublished"), ("unpublished variant proves the sealed wrapper differs from the supplied live generation",), stable_paths=True),
+    RecordKind("out-release-index", "prismabuild.produced_output_origin_consumer_release_index.v1", "private queue/released-origin-consumers/<key>.<refdigest>.json", "additive",
+               "prismabuild.produced_output:origin_consumer_release", ("prismabuild.produced_output:_index_release",),
+               ("created", "repaired"), ("an index without its confirmed release is no release",), stable_paths=True),
     RecordKind("out-batch", "prismaquant.prismabuild.produced_output_batch.v1", "residency/produced-output-batches/<instance>/<batch>.json", "additive",
                "prismabuild.produced_output:batch_record",
                ("prismabuild.produced_output:commit_batch", "prismabuild.produced_output:commit_origin_batch"),
@@ -246,7 +255,8 @@ KINDS = (
     RecordKind("map", "prismaquant.prismabuild.residency_map.v1",
                "residency/<consumer>.map.json", "closed",
                "prismabuild.residency_map:read_map", ("prismabuild.residency_map:write_map",),
-               ("ssd", "ram"), ("SSD maps omit the RAM overlay header",),
+               ("ssd", "ram", "empty-ssd", "empty-ram"),
+               ("SSD maps omit the RAM overlay header; tier_loop._emptied_map removes entries, leads and RAM overlays",),
                ("prismabuild.residency_map:_MAP_KEYS", "prismabuild.residency_map:_ENTRY_KEYS")),
     RecordKind("landing", "prismaquant.prismabuild.residency_landing.v1",
                "residency/<consumer>.landing.json", "closed",

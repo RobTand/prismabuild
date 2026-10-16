@@ -134,7 +134,12 @@ def operate(request, store, load):
     if family in ("fragment", "map", "landing"):
         rm = load("prismabuild.residency_map")
         if write:
-            value = fixture(family, variant, rm)
+            value = fixture(family, variant.removeprefix("empty-"), rm)
+            if family == "map" and variant.startswith("empty-"):
+                seed = store / "seed.map.json"
+                rm.write_map(seed, value)
+                value = load("tier_loop")._emptied_map(seed)
+                assert isinstance(value, dict) and not value["entries"]
             if family == "fragment":
                 path = rm.write_fragment(store, value)
             elif family == "map":
@@ -154,7 +159,10 @@ def operate(request, store, load):
                 request["_consumer_boundary"]()
                 value = rm.read_map(path)
                 found = rm.lookup(value, "/compat/input")
-                assert found and found["bytes"] == 8, "map did not resolve the declared input"
+                if variant.startswith("empty-"):
+                    assert found is None and value["leads"] == [] and not value["entries"]
+                else:
+                    assert found and found["bytes"] == 8, "map did not resolve the declared input"
             else:
                 request["_consumer_boundary"]()
                 value = rm.read_landing(path)
