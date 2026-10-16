@@ -18,12 +18,12 @@ def _contradictory_claim(queue, *, second_has_tokens=False):
         assert queue.ledger(LOST_BY).acquire(KEY, DEMAND)
     else:
         (queue.root / pool.RESERVATIONS / LOST_BY / "held" / KEY).mkdir(parents=True)
-    return queue.item_path(pool.CLAIMED, KEY).read_bytes()
+    return queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
 
 
 def _assert_preserved(queue, original):
-    assert queue.item_path(pool.CLAIMED, KEY).read_bytes() == original
-    assert not queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes() == original
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert queue.claim_reservation_hosts(KEY) == sorted([WON_BY, LOST_BY])
     assert queue.ledger(WON_BY).held() == DEMAND
 
@@ -47,7 +47,7 @@ def test_withdraw_refuses_ambiguous_claim_without_removing_ownership(queue):
         with pytest.raises(pool.PoolContractError, match="ambiguous claim holder"):
             queue.withdraw(KEY, reason="test withdrawal", signal_child=False)
     _assert_preserved(queue, original)
-    assert not queue.item_path(pool.WITHDRAWN, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY).exists()
     cleanup.assert_not_called()
 
 
@@ -57,10 +57,10 @@ def test_ambiguous_claim_does_not_block_reaping_another_claim(queue):
     queue.publish(action_key=other, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={}, max_attempts=1, retry_safe=True)
-    queue.item_path(pool.READY, other).rename(queue.item_path(pool.CLAIMED, other))
+    queue.records.item_path(pool.record_store.READY, other).rename(queue.records.item_path(pool.record_store.CLAIMED, other))
     assert _reap_on_a_third_box(queue) == [other]
     _assert_preserved(queue, original)
-    assert queue.item_path(pool.READY, other).exists()
+    assert queue.records.item_path(pool.record_store.READY, other).exists()
 
 
 def test_recovery_resumes_when_contradictory_evidence_is_removed(queue):

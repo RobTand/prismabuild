@@ -61,7 +61,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _win_but_die_before_naming_itself(q: pool.PoolQueue) -> None:
-    claimed_path = q.item_path(pool.CLAIMED, KEY)
+    claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     real = pool._write_json_atomic
 
     def dies(path, payload):
@@ -75,7 +75,7 @@ def _win_but_die_before_naming_itself(q: pool.PoolQueue) -> None:
                 q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity=DEMAND)
 
     assert q.ledger(WON_BY).held() == DEMAND, "the winner committed nothing"
-    assert not q.item_path(pool.READY, KEY).exists(), "the rename did not happen"
+    assert not q.records.item_path(pool.record_store.READY, KEY).exists(), "the rename did not happen"
 
 
 def _a_second_box_races_and_loses(q: pool.PoolQueue, stale: list) -> None:
@@ -107,7 +107,7 @@ def _the_race(q: pool.PoolQueue) -> None:
 
 
 def _record(q: pool.PoolQueue) -> dict:
-    return json.loads(q.item_path(pool.CLAIMED, KEY).read_text())
+    return json.loads(q.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
 
 
 def _reap_on_a_third_box(q: pool.PoolQueue) -> list[str]:
@@ -215,7 +215,7 @@ def test_the_superseded_record_names_the_winner(queue) -> None:
 
     named = {
         json.loads(path.read_text()).get("claimed_host")
-        for path in sorted(queue.superseded_dir().glob("*.json"))
+        for path in sorted(queue.records.superseded_dir().glob("*.json"))
     }
     assert named == {WON_BY}, f"superseded filings name {named}"
 
@@ -250,17 +250,17 @@ def test_a_legacy_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_pat
         max_attempts=1, retry_safe=True,
     )
     assert q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity={}) is None
-    assert q.item_path(pool.READY, KEY).exists()
-    assert not q.item_path(pool.CLAIMED, KEY).exists()
+    assert q.records.item_path(pool.record_store.READY, KEY).exists()
+    assert not q.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not q.ledger().held_keys()
     # Explicit historical recovery input: an older runtime could strand an
     # empty-demand rename before its claimed-host rewrite. No current claim
     # or execution is permitted by this construction.
     with mock.patch.object(pool.socket, "gethostname", lambda: WON_BY):
         q._write_claim_intent(KEY, owner=f"{WON_BY}:1:aaaa0001")
-    record = json.loads(q.item_path(pool.READY, KEY).read_text())
+    record = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text())
     record.update(claimed_by=f"{WON_BY}:1:aaaa0001", claimed_unix=time.time())
-    q.item_path(pool.READY, KEY).rename(q.item_path(pool.CLAIMED, KEY))
-    q.item_path(pool.CLAIMED, KEY).write_text(json.dumps(record))
+    q.records.item_path(pool.record_store.READY, KEY).rename(q.records.item_path(pool.record_store.CLAIMED, KEY))
+    q.records.item_path(pool.record_store.CLAIMED, KEY).write_text(json.dumps(record))
     assert q.claim_reservation_hosts(KEY) == []
     assert q.resolve_claim_holder(KEY, record) == WON_BY

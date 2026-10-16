@@ -154,7 +154,7 @@ def test_a_full_box_that_polls_slower_than_the_sampler_never_re_admits(box):
         assert claim() is None
 
     assert queue.passes(small) == 7
-    assert queue.item_path(pool.READY, small).exists()
+    assert queue.records.item_path(pool.record_store.READY, small).exists()
     # Admission reads local authority. Its asynchronously published diagnostic
     # copy can still contain an earlier interval when this assertion runs.
     sample = adaptive_cpu.read_json(
