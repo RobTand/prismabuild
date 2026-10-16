@@ -101,7 +101,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.record_store._write_json(path, live)
     return control
 
 
@@ -246,7 +246,7 @@ def test_wrong_nonce_terminal_retains(tmp_path: Path) -> None:
         "action_key": OWNER, "nonce": "0" * 32,
         "scope_unit": "prismabuild-job" + "0" * 32 + ".slice",
         "host": "elsewhere"}
-    pool._write_json_atomic(done_path, done)
+    pool.record_store._write_json(done_path, done)
     refused = po.safe_release_instance(
         queue, instance, template, lease_sdk=rlc)
     assert refused["ok"] is False
@@ -353,10 +353,15 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
             owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
             socket_path=endpoint)
         control = scope.create()
-        live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
+        live = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, owner),
+        )
         assert isinstance(live, dict)
         live["resource_scope"] = control
-        pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, owner), live)
+        pool.record_store._write_json(
+            queue.records.item_path(pool.record_store.CLAIMED, owner),
+            live,
+        )
         env = {"PRISMABUILD_ACTION_KEY": owner,
                "PRISMABUILD_ACTION_NONCE": control["nonce"],
                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}

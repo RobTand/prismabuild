@@ -104,7 +104,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.record_store._write_json(path, live)
     return control
 
 
@@ -465,7 +465,7 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
     assert isinstance(row, dict)
     row["produced_output"] = dict(row["produced_output"])
     row["produced_output"]["template_sha256"] = "0" * 64
-    pool._write_json_atomic(claim_path, row)
+    pool.record_store._write_json(claim_path, row)
     refused = po.retire_batch(queue, instance, template, "sub",
                               stage_root=str(stage),
                               residency_root=str(out_base))
@@ -684,10 +684,15 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
             socket_path=endpoint)
         control = scope.create()
-        live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
+        live = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, owner),
+        )
         assert isinstance(live, dict)
         live["resource_scope"] = control
-        pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, owner), live)
+        pool.record_store._write_json(
+            queue.records.item_path(pool.record_store.CLAIMED, owner),
+            live,
+        )
         env = {"PRISMABUILD_ACTION_KEY": owner,
                "PRISMABUILD_ACTION_NONCE": control["nonce"],
                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
