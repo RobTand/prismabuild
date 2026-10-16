@@ -37,7 +37,7 @@ CAMPAIGN_TAGS = ["progress-helper-v1", "progress-v1", "sparky"]
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -56,7 +56,7 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue: pool.PoolQueue,
 ) -> None:
     _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
-    item = pool._read_json(queue.item_path(pool.READY, KEY))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None and "residency" not in item
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
@@ -75,7 +75,7 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
     assert queue.tier_ids() == []
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
     assert "tier_reservations" not in done and "residency_verdict" not in done
 
@@ -135,7 +135,7 @@ def test_the_residency_gate_is_inert_without_a_residency_block(
     """The gate reads one absent field and says so; it cannot refuse anything."""
 
     _publish(queue, KEY, {"cpu": 1})
-    item = pool._read_json(queue.item_path(pool.READY, KEY))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None
     assert queue.residency_verdict(item) == {"state": "not_requested"}
     # ...and on a record that predates the field entirely.
@@ -151,22 +151,22 @@ def _tier_reads_fail(monkeypatch: pytest.MonkeyPatch, queue: pool.PoolQueue) -> 
     test that broke both would not show which one the conclusion depends on.
     """
 
-    real = pool._scan
-    target = (queue.root / pool.TIER_RESERVATIONS).resolve()
+    real = pool.immutable_files.scan_optional
+    target = (queue.root / pool.record_store.TIER_RESERVATIONS).resolve()
 
     def scan(directory: Path):
         if Path(directory).resolve() == target:
             raise OSError(errno.ESTALE, "stale NFS file handle")
         return real(directory)
 
-    monkeypatch.setattr(pool, "_scan", scan)
+    monkeypatch.setattr(pool.immutable_files, 'scan_optional', scan)
 
 
 def _uncontain(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutate the driver: put back the unguarded scan the fix contains."""
 
     monkeypatch.setattr(pool.PoolQueue, "tier_ids", lambda self: sorted(
-        directory.name for directory in pool._scan(self.root / pool.TIER_RESERVATIONS)
+        directory.name for directory in pool.immutable_files.scan_optional(self.root / pool.record_store.TIER_RESERVATIONS)
         if directory.is_dir() and not directory.name.startswith(".")))
 
 
@@ -186,10 +186,10 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
 
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
 
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     # The host tokens went back: the host ledger was never the broken one.
     assert queue.ledger().held() == {}
     # And the helpers answer emptily rather than raising.
@@ -211,9 +211,9 @@ def test_without_the_containment_that_finish_loses_the_outcome(
     with pytest.raises(OSError):
         queue.finish(KEY, status="executed", claim_snapshot=claimed)
     # Claim entombed, lease gone, and no outcome filed anywhere.
-    assert pool._read_json(queue.item_path(pool.DONE, KEY)) is None
-    assert pool._read_json(queue.item_path(pool.FAILED, KEY)) is None
-    assert not queue.lease_path(KEY).exists()
+    assert pool.record_store.require(queue.records.item(pool.record_store.DONE, KEY)) is None
+    assert pool.record_store.require(queue.records.item(pool.record_store.FAILED, KEY)) is None
+    assert not queue.records.lease_path(KEY).exists()
 
 
 def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(

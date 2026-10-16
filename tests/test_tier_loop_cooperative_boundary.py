@@ -90,13 +90,13 @@ def test_unknown_gate_parks_without_starting_or_claiming_epoch(scope, contents):
 
 
 def test_gate_closes_during_layout_and_blocks_adoption(scope, monkeypatch):
-    original = scope.Queue.ensure_layout
+    original = scope.Queue.records.ensure_layout
 
     def layout(queue):
         original(queue)
         close(scope)
 
-    monkeypatch.setattr(scope.Queue, "ensure_layout", layout)
+    monkeypatch.setattr(scope.Queue.records, 'ensure_layout', layout)
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == ["construct", "layout"]
     assert not (scope.root / "queue" / "adoption").exists()
@@ -223,7 +223,7 @@ def test_startup_exception_restores_both_signal_handlers(scope, monkeypatch):
     def layout(queue):
         raise OSError("startup namespace unavailable")
 
-    monkeypatch.setattr(scope.Queue, "ensure_layout", layout)
+    monkeypatch.setattr(scope.Queue.records, 'ensure_layout', layout)
     with pytest.raises(OSError, match="startup namespace"):
         tier_loop._serve(scope.args)
     assert {s: signal.getsignal(s) for s in previous} == previous

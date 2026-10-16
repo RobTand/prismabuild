@@ -19,7 +19,7 @@ def test_once_requires_known_matching_receipts(tmp_path, loaded, published, verd
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
     queue = pool.PoolQueue(tmp_path / "queue")
-    receipt = queue.root / pool.PREWARM / "boundary-input.json"
+    receipt = queue.root / pool.record_store.PREWARM / "boundary-input.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"receipt_probe": "actual tier-cycle input bytes"}))
     (tmp_path / "arcstats").write_text(f"size 4 0\nc 4 {1 << 30}\nc_max 4 {1 << 30}\n")
@@ -97,7 +97,7 @@ raise SystemExit(code)
     observed = {
         "exit": child.returncode,
         "cycles": len(cycles),
-        "layout": (queue.root / pool.READY).exists(),
+        "layout": (queue.root / pool.record_store.READY).exists(),
         "adoptions": sum(line.get("event") == "tier-records-adopted" for line in lines),
         "read_actual_receipt": (tmp_path / "receipt-read").exists(),
         "tiers": len(tiers),

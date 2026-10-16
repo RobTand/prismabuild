@@ -45,7 +45,7 @@ def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         lambda info, *, path=None, descriptor=None,
         follow_symlinks=True: "tmpfs")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     ledger.ensure_capacity({KIND: 4})
     assert ledger.acquire(MOVER, {KIND: 1})

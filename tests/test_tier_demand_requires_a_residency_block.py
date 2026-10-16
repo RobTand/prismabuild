@@ -30,7 +30,7 @@ FILL = f"fill_mb_s_pool_side@{TIER}"
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -74,7 +74,7 @@ def test_publish_refuses_tier_demand_with_no_residency_block(
         _submit(queue, KEY_A, {"cpu": 1, f"arc_gib@arc:dl380g10": 10000})
     with pytest.raises(pool.PoolContractError, match="residency block"):
         _submit(queue, KEY_A, {"cpu": 1, STAGE: 2, FILL: 5})
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_range_block_with_its_floor_still_admits(queue: pool.PoolQueue) -> None:
@@ -98,7 +98,7 @@ def test_a_leads_block_carries_tier_demand_past_publish(
 
     _submit(queue, KEY_A, {"cpu": 1, STAGE: 1},
             residency=_leads_block(leads=[KEY_A]))
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_probe_shaped_mover_with_its_range_block_still_admits(
@@ -114,7 +114,7 @@ def test_a_probe_shaped_mover_with_its_range_block_still_admits(
 
     _submit(queue, KEY_A, {"cpu": 1, STAGE: 2, FILL: 5},
             residency=_range_block(range_bytes=2))
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_host_demand_without_a_block_is_unchanged(queue: pool.PoolQueue) -> None:

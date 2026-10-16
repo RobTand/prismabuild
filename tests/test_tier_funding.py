@@ -94,7 +94,7 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
     if ram_gib:
         queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
@@ -116,7 +116,7 @@ def _publish_mover(queue: pool.PoolQueue, plan: dict[str, object], mover: str,
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -244,7 +244,7 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
     # Replaced plan under a new digest never inherits credit.  (Written
     # directly: ``freeze`` is first-writer by contract, so a test simulates
     # the replacement the retirement machinery would file.)
-    plan_path = queue.residency_plan_path(consumer)
+    plan_path = queue.records.residency_plan_path(consumer)
     original = plan_path.read_bytes()
     plan2 = _plan(queue, consumer, mover, tag="bind-v2")
     assert residency_plan.plan_sha256(plan2) != residency_plan.plan_sha256(plan)
@@ -258,12 +258,12 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
     # Torn record authorizes nothing and is not absence (R4): the fence
     # defers beside it -- never replaced, never freed -- and fencing
     # recovers only through true absence.
-    queue.funding_path(mover, TIER).write_text("{torn", encoding="utf-8")
+    queue.records.funding_path(mover, TIER).write_text("{torn", encoding="utf-8")
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     assert queue.reserve_fence(TIER, grant, _fields(
         queue, plan, mover, row, kind="stage_gib"), 2) is False
-    assert queue.funding_path(mover, TIER).read_text(encoding="utf-8") == "{torn"
-    queue.funding_path(mover, TIER).unlink()
+    assert queue.records.funding_path(mover, TIER).read_text(encoding="utf-8") == "{torn"
+    queue.records.funding_path(mover, TIER).unlink()
     assert queue.reserve_fence(TIER, grant, _fields(
         queue, plan, mover, row, kind="stage_gib"), 2) is True
     repaired = queue.read_funding(mover, TIER)
@@ -292,7 +292,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     big = _hexkey("exact-stealer")
     _stealer_row(queue, big, 4)
     assert queue.claim(tags=["dl380g10"], owner="w-steal") is None
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
     small = _hexkey("exact-small")
     _stealer_row(queue, small, 3)
     got = queue.claim(tags=["dl380g10"], owner="w-small")
@@ -310,7 +310,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     free_before = ledger.available().get("stage_gib")
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     assert got is not None and got["action_key"] == mover
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
     # No new money: the fence covered the whole demand.
     assert ledger.available().get("stage_gib") == free_before
     assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
@@ -346,7 +346,7 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     # before any consumed-marking: the first tier's entitlement must survive
     # intact for the retry, never freed into a stealer window.
     assert queue.claim(tags=["dl380g10"], owner="w-retry-1") is None
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
@@ -395,7 +395,7 @@ def test_malformed_funding_is_inert_and_retained_until_absent(
     mover, consumer = _hexkey("mal-mover"), _hexkey("mal-consumer")
     plan = _plan(queue, consumer, mover, tag="mal")
     row = _publish_mover(queue, plan, mover)
-    path = queue.funding_path(mover, TIER)
+    path = queue.records.funding_path(mover, TIER)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema": pool.TIER_FUNDING_SCHEMA_V1,
                                 "tier_id": TIER, "extra": True}),
@@ -432,7 +432,7 @@ def test_consumed_funding_refences_after_finish(tmp_path: Path) -> None:
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py", tags=["dl380g10"],
                   resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2}, residency=row["residency"])
-    row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row2, dict)
     assert queue.reserve_fence(TIER, grant, _fields(
         queue, plan, mover, row2, kind="stage_gib"), 2) is True
@@ -554,7 +554,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
 
     def fail_claim_record(path, *args, **kwargs):
         if (str(path).endswith(f"{mover}.json")
-                and f"{pool.CLAIMED}{os.sep}" in str(path)):
+                and f"{pool.record_store.CLAIMED}{os.sep}" in str(path)):
             raise OSError("injected claim-record failure")
         return real_write(path, *args, **kwargs)
 
@@ -562,7 +562,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     assert queue.claim(tags=["dl380g10"], owner="w-inj") is None
     # The row is back in ready with its publication intact; the fence never
     # touched free, so the free count is exact and no stealer window opened.
-    row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row2, dict)
     assert row2["published_unix"] == row["published_unix"]
     assert row2["resources"] == row["resources"]
@@ -608,7 +608,7 @@ def test_lease_write_failure_returns_remainder_keeps_fence(
     assert queue.claim(tags=["dl380g10"], owner="w-lease") is None
     # Funded fence kept in full; the ram remainder this attempt committed
     # went home exactly (ram free is whole again); nothing executed.
-    row2 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row2, dict)
     assert row2["published_unix"] == row["published_unix"]
     record = queue.read_funding(mover, TIER)
@@ -673,7 +673,7 @@ def test_mark_failure_unwinds_without_execution(
         # No execution either time; the fence stayed held in full under its
         # generation, the ram remainder went home -- never freed, never
         # regrown.
-        assert queue.item_path(pool.READY, mover).exists()
+        assert queue.records.item_path(pool.record_store.READY, mover).exists()
         record = queue.read_funding(mover, TIER)
         assert record is not None and record["state"] == "transferring"
         assert str(record["generation"]) == generation
@@ -787,7 +787,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     # measured -- the pin below is earned by bytes, not by a comment.
     staged = stage / "real.bin"
     staged.write_bytes(b"s" * span)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -813,7 +813,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     stealer = _hexkey("real-stealer")
     _stealer_row(queue, stealer, 3)
     assert queue.claim(tags=["dl380g10"], owner="w-real-steal") is None
-    assert queue.item_path(pool.READY, stealer).exists()
+    assert queue.records.item_path(pool.record_store.READY, stealer).exists()
     # Only the owner path returns landed bytes: the real egress deletes the
     # real file, releases the charge, and drops the fragment.
     receipt = stage_release.evict(
@@ -913,7 +913,7 @@ def test_funding_write_enforces_binding_and_table(tmp_path: Path) -> None:
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py", tags=["dl380g10"],
                   resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2}, residency=row["residency"])
-    row3 = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row3 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row3, dict)
     assert float(row3["published_unix"]) != float(row["published_unix"])
     assert queue.reserve_fence(
