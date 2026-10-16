@@ -622,7 +622,6 @@ _FUNDING_KIND_ROLES = {
 #: Where a tier loop files what it discovered about one tier, for readers.
 #: Per stage tier, what the tier loop's admission commitment saw this cycle
 #: (#930): one record per tier, rewritten each cycle by the loop that owns it.
-TIER_COMMITMENTS = "tier-commitments"
 TIER_COMMITMENT_SCHEMA_V1 = "prismabuild.tier_commitment.v1"
 #: The residency block an item may carry (#583): what a movement node moves,
 #: and which movement nodes a compute node waits on.  Absent on every item the
