@@ -115,7 +115,7 @@ def _path(stage: Path, name: str) -> Path:
 def _pass(queue, stage, index=None):
     return stage_release.sweep_dead_owner_fragments(
         queue, stage_roots={TIER: str(stage)},
-        residency_root=queue.residency_fragment_root(), index=index)
+        residency_root=queue.records.residency_fragment_root(), index=index)
 
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
@@ -186,7 +186,7 @@ def test_a_directory_stamped_after_the_tick_installs_and_hits(
     state = _pin(monkeypatch, stage, filesystem)
     state["clock"] = state["stamp"] + TICK_NS
     key = stage_release._skip_checkpoint_key(
-        queue, queue.residency_fragment_root(), stage, TIER, consumer, mover)
+        queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
     assert _one(_pass(queue, stage), mover)["cacheable"] is True
     assert key in stage_release._skip_checkpoints

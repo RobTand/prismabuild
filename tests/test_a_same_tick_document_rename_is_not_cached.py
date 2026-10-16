@@ -71,7 +71,7 @@ class _Version:
 
 
 def _documents(queue, consumer: str, mover: str) -> dict[str, Path]:
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     return {"fragment": residency_map.fragment_path(root, consumer, mover),
             "material": reader_lease.material_path(root, consumer, mover)}
 

@@ -65,7 +65,7 @@ def _fragment(root: Path, stage: Path, consumer: str, mover: str,
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -79,7 +79,7 @@ def test_one_owners_egress_leaves_the_other_owners_bytes(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     _fragment(root, stage, CONSUMER_B, MOVER_B,
@@ -187,14 +187,14 @@ def _shared_pair(tmp_path: Path):
     """Two consumers, two movers, one staged file; returns (queue, stage, file)."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     _fragment(root, stage, CONSUMER_B, MOVER_B,
@@ -241,7 +241,7 @@ def test_dual_egress_deletes_exactly_once(tmp_path: Path) -> None:
         assert by_which["b"]["complete"] is True
         assert (by_which["a"]["entries_deleted"]
                 + by_which["b"]["entries_deleted"]) == 1
-        root = queue.root / pool.RESIDENCY
+        root = queue.root / pool.record_store.RESIDENCY
         assert list((root / CONSUMER_A).glob("*.json")) == []
         assert list((root / CONSUMER_B).glob("*.json")) == []
 
@@ -272,7 +272,7 @@ def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     record: dict[str, object] = {
         "action_key": key,
@@ -312,7 +312,7 @@ def test_a_claimed_copy_without_a_fragment_still_owns_its_paths(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -340,7 +340,7 @@ def test_a_copy_start_waits_out_an_in_progress_egress_snapshot(tmp_path: Path) -
     import threading
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     order: list[str] = []
@@ -372,7 +372,7 @@ def test_the_ownership_lock_excludes_another_process(tmp_path: Path) -> None:
     if os.name != "posix":
         pytest.skip("POSIX locks need fork")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
 
@@ -398,11 +398,11 @@ def test_ownership_scan_scales_with_fragments_not_entries(tmp_path: Path) -> Non
     import time
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     target = stage / "wanted.bin"
     target.write_bytes(b"\0" * 1024)
     for consumer in range(40):
@@ -464,7 +464,7 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -513,7 +513,7 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     # record is gone, exactly as a finishing worker does it.
     _fragment(root, stage, consumer_c, mover_c,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
-    (queue.dir(pool.CLAIMED) / f"{mover_c}.json").unlink()
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{mover_c}.json").unlink()
     flipped.set()
     thread.join(timeout=120)
     assert not thread.is_alive()
@@ -537,7 +537,7 @@ def test_each_claim_resolves_its_own_cas_root(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     manifest = _one_entry_manifest()
@@ -569,7 +569,7 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -608,7 +608,7 @@ def test_a_rootless_claim_reads_the_default_not_a_sibling_root(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     manifest = _one_entry_manifest()
@@ -676,7 +676,7 @@ def test_an_inverted_range_is_undeterminable_not_unowned(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -701,13 +701,13 @@ def test_a_claim_missing_resources_cannot_establish_non_mover(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
     manifest = _one_entry_manifest()
     _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096)
-    record_path = queue.dir(pool.CLAIMED) / f"{MOVER_B}.json"
+    record_path = queue.records.dir(pool.record_store.CLAIMED) / f"{MOVER_B}.json"
     record = json_module.loads(record_path.read_text())
     del record["resources"]
     record_path.write_text(json_module.dumps(record))
@@ -727,7 +727,7 @@ def test_an_uncuttable_window_taints(fleet, monkeypatch) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"

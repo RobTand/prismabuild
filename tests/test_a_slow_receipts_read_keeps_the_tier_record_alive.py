@@ -143,17 +143,17 @@ class _Loop:
             # The parallel read's checkpoints are tested on a real clock in
             # ``test_a_fresh_tier_loop_announces_before_its_cold_read``.
             monkeypatch.setattr(tier_loop, "RECEIPT_READERS", 1)
-            real_parse = pool._read_json
+            real_parse = pool.record_store.read_queue_record
 
             def parse(path, *args, **kwargs):
                 if self.reading and Path(path).name.startswith(SLOW_PREFIX):
                     self.charge()
                 return real_parse(path, *args, **kwargs)
 
-            monkeypatch.setattr(pool, "_read_json", parse)
+            monkeypatch.setattr(pool.record_store, '_read_json', parse)
 
     def stamp(self) -> float:
-        record = json.loads(self.queue.tier_record_path(TIER).read_text())
+        record = json.loads(self.queue.records.tier_record_path(TIER).read_text())
         return float(record["announced_unix"])
 
     def age(self) -> float:
@@ -171,7 +171,7 @@ class _Loop:
 
         for index in range(SLOW_RECEIPTS):
             directory = self.queue.root / (
-                pool.PREWARM if index % 2 else tier_loop.MOVER_RECEIPTS)
+                pool.record_store.PREWARM if index % 2 else tier_loop.MOVER_RECEIPTS)
             directory.mkdir(parents=True, exist_ok=True)
             (directory / f"{SLOW_PREFIX}{index:04d}.json").write_text(
                 json.dumps({"schema": "pb.test-1148-noise.v1",
