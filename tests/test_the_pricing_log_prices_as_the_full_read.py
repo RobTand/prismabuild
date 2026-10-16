@@ -42,7 +42,7 @@ def _full_read(queue: pool.PoolQueue, *, schemas=(pool.POOL_MOVE_SCHEMA_V1,),
                ) -> list[dict[str, object]]:
     """``move_records`` as it was before #1044: every receipt, read whole."""
 
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     out: list[dict[str, object]] = []
     try:
         paths = sorted(directory.glob("*.json"))
@@ -50,7 +50,7 @@ def _full_read(queue: pool.PoolQueue, *, schemas=(pool.POOL_MOVE_SCHEMA_V1,),
         return out
     for path in paths:
         try:
-            record = pool._read_json(path, tolerate_stale=True)
+            record = pool.record_store._read_json(path, tolerate_stale=True)
         except pool.PoolContractError:
             continue
         if not isinstance(record, dict):
@@ -145,7 +145,7 @@ def _history(queue: pool.PoolQueue) -> dict[str, dict[str, object]]:
 
 
 def _file_directly(queue: pool.PoolQueue, name: str, body: bytes) -> None:
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     directory.mkdir(parents=True, exist_ok=True)
     (directory / name).write_bytes(body)
 
@@ -246,7 +246,7 @@ def test_the_projection_prices_every_price_as_the_whole_receipt(queue) -> None:
 
 
 def test_no_log_a_complete_log_and_a_deleted_log_price_alike(queue) -> None:
-    log = queue.move_pricing_log_path()
+    log = queue.records.move_pricing_log_path()
     # The writers logged what they filed; the foreign files are not logged.
     _check(queue)
     # That read logged the rest: now the log covers every receipt.
@@ -259,7 +259,7 @@ def test_no_log_a_complete_log_and_a_deleted_log_price_alike(queue) -> None:
 
 
 def test_a_cut_off_or_mangled_log_prices_alike(queue) -> None:
-    log = queue.move_pricing_log_path()
+    log = queue.records.move_pricing_log_path()
     queue.move_records(schemas=BOTH)
     whole = log.read_bytes()
     lines = whole.split(b"\n")[:-1]
@@ -306,12 +306,12 @@ def test_a_cut_off_or_mangled_log_prices_alike(queue) -> None:
 def test_a_logging_read_never_lands_an_older_line_after_a_newer(queue) -> None:
     """A reader logs a receipt it read; a writer re-files it before the append."""
 
-    log = queue.move_pricing_log_path()
+    log = queue.records.move_pricing_log_path()
     log.unlink()
     _logged, since = queue._read_move_pricing_log()
     key = _key("cold", 1)
-    path = queue.root / pool.MOVERS / f"{key}.json"
-    stale = pool._read_json(path)
+    path = queue.root / pool.record_store.MOVERS / f"{key}.json"
+    stale = pool.record_store.read_queue_record(path)
     newer = {**stale, "peak_rss_bytes": 77 * GIB, "unix": 5_000_000.0}
     queue.record_move(key, newer)
     queue._append_move_pricing(
@@ -324,8 +324,8 @@ def test_a_logging_read_never_lands_an_older_line_after_a_newer(queue) -> None:
 
 def test_the_log_is_not_a_file_in_the_receipt_directory(queue) -> None:
     queue.move_records()
-    log = queue.move_pricing_log_path()
+    log = queue.records.move_pricing_log_path()
     assert log.exists()
-    assert log.parent != queue.root / pool.MOVERS
-    assert not list((queue.root / pool.MOVERS).glob("*.jsonl"))
-    assert not list((queue.root / pool.MOVERS).glob("*.lock"))
+    assert log.parent != queue.root / pool.record_store.MOVERS
+    assert not list((queue.root / pool.record_store.MOVERS).glob("*.jsonl"))
+    assert not list((queue.root / pool.record_store.MOVERS).glob("*.lock"))

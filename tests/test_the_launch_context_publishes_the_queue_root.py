@@ -32,7 +32,7 @@ def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_launcher_names_its_queue_for_every_action(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     # An ordinary action -- no residency, no map -- still learns its queue:
     # an owner binding its produced output needs the root and reads no map.
@@ -44,11 +44,11 @@ def test_the_launcher_names_its_queue_for_every_action(tmp_path: Path) -> None:
 def test_the_published_root_survives_a_relocated_map(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     moved = tmp_path / "elsewhere" / "maps" / "deep" / f"{KEY}.json"
     moved.parent.mkdir(parents=True)
     moved.write_text("{}")
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path',
                         lambda self, key: moved)
     launch = queue.launch_environment(
         {"action_key": KEY, "residency": {"leads": ["d" * 64]}})

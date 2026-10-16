@@ -75,7 +75,7 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
     if ram_gib:
@@ -246,8 +246,8 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
     next phase would.
     """
 
-    ready = queue.item_path(pool.READY, consumer)
-    claimed = queue.item_path(pool.CLAIMED, consumer)
+    ready = queue.records.item_path(pool.record_store.READY, consumer)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, consumer)
     if ready.exists():
         item = json.loads(ready.read_text())
         ready.unlink()
@@ -332,7 +332,7 @@ def _drive_adopted_head_until_the_advance_publishes(
     assert advance not in _published(first, "mover-published"), first
 
     assert ledger.acquire(successor, {"stage_gib": 1}) is True
-    queue.item_path(pool.READY, successor).unlink()
+    queue.records.item_path(pool.record_store.READY, successor).unlink()
     _claim_with_progress(queue, CONSUMER, phase="phase-0")
 
     gated_cycles = 0
@@ -456,7 +456,7 @@ def test_a_partial_blind_grant_permits_nothing(tmp_path: Path) -> None:
     assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 0
     assert queue.read_funding(m1, TIER) is None
     assert [key for key in (m0, m1, m2, m3)
-            if queue.item_path(pool.READY, key).exists()] == []
+            if queue.records.item_path(pool.record_store.READY, key).exists()] == []
 
 
 def test_a_final_window_still_needs_no_advance_fence(tmp_path: Path) -> None:

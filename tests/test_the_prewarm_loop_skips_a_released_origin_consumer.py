@@ -28,7 +28,7 @@ from prismabuild import produced_output  # noqa: E402
 
 
 def _index_entry(fleet: Fleet, key: str, body: str = "{}") -> Path:
-    directory = fleet.queue.released_origin_consumers_dir()
+    directory = fleet.queue.records.released_origin_consumers_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{key}.{'b' * 16}.json"
     path.write_text(body)
