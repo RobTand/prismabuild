@@ -43,6 +43,8 @@ refuses its consumer rather than admitting it onto bytes nobody reserved.
 
 from __future__ import annotations
 
+from prismabuild import materialize
+
 import argparse
 import array
 import bisect
@@ -3801,6 +3803,7 @@ class _LandingReport:
                  interval_s: float, range_bytes: int) -> None:
         self.copier = copier
         self.path = queue.records.mover_landing_path(mover)
+        self.records = queue.records
         self.mover = str(mover)
         self.interval_s = max(0.001, float(interval_s))
         self.range_bytes = int(range_bytes)
@@ -3823,7 +3826,7 @@ class _LandingReport:
                   "range_bytes": self.range_bytes}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            pool._write_json_atomic(self.path, record)
+            self.records.replace_record_at(self.path, record)
         except (OSError, pool.PoolContractError):
             self.unwritten += 1
             return
@@ -4048,7 +4051,9 @@ def served_for(args) -> dict[str, object]:
         return _served_for_sharers(args, shared)
     try:
         queue = pool.PoolQueue(Path(args.pool_root))
-        claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, str(args.consumer_action_key)))
+        claim = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, str(args.consumer_action_key)),
+        )
     except (OSError, pool.PoolContractError):
         claim = None
     if not isinstance(claim, dict):
@@ -4104,7 +4109,9 @@ def _served_for_sharers(args, consumers: Sequence[str]) -> dict[str, object]:
     reasons: list[str] = []
     for consumer in consumers:
         try:
-            claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, consumer))
+            claim = pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, consumer),
+            )
         except (OSError, pool.PoolContractError):
             claim = None
         if not isinstance(claim, dict):
@@ -5251,7 +5258,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.receipt:
         # The atomic writer every other fleet record uses: a reader of this
         # path must never be able to observe half a document.
-        pool._write_json_atomic(Path(args.receipt), receipt)
+        materialize._write_json_atomic(Path(args.receipt), receipt)
     print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
     return 1 if receipt.get("refusal") else 0
 

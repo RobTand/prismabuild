@@ -516,7 +516,7 @@ class _StagedWindow:
                                  "checkpoints")
         path = os.path.join(directory, f"chunk-{index}.json")
         try:
-            self.pool_mod._write_json_atomic(Path(path), payload)
+            self.pool_mod.materialize._write_json_atomic(Path(path), payload)
         except OSError as exc:
             raise _StagedReadRefusal(
                 f"leg3 staged-read refusal: checkpoint not durable: {exc}") from exc

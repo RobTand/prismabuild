@@ -745,7 +745,7 @@ def _file_reset(plan: Mapping, *, reason: str,
         ):
             if field in record:
                 record[kept] = record.pop(field)
-        pool._write_json_atomic(path, record)
+        pool.record_store.RecordStore(path.parent.parent).replace_record_at(path, record)
 
 
 def build_parser() -> argparse.ArgumentParser:

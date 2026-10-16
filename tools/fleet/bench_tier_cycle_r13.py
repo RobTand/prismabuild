@@ -338,7 +338,7 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    queue.records.replace_record_at(path, live)
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": nonce,
            "PRISMABUILD_ACTION_SCOPE": str(control["scope_id"])}

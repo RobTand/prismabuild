@@ -41,6 +41,8 @@ read as resident while the tmpfs holds nothing.
 
 from __future__ import annotations
 
+from prismabuild import materialize
+
 import argparse
 import json
 import os
@@ -437,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.receipt:
         # The atomic writer every other fleet record uses: a reader of this
         # path must never be able to observe half a document.
-        pool._write_json_atomic(Path(args.receipt), receipt)
+        materialize._write_json_atomic(Path(args.receipt), receipt)
     print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
     return 1 if receipt.get("refusal") else 0
 

@@ -21,7 +21,9 @@ def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch
     q = pool.PoolQueue(tmp_path / 'queue')
     q.records.ensure_layout()
     key = 'a' * 64
-    q.records.item_path(pool.record_store.READY, key).write_text(json.dumps({'action_key': key, 'published_unix': 1.0}))
+    q.records.item_path(pool.record_store.READY, key).write_text(
+        json.dumps({'action_key': key, 'published_unix': 1.0}),
+    )
     sleeps = []
     def land(_):
         sleeps.append(1)
@@ -68,16 +70,22 @@ def test_lane_can_heal_a_malformed_terminal_record(tmp_path, monkeypatch, fleet)
     q, cas, action = _submitted(tmp_path, monkeypatch)
     key = action['action_key']
     q.records.item_path(pool.record_store.FAILED, key).write_text('{')
-    publish = slurm_lane._publish_json_if_absent
+    publish = slurm_lane.record_store.RecordStore.file_lane_item_if_absent
     attempts = []
     def bounded_publish(*args, **kwargs):
         attempts.append(1)
         assert len(attempts) <= 3, 'malformed existing record caused a publication loop'
         return publish(*args, **kwargs)
-    monkeypatch.setattr(slurm_lane, '_publish_json_if_absent', bounded_publish)
+    monkeypatch.setattr(
+        slurm_lane.record_store.RecordStore,
+        'file_lane_item_if_absent',
+        bounded_publish,
+    )
     rows = pbwait.wait_for_keys(q, [key], cas=cas, wait_s=1, poll_s=0)
     assert rows[0]['status'] == 'failed'
-    assert json.loads(q.records.item_path(pool.record_store.FAILED, key).read_text())['status'] == 'failed'
+    assert json.loads(
+        q.records.item_path(pool.record_store.FAILED, key).read_text(),
+    )['status'] == 'failed'
 
 
 @pytest.mark.parametrize('receipt', [False, True])
