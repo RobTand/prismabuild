@@ -74,8 +74,8 @@ def test_finish_deletes_only_ephemeral_and_archives_before_capacity_release(
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
     assert queue.ledger().held() == {}
     state = pool.record_store.DONE if returncode == 0 else pool.record_store.READY
-    ending = pool.record_store.require(queue.records.item(state, item["action_key"]))
-    archived = pool.record_store.read_queue_record(queue.root / ending["attempt_history"][-1]["outcome"])
+    ending = pool.record_store.value_or_raise(queue.records.item(state, item["action_key"]))
+    archived = pool.record_store.read_document(queue.root / ending["attempt_history"][-1]["outcome"])
     assert all(entry["cleaned"] for entry in archived["detail"][FIELD]["entries"])
     if returncode:
         assert FIELD not in ending
@@ -160,7 +160,7 @@ def test_versioned_request_requires_worker_capability(lifetime):
 
 def test_killed_launcher_existing_reaper_cleans_and_requeues(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
-    lease = pool.record_store.read_queue_record(queue.records.lease_path(item["action_key"]))
+    lease = pool.record_store.read_document(queue.records.lease_path(item["action_key"]))
     lease["heartbeat_unix"] = 1.0
     pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
     queue.reap_stale(timeout_s=1)
@@ -342,7 +342,7 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     key = item["action_key"]
     queue.withdraw(key, signal_child=False)
-    withdrawn = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
+    withdrawn = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
     decision = queue.records.withdrawal_decision_path(withdrawn)
     decision_bytes = decision.read_bytes()
     with monkeypatch.context() as fault:
@@ -357,7 +357,7 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
                         pytest.fail("durably consumed scratch must not be revisited"))
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not tombstones[0].exists() and queue.ledger().held() == {}
-    completed = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key))
+    completed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, key))
     assert all(field in completed and completed[field] == value for field, value in withdrawn.items())
     assert decision.read_bytes() == decision_bytes
     assert completed["resource_scope_cleanup"]["complete"] is True
@@ -423,7 +423,7 @@ def test_widowed_scratch_lease_refuses_contradictory_owner_before_scope_stop(
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     key = item["action_key"]
     queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
-    lease = pool.record_store.read_queue_record(queue.records.lease_path(key))
+    lease = pool.record_store.read_document(queue.records.lease_path(key))
     if contradiction == "owner":
         lease["owner"] = "foreign-worker"
     else:
@@ -467,7 +467,7 @@ def test_tombstone_refuses_invalid_or_mismatched_owner_without_touching_ready_su
     ready = queue._shape_as_ready_item(successor, action_key=key)
     pool._write_json_atomic(ready, successor)
     ready_bytes = ready.read_bytes()
-    broken = pool.record_store.read_queue_record(tombstone)
+    broken = pool.record_store.read_document(tombstone)
     if contradiction == "nonce":
         broken["resource_scope"]["nonce"] = "e" * 32
     elif contradiction == "publication":

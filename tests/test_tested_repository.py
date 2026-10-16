@@ -167,9 +167,9 @@ def test_attempt_and_end_carry_the_repository(tmp_path):
     assert pool.tested_repository_of(claimed) == "atlas"
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, key))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, key))
     assert done["tested_repository"] == "atlas"
-    attempt = pool.record_store.read_queue_record(queue.records.attempt_path(done, 1))
+    attempt = pool.record_store.read_document(queue.records.attempt_path(done, 1))
     assert attempt["schema"] == pool.record_store.POOL_ATTEMPT_SCHEMA_V1
     assert attempt["tested_repository"] == "atlas"
 
@@ -187,9 +187,9 @@ def test_a_row_without_the_field_reads_unknown_on_attempt_and_end(
     assert claimed is not None
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool.record_store.require(queue.records.item(pool.record_store.DONE, key))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, key))
     assert "tested_repository" not in done
-    attempt = pool.record_store.read_queue_record(queue.records.attempt_path(done, 1))
+    attempt = pool.record_store.read_document(queue.records.attempt_path(done, 1))
     assert attempt["tested_repository"] == UNKNOWN
 
 

@@ -134,7 +134,7 @@ def test_cancelled_before_recording_reap_keeps_later_declaration_evidence(runtim
     queue, item, variables = create()
     queue._start_resource_scope(item)
     queue.withdraw(item["action_key"], signal_child=False)
-    decision = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, item["action_key"]))
+    decision = pool.record_store.value_or_raise(queue.records.item(pool.record_store.WITHDRAWN, item["action_key"]))
     assert decision is not None and FIELD not in decision
     evidence = record(queue, item)
     # Cancellation concludes a claim; unlike a retry, it is not returned in

@@ -237,7 +237,7 @@ def test_ending_archives_declarations_but_does_not_delete_or_carry_to_retry(
     sentinel.write_bytes(b"audit-only, not cleanup ownership")
     outcome = {"status": "executed" if returncode == 0 else "failed", "returncode": returncode}
     queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
-    ending = pool.record_store.require(queue.records.item(pool.record_store.DONE if returncode == 0 else pool.record_store.READY, item["action_key"]))
+    ending = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE if returncode == 0 else pool.record_store.READY, item["action_key"]))
     assert ending is not None
     history = ending["attempt_history"]
     assert isinstance(history, list) and isinstance(history[-1], dict)
@@ -324,7 +324,7 @@ def test_payload_cleanup_failure_preserves_declarations_and_completed_result(run
     monkeypatch.setattr(resource_scope.ResourceScope, "release", original)
     queue.finish(item["action_key"], status="executed", detail={"returncode": 0},
                  claim_snapshot=item)
-    terminal = pool.record_store.require(queue.records.item(pool.record_store.DONE, item["action_key"]))
+    terminal = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, item["action_key"]))
     assert terminal is not None
     details = terminal["detail"]
     assert isinstance(details, dict) and details[FIELD] == evidence
@@ -338,7 +338,7 @@ def test_stale_reap_archives_old_declarations_and_strips_retry(runtime, monkeypa
     queue.execute(item, containment=True)
     evidence = live_record(queue, item)[FIELD]
     assert queue.reap_stale(timeout_s=-1) == [item["action_key"]]
-    ready = pool.record_store.require(queue.records.item(pool.record_store.READY, item["action_key"]))
+    ready = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, item["action_key"]))
     assert ready is not None and FIELD not in ready
     details = ready["detail"]
     assert isinstance(details, dict) and details[FIELD] == evidence

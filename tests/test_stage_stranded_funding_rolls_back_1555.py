@@ -85,7 +85,7 @@ def _bind(q, template, owner):
     })
     control = scope.control_record()
     path = q.records.item_path(pool.record_store.CLAIMED, owner)
-    live = pool.record_store.read_queue_record(path)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -155,7 +155,7 @@ def _publish_mover(q, mover, manifest, total, gib=1, batch_ref=None):
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total},
               produced_output_batch=batch_ref)
-    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -282,11 +282,11 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     # A funded-but-uncommitted mover never claims through the gate
     # (claim refuses output_funding_pending), so the race row is filed
     # direct: the repair must read any CLAIMED row as live.
-    ready = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
+    ready = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(ready, dict)
     pool._write_json_atomic(q.records.item_path(pool.record_store.CLAIMED, mover), ready)
     q.records.item_path(pool.record_store.READY, mover).unlink()
-    assert pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover)) is not None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover)) is not None
     q.finish(owner, status="failed", detail={"returncode": 1})
     assert po._producer_attempt_state(q, inst) == "dead"
     # The repair reads a CLAIMED row and refuses, even with the prewrite
