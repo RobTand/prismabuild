@@ -29,7 +29,7 @@ def operate(request, store, load):
                 yield census
             original = election.locked_census
             election.locked_census = supplied_census
-            holder = SimpleNamespace(name=M, kind=load("prismabuild.holder_census").HolderKind.OTHER_HOLDER)
+            holder = SimpleNamespace(name=M, kind=election.HolderKind.OTHER_HOLDER) if hasattr(election, "HolderKind") else None
             ledger = SimpleNamespace(base=Path("/compat/compat-host"), held_keys=lambda: [M],
                 holder_census=lambda: SimpleNamespace(non_private_holders=[holder]))
             try:
