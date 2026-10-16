@@ -140,7 +140,7 @@ def test_a_superseding_resubmission_takes_over_the_failed_declaration(
         {"action_key": second, "state": "succeeded"}],
         key=lambda item: item["state"])
     assert not path.exists() and _charged(queue, instance) == 0
-    assert queue.item_path(pool.FAILED, first).exists(), "history is kept"
+    assert queue.records.item_path(pool.record_store.FAILED, first).exists(), "history is kept"
 
 
 def test_a_failed_declaration_nobody_supersedes_is_held_and_reported(
@@ -155,7 +155,7 @@ def test_a_failed_declaration_nobody_supersedes_is_held_and_reported(
     po.declare_origin_consumer(queue, committed["ref"], consumer_action_key=consumer)
     _publish_consumer(queue, consumer)
     queue.withdraw(consumer, reason="gave up", signal_child=False)
-    assert queue.item_path(pool.WITHDRAWN, consumer).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, consumer).exists()
 
     blocked = {"event": STALLED, "ref": committed["ref"],
                "bytes": path.stat().st_size,

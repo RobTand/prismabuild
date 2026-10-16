@@ -57,17 +57,17 @@ def _queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
 
     monkeypatch.setattr(supervise, "MIRROR", tmp_path / "fleet")
     queue = pool.PoolQueue(tmp_path / "fleet" / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
 def _hold_a_claim(queue: pool.PoolQueue, pid: int, *, host: str) -> None:
     """The lease ``claim`` writes, for a loop that has not spawned anything."""
 
-    queue.item_path(pool.CLAIMED, KEY).write_text(
+    queue.records.item_path(pool.record_store.CLAIMED, KEY).write_text(
         json.dumps({"action_key": KEY, "claimed_host": host}), encoding="utf-8"
     )
-    queue.lease_path(KEY).write_text(json.dumps({
+    queue.records.lease_path(KEY).write_text(json.dumps({
         "schema": pool.POOL_LEASE_SCHEMA_V1,
         "action_key": KEY,
         "owner": f"{host}:{pid}:abcdef12",
@@ -130,7 +130,7 @@ def test_a_claim_with_unknown_ownership_does_not_authorize_a_signal(
     queue = _queue(tmp_path, monkeypatch)
     _hold_a_claim(queue, childless.pid, host=socket.gethostname())
     if lease_bytes is None:
-        queue.lease_path(KEY).unlink()
+        queue.records.lease_path(KEY).unlink()
     else:
-        queue.lease_path(KEY).write_text(lease_bytes)
+        queue.records.lease_path(KEY).write_text(lease_bytes)
     assert supervise._is_idle(childless.pid) is False

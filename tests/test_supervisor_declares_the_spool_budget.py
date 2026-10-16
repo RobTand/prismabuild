@@ -176,7 +176,7 @@ def test_a_covered_declaration_reaches_the_worker_and_its_producer_is_claimed(
     assert offer == {"mem_gb": 8, "cpu": 2, "disk_metadata": 0, KIND: 32}
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     _producer(queue, key)
     claimed = queue.claim(owner="w", capacity=offer)
@@ -194,11 +194,11 @@ def test_a_box_that_declares_too_little_leaves_the_producer_queued_with_a_reason
     assert offer[KIND] == 16
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "b" * 64
     _producer(queue, key)
     assert queue.claim(owner="w", capacity=offer) is None
-    assert (queue.dir(pool.READY) / f"{key}.json").exists()
+    assert (queue.records.dir(pool.record_store.READY) / f"{key}.json").exists()
     [denial] = _denials(queue)
     assert denial["reason"] == "never_fits_capacity"
     assert denial["evidence"]["demand"][KIND] == 32
@@ -223,7 +223,7 @@ def test_a_number_the_disk_cannot_cover_is_lowered_to_the_room(
     assert offer[KIND] == 20
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "c" * 64
     _producer(queue, key)
     assert queue.claim(owner="w", capacity=offer) is None
@@ -618,7 +618,7 @@ def _holder_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(supervise, "MIRROR", tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "boxa")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -667,7 +667,7 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
     assert _worker_offer(args, queue.ledger())[KIND] == 200
     assert queue.claim(owner="w2", capacity=_worker_offer(args, queue.ledger())) is None
     assert queue.ledger().capacity()[KIND] == 200
-    assert (queue.dir(pool.READY) / f"{second}.json").exists()
+    assert (queue.records.dir(pool.record_store.READY) / f"{second}.json").exists()
 
     # Still waiting on the next tick; the line is not repeated.
     assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "200"]

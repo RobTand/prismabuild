@@ -62,13 +62,13 @@ def _fragment_entries(material_entries: dict) -> dict:
 
 def _fragment_doc(queue, consumer: str, mover: str) -> dict:
     path = residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover)
+        queue.records.residency_fragment_root(), consumer, mover)
     return residency_map.validate_fragment(json.loads(path.read_bytes()))
 
 
 def _material_doc(queue, consumer: str, mover: str) -> dict:
     got = reader_lease.read_material(
-        queue.residency_fragment_root(), consumer, mover)
+        queue.records.residency_fragment_root(), consumer, mover)
     assert isinstance(got, dict), got
     return got
 
@@ -205,7 +205,7 @@ def test_the_successor_adopts_the_survivor_with_zero_recopy(
 
     # The shortened donor is a per-path cache, never a whole-range donor:
     # whole-range adoption refuses it and leaves donor and tokens untouched.
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     holder = queue.tier_ledger(TIER).holder_tokens(mover)
     refused = tier_loop.adopt(
         queue, old_key=mover, new_key=base._key(),
@@ -253,9 +253,9 @@ def test_a_fully_stale_owner_settles_its_holder_once(fleet, tmp_path, monkeypatc
                and entry.get("complete") is True]
     assert retired, receipts
     assert not residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert _tokens(queue, mover) == {}, "the whole charge settles exactly once"
     assert not any((stage / red.staged_name(name)).exists() for name in NAMES)
 
@@ -361,7 +361,7 @@ def test_a_co_owner_fragment_protects_its_file_and_the_rest_still_prunes(
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)
     coowner, comover = base._key(), base._key()
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": coowner, "mover_action_key": comover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -391,7 +391,7 @@ def test_a_co_owner_cannot_make_a_nonregular_path_clean(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)
     coowner, comover = base._key(), base._key()
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": coowner, "mover_action_key": comover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -544,14 +544,14 @@ def test_republication_after_census_retains(fleet, monkeypatch, owner):
     red._sweep(queue, stage)
 
     _assert_owner_intact(queue, stage, consumer, mover)
-    assert queue.item_path(
-        pool.READY, consumer if owner == "consumer" else mover).exists()
+    assert queue.records.item_path(
+        pool.record_store.READY, consumer if owner == "consumer" else mover).exists()
 
 
 def test_a_damaged_done_terminal_retains(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    path = queue.item_path(pool.DONE, mover)
+    path = queue.records.item_path(pool.record_store.DONE, mover)
     record = json.loads(path.read_bytes())
     record["published_unix"] += 1
     path.write_text(json.dumps(record))
@@ -712,7 +712,7 @@ def test_an_unchanged_coherent_owner_skips_and_is_invalidated(
     def run_pass():
         return stage_release.sweep_dead_owner_fragments(
             queue, stage_roots={TIER: str(stage)},
-            residency_root=queue.residency_fragment_root())
+            residency_root=queue.records.residency_fragment_root())
 
     run_pass()
     assert seen[0] >= len(destinations), "the first pass must scan every entry"
@@ -752,10 +752,10 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
             "stage_path": str(path), "bytes": SIZE,
             "sha256": red.OLD_DIGEST, "file_id": red._identity(path)}
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256="a" * 64, generation="a" * 32, entries=entries)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -768,7 +768,7 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
     def run_pass():
         return stage_release.sweep_dead_owner_fragments(
             queue, stage_roots={TIER: str(stage)},
-            residency_root=queue.residency_fragment_root())
+            residency_root=queue.records.residency_fragment_root())
 
     run_pass()
     assert seen[0] >= len(destinations), "the first pass must scan"
@@ -872,10 +872,10 @@ def test_a_symlinked_intermediate_directory_retains(fleet):
         "bytes": SIZE,
         "sha256": red.OLD_DIGEST, "file_id": red._identity(path)}}
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256="a" * 64, generation="a" * 32, entries=entries)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),

@@ -96,7 +96,7 @@ def _co_owner(fleet, names) -> tuple[str, str]:
 
 
 def _write_fragment(queue, stage, consumer, mover, entries) -> None:
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -106,7 +106,7 @@ def _write_fragment(queue, stage, consumer, mover, entries) -> None:
 def _rewrite_fragment(queue, consumer, mover) -> None:
     """The same document filed again: a new inode, the same content."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     path = residency_map.fragment_path(root, consumer, mover)
     residency_map.write_fragment(root, json.loads(path.read_text()))
 
@@ -114,7 +114,7 @@ def _rewrite_fragment(queue, consumer, mover) -> None:
 def _drop_owner(queue, consumer, mover) -> None:
     """What an owner's egress leaves: no fragment and no material."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     residency_map.fragment_path(root, consumer, mover).unlink()
     reader_lease.material_path(root, consumer, mover).unlink()
 
@@ -122,7 +122,7 @@ def _drop_owner(queue, consumer, mover) -> None:
 def _pass(queue, stage, index=None):
     return stage_release.sweep_dead_owner_fragments(
         queue, stage_roots={TIER: str(stage)},
-        residency_root=queue.residency_fragment_root(), index=index)
+        residency_root=queue.records.residency_fragment_root(), index=index)
 
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
@@ -139,7 +139,7 @@ def _one(receipts, mover: str) -> dict:
 
 def _checkpoint_key(queue, stage, consumer, mover) -> tuple:
     return stage_release._skip_checkpoint_key(
-        queue, queue.residency_fragment_root(), stage, TIER, consumer, mover)
+        queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
 
 def _count_destination_lstats(monkeypatch, paths) -> list[int]:
@@ -219,7 +219,7 @@ def test_removing_the_co_owner_can_evict_the_whole_owner(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)      # every path replaced
     co_consumer, co_mover = _co_owner(fleet, NAMES)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
 
     assert _one(_pass(queue, stage), mover)["retained_reason"] == "co-owner"
     assert _receipts_for(_pass(queue, stage), mover) == []
