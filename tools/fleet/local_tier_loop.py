@@ -63,7 +63,7 @@ def main(argv=None):
                     elif gate is None:
                         try:
                             queue = pool.PoolQueue(args.pool_root)
-                            queue.ensure_layout()
+                            queue.records.ensure_layout()
                             result = local_tier_cycle(queue, socket.gethostname(), resident_sets.read_policy(args.policy))
                         except Exception as error:
                             print(json.dumps({"event": "localtier-cycle-error",

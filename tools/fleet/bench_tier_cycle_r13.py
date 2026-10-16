@@ -334,8 +334,8 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
     nonce = secrets.token_hex(16)
     control = {"action_key": owner, "nonce": nonce,
                "scope_id": po._broker_scope_id(owner, nonce)}
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -437,7 +437,7 @@ def run_cycles(args) -> int:
     def discover(**_kwargs):
         return {bench_tier_cycle.TIER: _discover_record(stage, host)}
 
-    sampler = AgeSampler(queue.tier_record_path(bench_tier_cycle.TIER),
+    sampler = AgeSampler(queue.records.tier_record_path(bench_tier_cycle.TIER),
                          args.age_sample_s)
     sampler.start()
     counter.install()
@@ -688,7 +688,7 @@ def main(argv: list[str] | None = None) -> int:
     host = socket.gethostname()
     bench_tier_cycle.HOST = host
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(

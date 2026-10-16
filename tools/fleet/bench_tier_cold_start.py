@@ -94,7 +94,7 @@ class _Ages(threading.Thread):
 
     def __init__(self, queue: pool.PoolQueue) -> None:
         super().__init__(daemon=True)
-        self.path = queue.tier_record_path(TIER)
+        self.path = queue.records.tier_record_path(TIER)
         self.halt = threading.Event()
         self.oldest = 0.0
         self.dead_polls = 0
@@ -124,7 +124,7 @@ def run(args) -> dict[str, object]:
     scratch = Path(tempfile.mkdtemp(prefix="bench-1153-", dir=work))
     try:
         queue = pool.PoolQueue(scratch / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         stage = scratch / "stage"
         stage.mkdir()
         queue.mint_tier_capacity(TIER, {"stage_gib": 700})
@@ -142,9 +142,9 @@ def run(args) -> dict[str, object]:
             tier_loop.RECEIPT_READERS = int(args.readers)
         readers = int(getattr(tier_loop, "RECEIPT_READERS", 1))
         delay = args.read_ms / 1000.0
-        receipt_dirs = {str(queue.root / pool.MOVERS),
-                        str(queue.root / pool.PREWARM)}
-        real_read = pool._read_json
+        receipt_dirs = {str(queue.root / pool.record_store.MOVERS),
+                        str(queue.root / pool.record_store.PREWARM)}
+        real_read = pool.record_store.read_queue_record
         reads = [0]
         lock = threading.Lock()
 
@@ -155,7 +155,7 @@ def run(args) -> dict[str, object]:
                 time.sleep(delay)
             return real_read(path, *a, **kw)
 
-        pool._read_json = slow_read
+        pool.record_store.read_queue_record = slow_read
         writes: list[float] = []
         real_announce = queue.announce_tier
 
@@ -199,7 +199,7 @@ def run(args) -> dict[str, object]:
         for index in range(2 * args.warm_cycles):
             serial = index % 2 == 1
             tier_loop.RECEIPT_READERS = 1 if serial else readers
-            directory = queue.root / pool.MOVERS
+            directory = queue.root / pool.record_store.MOVERS
             (directory / f"warm-{index:04d}.json").write_text(json.dumps(
                 {"schema": "pb.bench-1153-noise.v1", "unix": time.time()}))
             time.sleep(0.05)
@@ -209,7 +209,7 @@ def run(args) -> dict[str, object]:
             (warm_serial if serial else warm).append(round(float(
                 tier_loop.LAST_CYCLE.get("phases", {}).get("receipts", 0.0)), 4))
         tier_loop.RECEIPT_READERS = readers
-        pool._read_json = real_read
+        pool.record_store.read_queue_record = real_read
         return {
             "bench": "tier-cold-start-1153",
             "fix_present": callable(getattr(tier_loop, "_start", None)),
