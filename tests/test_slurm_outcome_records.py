@@ -563,7 +563,7 @@ def test_the_actions_own_exit_status_reaches_the_terminal_record(
     )
     assert completed.returncode == 1, completed.stderr
     assert json.loads(
-        sl.records.action_status_path(lane_dir, "4242").read_text(encoding="utf-8")
+        sl.action_status_path(lane_dir, "4242").read_text(encoding="utf-8")
     ) == {"action_returncode": 7}
 
     job = sl.SubmittedJob(
@@ -663,7 +663,7 @@ def test_a_malformed_sidecar_leaves_the_record_as_it_was(
 
     directory = tmp_path / "lane" / ("c" * 64)
     directory.mkdir(parents=True)
-    sidecar = sl.records.action_status_path(directory, "77")
+    sidecar = sl.action_status_path(directory, "77")
     for text in ("{", "[]", '{"action_returncode": "7"}', '{"action_signal": 9}'):
         sidecar.write_text(text, encoding="utf-8")
         assert sl.read_action_status(sidecar) == {}
