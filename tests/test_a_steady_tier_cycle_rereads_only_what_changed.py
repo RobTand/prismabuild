@@ -346,7 +346,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
     kept = loop.receipts.records._captures._slots[str(receipts)].value
     assert len(kept) >= 6000, len(kept)
     for name, (_version, record) in kept.items():
-        assert record == pool.record_store.read_queue_record(receipts / name), name
+        assert record == pool.record_store.read_document(receipts / name), name
 
 
 def test_an_unreadable_receipt_directory_is_skipped_and_named(

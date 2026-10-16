@@ -35,7 +35,7 @@ def test_explicit_invalid_demand_is_not_the_fixture_default(tmp_path, resources)
     queue = fixture(tmp_path)
     publish(queue, resources=resources)
     assert queue.claim() is None
-    row = pool.record_store.require(queue.records.item(pool.record_store.READY, KEY))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert isinstance(row, dict)
     assert row["resources"] == (resources or {})
     assert not queue.ledger().held_keys()

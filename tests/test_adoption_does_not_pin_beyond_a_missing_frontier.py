@@ -110,7 +110,7 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
     for _ in range(3):
         base._cycle(queue, stage, gib=69)
     mover = base._hexkey('actualmover1')
-    ready = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, mover))
+    ready = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, mover))
     claim = queue.claim(ready=[ready], tags=['dl380g10'], owner='frontier-reader-test',
                         capacity={'cpu': 4, 'mem_gb': 4})
     assert claim and claim['action_key'] == mover

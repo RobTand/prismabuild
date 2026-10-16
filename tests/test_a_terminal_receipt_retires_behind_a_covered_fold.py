@@ -857,7 +857,7 @@ def test_a_crash_between_checkpoint_and_state_is_repaired_on_retry(
     assert reason == "" and committed == [second]
     checkpoint_path = queue.records.mover_retirement_checkpoint_path()
     state_path = queue.records.mover_retirement_state_path()
-    revision = pool.record_store.read_queue_record(checkpoint_path)["revision"]
+    revision = pool.record_store.read_document(checkpoint_path)["revision"]
 
     # The crash the review names: the checkpoint has the entry, the state
     # marker was never written, and the active receipt is still filed.
@@ -866,11 +866,11 @@ def test_a_crash_between_checkpoint_and_state_is_repaired_on_retry(
 
     assert queue.retire_move_receipt(second, expected_version=version) == ""
     assert not queue.records.move_path(second).is_file()
-    state = pool.record_store.read_queue_record(state_path)
+    state = pool.record_store.read_document(state_path)
     assert state["revision"] == revision
-    assert state["checkpoint_sha256"] == pool.record_store.read_queue_record(
+    assert state["checkpoint_sha256"] == pool.record_store.read_document(
         checkpoint_path)["checkpoint_sha256"]
-    assert pool.record_store.read_queue_record(checkpoint_path)["revision"] == revision
+    assert pool.record_store.read_document(checkpoint_path)["revision"] == revision
     assert set(queue.read_mover_retirements()) == {first, second}
 
 
@@ -1045,7 +1045,7 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     # whole batch: two checkpoint writes and two markers, not 6,000.
     assert written.count(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT) == 2, written
     assert written.count(pool.record_store.MOVERS_RETIREMENT_STATE) == 2, written
-    checkpoint = pool.record_store.read_queue_record(queue.records.mover_retirement_checkpoint_path())
+    checkpoint = pool.record_store.read_document(queue.records.mover_retirement_checkpoint_path())
     assert checkpoint["revision"] == 1
     assert set(checkpoint["entries"]) == set(keys)
     assert set(queue.read_mover_retirements()) == set(keys)

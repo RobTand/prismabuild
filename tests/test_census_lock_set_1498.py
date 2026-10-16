@@ -60,7 +60,7 @@ def _loops_holding(queue, keys):
 
 
 def _claim_only(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
-    row = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(row, dict)
     result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", host], ready=[row],

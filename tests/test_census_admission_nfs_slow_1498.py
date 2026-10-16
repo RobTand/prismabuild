@@ -61,7 +61,7 @@ def _slow_reads(monkeypatch, seconds):
 
 
 def _claim(queue, key, *, cpu_sampler, gpu_sampler):
-    candidate = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                        has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
                        cpu_sampler=cpu_sampler,
@@ -153,7 +153,7 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
             for index in range(257)]
     before = {key: queue.records.passes_path(key).read_bytes() for key in kept}
     orphan = _conclude(queue, 300)
-    real_read = pool.record_store.read_queue_record
+    real_read = pool.record_store._read_json
     inspected = []
 
     def read(path, **kwargs):
@@ -250,7 +250,7 @@ def test_swept_census_still_refuses_lower_work_behind_a_live_election(fleet, mon
     refusal = denial(lower)
     assert refusal["reason"] == "deferred_for_measurement_reservation", refusal
     assert refusal["evidence"]["selection"] == reservation.selection(
-        pool.record_store.read_queue_record(queue.records.passes_path(measurement)))
+        pool.record_store.read_document(queue.records.passes_path(measurement)))
     assert queue.ledger().held_keys() == [holder]
 
 
