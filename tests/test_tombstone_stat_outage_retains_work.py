@@ -19,7 +19,7 @@ def test_post_read_stat_outage_retains_tombstone(tmp_path, monkeypatch, error_nu
     )
     record['attempts'] = 1
     pool._write_json_atomic(tombstone, record)
-    outcome = queue.attempt_path(record, 1)
+    outcome = queue.records.attempt_path(record, 1)
     # Prove that the immutable outcome and its history verify without the fault.
     assert len(queue.attempt_outcomes(record)) == 1
     original_stat = os.stat
@@ -37,9 +37,9 @@ def test_post_read_stat_outage_retains_tombstone(tmp_path, monkeypatch, error_nu
     assert queue.sweep_finish_tombstones() == []
     assert calls == 2
     assert tombstone.exists()
-    assert not list(queue.superseded_dir().glob(f'{KEY}.*.finish-tombstone.json'))
+    assert not list(queue.records.superseded_dir().glob(f'{KEY}.*.finish-tombstone.json'))
     # A later successful read restores the same action and verified outcome.
     assert queue.sweep_finish_tombstones() == [KEY]
-    restored = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    restored = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert restored == record
     assert len(queue.attempt_outcomes(restored)) == 1

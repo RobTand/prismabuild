@@ -87,7 +87,7 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
     """
 
     queue, stage, _ = fleet
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     consumer, _generation = base._fail_consumer(queue)
     mover = base._key()
     base._publish(queue, mover, max_attempts=1)
@@ -136,7 +136,7 @@ def _sweep(queue, stage, pressure):
 def _owned(queue, consumer: str, mover: str) -> bool:
     """Whether the owner's fragment and material are both still filed."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment = residency_map.fragment_path(root, consumer, mover).exists()
     material = reader_lease.material_path(root, consumer, mover).exists()
     assert fragment == material, (fragment, material)
@@ -379,8 +379,8 @@ def test_a_live_co_owner_keeps_the_file(fleet):
     base._publish(queue, live_consumer, max_attempts=1)
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
-            queue.residency_fragment_root(), *dead).read_text()))
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+            queue.records.residency_fragment_root(), *dead).read_text()))
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         **{key: value for key, value in fragment.items()
            if key not in ("consumer_action_key", "mover_action_key")},
         "consumer_action_key": live_consumer,

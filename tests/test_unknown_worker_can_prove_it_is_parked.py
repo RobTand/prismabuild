@@ -30,11 +30,11 @@ def test_idle_physical_park_does_not_require_receipt_identity(
     if missing:
         (tmp_path / missing).unlink()
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     queue.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root=tmp_path,
                   worker_script="never-authorized.py", resources={"cpu": 1, "mem_gb": 1})
-    ready = queue.item_path(pool.READY, key)
+    ready = queue.records.item_path(pool.record_store.READY, key)
     original = ready.read_bytes()
     queue_root = str(queue.root)
     queue_io = []
@@ -60,11 +60,11 @@ def test_idle_physical_park_does_not_require_receipt_identity(
     assert code == (75 if missing else 0)
     assert queue_io == [], "UNKNOWN reached the private queue"
     assert ready.read_bytes() == original
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
-    assert list(queue.dir(pool.DONE).iterdir()) == []
-    assert list(queue.dir(pool.FAILED).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.DONE).iterdir()) == []
+    assert list(queue.records.dir(pool.record_store.FAILED).iterdir()) == []
     assert not (queue.root / role_session.GENERATION_DRIFT_DIR).exists()
-    offers = list((queue.root / pool.WORKERS).glob("*.json"))
+    offers = list((queue.root / pool.record_store.WORKERS).glob("*.json"))
     assert len(offers) == (0 if missing else 1)
     if closed:
         start = Path("/proc/self/stat").read_text().rpartition(")")[2].split()[19]
