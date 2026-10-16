@@ -968,7 +968,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
         prefix = holder[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
         if len(prefix) != 16 or any(c not in "0123456789abcdef" for c in prefix):
             return "none", "malformed blind-grant name"
-        candidates = [p.stem for p in pool.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
+        candidates = [p.stem for p in pb.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
                       if p.suffix == ".json" and len(p.stem) == 64
                       and p.stem.startswith(prefix)]
         if len(candidates) > 1:
@@ -1073,7 +1073,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
     if row.get("published_unix") != record["published_unix"]:
         return "none", "funding publication is stale"
     if blind:
-        names = {p.name for p in pool.immutable_files.match_optional(
+        names = {p.name for p in pb.immutable_files.match_optional(
             queue.tier_ledger(tier_id).held_dir / holder, "*-*")}
         if (record["state"] == "reserved" and len(record["tokens"]) == demand
                 and all(name.startswith("ram_gib-") and name in names
@@ -2389,7 +2389,7 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
     # under the consumer lock before withdrawing or reaping anything. A plan
     # filed after this observation is conservatively deferred to the next pass.
     try:
-        filed_keys = {path.stem for path in pool.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
+        filed_keys = {path.stem for path in pb.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)
                       if path.suffix == ".json" and len(path.stem) == 64}
     except OSError:
         return events
@@ -8329,7 +8329,7 @@ def _settle_protected(queue: pool.PoolQueue,
                         and record.get("state") == "reserved"):
                     try:
                         mover_names = {
-                            path.name for path in pool.immutable_files.match_optional(
+                            path.name for path in pb.immutable_files.match_optional(
                                 ledger.held_dir / mover, "*-*")}
                     except (OSError, pool.PoolContractError, ValueError):
                         mover_names = set()
@@ -10569,7 +10569,7 @@ class Liveness:
         now = self._now()
         suffix = f":{host}"
         adopted: list[str] = []
-        for path in pool.immutable_files.match_optional(queue.root / pool.record_store.TIERS, "*.json"):
+        for path in pb.immutable_files.match_optional(queue.root / pool.record_store.TIERS, "*.json"):
             tier_id = path.stem
             if not tier_id.endswith(suffix):
                 continue
