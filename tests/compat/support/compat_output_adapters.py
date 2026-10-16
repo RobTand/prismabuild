@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
+import runpy
 
 C, D, G = "c" * 64, "9" * 64, "7" * 32
 
@@ -23,6 +25,8 @@ def template(po, variant):
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family in ("out-batch", "out-descriptor", "out-ref", "out-batch-ref", "out-origin-ref"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["operate"](request, store, load)
     po, core = load("prismabuild.produced_output"), load("prismabuild.core")
     value = template(po, variant)
     if family == "out-template":

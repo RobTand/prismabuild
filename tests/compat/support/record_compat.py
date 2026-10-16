@@ -87,6 +87,12 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None):
         references = (kind.reader,) + kind.legacy_readers
     result["catalogued_operation"] = "source-reader" if raw is None and kind.fixture_source else request["op"]
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
+    if raw is None and result["returncode"] == 0 and kind.wire_id is not None:
+        actual_wire = json.loads(base64.b64decode(result["result"]["raw"]))
+        result["wire_identity_verified"] = isinstance(actual_wire, dict) and actual_wire.get("schema") == kind.wire_id
+        if not result["wire_identity_verified"]:
+            result["returncode"] = 3
+            result["entry_error"] = "actual writer bytes disagree with the catalogued wire identity"
     if process.returncode in (0, 1) and not result["catalogued_entry_verified"]:
         result["returncode"] = 3
         result["entry_error"] = "adapter did not reach its catalogued production entry"
