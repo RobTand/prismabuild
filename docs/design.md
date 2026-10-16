@@ -1923,6 +1923,9 @@ record remains readable. Collection-only and positively excluded quanta keep
 their existing rules; an entirely empty requested population cannot be green.
 `pbtest`, `pbmergeq` and the receipt shape gate consume this same judgment.
 The shape gate also supplies its exact required passing-node roster.
+An outer client exit of 1 can report ordinary shard test failures. Other
+nonzero outer exits leave the requested files unknown even when the shard
+records contain test failures; the known failing nodes remain in the verdict.
 
 The sealed recorder emits its first `prismabuild.pbtest_preflight.v1` decision
 before importing pytest. Dependency-pin refusal is typed at that boundary;

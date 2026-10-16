@@ -694,8 +694,8 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
         if (selected != expected or any(record.get("collect_only") or record.get("uncounted") for record in records if record)
                 or sorted((r[0], r[1], r[2]) for r in reports) != sorted((n, "call", "passed") for n in expected)):
             problem("required_population", "not every reference table passed exactly once in the required population", requested)
-    if client_returncode and shards and all(s["green"] for s in shards):
-        problem("unexplained_client_exit", f"pbtest client exited {client_returncode} after green shard observations", requested)
+    if client_returncode and shards and (client_returncode != 1 or all(s["green"] for s in shards)):
+        problem("unexplained_client_exit", f"pbtest client exited {client_returncode} without an ordinary failed-run ending", requested)
     if not shards and requested:
         unknown.update(requested)
     all_problems = [*problems, *(p for s in shards for p in s["problems"])]
