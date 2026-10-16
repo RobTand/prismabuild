@@ -145,7 +145,7 @@ def warm_checkpoint(fleet, monkeypatch):
     # Supported queue/fragment/material writers and real terminal history.
     consumer, mover = owner.stale_owner(
         fleet, coherent_names=set(owner.NAMES), replace=False)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment = stage_release.residency_map.fragment_path(root, consumer, mover)
     material = stage_release.reader_lease.material_path(root, consumer, mover)
     parents = {str((stage / owner.staged_name(name)).parent) for name in owner.NAMES}

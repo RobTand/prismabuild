@@ -87,7 +87,7 @@ def _stranded_tombstone(
     )
     item = queue.claim(capacity={"cpu": 1})
     assert item is not None
-    claimed_path = queue.item_path(pool.CLAIMED, KEY)
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())
     if with_history:
         record["attempts"] = 1
@@ -95,24 +95,24 @@ def _stranded_tombstone(
             {
                 "attempt": 1,
                 "outcome": str(
-                    queue.attempt_path(record, 1).relative_to(queue.root)
+                    queue.records.attempt_path(record, 1).relative_to(queue.root)
                 ),
             }
         ]
         # The generation directory exists -- this is a real archived attempt --
         # but the immutable outcome the record links is not readable here.
-        queue.attempt_path(record, 1).parent.mkdir(parents=True, exist_ok=True)
+        queue.records.attempt_path(record, 1).parent.mkdir(parents=True, exist_ok=True)
 
     # The window sweep_finish_tombstones is the only reader of: the claim has
     # been moved aside and its next home was never published.
     tombstone = (
-        queue.dir(pool.CLAIMED)
+        queue.records.dir(pool.record_store.CLAIMED)
         / f"{KEY}.{int((pool._now() - pool.LEASE_TIMEOUT_S * 2) * 1_000_000)}"
-        f"{pool.TOMBSTONE_SUFFIX}"
+        f"{pool.record_store.TOMBSTONE_SUFFIX}"
     )
     pool._write_json_atomic(tombstone, record)
     claimed_path.unlink(missing_ok=True)
-    queue.lease_path(KEY).unlink(missing_ok=True)
+    queue.records.lease_path(KEY).unlink(missing_ok=True)
     return queue, tombstone
 
 
@@ -127,10 +127,10 @@ def test_a_missing_attempt_outcome_does_not_escape_the_sweep(
     assert queue.sweep_finish_tombstones() == [KEY]
 
     assert not tombstone.exists(), "the tombstone was neither filed nor removed"
-    assert not queue.item_path(pool.CLAIMED, KEY).exists(), (
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists(), (
         "a record whose attempt links do not verify was restored anyway"
     )
-    assert list(queue.superseded_dir().glob(f"{KEY}.*.finish-tombstone.json")), (
+    assert list(queue.records.superseded_dir().glob(f"{KEY}.*.finish-tombstone.json")), (
         "the record was deleted rather than filed as evidence"
     )
 
@@ -143,12 +143,12 @@ def test_a_tampered_attempt_outcome_does_not_escape_the_sweep(
     queue, tombstone = _stranded_tombstone(tmp_path)
     record = json.loads(tombstone.read_text())
     # A directory where the immutable outcome should be: not a regular file.
-    queue.attempt_path(record, 1).mkdir(parents=True, exist_ok=True)
+    queue.records.attempt_path(record, 1).mkdir(parents=True, exist_ok=True)
 
     assert queue.sweep_finish_tombstones() == [KEY]
     assert not tombstone.exists()
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert list(queue.superseded_dir().glob(f"{KEY}.*.finish-tombstone.json"))
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert list(queue.records.superseded_dir().glob(f"{KEY}.*.finish-tombstone.json"))
 
 
 def test_an_unreadable_attempt_outcome_retains_the_tombstone(
@@ -171,7 +171,7 @@ def test_an_unreadable_attempt_outcome_retains_the_tombstone(
 
     assert queue.sweep_finish_tombstones() == []
     assert tombstone.exists(), "a stale handle discarded the record"
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
 
 
 def test_a_sound_tombstone_is_still_restored(tmp_path: Path) -> None:
@@ -184,7 +184,7 @@ def test_a_sound_tombstone_is_still_restored(tmp_path: Path) -> None:
     queue, tombstone = _stranded_tombstone(tmp_path, with_history=False)
 
     assert queue.sweep_finish_tombstones() == [KEY]
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not tombstone.exists()
 
 

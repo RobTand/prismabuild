@@ -35,7 +35,7 @@ def test_each_descriptor_is_pinned_against_egress_until_it_is_closed(tmp_path, m
     def observing_open(queue, pin, ref_id, key, **kwargs):
         fd, serving = original_open(queue, pin, ref_id, key, **kwargs)
         index = fleet.keys.index(key)
-        held = (queue.root / pool.RESIDENCY / reader_lease.LEASES_SUBDIR
+        held = (queue.root / pool.record_store.RESIDENCY / reader_lease.LEASES_SUBDIR
                 / CONSUMER / (pin['pin_id'] + '.lease.json'))
         assert held.is_file(), 'reader ref missing while its fd is live'
         result = stage_release.evict(
@@ -70,7 +70,7 @@ def test_a_failed_pinned_open_releases_its_acquired_ref(tmp_path, monkeypatch):
     calls = []
 
     def fail_open(queue, pin, ref_id, key, **kwargs):
-        path = (queue.root / pool.RESIDENCY / reader_lease.LEASES_SUBDIR
+        path = (queue.root / pool.record_store.RESIDENCY / reader_lease.LEASES_SUBDIR
                 / CONSUMER / (pin['pin_id'] + '.lease.json'))
         assert path.is_file()
         calls.append(pin['pin_id'])

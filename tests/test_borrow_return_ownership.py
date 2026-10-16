@@ -14,7 +14,7 @@ def test_exception_after_borrow_return_does_not_return_a_peers_borrow(rig, monke
     peers = []
 
     def lose(source, target):
-        if Path(source) == queue.item_path(pool.READY, lost_key):
+        if Path(source) == queue.records.item_path(pool.record_store.READY, lost_key):
             Path(source).unlink()  # another claimant consumed the ready name
             raise FileNotFoundError(source)
         return original_rename(source, target)

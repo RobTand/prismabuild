@@ -56,7 +56,7 @@ def test_an_image_with_the_old_generation_tag_waits(tmp_path):
     """The rollout's own shape: image present, generation not yet turned."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN)
 
     assert pbcanary.generation_pending(
@@ -65,7 +65,7 @@ def test_an_image_with_the_old_generation_tag_waits(tmp_path):
 
 def test_the_same_offer_on_the_new_generation_does_not_wait(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=NEW_GEN)
 
     assert pbcanary.generation_pending(
@@ -76,7 +76,7 @@ def test_an_image_no_box_reports_does_not_wait(tmp_path):
     """Nowhere at all is the immediate refusal it always was."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN, image=False)
 
     assert pbcanary.generation_pending(
@@ -248,7 +248,7 @@ def test_a_retained_offer_on_the_old_generation_waits(tmp_path, monkeypatch):
     reads "not pending" and lets the leg submit into the refusal.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN)
     later = pool._now() + 10 * pool.OFFER_TIMEOUT_S
     monkeypatch.setattr(pool, "_now", lambda: later)

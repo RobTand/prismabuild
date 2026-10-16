@@ -91,7 +91,7 @@ def _manifest_bytes(pool_dir: Path) -> tuple[dict, Path]:
 
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {KIND: 8})  # standing supply admits A, B
     (tmp_path / "stage").mkdir(parents=True, exist_ok=True)
     assert stage_release.register_stage_root(
@@ -138,7 +138,7 @@ def _move_args(tmp_path: Path, queue: pool.PoolQueue, manifest_path: Path,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -351,7 +351,7 @@ def test_retire_held_is_idempotent_and_reclaimable(tmp_path: Path) -> None:
     and a destroyed name never reappears except through dead-set reclaim
     inside an honestly backed wanted bound (no transient excess)."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 4})
     assert ledger.acquire(MOVER_A, {KIND: 3}) is True
@@ -382,7 +382,7 @@ def test_reclaim_dedupes_a_live_duplicate_without_reissue(tmp_path: Path) -> Non
     its charge, the dead file goes. Deterministic: the duplicate state is
     pre-placed, exactly the aftermath of a rename the destroy raced."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 4})
     assert ledger.acquire(MOVER_A, {KIND: 2}) is True
@@ -409,7 +409,7 @@ def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
     (free == wanted - held) holds even with both copies live, and a
     follow-up mint is stable."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     queue.mint_tier_capacity(TIER, {KIND: 4})
     assert ledger.acquire(MOVER_A, {KIND: 2}) is True
@@ -512,7 +512,7 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     # the probe rule stands alone.  Either expectation is derived from the
     # fixture, not read back off the mint it checks.
     observations = tier_loop.ReceiptCache().read(
-        [queue.root / pool.PREWARM, queue.root / pool.MOVERS])
+        [queue.root / pool.record_store.PREWARM, queue.root / pool.record_store.MOVERS])
     assert len(observations) == 2, observations
     supply = storage_tiers.fill_supply_from_records(observations)
     assert supply["ceiling_mb_s"] is None, supply
@@ -559,7 +559,7 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
     """An inadmissible tier gets no momentary supply: one keep-mint, rate
     and occupancy holds intact, never transiently zeroed."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir(parents=True, exist_ok=True)
     queue.mint_tier_capacity(TIER, {KIND: 3, storage_tiers.FILL_KIND: 50})
@@ -576,7 +576,7 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
                    "manifest_sha256": "f" * 64, "manifest_bytes": 1 << 40,
                    "leads": ["d" * 64]})
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
+    other.records.ensure_layout()
     assert stage_release.register_stage_root(
         other, tier_id=TIER, stage_root=stage) == "registered"
     # A ready row with sealed fill demand, so the keep-mint must carry the
