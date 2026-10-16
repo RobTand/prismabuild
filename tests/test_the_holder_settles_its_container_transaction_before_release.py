@@ -41,7 +41,7 @@ def holder(tmp_path, monkeypatch):
         'token': 'a' * 64, 'socket_path': str(resource_scope.BROKER_SOCKET),
         'memory_max_bytes': 1024**3, 'create_recovered': True}
     record['claimed_host'] = socket.gethostname()
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
 
     marker = queue.container_marker(OWNER)
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ def test_a_late_finisher_settles_nothing_it_does_not_own(holder):
     queue, record, calls, queries, marker = holder
     live = dict(record)
     live['resource_scope'] = {**record['resource_scope'], 'nonce': 'c' * 32}
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), live)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY), live)
     outcome = queue.cleanup_action_containers(record, scope_only=True)
     assert outcome['complete'] is True
     assert 'settle' not in _ops(calls) and queries == []
@@ -161,7 +161,7 @@ def test_an_action_that_never_touched_docker_settles_nothing(tmp_path, monkeypat
         'token': 'a' * 64, 'socket_path': str(resource_scope.BROKER_SOCKET),
         'memory_max_bytes': 1024**3, 'create_recovered': True}
     record['claimed_host'] = socket.gethostname()
-    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
+    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
     calls = []
     monkeypatch.setattr(resource_scope.ResourceScope, '_request',
                         lambda scope, op, **extra: (calls.append(op), {'ok': True})[1])

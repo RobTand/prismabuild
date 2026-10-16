@@ -18,7 +18,7 @@ def test_post_read_stat_outage_retains_tombstone(tmp_path, monkeypatch, error_nu
         record, attempt=1, status='failed', disposition='requeued', detail={},
     )
     record['attempts'] = 1
-    pool._write_json_atomic(tombstone, record)
+    pool.record_store._write_json(tombstone, record)
     outcome = queue.records.attempt_path(record, 1)
     # Prove that the immutable outcome and its history verify without the fault.
     assert len(queue.attempt_outcomes(record)) == 1
