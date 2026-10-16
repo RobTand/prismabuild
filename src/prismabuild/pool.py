@@ -346,8 +346,6 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 #: withdrawn action is a decision, and putting it in the failure record makes
 #: the failure record lie about the fleet.  Four withdrawn test suites are in
 #: the live ``failed/`` for exactly that reason.
-WITHDRAWN = "withdrawn"
-_STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 
 #: Suffix of a claim that has been moved out of the way while its finisher
 #: publishes the item's next home.  Every reader of ``claimed/`` addresses it
