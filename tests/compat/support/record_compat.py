@@ -254,10 +254,11 @@ def retained(directory=CAPTURE, *, history_control=False):
         yield result
 
 
-def historical_writer(kind, reader_root, reader_manifest, sources):
-    if kind.historical_writer_source is None:
+def historical_writer(kind, reader_root, reader_manifest, sources, *, case):
+    source = dict(kind.variant_writer_sources).get(case.split("/", 1)[1], kind.historical_writer_source)
+    if source is None:
         return reader_root, reader_manifest, None
-    name, root, manifest = next(row for row in sources if row[0] == kind.historical_writer_source)
+    name, root, manifest = next(row for row in sources if row[0] == source)
     provenance = json.loads(manifest.read_bytes())
     return root, manifest, {key: provenance[key] for key in ("generation", "commit", "tree", "receipt_sha256", "archive_sha256", "published")}
 
@@ -305,7 +306,7 @@ def generate(output, selected=None):
                     continue
                 prefix = output / "attestations" / generation
                 stores = Path(tmp) / generation
-                writer_root, writer_manifest, writer_provenance = historical_writer(kind, old, manifest, writer_sources)
+                writer_root, writer_manifest, writer_provenance = historical_writer(kind, old, manifest, writer_sources, case=case)
                 result = invoke(writer_root, case, stores / (label + "-old"), manifest=writer_manifest,
                                 evidence=prefix / (label + "-old-" + phase + ".json"))
                 if not check(result, case, generation, phase):

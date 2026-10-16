@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import datetime
 import itertools
 import json
@@ -52,6 +53,20 @@ def operate(request, store, load):
         pool = load("prismabuild.pool")
         if writing:
             value = box_window(store, load)
+            if family == "box-window" and variant != "pqteld":
+                queue = pool.PoolQueue(store / "queue")
+                window = load("prismabuild.box_window")
+                original = window.read_window
+                def sensor(*args, **kwargs):
+                    if variant == "unavailable":
+                        raise OSError("private unavailable sensor fixture")
+                    return value
+                window.read_window = sensor
+                queue._gpu_power_state = lambda: {}
+                try:
+                    value = queue._box_window(90., 100.)
+                finally:
+                    window.read_window = original
             if family == "resource-profile":
                 queue = pool.PoolQueue(store / "queue")
                 queue._box_window = lambda *args: value
@@ -61,11 +76,29 @@ def operate(request, store, load):
                     telemetry["process_io"] = {"read_bytes": 8, "write_bytes": 16, "members": ["private"]}
                 if variant == "rusage":
                     outcome["child_rusage"] = {"user_seconds": 1., "system_seconds": 0.5}
-                value = queue._resource_profile({"action_key": "c" * 64, "claimed_unix": 90.}, outcome)
+                if variant == "unavailable":
+                    @contextmanager
+                    def private_checkout(item):
+                        yield store
+                    checkout = pool._execution_checkout
+                    pool._execution_checkout = private_checkout
+                    queue._execute_in_checkout = lambda *args, **kwargs: {"status": "succeeded", "returncode": 0}
+                    def unavailable(*args):
+                        raise OSError("private unavailable telemetry fixture")
+                    queue._resource_profile = unavailable
+                    try:
+                        value = queue.execute({"action_key": "c" * 64})["resource_profile"]
+                    finally:
+                        pool._execution_checkout = checkout
+                else:
+                    value = queue._resource_profile({"action_key": "c" * 64, "claimed_unix": 90.}, outcome)
         else:
             incoming = json.loads(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()
             result = pool.resource_profile_summary({"resource_profile": {"box_window": incoming} if family == "box-window" else incoming})
+            if variant == "unavailable":
+                assert all(value is None for value in result.values()), result
+                return result
             assert result["gpu_power_peak_w"] == 50.
             if family == "resource-profile":
                 assert result["memory_peak_bytes"] == 32

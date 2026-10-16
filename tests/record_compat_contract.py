@@ -109,7 +109,7 @@ class RecordContract:
                 continue
             historical = HISTORY[generation, case]
             assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
-            writer_root, writer_manifest, provenance = historical_writer(kind, old, manifest, writer_sources)
+            writer_root, writer_manifest, provenance = historical_writer(kind, old, manifest, writer_sources, case=case)
             assert historical.get("writer_source") == provenance
             prior = write(writer_root, case, tmp_path / generation / "old-writer", manifest=writer_manifest,
                           evidence=evidence(generation + "/" + label + "-old-writer.json"))

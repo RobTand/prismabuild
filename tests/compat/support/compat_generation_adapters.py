@@ -69,7 +69,17 @@ def operate(request, store, load):
     publication = load("prismabuild.runtime_publication")
     if family == "runtime-receipt":
         if writing:
-            path = publisher_generation(store, load, variant) / "RUNTIME_VERSION.json"
+            if variant == "qualification":
+                qualification, upgrade = load("qualify_rollout"), load("upgrade_client")
+                source = store / "source"
+                for member in set(upgrade.MEMBERS.values()) | {"tools/fleet/publish_runtime.py"}:
+                    target = source / member
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"# private qualification wire fixture member\n")
+                generation, _ = qualification.build_generation(store, NAME, source, upgrade, ["compat-host"])
+            else:
+                generation = publisher_generation(store, load, variant)
+            path = generation / "RUNTIME_VERSION.json"
         else:
             request["_consumer_boundary"]()
             result = publication._receipt(base64.b64decode(request["raw"]), NAME)

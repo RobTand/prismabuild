@@ -5,6 +5,7 @@ import base64
 import json
 from pathlib import Path
 import runpy
+from types import SimpleNamespace
 
 C = "c" * 64
 
@@ -14,7 +15,27 @@ def operate(request, store, load):
     writing = request["op"] == "write"
     if family == "storage-tier":
         tiers = load("prismabuild.storage_tiers")
-        if writing:
+        if writing and variant.startswith("ram"):
+            root = store / "ram"
+            root.mkdir()
+            (root / tiers.RAM_EPOCH_MARKER).write_text(json.dumps({"schema": tiers.RAM_EPOCH_MARKER_SCHEMA_V1,
+                "epoch": "100-compat", "unix": 100, "host": "compat-host"}))
+            mounts, meminfo, numa = store / "mounts", store / "meminfo", store / "numa"
+            mounts.write_text(f"tmpfs {root} tmpfs rw,noswap 0 0\n")
+            meminfo.write_text("MemTotal: 33554432 kB\n")
+            (numa / "node0").mkdir(parents=True)
+            (numa / "has_memory").write_text("0\n")
+            (numa / "node0/meminfo").write_text("Node 0 MemTotal: 33554432 kB\n")
+            policy = {"mountpoint": str(root), "window_gib_default": 4, "ceiling_gib_max": 8,
+                      "arc_floor_gib": 0, "system_reserve_gib": 1}
+            def capacity(path):
+                if variant == "ram-refused":
+                    raise OSError("private unavailable capacity fixture")
+                return SimpleNamespace(f_blocks=8, f_bavail=8, f_frsize=tiers.GIB, f_files=100, f_favail=100)
+            value = tiers.ram_tier(policy, host="compat-host", statvfs=capacity, proc_mounts=str(mounts),
+                meminfo_path=str(meminfo), memory_numa_root=str(numa), stats={}, rows_held_gib=0, now=100.)
+            assert value["ram_admission"]["admissible"] == (variant == "ram"), value
+        elif writing:
             arc = store / "arcstats"
             arc.write_text("c_max 4 4294967296\narc_meta_used 4 0\nsize 4 1024\nc 4 4294967296\n")
             pressure = store / "pressure"
@@ -33,7 +54,10 @@ def operate(request, store, load):
             request["_consumer_boundary"]()
             value = json.loads(base64.b64decode(request["raw"]))
             tokens = tiers.tier_tokens(value)
-            assert tokens.get("stage_gib" if variant == "stage" else "arc_gib") == 4
+            if variant == "ram-refused":
+                assert not tokens
+            else:
+                assert tokens.get("ram_gib" if variant == "ram" else "stage_gib" if variant == "stage" else "arc_gib") == 4
             return tokens
     else:
         rp, pool = load("prismabuild.residency_plan"), load("prismabuild.pool")
