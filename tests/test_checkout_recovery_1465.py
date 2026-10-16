@@ -75,6 +75,19 @@ def _snapshot(root: Path, *, ignored: str | None = None) -> dict[str, object]:
     return result
 
 
+def _snapshot_delta(before, after):
+    delta = {}
+    for root in before.keys() | after.keys():
+        old, new = before.get(root, {}), after.get(root, {})
+        if old != new:
+            delta[root] = {
+                name: (old.get(name), new.get(name))
+                for name in old.keys() | new.keys()
+                if old.get(name) != new.get(name)
+            }
+    return delta
+
+
 def _json(path: Path, value: object) -> None:
     if path.exists():
         path.chmod(0o644)
@@ -1808,7 +1821,7 @@ def test_pid_or_mapping_lifetime_change_after_mapping_read_refuses_without_clean
     assert any("changed" in error for error in result["errors"]), result
     after = case.preserved()
     after.pop(str(case.proc_root))
-    assert after == before
+    assert after == before, _snapshot_delta(before, after)
 
 
 def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_exception(case):

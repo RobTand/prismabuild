@@ -274,24 +274,33 @@ def _publish_incoming_inode_during_read(monkeypatch, path: Path, raw: bytes):
     """Publish the incoming inode after its first fstat, before its read."""
     incoming = path.parent / ".incoming.progress"
     original_open, original_read = pb._open_regular_nofollow, os.read
-    pending = set()
+    pending = {}
+    observations = []
 
     def opened(candidate, *, where):
         if Path(candidate) != path:
             return original_open(candidate, where=where)
         incoming.write_bytes(raw)
         held = original_open(incoming, where=where)
-        pending.add(held[0])
+        pending[held[0]] = held[1]
         return held
 
     def read(descriptor, count):
         if descriptor in pending:
-            pending.remove(descriptor)
+            before = pending.pop(descriptor)
             os.replace(incoming, path)
+            after = os.fstat(descriptor)
+            observations.append({
+                "ctime": (before.st_ctime_ns, after.st_ctime_ns),
+                "mtime": (before.st_mtime_ns, after.st_mtime_ns),
+                "size": (before.st_size, after.st_size),
+                "links": (before.st_nlink, after.st_nlink),
+            })
         return original_read(descriptor, count)
 
     monkeypatch.setattr(pb, "_open_regular_nofollow", opened)
     monkeypatch.setattr(pb.os, "read", read)
+    return observations
 
 
 def test_incoming_rename_metadata_churn_does_not_reject_or_renew_grace(
@@ -300,8 +309,8 @@ def test_incoming_rename_metadata_churn_does_not_reject_or_renew_grace(
     _replace(path, _record(1))
     watch = _watch(path)
     with monkeypatch.context() as patch:
-        _publish_incoming_inode_during_read(patch, path, _record(2))
-        assert watch.sample(now=1) is False
+        observations = _publish_incoming_inode_during_read(patch, path, _record(2))
+        assert watch.sample(now=1) is False, observations
     assert watch.rejected == 0, watch.last_rejection
     assert watch.last_rejection is None
     assert watch.accepted == 0
