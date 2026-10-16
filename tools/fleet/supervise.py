@@ -484,16 +484,17 @@ def declared_shape(host: str, override_loops: int,
 
     try:
         config = _config(host)
+        args = config.loop_args
+        loops = override_loops or config.loops
     except (SystemExit, OSError, ValueError):
         if previous is None:
             raise
         return previous
-    args = config.loop_args
     if SPOOL_FLAG in args or any(a.startswith(SPOOL_FLAG + "=") for a in args):
         # Only a box that declares a spool budget reads anything more; every
         # other box's arguments are the file's, byte for byte (#910).
         args = spool_declaration(host, config, args, record=record)
-    return (override_loops or config.loops, args)
+    return (loops, args)
 
 
 #: The worker loop flag that declares this box's local disk budget, in GiB
