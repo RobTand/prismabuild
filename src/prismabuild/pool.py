@@ -22379,6 +22379,276 @@ class PoolQueue:
             break
         return _FundingSeal(funding_sealed, failed_tier)
 
+    def _build_claim_record(
+        self, committed: _CommittedClaim, *, ledger, cpu_tiers, owner,
+    ) -> dict[str, object]:
+        tiers = committed.tiers
+        host = tiers.host
+        qualified = host.candidate
+        key = qualified.key
+        moved = committed.moved.record
+        demand, tier_demand = host.demand.host, host.demand.tiers
+        residency, class_verdict = qualified.residency, committed.class_verdict
+        scratch_evidence = host.request.scratch_evidence if host.request is not None else None
+        gang_backfill = host.arbitration.backfill if host.arbitration is not None else []
+        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+        tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
+        # From ``moved``, not from ``item``: past the rename the bytes in
+        # ``claimed`` are the item, and the scan's copy may be a generation
+        # ``publish`` has already replaced.  Rebuilding the claim from the
+        # scan wrote that replaced generation back over the one the rename
+        # moved, so the worker ran a submission nobody had asked for and
+        # ``finish`` filed the outcome under the retired ``published_unix``
+        # -- where the waiter on the live one never looked.  The terminal
+        # and withdrawal guards above already read ``moved`` for this
+        # reason; the record this method returns is the last place that
+        # still did not.
+        claimed = dict(moved)
+        claimed.pop("gang_backfill", None)
+        if gang_backfill:
+            claimed["gang_backfill"] = gang_backfill
+        claimed.pop("container_class_verdict", None)
+        if class_verdict is not None:
+            claimed["container_class_verdict"] = class_verdict
+        if scratch_evidence is not None:
+            # Claim evidence belongs to the bytes actually renamed,
+            # the winning worker and this publication/attempt only.
+            # Generation was verified above, not relabelled after the
+            # rename. Only this actual winning reservation establishes
+            # local fit; peer feasibility stays conservative/advisory.
+            selected = next(c for c in scratch_evidence["candidates"]
+                            if c["host"] == scratch_evidence["selected_host"])
+            selected.update(fit=True, exclusion=None,
+                            fit_basis="actual_host_admission_and_reservation")
+            claimed[local_scratch.PLACEMENT] = scratch_evidence
+        # ``passes`` is not a field of the item; it is the aging sidecar,
+        # which ``ready_items`` stamps on its copy so the ready ordering
+        # can read it and which this method deletes four lines below.
+        # Copying it into the claim freezes a denial count into the
+        # claimed record, into every attempt archived from it, and into
+        # the done or failed record it becomes -- a number describing a
+        # counter that no longer exists, on a record no admission decision
+        # ever reads.
+        claimed.pop("passes", None)
+        claimed.pop("cpu_allocation", None)
+        claimed.pop("gpu_admission", None)
+        claimed.pop("idle_baseline", None)
+        claimed.pop("tier_fill_borrowed", None)
+        generation = (key, repr(moved.get("published_unix")))
+        self._placement_history.discard(generation)
+        claimed["claimed_by"] = owner
+        claimed["claimed_unix"] = _now()
+        claimed["claimed_host"] = socket.gethostname()
+        claimed["served_from"] = "canonical"
+        if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
+            claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
+        if adaptive_gpu is not None:
+            claimed["gpu_admission"] = ledger.holder_census().gpu_record(key).as_record()
+        if adaptive is not None and adaptive.get("idle_baseline"):
+            # The host baseline an exclusive claim was judged idle
+            # against (#997): measurements compare on it afterwards.
+            claimed["idle_baseline"] = adaptive["idle_baseline"]
+        claimed["reserved_on"] = socket.gethostname() if demand else None
+        if tier_demand:
+            claimed["tier_reservations"] = {
+                tier_id: dict(sorted(needs.items()))
+                for tier_id, needs in sorted(tier_demand.items())
+            }
+        if residency["state"] != "not_requested":
+            claimed["residency_verdict"] = residency
+        if tier_borrowed:
+            claimed["tier_fill_borrowed"] = tier_borrowed
+        if tier_fill_waived:
+            claimed["tier_fill_waived"] = tier_fill_waived
+        return claimed
+
+    def _persist_committed_claim(
+        self, committed: _CommittedClaim, *, ledger, cpu_tiers, owner,
+    ) -> dict[str, object] | None:
+        host = committed.tiers.host
+        item, key = host.candidate.item, host.candidate.key
+        reservation = host.candidate.reservation
+        reservation_demand = host.demand.reservation
+        adaptive, adaptive_gpu = host.adaptive, host.adaptive_gpu
+        src, dst, moved = committed.moved
+        filed, tier_filed, tier_wanted = committed.filed, committed.tier_filed, committed.tier_wanted
+        terminal = self.terminal_outcome_covers(moved, action_key=key)
+        if terminal is not None:
+            # A stale reaper can put a generation back in ``ready`` after
+            # its outcome was filed, or the outcome can land between the
+            # ready scan and this rename.  The rename is the last boundary
+            # at which the payload is definitely not executing.
+            reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
+            state, outcome = terminal
+            self._file_superseded(
+                moved, key=key, kind="terminal-claim", status="dropped",
+                dropped_unix=_now(), dropped_host=socket.gethostname(),
+                reason="claim lost to an outcome for the same generation "
+                       f"filed under {state}",
+                terminal_status=outcome.get("status"),
+            )
+            dst.unlink(missing_ok=True)
+            self.passes_path(key).unlink(missing_ok=True)
+            return None
+        if self.withdrawal_covers(moved, action_key=key) is not None:
+            # Withdrawn between the scan above and this rename.  The window
+            # is microseconds wide and closing it here costs one listing on
+            # a path taken once per claim; leaving it open costs a cancelled
+            # action a full run before ``execute`` notices.
+            reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
+            self._file_superseded(
+                moved, key=key, kind="dropped", status="dropped",
+                dropped_unix=_now(), dropped_host=socket.gethostname(),
+                reason="withdrawn between the ready scan and the claim",
+            )
+            dst.unlink(missing_ok=True)
+            return None
+        claimed = self._build_claim_record(
+            committed, ledger=ledger, cpu_tiers=cpu_tiers, owner=owner)
+        if reservation.tier_funded:
+            # Re-verify each funding against the renamed record before
+            # persisting: the claim holds this key's transition lock,
+            # so no coordinator transfer/cancel interleaves, but the
+            # check still runs against ``moved`` (post-rename bytes)
+            # with the generation this attempt verified at begin.
+            # Nothing is marked here: marking tier1 then failing
+            # tier2 -- or failing persistence itself -- must leave a
+            # recoverable entitlement (both records still
+            # ``transferring`` for the next attempt to re-verify),
+            # never consumed-but-no-executable-claim stranded credit.
+            # The fence stays fused while the remainder this attempt
+            # committed goes home through the reservation owner;
+            # the row goes back byte-identical, and the next attempt
+            # re-verifies the same binding: preserved, never freed
+            # into a stealer window, never double-spent.
+            funding_verified = self._verify_claim_funding(committed)
+            if not funding_verified:
+                reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                    moved=_MovedReady(src, dst, moved))
+                self.record_denial(item, "committed_reservation_incomplete", {
+                    "filed_tokens": filed,
+                    "expected_tokens": sum(reservation_demand.values()),
+                    "tier_filed_tokens": tier_filed,
+                    "tier_expected_tokens": tier_wanted,
+                    "adaptive_cpu": adaptive is not None,
+                    "adaptive_gpu": adaptive_gpu is not None,
+                })
+                return None
+        if reservation.tier_funded:
+            # Bind the exact funding generations to this durable
+            # attempt: every later release/recovery decision (settle,
+            # reapers, egress) proves against these names instead of
+            # trusting record state alone.  A ``transferring`` record
+            # whose generation and token set match a live
+            # claimed/terminal attempt is entitlement-or-physical
+            # under that attempt, never free credit.
+            claimed["tier_funding"] = {
+                funded_tier: {
+                    "generation": entry.get("generation"),
+                    "kinds": dict(entry.get("kinds") or {}),
+                    "tokens": [str(name) for name in
+                               (entry.get("tokens") or [])],
+                    "variant": str(entry.get("variant") or "window"),
+                }
+                for funded_tier, entry in sorted(reservation.tier_funded.items())
+                if isinstance(entry, dict)
+            }
+        # Read here, where the claim record is being written anyway,
+        # so the receipt costs no extra write and cannot race: after
+        # this point the prewarm loop has already skipped this key,
+        # because it only ever looks at ``ready``.  Absent is normal.
+        # A reference, never a copy (#596): the receipt keeps growing
+        # after the claim as later windows extend it, and the terminal
+        # record resolves this pointer at finish, verifying the key
+        # and the digest so a same-key successor's receipt is never
+        # mistaken for this generation's.
+        warmed = self.prewarm(key)
+        if warmed is not None:
+            digest = warmed.get("manifest_sha256")
+            if isinstance(digest, str) and digest:
+                claimed["prewarm"] = {
+                    PREWARM_RECEIPT_REF: key,
+                    "manifest_sha256": digest,
+                }
+        try:
+            _write_json_atomic(dst, claimed)
+        except (OSError, PoolContractError, ValueError) as exc:
+            # The claim record never landed (atomic replace leaves
+            # ``dst`` with its old bytes): nothing may execute.
+            # Fence-first unwind, row still byte-identical.
+            reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                moved=_MovedReady(src, dst, moved))
+            self.record_denial(item, "claim_persistence_failed", {
+                "error": str(exc),
+                "phase": "claim-record",
+                "filed_tokens": filed,
+                "expected_tokens": sum(reservation_demand.values()),
+                "tier_filed_tokens": tier_filed,
+                "tier_expected_tokens": tier_wanted,
+                "adaptive_cpu": adaptive is not None,
+                "adaptive_gpu": adaptive_gpu is not None,
+            })
+            return None
+        try:
+            self.write_lease(
+                key,
+                owner=owner, claim_snapshot=claimed,
+                container_owner=(str(claimed["container_owner"])
+                                 if claimed.get("container_owner") else None),
+            )
+        except (OSError, PoolContractError, ValueError) as exc:
+            # The lease never landed but ``dst`` now holds claim
+            # content: restore it from ``moved`` before linking back,
+            # so a claimed-content row never lands in ``ready``.
+            reservation.abandon(_ClaimExit.PERSISTED_RETRY,
+                                moved=_MovedReady(src, dst, moved))
+            self.record_denial(item, "claim_persistence_failed", {
+                "error": str(exc),
+                "phase": "lease",
+                "filed_tokens": filed,
+                "expected_tokens": sum(reservation_demand.values()),
+                "tier_filed_tokens": tier_filed,
+                "tier_expected_tokens": tier_wanted,
+                "adaptive_cpu": adaptive is not None,
+                "adaptive_gpu": adaptive_gpu is not None,
+            })
+            return None
+        if reservation.tier_funded:
+            # Fuse each funding shut only after the claim is durable.
+            # A mark that fails here unwinds the whole claim back to
+            # ready instead of returning it: no execution without
+            # complete durable proof.  One claim carries at most one
+            # funded tier in practice (a row has a single residency
+            # block, and ``funded_cover`` requires the row's
+            # residency tier to equal the record's tier).  The claim
+            # holds this key's transition lock throughout, so no
+            # coordinator transfer/cancel interleaves between the
+            # pre-persistence verification and these marks; only I/O
+            # can still fail, and I/O failure keeps the entitlement
+            # (records stay ``transferring``) for the next attempt.
+            sealed = self._seal_claim_funding(committed)
+            funding_sealed, failed_tier = sealed.sealed, sealed.failed_tier
+            if not funding_sealed:
+                reservation.abandon(_ClaimExit.PERSISTED_RETRY,
+                                    moved=_MovedReady(src, dst, moved))
+                self.record_denial(item, "funding_not_durable", {
+                    "tier_id": failed_tier,
+                    "filed_tokens": filed,
+                    "expected_tokens": sum(reservation_demand.values()),
+                    "tier_filed_tokens": tier_filed,
+                    "tier_expected_tokens": tier_wanted,
+                    "adaptive_cpu": adaptive is not None,
+                    "adaptive_gpu": adaptive_gpu is not None,
+                })
+                return None
+        # Keep a canonical election through unstarted deferral/retry.
+        # Neither READY absence nor a successful rename retires it.
+        from . import _measurement_reservation as measurement_reservation
+        pass_record = _read_json(self.passes_path(key)) or {}
+        if measurement_reservation.selection(pass_record) is None:
+            self.passes_path(key).unlink(missing_ok=True)
+        return claimed
+
     def _claim_pass(
         self,
         *,
@@ -22712,27 +22982,9 @@ class PoolQueue:
                 if isinstance(qualified, candidate_policy.ScanOrder):
                     scan = qualified
                     continue
-                sealed_demand = qualified.demand.sealed
                 demand = qualified.demand.host
-                tier_demand = qualified.demand.tiers
-                reservation_demand = qualified.demand.reservation
-                sealed_host_demand = qualified.demand.sealed_host
-                residency = qualified.residency
-                declared_images = qualified.declared_images
-                class_verdict = qualified.class_verdict
-                canary_exempt = qualified.canary_exempt
-                scratch_intent = qualified.scratch_intent
-                dependent_owner = qualified.dependent_owner
                 reservation = qualified.reservation
                 host_claim = _HostAccepted(qualified, qualified.demand)
-                allowance = None
-                gang = gang_record = gang_entry = None
-                tier_borrowed: dict[str, object] | None = None
-                tier_fill_waived: dict[str, object] | None = None
-                adaptive = None
-                adaptive_gpu = None
-                scratch_evidence = scratch_boundary = None
-                scratch_expired = scratch_changed = False
                 # From the reservation to ``commit_acquire`` the tokens exist
                 # only under a handle this frame holds: nothing else can name
                 # them, and no sweep will return them before
@@ -22755,15 +23007,10 @@ class PoolQueue:
                         if isinstance(prepared, candidate_policy.ScanOrder):
                             scan = prepared
                             continue
-                        dependent_owner = prepared.dependent_owner
-                        scratch_evidence = prepared.scratch_evidence
                         gang_context = self._prepare_claim_gang(
                             prepared, ledger=ledger, host_gate=host_gate)
                         if gang_context is _ClaimHandled.REFUSED:
                             continue
-                        gang = gang_context.declaration
-                        gang_record = gang_context.record
-                        gang_entry = gang_context.entry
                         from . import _measurement_reservation as measurement_reservation
                         if census_refusal is not None:
                             self.record_denial(item, "measurement_census_unavailable", census_refusal)
@@ -22791,17 +23038,11 @@ class PoolQueue:
                                 tagset=tagset, has_gpu=has_gpu)
                             scan, preempted = accounted.order, accounted.preempted
                             continue
-                        demand, reservation_demand = host_claim.demand.host, host_claim.demand.reservation
-                        adaptive, adaptive_gpu = host_claim.adaptive, host_claim.adaptive_gpu
-                        gang_backfill = host_claim.arbitration.backfill
-                        backfill_binding = host_claim.arbitration.backfill_binding
-                        _gang = host_claim.arbitration.gang_api
                     tiers = self._take_claim_tiers(
                         host_claim, ledger=ledger, cpu_tiers=cpu_tiers,
                         placement=placement, reads=reads)
                     if tiers is _ClaimHandled.REFUSED:
                         continue
-                    tier_borrowed, tier_fill_waived = tiers.borrowed, tiers.fill_waived
                     committed = self._rename_and_commit_claim(
                         tiers, ledger=ledger, owner=owner, tagset=tagset, has_gpu=has_gpu,
                         admission_open=admission_open, image_host=image_host,
@@ -22809,253 +23050,13 @@ class PoolQueue:
                         pass_census=pass_census)
                     if committed is _ClaimHandled.REFUSED:
                         continue
-                    src, dst, moved = committed.moved
-                    class_verdict = committed.class_verdict
-                    filed, tier_filed, tier_wanted = committed.filed, committed.tier_filed, committed.tier_wanted
                 except BaseException:
                     reservation.abandon(_ClaimExit.UNCERTAIN)
                     raise
-                terminal = self.terminal_outcome_covers(moved, action_key=key)
-                if terminal is not None:
-                    # A stale reaper can put a generation back in ``ready`` after
-                    # its outcome was filed, or the outcome can land between the
-                    # ready scan and this rename.  The rename is the last boundary
-                    # at which the payload is definitely not executing.
-                    reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
-                    state, outcome = terminal
-                    self._file_superseded(
-                        moved, key=key, kind="terminal-claim", status="dropped",
-                        dropped_unix=_now(), dropped_host=socket.gethostname(),
-                        reason="claim lost to an outcome for the same generation "
-                               f"filed under {state}",
-                        terminal_status=outcome.get("status"),
-                    )
-                    dst.unlink(missing_ok=True)
-                    self.passes_path(key).unlink(missing_ok=True)
-                    continue
-                if self.withdrawal_covers(moved, action_key=key) is not None:
-                    # Withdrawn between the scan above and this rename.  The window
-                    # is microseconds wide and closing it here costs one listing on
-                    # a path taken once per claim; leaving it open costs a cancelled
-                    # action a full run before ``execute`` notices.
-                    reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
-                    self._file_superseded(
-                        moved, key=key, kind="dropped", status="dropped",
-                        dropped_unix=_now(), dropped_host=socket.gethostname(),
-                        reason="withdrawn between the ready scan and the claim",
-                    )
-                    dst.unlink(missing_ok=True)
-                    continue
-                # From ``moved``, not from ``item``: past the rename the bytes in
-                # ``claimed`` are the item, and the scan's copy may be a generation
-                # ``publish`` has already replaced.  Rebuilding the claim from the
-                # scan wrote that replaced generation back over the one the rename
-                # moved, so the worker ran a submission nobody had asked for and
-                # ``finish`` filed the outcome under the retired ``published_unix``
-                # -- where the waiter on the live one never looked.  The terminal
-                # and withdrawal guards above already read ``moved`` for this
-                # reason; the record this method returns is the last place that
-                # still did not.
-                claimed = dict(moved)
-                claimed.pop("gang_backfill", None)
-                if gang_backfill:
-                    claimed["gang_backfill"] = gang_backfill
-                claimed.pop("container_class_verdict", None)
-                if class_verdict is not None:
-                    claimed["container_class_verdict"] = class_verdict
-                if scratch_evidence is not None:
-                    # Claim evidence belongs to the bytes actually renamed,
-                    # the winning worker and this publication/attempt only.
-                    # Generation was verified above, not relabelled after the
-                    # rename. Only this actual winning reservation establishes
-                    # local fit; peer feasibility stays conservative/advisory.
-                    selected = next(c for c in scratch_evidence["candidates"]
-                                    if c["host"] == scratch_evidence["selected_host"])
-                    selected.update(fit=True, exclusion=None,
-                                    fit_basis="actual_host_admission_and_reservation")
-                    claimed[local_scratch.PLACEMENT] = scratch_evidence
-                # ``passes`` is not a field of the item; it is the aging sidecar,
-                # which ``ready_items`` stamps on its copy so the ready ordering
-                # can read it and which this method deletes four lines below.
-                # Copying it into the claim freezes a denial count into the
-                # claimed record, into every attempt archived from it, and into
-                # the done or failed record it becomes -- a number describing a
-                # counter that no longer exists, on a record no admission decision
-                # ever reads.
-                claimed.pop("passes", None)
-                claimed.pop("cpu_allocation", None)
-                claimed.pop("gpu_admission", None)
-                claimed.pop("idle_baseline", None)
-                claimed.pop("tier_fill_borrowed", None)
-                generation = (key, repr(moved.get("published_unix")))
-                self._placement_history.discard(generation)
-                claimed["claimed_by"] = owner
-                claimed["claimed_unix"] = _now()
-                claimed["claimed_host"] = socket.gethostname()
-                claimed["served_from"] = "canonical"
-                if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
-                    claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
-                if adaptive_gpu is not None:
-                    claimed["gpu_admission"] = ledger.holder_census().gpu_record(key).as_record()
-                if adaptive is not None and adaptive.get("idle_baseline"):
-                    # The host baseline an exclusive claim was judged idle
-                    # against (#997): measurements compare on it afterwards.
-                    claimed["idle_baseline"] = adaptive["idle_baseline"]
-                claimed["reserved_on"] = socket.gethostname() if demand else None
-                if tier_demand:
-                    claimed["tier_reservations"] = {
-                        tier_id: dict(sorted(needs.items()))
-                        for tier_id, needs in sorted(tier_demand.items())
-                    }
-                if residency["state"] != "not_requested":
-                    claimed["residency_verdict"] = residency
-                if tier_borrowed:
-                    claimed["tier_fill_borrowed"] = tier_borrowed
-                if tier_fill_waived:
-                    claimed["tier_fill_waived"] = tier_fill_waived
-                if reservation.tier_funded:
-                    # Re-verify each funding against the renamed record before
-                    # persisting: the claim holds this key's transition lock,
-                    # so no coordinator transfer/cancel interleaves, but the
-                    # check still runs against ``moved`` (post-rename bytes)
-                    # with the generation this attempt verified at begin.
-                    # Nothing is marked here: marking tier1 then failing
-                    # tier2 -- or failing persistence itself -- must leave a
-                    # recoverable entitlement (both records still
-                    # ``transferring`` for the next attempt to re-verify),
-                    # never consumed-but-no-executable-claim stranded credit.
-                    # The fence stays fused while the remainder this attempt
-                    # committed goes home through the reservation owner;
-                    # the row goes back byte-identical, and the next attempt
-                    # re-verifies the same binding: preserved, never freed
-                    # into a stealer window, never double-spent.
-                    funding_verified = self._verify_claim_funding(committed)
-                    if not funding_verified:
-                        reservation.abandon(_ClaimExit.COMMITTED_RETRY,
-                                            moved=_MovedReady(src, dst, moved))
-                        self.record_denial(item, "committed_reservation_incomplete", {
-                            "filed_tokens": filed,
-                            "expected_tokens": sum(reservation_demand.values()),
-                            "tier_filed_tokens": tier_filed,
-                            "tier_expected_tokens": tier_wanted,
-                            "adaptive_cpu": adaptive is not None,
-                            "adaptive_gpu": adaptive_gpu is not None,
-                        })
-                        continue
-                if reservation.tier_funded:
-                    # Bind the exact funding generations to this durable
-                    # attempt: every later release/recovery decision (settle,
-                    # reapers, egress) proves against these names instead of
-                    # trusting record state alone.  A ``transferring`` record
-                    # whose generation and token set match a live
-                    # claimed/terminal attempt is entitlement-or-physical
-                    # under that attempt, never free credit.
-                    claimed["tier_funding"] = {
-                        funded_tier: {
-                            "generation": entry.get("generation"),
-                            "kinds": dict(entry.get("kinds") or {}),
-                            "tokens": [str(name) for name in
-                                       (entry.get("tokens") or [])],
-                            "variant": str(entry.get("variant") or "window"),
-                        }
-                        for funded_tier, entry in sorted(reservation.tier_funded.items())
-                        if isinstance(entry, dict)
-                    }
-                # Read here, where the claim record is being written anyway,
-                # so the receipt costs no extra write and cannot race: after
-                # this point the prewarm loop has already skipped this key,
-                # because it only ever looks at ``ready``.  Absent is normal.
-                # A reference, never a copy (#596): the receipt keeps growing
-                # after the claim as later windows extend it, and the terminal
-                # record resolves this pointer at finish, verifying the key
-                # and the digest so a same-key successor's receipt is never
-                # mistaken for this generation's.
-                warmed = self.prewarm(key)
-                if warmed is not None:
-                    digest = warmed.get("manifest_sha256")
-                    if isinstance(digest, str) and digest:
-                        claimed["prewarm"] = {
-                            PREWARM_RECEIPT_REF: key,
-                            "manifest_sha256": digest,
-                        }
-                try:
-                    _write_json_atomic(dst, claimed)
-                except (OSError, PoolContractError, ValueError) as exc:
-                    # The claim record never landed (atomic replace leaves
-                    # ``dst`` with its old bytes): nothing may execute.
-                    # Fence-first unwind, row still byte-identical.
-                    reservation.abandon(_ClaimExit.COMMITTED_RETRY,
-                                        moved=_MovedReady(src, dst, moved))
-                    self.record_denial(item, "claim_persistence_failed", {
-                        "error": str(exc),
-                        "phase": "claim-record",
-                        "filed_tokens": filed,
-                        "expected_tokens": sum(reservation_demand.values()),
-                        "tier_filed_tokens": tier_filed,
-                        "tier_expected_tokens": tier_wanted,
-                        "adaptive_cpu": adaptive is not None,
-                        "adaptive_gpu": adaptive_gpu is not None,
-                    })
-                    continue
-                try:
-                    self.write_lease(
-                        key,
-                        owner=owner, claim_snapshot=claimed,
-                        container_owner=(str(claimed["container_owner"])
-                                         if claimed.get("container_owner") else None),
-                    )
-                except (OSError, PoolContractError, ValueError) as exc:
-                    # The lease never landed but ``dst`` now holds claim
-                    # content: restore it from ``moved`` before linking back,
-                    # so a claimed-content row never lands in ``ready``.
-                    reservation.abandon(_ClaimExit.PERSISTED_RETRY,
-                                        moved=_MovedReady(src, dst, moved))
-                    self.record_denial(item, "claim_persistence_failed", {
-                        "error": str(exc),
-                        "phase": "lease",
-                        "filed_tokens": filed,
-                        "expected_tokens": sum(reservation_demand.values()),
-                        "tier_filed_tokens": tier_filed,
-                        "tier_expected_tokens": tier_wanted,
-                        "adaptive_cpu": adaptive is not None,
-                        "adaptive_gpu": adaptive_gpu is not None,
-                    })
-                    continue
-                if reservation.tier_funded:
-                    # Fuse each funding shut only after the claim is durable.
-                    # A mark that fails here unwinds the whole claim back to
-                    # ready instead of returning it: no execution without
-                    # complete durable proof.  One claim carries at most one
-                    # funded tier in practice (a row has a single residency
-                    # block, and ``funded_cover`` requires the row's
-                    # residency tier to equal the record's tier).  The claim
-                    # holds this key's transition lock throughout, so no
-                    # coordinator transfer/cancel interleaves between the
-                    # pre-persistence verification and these marks; only I/O
-                    # can still fail, and I/O failure keeps the entitlement
-                    # (records stay ``transferring``) for the next attempt.
-                    sealed = self._seal_claim_funding(committed)
-                    funding_sealed, failed_tier = sealed.sealed, sealed.failed_tier
-                    if not funding_sealed:
-                        reservation.abandon(_ClaimExit.PERSISTED_RETRY,
-                                            moved=_MovedReady(src, dst, moved))
-                        self.record_denial(item, "funding_not_durable", {
-                            "tier_id": failed_tier,
-                            "filed_tokens": filed,
-                            "expected_tokens": sum(reservation_demand.values()),
-                            "tier_filed_tokens": tier_filed,
-                            "tier_expected_tokens": tier_wanted,
-                            "adaptive_cpu": adaptive is not None,
-                            "adaptive_gpu": adaptive_gpu is not None,
-                        })
-                        continue
-                # Keep a canonical election through unstarted deferral/retry.
-                # Neither READY absence nor a successful rename retires it.
-                from . import _measurement_reservation as measurement_reservation
-                pass_record = _read_json(self.passes_path(key)) or {}
-                if measurement_reservation.selection(pass_record) is None:
-                    self.passes_path(key).unlink(missing_ok=True)
-                return claimed
+                claimed = self._persist_committed_claim(
+                    committed, ledger=ledger, cpu_tiers=cpu_tiers, owner=owner)
+                if claimed is not None:
+                    return claimed
         return None
 
     # -- self-healing ---------------------------------------------------
