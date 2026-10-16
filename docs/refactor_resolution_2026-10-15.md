@@ -51,6 +51,15 @@ failures, two fixture repairs and shared JSON duplicate-key construction.
 Neither population is a new full-repository qualification. C03, C05, C31 and
 the other remaining requirements continue; the whole brief remains open.
 
+C17's ordinary role-kit boundary and shared exit value are complete at
+`69667698ed99fa80b5fd7d4a5732d4db4aa9c063` under D05. Its 51-file current-source
+population passed all 737 cases, including eight architecture cases, with no
+skips. All four primary chains and the exact native population were
+independently verified. The follow-up records the eight-module stdlib closure,
+installed-wheel operations, unchanged role ASTs after resolving the shared
+constant, and D05's explicit preservation of role-owned idle timing and exit
+choices. This does not complete the separate privileged drain proofs.
+
 The earlier combined `5ee56bb83bb887749b2d47128566f18002f5911f` run remains
 failed: 14,817 passed, 24 skipped and two architecture checks failed. The
 correction removes a directory helper with no production callers, moves its
@@ -612,7 +621,8 @@ unique cases, with 3,852 passes and one incomplete tier fixture. The complete
 seven-case file passed at fixture-only `32b79024ec9f`, preserving the original
 cycle assertion and requiring an actual moved-runtime diagnosis in its negative
 control. This layered evidence is separate from a final full-current-source
-pass. C17's standard-library role-runner boundary remains unfinished.
+pass. At that receipt checkpoint, C17's standard-library role-kit boundary
+remained unfinished. Its later current-source completion is recorded above.
 
 Staged drain policy at `16764c8f3de3` passed 1,033 unique cases across 62 files.
 All 998 prior cases remain, with 35 new cases and all 350 pre-existing

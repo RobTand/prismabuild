@@ -152,3 +152,43 @@ remaining original requirements.
 The final integrated suite, remaining source requirements, native ARM/NFS and
 paired-host drain proofs, compatibility corpus and deployment checks remain
 open. No runtime publication or GitHub PR-state change is included.
+## Completed role kit boundary
+
+C17 is complete under D05's accepted shared-kit design. Each role keeps its
+loop, idle waits, completion boundary and exit choices. The kit owns shared stop
+requests, singleton fencing, receipt observation, drift stamps and parking.
+`generation_receipt` owns identity comparison. At behavioral source
+`69667698ed99fa80b5fd7d4a5732d4db4aa9c063`, the kit also names the shared
+deferral value as `ROLE_DEFERRED_EXIT = 75`. All fourteen role return literals
+use that owner. Singleton refusal stays 3; worker one-shot drift stays 0.
+
+The original c17.r01 list includes sleep and exits. D05 assigns the choice and
+timing to each role while sharing the operations and exit value. Worker paths
+that use `time.sleep` still finish that interval after a stop request. This is
+the explicit engineering reading used for completion; the frozen requirement
+wording and historical assessments remain intact.
+
+The ordinary package and role import closure contains eight package modules,
+each depending only on the standard library and those siblings. Core and
+residency-map exports load on explicit access. The existing boundary tests build
+and install a wheel offline, remove the broad owners from one installation,
+and check actual module paths and hashes in isolated child interpreters. They
+exercise real signals, cross-process singleton contention, receipt refusals,
+exact drift bytes and idempotent park markers. Complete-package tests preserve
+public object identity and actual progress operations.
+
+The baseline at `1f4000f8131492e68ed992edc5deb2b09ea4751e` passed 708 cases
+across 49 whole files. The final source passed all 737 cases across 51 whole
+files and four successful actions, with no skips. The additional two complete
+tier-exit consumer files contain 29 existing native nodes. No test or assertion
+changed. Resolving the new constant gives each role module's exact prior AST;
+the kit adds only the integer constant. All eight architecture cases passed.
+Source bundles, executable and producer identities, logs, CAS receipts, native
+collection, outcomes and completed teardown were independently checked. This
+is the affected C17 population, not a new full-repository qualification.
+
+Rerunnable source and population checks are under
+`/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c17-root-review/`.
+`final-combined-primary.json`, `final-population.json`, `final-source-audit.json`
+and `exit-source-equivalence.json` bind that result to its source. The privileged
+drain profiles and ARM/NFS proof remain separate work.
