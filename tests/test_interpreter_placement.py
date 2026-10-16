@@ -27,7 +27,7 @@ TF516_PYTHON = "/home/rob/venvs/pq-pb461728e4-tessera-43da1c39-tf516/bin/python"
 
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -53,7 +53,7 @@ def _publish(queue, key, **kwargs):
 
 
 def _item_of(queue, key):
-    return json.loads(queue.item_path(pool.READY, key).read_text())
+    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
 
 
 def _denials(queue):
@@ -149,8 +149,8 @@ def test_publish_refuses_a_relative_path_and_a_bare_capability(tmp_path):
         _publish(queue, "c" * 64, interpreter="venv/bin/python")
     with pytest.raises(pool.PoolContractError, match="interpreter"):
         _publish(queue, "d" * 64, tags=[contracts.INTERPRETER_TAG])
-    assert not queue.item_path(pool.READY, "c" * 64).exists()
-    assert not queue.item_path(pool.READY, "d" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "c" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
 
 
 def test_an_item_without_an_interpreter_is_byte_identical_to_before(tmp_path):
@@ -210,7 +210,7 @@ def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
     denial = _denials(queue)[-1]
     assert denial["reason"] == "interpreter_not_present"
     assert denial["evidence"]["interpreter"] == "/no/such/bin/python"
-    assert queue.item_path(pool.READY, "f" * 64).exists()
+    assert queue.records.item_path(pool.record_store.READY, "f" * 64).exists()
 
 
 def test_the_claim_takes_an_interpreter_this_box_has(tmp_path):
@@ -466,7 +466,7 @@ def test_local_dependency_capability_without_requirements_refuses(tmp_path):
     q = _queue_at(tmp_path)
     with pytest.raises(pool.PoolContractError, match="requires local_dependencies"):
         _publish(q, "e" * 64, tags=[local_dependencies.TAG])
-    assert not q.item_path(pool.READY, "e" * 64).exists()
+    assert not q.records.item_path(pool.record_store.READY, "e" * 64).exists()
 
 
 @pytest.mark.parametrize("kind,suffix", [("path", "/"), ("path", "/."),

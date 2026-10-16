@@ -51,7 +51,7 @@ def _hexkey(seed: str) -> str:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -88,7 +88,7 @@ def _file_partial(tmp_path: Path, queue: pool.PoolQueue, *, mover: str,
     target = ram / "model" / "shard-0.bin"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"x" * 4096)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": RAM_TIER, "stage_root": str(ram), "epoch": EPOCH,
@@ -138,7 +138,7 @@ def test_a_half_landed_promotion_returns_its_tokens_and_its_files(
     assert events[0]["tokens_released"] == 2
     assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
     assert not (ram / "model" / "shard-0.bin").exists()
 
 
@@ -177,7 +177,7 @@ def test_a_clean_landing_is_occupancy_not_stranding(
     assert events == []
     assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
 
 
 def test_queued_and_running_promotions_are_not_judged(
@@ -189,8 +189,8 @@ def test_queued_and_running_promotions_are_not_judged(
     ram = _ram_root(tmp_path, queue)
     _hold(queue, MOVER, 2)
     _hold(queue, OTHER, 2)
-    queue.item_path(pool.READY, MOVER).write_text("{}")
-    queue.item_path(pool.CLAIMED, OTHER).write_text("{}")
+    queue.records.item_path(pool.record_store.READY, MOVER).write_text("{}")
+    queue.records.item_path(pool.record_store.CLAIMED, OTHER).write_text("{}")
     _receipt(queue, MOVER, staged_gib=0, complete=False,
              errors=["shard-0.bin: [Errno 28] No space left on device"])
 
@@ -300,4 +300,4 @@ def test_the_cycle_releases_a_live_consumer_stranded_promotion(
                 and MOVER in json.dumps(line)]
     assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

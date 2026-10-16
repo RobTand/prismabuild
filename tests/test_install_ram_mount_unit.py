@@ -733,7 +733,7 @@ def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
 
         monkeypatch.setattr(tier_loop.os, "statvfs", private_statvfs)
         queue = pool.PoolQueue(tmp_path / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         queue.ledger(RAM_HOST).ensure_capacity({"mem_gb": 294})
         assert queue.ledger(RAM_HOST).acquire("fixture-worker", {"mem_gb": 88})
         assert queue.rows_host_memory_held(RAM_HOST) == 88
@@ -749,7 +749,7 @@ def _rendered_ram_cycle(obj, capsys, *, reason=None):
         now=RAM_SAMPLED, discover=obj.evidence.discover)
     assert tier_loop.LAST_CYCLE["completed"] is True
     record = next(row for row in announced if row["tier_id"] == RAM_ID)
-    persisted = json.loads(obj.queue.tier_record_path(RAM_ID).read_text())
+    persisted = json.loads(obj.queue.records.tier_record_path(RAM_ID).read_text())
     assert persisted == dict(record, announced_unix=obj.clock[0])
     assert next(row for row in obj.queue.tiers() if row["tier_id"] == RAM_ID) == persisted
     expected_tokens = {"ram_gib": 112} if reason is None else {}
