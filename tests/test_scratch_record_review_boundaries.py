@@ -54,7 +54,7 @@ def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
     transitions = []
 
     def guarded(path, value):
-        if path == queue.item_path(pool.CLAIMED, item["action_key"]) and "resource_scope_intent" in value:
+        if path == queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]) and "resource_scope_intent" in value:
             def successor():
                 replacement = dict(live_record(queue, item))
                 replacement["published_unix"] += 10
@@ -89,20 +89,20 @@ def test_scope_contradiction_in_lease_is_retained_not_overwritten(runtime, monke
     queue, item, variables = create()
     process(monkeypatch)
     queue.execute(item, containment=True)
-    lease = json.loads(queue.lease_path(item["action_key"]).read_text())
+    lease = json.loads(queue.records.lease_path(item["action_key"]).read_text())
     nonce = "2" * 32
     lease[field]["nonce"] = nonce
     if field == "resource_scope":
         lease[field]["scope_id"] = "prismabuild-job" + hashlib.sha256(
             (item["action_key"] + nonce).encode()).hexdigest()[:32] + ".slice"
-    pool._write_json_atomic(queue.lease_path(item["action_key"]), lease)
-    claim_before = queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes()
-    lease_before = queue.lease_path(item["action_key"]).read_bytes()
+    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
+    claim_before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes()
+    lease_before = queue.records.lease_path(item["action_key"]).read_bytes()
     held = queue.ledger().held()
     with pytest.raises((client.LocalScratchError, pool.PoolContractError)):
         record(queue, item)
-    assert queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes() == claim_before
-    assert queue.lease_path(item["action_key"]).read_bytes() == lease_before
+    assert queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes() == claim_before
+    assert queue.records.lease_path(item["action_key"]).read_bytes() == lease_before
     assert queue.ledger().held() == held
 
 
@@ -112,21 +112,21 @@ def test_idempotent_recording_preserves_worker_heartbeat_authority(runtime, monk
     queue, item, variables = create()
     process(monkeypatch)
     queue.execute(item, containment=True)
-    lease = json.loads(queue.lease_path(item["action_key"]).read_text())
+    lease = json.loads(queue.records.lease_path(item["action_key"]).read_text())
     lease.update(pid=1234567, child_pid=2345678, heartbeat_unix=lease["heartbeat_unix"] - 1,
                  execution_observation={"launcher_alive": True, "stdout_bytes": 123},
                  progress_observation={"phase": "payload", "quiet_s": 0.25})
     if needs_repair:
         lease.pop(FIELD)
-    pool._write_json_atomic(queue.lease_path(item["action_key"]), lease)
-    before = queue.lease_path(item["action_key"]).read_bytes()
+    pool._write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
+    before = queue.records.lease_path(item["action_key"]).read_bytes()
     evidence = record(queue, item)
-    after = json.loads(queue.lease_path(item["action_key"]).read_text())
+    after = json.loads(queue.records.lease_path(item["action_key"]).read_text())
     assert after[FIELD] == evidence
     assert {key: value for key, value in after.items() if key != FIELD} == {
         key: value for key, value in lease.items() if key != FIELD}
     if not needs_repair:
-        assert queue.lease_path(item["action_key"]).read_bytes() == before
+        assert queue.records.lease_path(item["action_key"]).read_bytes() == before
 
 
 def test_cancelled_before_recording_reap_keeps_later_declaration_evidence(runtime):
@@ -134,16 +134,16 @@ def test_cancelled_before_recording_reap_keeps_later_declaration_evidence(runtim
     queue, item, variables = create()
     queue._start_resource_scope(item)
     queue.withdraw(item["action_key"], signal_child=False)
-    decision = pool._read_json(queue.item_path(pool.WITHDRAWN, item["action_key"]))
+    decision = pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, item["action_key"]))
     assert decision is not None and FIELD not in decision
     evidence = record(queue, item)
     # Cancellation concludes a claim; unlike a retry, it is not returned in
     # reap_stale's list of keys requeued. Check the actual removal/evidence.
     assert queue.reap_stale(timeout_s=-1) == []
-    assert not queue.item_path(pool.CLAIMED, item["action_key"]).exists()
-    archived = [json.loads(path.read_text()) for path in queue.superseded_dir().glob("*.json")]
+    assert not queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists()
+    archived = [json.loads(path.read_text()) for path in queue.records.superseded_dir().glob("*.json")]
     assert any(value.get(FIELD) == evidence for value in archived), (
         "cancelled reaping discarded later declaration evidence")
-    assert not queue.item_path(pool.CLAIMED, item["action_key"]).exists()
-    assert not queue.lease_path(item["action_key"]).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).exists()
+    assert not queue.records.lease_path(item["action_key"]).exists()
     assert queue.ledger().held() == {}

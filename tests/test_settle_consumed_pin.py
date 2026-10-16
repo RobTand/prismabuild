@@ -71,7 +71,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5})
     ledger = queue.tier_ledger(TIER)
     stage = tmp_path / "stage"
@@ -91,7 +91,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
 
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-0")
@@ -115,7 +115,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     # The actual copy, staged before the receipt measures it.
     staged = stage / "pin.bin"
     staged.write_bytes(b"s" * SPAN)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -191,7 +191,7 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5})
     ledger = queue.tier_ledger(TIER)
     mover, consumer = _hexkey("proof-mover"), _hexkey("proof-consumer")
@@ -206,7 +206,7 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-proof")
     generation = _funded_pair(queue, plan, mover, row, kind="stage_gib",
@@ -215,7 +215,7 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     assert record is not None
     names = [str(name) for name in record["tokens"]]
 
-    done_path = queue.item_path(pool.DONE, mover)
+    done_path = queue.records.item_path(pool.record_store.DONE, mover)
     pool._write_json_atomic(done_path, {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
         "action_key": mover, "status": "executed",

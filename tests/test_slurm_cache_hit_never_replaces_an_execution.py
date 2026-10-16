@@ -29,7 +29,7 @@ def _file(queue_root: Path, status: str, generation: float):
 
 
 def _done(queue_root: Path) -> dict:
-    return json.loads((queue_root / pool.DONE / f"{KEY}.json").read_text(encoding="utf-8"))
+    return json.loads((queue_root / pool.record_store.DONE / f"{KEY}.json").read_text(encoding="utf-8"))
 
 
 def test_a_hit_filed_after_the_execution_leaves_the_execution_standing(tmp_path: Path) -> None:
