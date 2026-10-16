@@ -193,3 +193,62 @@ drain profiles and ARM/NFS proof remain separate work.
 The final integrated suite, remaining source requirements, native ARM/NFS and
 paired-host drain proofs, compatibility corpus and deployment checks remain
 open. No runtime publication or GitHub PR-state change is included.
+
+
+## C06 ending and wait software units
+
+C06 remains in progress. The accumulation branch includes the accepted software
+units through `91ae3fc005d2396c58dbcf9f287d18c2fc92aebc`. `endings` owns the
+pure queries; `action_wait` owns the shared loop and reader lifetime;
+`action_client` owns synchronous intake, immutable verification and reporting.
+Every current caller and patch target moved with its owner. The generic reader
+and its own-child reap authority remain unchanged.
+
+The shared engine at `26acacd9` passed 2,371 cases with 18 existing capability
+skips across 128 whole files and four actions. The package extraction at
+`3148a978` passed 2,442 with the same 18 skips across 131 files and four actions.
+Its separate cleanup consumer passed all eight native cases. The original
+four-case estimate counted declarations rather than parameterized cases; the
+immutable plan is preserved and a separate population artifact proves the eight
+IDs equal the earlier C01 collection. The source audit retains all 1,470 old
+assertion ASTs under the namespace mapping. All eight architecture cases passed.
+
+Client reader history at `91ae3fc0` passed all 64 cases across seven files. It
+records abandoned readers in a `finally`, before strict identity parsing, and
+retains their lifetime count after they are reaped. Its bounded identity list
+cannot erase that count. Interrupt and SIGTERM unwind controls pass. Histories
+are local to a client context; nested scopes do not roll up and thread-pool
+readers do not inherit them. This helper is still opt-in.
+
+Source bundles, runtime and executable identities, logs, inputs, terminal
+records, CAS receipts, exact native populations and completed teardown were
+checked independently by root and Claude for each accepted unit. Earlier
+failed engine pins and their complete native records remain retained.
+The architecture baseline lost only the three obsolete sorted-JSON allowances
+whose calls moved to the digest owner. No allowance was added.
+
+The attempt-model gate passed 7,356 cases with 20 classified skips. Eighteen
+are the existing checkpoint capability skips; two require an NFS client mount.
+Their separate whole-file, 39-case supplement remains queued as action
+`18ca29be3ba14f49671b32d6180bf77f49cfb8559aa677819622db28253cf04c`.
+Those two cases have no execution credit.
+
+The typed client event channel is isolated work. Replacing pbtest's prose
+identity and recovery decisions, replacing its runpy recovery, moving the
+package wait to typed results, reconciling C05's final read ports and running
+the integrated repository gate are still required. The present integer package
+wait interface is temporary. No complete C06, deployment or full-suite claim
+follows from the software units above. Evidence and replayable audits are in
+`active/c06-root-design/` under the shared refactor evidence directory.
+
+## Native ARM boundary follow-up
+
+The previously queued ARM/NFS constructor completed on Sparky. Its original
+controller's exit 75 is retained separately from the later action's exit zero
+and CAS receipt. Root verified its exact source, native ARM executable, runtime,
+inputs, logs and boundary observations. The container ran as root, installed
+reader files were root-owned, the reader retained UID 1000, shared writes used
+NFS4 and PB-assigned CPU affinity was preserved. This is constructor evidence.
+The actual ARM actor entry and four paired-host scenarios remain separate
+gates, as do the five-role drain requirements and final rollout acceptance.
+No live service or runtime generation was published.
