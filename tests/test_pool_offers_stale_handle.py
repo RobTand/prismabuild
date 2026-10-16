@@ -37,7 +37,7 @@ from prismabuild import pool  # noqa: E402
 
 
 def _write_offer(root: Path, host: str) -> Path:
-    directory = root / pool.WORKERS
+    directory = root / pool.record_store.WORKERS
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{host}.json"
     path.write_text(
@@ -58,7 +58,7 @@ def _write_offer(root: Path, host: str) -> Path:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -112,7 +112,7 @@ def test_read_json_still_raises_on_stale_by_default(
     _raise_on(monkeypatch, "addressed.json", errno.ESTALE)
 
     with pytest.raises(OSError) as caught:
-        pool._read_json(path)
+        pool.record_store.read_queue_record(path)
     assert caught.value.errno == errno.ESTALE
 
 

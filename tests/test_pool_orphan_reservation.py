@@ -22,7 +22,7 @@ KEY = "d" * 64
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -39,14 +39,14 @@ def test_finish_lost_race_releases_from_the_claim_snapshot(
     )
 
     def claim_disappears_after_execution(item, **_kwargs):
-        queue.item_path(pool.CLAIMED, KEY).unlink()
+        queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
         return {"status": "executed", "returncode": 0}
 
     monkeypatch.setattr(queue, "execute", claim_disappears_after_execution)
     outcome = queue.serve_once(capacity={"gpu": 1, "mem_gb": 8})
 
     assert outcome["status"] == "executed"
-    assert queue.item_path(pool.DONE, KEY).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY).exists()
     assert queue.ledger().held_keys() == []
     assert queue.ledger().available() == {"gpu": 1, "mem_gb": 8}
 
@@ -63,9 +63,9 @@ def test_a_terminal_orphan_can_be_reclaimed_by_verified_key(tmp_path: Path) -> N
     claimed = queue.claim(capacity={"cpu": 1, "mem_gb": 3})
     terminal = dict(claimed)
     terminal.update({"status": "executed", "finished_host": socket.gethostname()})
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(terminal))
-    queue.item_path(pool.CLAIMED, KEY).unlink()
-    queue.lease_path(KEY).unlink()
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(terminal))
+    queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
+    queue.records.lease_path(KEY).unlink()
 
     result = queue.reclaim_terminal_reservation(KEY)
 
@@ -114,7 +114,7 @@ def _tier_only_terminal(queue: pool.PoolQueue, *, owner: str) -> None:
     assert handle is not None
     assert ledger.commit_acquire(KEY, handle) == 2
     assert ledger.holder_tokens(KEY) == {TIER_KIND: 2}
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed",
         "finished_host": socket.gethostname(), "container_owner": owner,
     }))

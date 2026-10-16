@@ -18,7 +18,7 @@ def test_invalid_offer_time_cannot_vouch_for_a_worker(tmp_path, monkeypatch, ann
     monkeypatch.setattr(pool, "_now", lambda: 1000.0)
     queue.announce(host="current", tags=[], has_gpu=False)
     queue.announce(host="invalid", tags=[], has_gpu=False)
-    path = queue.root / pool.WORKERS / "invalid.json"
+    path = queue.root / pool.record_store.WORKERS / "invalid.json"
     record = json.loads(path.read_text())
     record["announced_unix"] = announced
     path.write_text(json.dumps(record))
@@ -37,11 +37,11 @@ def test_offers_expire_at_scan_completion(tmp_path, monkeypatch, stall_at):
     clock[0] = 1000.0
 
     original_glob = Path.glob
-    original_read = pool._read_json
+    original_read = pool.record_store.read_queue_record
 
     def stalled_glob(directory, pattern):
         paths = list(original_glob(directory, pattern))
-        if directory == queue.root / pool.WORKERS and stall_at == "enumeration":
+        if directory == queue.root / pool.record_store.WORKERS and stall_at == "enumeration":
             clock[0] = 1060.0
         return iter(paths)
 
@@ -53,6 +53,6 @@ def test_offers_expire_at_scan_completion(tmp_path, monkeypatch, stall_at):
         return record
 
     monkeypatch.setattr(Path, "glob", stalled_glob)
-    monkeypatch.setattr(pool, "_read_json", stalled_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
 
     assert [offer["host"] for offer in queue.offers(max_age_s=30)] == ["z-current"]

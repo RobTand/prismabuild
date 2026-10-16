@@ -280,8 +280,8 @@ def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="otherbox", tags=["otherbox"], has_gpu=False,
                    capacity={"cpu": 8, "mem_gb": 16})
-    queue.ensure_layout()
-    (queue.dir("ready") / f"{'f' * 64}.json").write_text(json.dumps({
+    queue.records.ensure_layout()
+    (queue.records.dir("ready") / f"{'f' * 64}.json").write_text(json.dumps({
         "schema": pool.POOL_ITEM_SCHEMA_V1, "action_key": "f" * 64,
         "cas_root": str(queue.root / "cas"), "checkout_root": "/home/rob/tmp/ts101",
         "worker_script": "/mnt/shared/prismabuild-fleet/repo/tools/x.py",
