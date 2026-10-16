@@ -55,12 +55,12 @@ def test_supported_old_consumer_and_current_consumer_read_actual_writers(case, g
         historical = HISTORY[generation, case]
         assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
         prior = write(old, case, tmp_path / generation / "old-writer", manifest=manifest,
-                      evidence=evidence(label + "-old-writer.json"))
+                      evidence=evidence(generation + "/" + label + "-old-writer.json"))
         assert prior == decoded(historical), "historical writer did not reproduce captured bytes"
         for root, raw, direction, attestation in ((ROOT, prior, "forward", None),
                                                   (old, current, "reverse", manifest)):
             observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
-                              evidence=evidence(label + "-" + direction + ".json"))
+                              evidence=evidence(generation + "/" + label + "-" + direction + ".json"))
             accepted(observed)
             assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
 
@@ -74,7 +74,7 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
             observed = invoke(root, case, tmp_path / suffix, raw=raw, manifest=attestation,
-                              evidence=evidence(kind.name + "-unknown-" + suffix + ".json"))
+                              evidence=evidence(generation + "/" + kind.name + "-unknown-" + suffix + ".json"))
             if kind.field_policy == "closed":
                 assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             else:
@@ -82,7 +82,7 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
 
 
 @pytest.mark.parametrize("kind", KINDS, ids=lambda kind: kind.name)
-def test_foreign_wire_identity_reaches_and_fails_both_real_consumers(kind, generations, tmp_path):
+def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations, tmp_path):
     case = kind.name + "/" + kind.variants[0]
     body = json.loads(decoded(GOLDENS[case]))
     body[kind.negative_field] = "compat.foreign.v999"
@@ -90,7 +90,7 @@ def test_foreign_wire_identity_reaches_and_fails_both_real_consumers(kind, gener
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
             observed = invoke(root, case, tmp_path / suffix, raw=raw, manifest=attestation,
-                              evidence=evidence(kind.name + "-foreign-" + suffix + ".json"))
+                              evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
             assert any(call[1].lstrip("_") == reader.lstrip("_") for call in observed["calls"]), observed
@@ -127,7 +127,7 @@ def test_actual_candidate_writer_mutation_fails_the_unchanged_old_consumer(gener
     assert raw != decoded(GOLDENS["landing/horizon"])
     for generation, old, manifest in generations:
         observed = invoke(old, "landing/horizon", tmp_path / "old-mutant", raw=raw, manifest=manifest,
-                          evidence=evidence("mutant-old-consumer.json"))
+                          evidence=evidence(generation + "/mutant-old-consumer.json"))
         assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
         assert "compat_unknown_field" in observed["error"]["message"]
         assert any(call[1] == "read_landing" for call in observed["calls"])
@@ -149,3 +149,33 @@ def test_closure_tampering_refuses_even_when_the_old_reader_still_accepts(genera
     observed = invoke(altered, "landing/horizon", tmp_path / "store",
                       raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest)
     assert observed["returncode"] == 2 and "unattested retained import" in observed["attestation_error"]
+
+
+def test_pre_1018_historical_reader_refuses_actual_horizon_writer_but_forward_reads(tmp_path):
+    with retained(DATA / "history-controls", history_control=True) as historical:
+        generation, old, manifest = historical[0]
+        original = write(old, "landing/ready", tmp_path / "history-writer", manifest=manifest,
+                         evidence=evidence("history-pre-1018-writer.json"))
+        accepted(invoke(ROOT, "landing/ready", tmp_path / "history-forward", raw=original,
+                        evidence=evidence("history-pre-1018-forward.json")))
+        current = write(ROOT, "landing/horizon", tmp_path / "horizon-writer")
+        observed = invoke(old, "landing/horizon", tmp_path / "history-reverse", raw=current, manifest=manifest,
+                          evidence=evidence("history-pre-1018-reverse-red.json"))
+        assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
+        assert "horizon" in observed["error"]["message"]
+        assert any(call[1] == "read_landing" for call in observed["calls"])
+
+
+def test_pythonpath_poison_cannot_supply_a_retained_dependency(generations, tmp_path, monkeypatch):
+    poison = tmp_path / "poison/prismabuild"
+    poison.mkdir(parents=True)
+    (poison / "__init__.py").write_text("raise RuntimeError('installed-package poison')\n")
+    monkeypatch.setenv("PYTHONPATH", str(poison.parent))
+    generation, old, manifest = generations[0]
+    observed = invoke(old, "landing/horizon", tmp_path / "poison-control",
+                      raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest,
+                      evidence=evidence("pythonpath-poison-control.json"))
+    accepted(observed)
+    assert all("site-packages" not in path for path in observed["sys_path"])
+    assert str(poison.parent) not in observed["sys_path"]
+    assert all(Path(row["path"]).is_relative_to(old) for row in observed["imports"].values())
