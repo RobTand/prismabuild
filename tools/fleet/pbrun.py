@@ -5360,7 +5360,7 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     if not isinstance(detail, dict) or "cancelled_with" not in detail:
         return
     detail["scancel_accepted_unix"] = time.time()
-    materialize._write_json_atomic(filed, record, trailing_newline=True)
+    pool.record_store.RecordStore(queue_root).replace_lane_item_at(filed, record)
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
