@@ -3755,8 +3755,8 @@ class ResourceLedger:
 
         reader = self._names_reader()
         if reader is None or "/" in pattern or "**" in pattern:
-            return (_glob_visible(directory, pattern) if strict
-                    else _glob(directory, pattern))
+            return (immutable_files.match_required(directory, pattern) if strict
+                    else immutable_files.match_optional(directory, pattern))
         try:
             # Filter before constructing Paths, and sort exactly once. The
             # prior scan adapter sorted all Paths and this glob sorted them a
