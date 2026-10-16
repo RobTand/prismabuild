@@ -68,7 +68,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 8})
     return queue
 
@@ -97,8 +97,8 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -239,8 +239,8 @@ def test_wrong_nonce_terminal_retains(tmp_path: Path) -> None:
     assert po.admit_instance(queue, instance, template)["ok"] is True
     _finish_bare(queue, OWNER, claimed)
     # Terminal telemetry names another nonce: exact-attempt proof fails.
-    done_path = queue.item_path(pool.DONE, OWNER)
-    done = pool._read_json(done_path)
+    done_path = queue.records.item_path(pool.record_store.DONE, OWNER)
+    done = pool.record_store.read_queue_record(done_path)
     assert isinstance(done, dict)
     done["resource_telemetry"] = {
         "action_key": OWNER, "nonce": "0" * 32,
@@ -353,10 +353,10 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
             owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
             socket_path=endpoint)
         control = scope.create()
-        live = pool._read_json(queue.item_path(pool.CLAIMED, owner))
+        live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, owner))
         assert isinstance(live, dict)
         live["resource_scope"] = control
-        pool._write_json_atomic(queue.item_path(pool.CLAIMED, owner), live)
+        pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, owner), live)
         env = {"PRISMABUILD_ACTION_KEY": owner,
                "PRISMABUILD_ACTION_NONCE": control["nonce"],
                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
@@ -367,7 +367,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         po.declare_instance(queue.root, instance)
         assert po.admit_instance(queue, instance, template)["ok"] is True
         terminal = queue.finish(owner, status="executed", detail={})
-        assert terminal == queue.item_path(pool.DONE, owner)
+        assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
         proof = rlc.read_scope_attestation(queue, owner, nonce)
         assert isinstance(proof, dict) and proof["scope_empty"] is True
         first = po.safe_release_instance(

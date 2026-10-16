@@ -57,7 +57,7 @@ def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: stage_gib})
     return queue
 
@@ -86,8 +86,8 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -115,7 +115,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
                         resources={"cpu": 1, "mem_gb": 1, **terms},
                         produced_output_template=template)
     assert row.is_file()
-    item = pool._read_json(queue.item_path(pool.READY, key))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
     assert isinstance(item, dict)
     ref = item["produced_output"]
     assert ref["schema"] == po.PRODUCED_OUTPUT_REF_SCHEMA_V1
@@ -136,7 +136,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     q2 = AdmittedQueueFixture(
         pool.PoolQueue(small / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q2.ensure_layout()
+    q2.records.ensure_layout()
     q2.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 1})
     key2 = "9" * 64
     q2.publish(action_key=key2, cas_root="/cas", worker_script="/w.py",
@@ -144,7 +144,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
                resources={"cpu": 1, "mem_gb": 1, **terms},
                produced_output_template=_template(str(small / "out")))
     assert q2.claim(owner="w1") is None
-    assert pool._read_json(q2.item_path(pool.READY, key2)) is not None
+    assert pool.record_store.require(q2.records.item(pool.record_store.READY, key2)) is not None
 
 
 def test_input_and_output_demand_coexist(tmp_path: Path) -> None:
@@ -163,13 +163,13 @@ def test_input_and_output_demand_coexist(tmp_path: Path) -> None:
                    "manifest_sha256": "e" * 64, "manifest_bytes": 10,
                    "leads": ["f" * 64]},
         produced_output_template=template)
-    item = pool._read_json(queue.item_path(pool.READY, key))
+    item = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
     assert item["residency"]["leads"] == ["f" * 64]
     assert item["produced_output"]["template_id"] == "admit-v1"
     # Leads are absent, so the claim waits on inputs (input semantics
     # preserved) rather than admitting on tier capacity alone.
     assert queue.claim(owner="w1") is None
-    assert pool._read_json(queue.item_path(pool.READY, key)) is not None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, key)) is not None
 
 
 def test_refusals_and_legacy(tmp_path: Path) -> None:
@@ -201,7 +201,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **terms},
                       produced_output_template=bad)
-    assert pool._read_json(queue.item_path(pool.READY, "3" * 64)) is None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, "3" * 64)) is None
     # File the original, then a conflicting body for the same id refuses.
     queue.publish(action_key="0" * 64, cas_root="/cas",
                   worker_script="/w.py", checkout_root="/co",
@@ -218,7 +218,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **other_terms},
                       produced_output_template=other_validated)
-    assert pool._read_json(queue.item_path(pool.READY, "4" * 64)) is None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, "4" * 64)) is None
 
     # Legacy input-only mover still publishes without any produced template.
     mover = "5" * 64
@@ -232,7 +232,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                              "tier_id": STAGE_TIER,
                              "range_start_bytes": 0,
                              "range_end_bytes": 1 << 30})
-    assert pool._read_json(queue.item_path(pool.READY, mover)) is not None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, mover)) is not None
     # And the old #595 gate still refuses unbacked tier demand.
     with pytest.raises(pool.PoolContractError, match="residency block"):
         queue.publish(action_key="6" * 64, cas_root="/cas",
@@ -418,7 +418,7 @@ def test_refused_declaration_leaves_withdrawal_untouched(
                   produced_output_template=first)
     queue.withdraw(key, reason="operator hold", by="test",
                    signal_child=False)
-    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+    assert pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key)) is not None
     # Same id, different durable maxima, same window so the demand matches:
     # the declaration conflict must refuse BEFORE any withdrawal is retired.
     other = _template(str(origin), template_id="conflict-v1")
@@ -433,8 +433,8 @@ def test_refused_declaration_leaves_withdrawal_untouched(
             resources={"cpu": 1, "mem_gb": 1,
                        **po.owner_demand_terms(other_validated)},
             produced_output_template=other_validated)
-    assert pool._read_json(queue.item_path(pool.READY, key)) is None
-    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, key)) is None
+    assert pool.record_store.require(queue.records.item(pool.record_store.WITHDRAWN, key)) is not None
 
 
 def test_core_declaration_rejects_empty_and_oversized_input() -> None:

@@ -71,7 +71,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 8})
     return queue
 
@@ -100,8 +100,8 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -341,7 +341,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
 
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.require_prewrite(
         queue, instance, template, batch_id="w0", tier=STAGE_TIER,
         class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
@@ -422,7 +422,7 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
     stage.mkdir()
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     origin = Path(str(po.validate_template(template)["output_prefix"]))
     name = f"{tag}.pt"
     assert po.require_prewrite(
@@ -460,8 +460,8 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
     # White-box queue-row edit (documented as tampering): the live claim's
     # projected ref names a foreign digest while the sealed request still
     # declares the admitted template. Egress must taint, not skip.
-    claim_path = queue.item_path(pool.CLAIMED, owner)
-    row = pool._read_json(claim_path)
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    row = pool.record_store.read_queue_record(claim_path)
     assert isinstance(row, dict)
     row["produced_output"] = dict(row["produced_output"])
     row["produced_output"]["template_sha256"] = "0" * 64
@@ -526,7 +526,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         return batch
 
     def _state(batch):
-        ns_dir = (po.output_fragment_root(queue.root / pool.RESIDENCY)
+        ns_dir = (po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
                   / batch["batch_namespace"])
         return (
             (origin / f"{batch['batch_id']}.pt").is_file(),
@@ -563,7 +563,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-a",
         stage_root=str(tmp_path / "stage-mut-a"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY)))["ok"] is False
+            queue.root / pool.record_store.RESIDENCY)))["ok"] is False
     assert po.reclaim_origin(
         queue, instance, template, batch_id="mut-a")["ok"] is False
     assert _state(batch_a) == before
@@ -578,7 +578,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-b",
         stage_root=str(tmp_path / "stage-mut-b"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY)))["ok"] is False
+            queue.root / pool.record_store.RESIDENCY)))["ok"] is False
     assert po.reclaim_origin(
         queue, instance, template, batch_id="mut-b")["ok"] is False
     assert _state(batch_b) == before
@@ -593,7 +593,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         queue, instance, template, "mut-c",
         stage_root=str(tmp_path / "stage-mut-c"),
         residency_root=str(po.output_fragment_root(
-            queue.root / pool.RESIDENCY)))
+            queue.root / pool.record_store.RESIDENCY)))
     assert refused["ok"] is False
     assert _state(batch_c) == before
     assert calls == []
@@ -684,10 +684,10 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             owner, nonce, 64 * 1024 ** 2, tmp_path / "telemetry.json",
             socket_path=endpoint)
         control = scope.create()
-        live = pool._read_json(queue.item_path(pool.CLAIMED, owner))
+        live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, owner))
         assert isinstance(live, dict)
         live["resource_scope"] = control
-        pool._write_json_atomic(queue.item_path(pool.CLAIMED, owner), live)
+        pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, owner), live)
         env = {"PRISMABUILD_ACTION_KEY": owner,
                "PRISMABUILD_ACTION_NONCE": control["nonce"],
                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
@@ -704,7 +704,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
 
         assert stage_release.register_stage_root(
             queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-        out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+        out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
         payload = b"W" * BIG
         assert po.require_prewrite(
             queue, instance, template, batch_id="full", tier=STAGE_TIER,
@@ -775,7 +775,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         # Ordinary next-prewrite work proceeds while live; the contained
         # finish then authorizes the final release.
         terminal = queue.finish(owner, status="executed", detail={})
-        assert terminal == queue.item_path(pool.DONE, owner)
+        assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
         proof = rlc.read_scope_attestation(queue, owner, nonce)
         assert isinstance(proof, dict) and proof["scope_empty"] is True
         released = po.safe_release_instance(

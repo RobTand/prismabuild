@@ -47,7 +47,7 @@ def _stage(world, batch_id, payload):
     batch = world.first_publish(batch_id, desc)
     mover = batch["mover_key"]
     assert fx._claim_mover(world.q, "w-" + batch_id)["action_key"] == mover
-    outcome = world.q.execute(fx.pool._read_json(world.q.item_path("claimed", mover)), timeout_s=240)
+    outcome = world.q.execute(fx.pool.record_store.require(world.q.records.item("claimed", mover)), timeout_s=240)
     receipt = world.q.move_record(mover)
     assert outcome.get("returncode") == 0, {
         "returncode": outcome.get("returncode"),

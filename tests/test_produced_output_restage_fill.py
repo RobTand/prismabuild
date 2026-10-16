@@ -54,8 +54,8 @@ def _sealed(world, key: str) -> dict:
 
 
 def _row(world, key: str) -> dict:
-    for state in (pool.READY, pool.CLAIMED):
-        row = pool._read_json(world.q.item_path(state, key))
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        row = pool.record_store.require(world.q.records.item(state, key))
         if row is not None:
             return row
     raise AssertionError(f"no live row for {key[:12]}")

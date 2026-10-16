@@ -100,7 +100,7 @@ def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {KIND: gib})
     return q
 
@@ -121,8 +121,8 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = q.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -258,7 +258,7 @@ def _producer_request(tmp_path: Path, cas_root: Path, template: dict) -> str:
 
 
 def _execute_mover(q: pool.PoolQueue, mover: str) -> dict:
-    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict), "mover row must be claimed to execute"
     outcome = q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, outcome
@@ -282,7 +282,7 @@ class _World:
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
         self.ledger = self.q.tier_ledger(TIER)
-        self.out_base = po.output_fragment_root(self.q.root / pool.RESIDENCY)
+        self.out_base = po.output_fragment_root(self.q.root / pool.record_store.RESIDENCY)
         self.publish_kwargs = dict(producer_action_key=self.owner,
                                    command_extra=["--unpaced"])
 
@@ -386,7 +386,7 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     record = world.q.read_output_funding(mover0, TIER)
     assert record is not None and str(record["state"]) == "consumed"
     assert (isinstance(mover_row := RecordStore(world.q.root).mover(mover0), Present)
-            and mover_row.value.state == pool.DONE)
+            and mover_row.value.state == pool.record_store.DONE)
     assert map_mod.read_fragments(world.out_base, ns) == []
     assert not world.stage_path("p1.bin").exists()
 
