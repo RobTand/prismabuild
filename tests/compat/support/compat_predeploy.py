@@ -50,7 +50,7 @@ def capture(out):
 
 
 def validate(args):
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(root / "src"))
     from prismabuild.compatibility_window import (
         WindowError, require_generation, require_predeploy, require_reachable,

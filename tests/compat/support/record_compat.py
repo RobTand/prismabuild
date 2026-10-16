@@ -15,7 +15,7 @@ import sys
 import tarfile
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable

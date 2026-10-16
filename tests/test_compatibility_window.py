@@ -12,7 +12,7 @@ from prismabuild.compatibility_window import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/maintenance"))
+sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from record_compat import retained
 from compat_sources import capture_window
 

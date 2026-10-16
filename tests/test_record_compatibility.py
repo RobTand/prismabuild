@@ -12,7 +12,7 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/maintenance"))
+sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from record_compat import accepted, invoke, retained, write
 from prismabuild.record_kinds import KINDS, cases
 
