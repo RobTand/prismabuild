@@ -335,7 +335,7 @@ def _absent(error: OSError) -> bool:
     ``ENOENT`` and ``ENOTDIR`` are absence: a key that was never published, a
     state directory a queue has not created yet.  Every other ``OSError`` --
     ``ESTALE`` and ``EIO`` are the two the fleet actually sees (#208) -- is a
-    mount that failed to answer, and ``pool.record_store.read_queue_record`` keeps those loud on
+    mount that failed to answer, and ``pool.record_store.read_document`` keeps those loud on
     purpose.  A reader that swallowed them would answer "no action starts with
     that prefix" during an NFS burst, with ``complete: true`` next to it, and
     those two sentences call for opposite responses.  Every call site below

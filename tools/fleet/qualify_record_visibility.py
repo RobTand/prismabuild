@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 def _plain_move_record(pool, queue, key):
     """``PoolQueue.move_record`` as it read before #808: no revalidation."""
 
-    record = pool.record_store.read_queue_record(queue.records.move_path(key))
+    record = pool.record_store.read_document(queue.records.move_path(key))
     if not isinstance(record, dict) or record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
         return None
     return record

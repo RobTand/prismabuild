@@ -270,7 +270,7 @@ def late_finish(q, key, first, status):
 
 def refused_late_finish(q, key, first, status):
     """Model a stale claim read only in this caller, leaving its waiter live."""
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     caller = threading.get_ident()
     claim_path = q.records.item_path(pool.record_store.CLAIMED, key)
     injected_reads = 0

@@ -721,7 +721,7 @@ def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
         try:
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ValueError("not a regular queue record")
-            record = pool.record_store.read_queue_record(path)
+            record = pool.record_store.read_document(path)
             if record is None:
                 # A rename may have raced this census. Unknown, rather than
                 # a confident empty answer; a later screen can settle it.
@@ -865,7 +865,7 @@ def _pool_sidecar(path: Path) -> dict | None | Exception:
     if reader is not None:
         return reader.sidecar(path)
     try:
-        return pool.record_store.read_queue_record(path)
+        return pool.record_store.read_document(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -1300,7 +1300,7 @@ def _starvation_sidecar(path: Path) -> dict | None | Exception:
     if reader is not None:
         return reader.sidecar(path)
     try:
-        return pool.record_store.read_queue_record(path)
+        return pool.record_store.read_document(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -2100,7 +2100,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     reports: list[dict] = []
     for kind, name, report_path in report_paths:
         try:
-            report = pool.record_store.read_queue_record(report_path)
+            report = pool.record_store.read_document(report_path)
         except (OSError, pool.PoolContractError) as exc:
             notes.append(f"starvation {kind} ledger {name} census report: {exc}")
             unreadable.append(f"starvation {kind} ledger {name} census report: {exc}")

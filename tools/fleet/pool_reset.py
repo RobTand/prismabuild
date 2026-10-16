@@ -724,7 +724,7 @@ def _file_reset(plan: Mapping, *, reason: str,
     """
 
     for path in plan["paths"]:
-        record = pool.record_store.read_queue_record(path)
+        record = pool.record_store.read_document(path)
         if record is None:
             continue
         record["status"] = "reset"

@@ -240,7 +240,7 @@ def _parse_queue_record(path: Path) -> _Parsed:
     try:
         if not statmod.S_ISREG(path.lstat().st_mode):
             raise ValueError("not a regular queue record")
-        record = pool.record_store.read_queue_record(path)
+        record = pool.record_store.read_document(path)
         if record is None:
             # A rename may have raced this census. Unknown, rather than a
             # confident empty answer; a later screen can settle it.
@@ -255,10 +255,10 @@ def _parsed_ok(parsed: _Parsed) -> bool:
 
 
 def _parse_json(path: Path) -> _Parsed:
-    """``pool.record_store.read_queue_record`` of one record, failure retained."""
+    """``pool.record_store.read_document`` of one record, failure retained."""
 
     try:
-        return _Parsed(pool.record_store.read_queue_record(path), None)
+        return _Parsed(pool.record_store.read_document(path), None)
     except (OSError, ValueError) as exc:
         return _Parsed(None, exc)
 
@@ -267,7 +267,7 @@ def _read_or_exception(path: Path) -> dict | None | Exception:
     """``pbstatus._pool_sidecar``: the record, ``None``, or the failure."""
 
     try:
-        return pool.record_store.read_queue_record(path)
+        return pool.record_store.read_document(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -588,7 +588,7 @@ class KeptReads:
 
     def json_records(self, directory: Path, *, select=_visible_json,
                      ) -> list[tuple[Path, _Parsed]]:
-        """Every record ``select`` names, read as ``pool.record_store.read_queue_record`` reads it."""
+        """Every record ``select`` names, read as ``pool.record_store.read_document`` reads it."""
 
         return self._read(directory, select, _parse_json, _parsed_ok)
 
@@ -1395,7 +1395,7 @@ def _receipt_projection(entry: _KeptEntry):
     """
 
     try:
-        record = pool.record_store.read_queue_record(Path(entry.path))
+        record = pool.record_store.read_document(Path(entry.path))
     except (OSError, ValueError):
         record = None
     if not isinstance(record, dict):
@@ -1454,7 +1454,7 @@ def _plan_tier(reader: KeptReads, entry: _KeptEntry):
         return slot["tier"]
     reader.computed += 1
     try:
-        raw = pool.record_store.read_queue_record(Path(entry.path))
+        raw = pool.record_store.read_document(Path(entry.path))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
