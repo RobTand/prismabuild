@@ -204,8 +204,12 @@ def accepted(result):
     return result["result"]
 
 
-def write(root, case, store, **kw):
-    return base64.b64decode(accepted(invoke(root, case, store, **kw))["raw"])
+def write(root, case, store, *, observe=None, **kw):
+    result = invoke(root, case, store, **kw)
+    raw = base64.b64decode(accepted(result)["raw"])
+    if observe is not None:
+        observe(result, raw)
+    return raw
 
 
 @contextmanager

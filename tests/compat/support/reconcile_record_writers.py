@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 from collections import Counter, defaultdict
 import hashlib
 import json
@@ -12,14 +14,35 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def reconcile(root, inventory, evidence):
-    observed, functions, inputs = defaultdict(set), defaultdict(set), []
+def primary_records(audits, fleet, source_pin):
+    for audit in audits:
+        for action in json.loads(audit.read_bytes()):
+            assert action["source_parent"] == source_pin and action["source_git"]["git_objects_verified"]
+            assert action["returncode"] == 0 and action["receipt_sha256"] and action["cleanup_complete"]
+            assert action["native_completion"] and not action["outcomes"]["deselected"]
+            for stream in ("stdout", "stderr"):
+                reference = action["logs"][stream]
+                path = fleet / "pb-queue" / reference["path"]
+                assert digest(path) == reference["sha256"] and path.stat().st_size == reference["bytes"]
+                for number, line in enumerate(path.read_text().splitlines(), 1):
+                    if line.startswith("compat-writer-proof: "):
+                        raw = gzip.decompress(base64.b64decode(line.removeprefix("compat-writer-proof: "), validate=True))
+                        yield f"{action['action_key']}:{stream}:{number}", hashlib.sha256(raw).hexdigest(), json.loads(raw)
+
+
+def captured_records(evidence):
     for directory in evidence:
         for path in sorted(directory.rglob("*.json")):
             try:
                 record = json.loads(path.read_bytes())
             except (ValueError, UnicodeError):
                 continue
+            yield str(path), digest(path), record
+
+
+def reconcile(root, inventory, records):
+    observed, functions, inputs = defaultdict(set), defaultdict(set), []
+    for identity, data_hash, record in records:
             if not isinstance(record, dict) or record.get("returncode") != 0 or not record.get("isolated"):
                 continue
             if not record.get("compiled_source_code_verified") or not record.get("catalogued_entry_verified"):
@@ -33,12 +56,12 @@ def reconcile(root, inventory, evidence):
             phase = record.get("catalogued_operation")
             if phase != "write":
                 continue
-            inputs.append({"path": str(path), "sha256": digest(path), "case": record["request"]})
+            inputs.append({"path": identity, "sha256": data_hash, "case": record["request"]})
             for name, lines in record.get("executed_lines", {}).items():
                 if name in actual:
                     for line in lines:
                         observed[name, line].add(record["request"])
-            for name, _, _, owner in record["calls"]:
+            for name, _, _, owner in record.get("calls", []):
                 if name in actual:
                     functions[name, owner].add(record["request"])
     rows = []
@@ -74,11 +97,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--inventory", type=Path, required=True)
-    parser.add_argument("--attestations", type=Path, action="append", required=True)
+    parser.add_argument("--attestations", type=Path, action="append", default=[])
+    parser.add_argument("--primary-audit", type=Path, action="append", default=[])
+    parser.add_argument("--source-pin")
+    parser.add_argument("--fleet", type=Path, default=Path("/mnt/shared/prismabuild-fleet"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
-    report = reconcile(args.root, args.inventory, args.attestations)
+    if args.primary_audit and not args.source_pin:
+        parser.error("primary native evidence requires its explicit source pin")
+    from itertools import chain
+    records = chain(captured_records(args.attestations), primary_records(args.primary_audit, args.fleet, args.source_pin))
+    report = reconcile(args.root, args.inventory, records)
     with args.out.open("x") as stream:
         stream.write(json.dumps(report, sort_keys=True, indent=2) + "\n")
     args.out.chmod(0o444)

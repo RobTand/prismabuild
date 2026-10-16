@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import gzip
 import json
 import os
 from pathlib import Path
@@ -49,12 +50,37 @@ def has_historical_participant(case, generation, root, manifest):
     return False
 
 
+class WriterEvidence:
+    def __init__(self):
+        self.records = {}
+
+    def observe(self, record, raw):
+        case = record["request"]
+        assert case not in self.records
+        fields = ("returncode", "isolated", "no_site", "compiled_source_code_verified", "catalogued_entry_verified",
+                  "catalogued_operation", "imports", "executed_lines", "executing_code_sha256", "driver_sha256",
+                  "selected_adapter_sha256", "request", "sys_path", "interpreter")
+        self.records[case] = {key: record[key] for key in fields}
+        self.records[case].update(wire_sha256=hashlib.sha256(raw).hexdigest(),
+                                  fixture_origin=GOLDENS[case].get("origin", "production writer"))
+
+    def pytest_terminal_summary(self, terminalreporter):
+        for case, value in sorted(self.records.items()):
+            raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode()
+            terminalreporter.write_line("compat-writer-proof: " + encoded)
+
+
+WRITER_EVIDENCE = None
+
+
 @pytest.fixture(scope="module")
 def generations(pytestconfig):
-    global EVIDENCE
-    output = pytestconfig.getoption("--surface-json", default=None)
-    if EVIDENCE is None and output:
-        EVIDENCE = Path(output).with_suffix(".compat-attestations")
+    global WRITER_EVIDENCE
+    WRITER_EVIDENCE = pytestconfig.pluginmanager.get_plugin("compat-writer-evidence")
+    if WRITER_EVIDENCE is None:
+        WRITER_EVIDENCE = WriterEvidence()
+        pytestconfig.pluginmanager.register(WRITER_EVIDENCE, "compat-writer-evidence")
     with retained() as result:
         yield result
 
@@ -102,7 +128,8 @@ def pytest_generate_tests(metafunc):
 class RecordContract:
     def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(self, case, generations, writer_sources, tmp_path):
         label = case.replace("/", "-")
-        current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"))
+        current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"),
+                        observe=WRITER_EVIDENCE.observe)
         assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
         kind = next(kind for kind in KINDS if kind.name == case.split("/")[0])
         readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
