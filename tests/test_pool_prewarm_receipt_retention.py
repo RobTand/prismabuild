@@ -41,7 +41,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def _publish(queue: pool.PoolQueue, key: str) -> dict:
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py")
-    return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
 
 def _receipt(queue: pool.PoolQueue, key: str, **overrides) -> None:

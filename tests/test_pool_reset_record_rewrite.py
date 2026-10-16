@@ -110,7 +110,7 @@ def test_the_rewrite_is_published_by_rename(
     with contextlib.suppress(OSError):
         pool_reset._file_reset({"paths": [path]}, reason="operator reset")
 
-    record = pool.record_store.read_queue_record(path)
+    record = pool.record_store.read_document(path)
     assert record is not None
     assert record["status"] == "reset"
 

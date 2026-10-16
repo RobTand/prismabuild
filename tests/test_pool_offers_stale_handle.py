@@ -112,7 +112,7 @@ def test_read_json_still_raises_on_stale_by_default(
     _raise_on(monkeypatch, "addressed.json", errno.ESTALE)
 
     with pytest.raises(OSError) as caught:
-        pool.record_store.read_queue_record(path)
+        pool.record_store.read_document(path)
     assert caught.value.errno == errno.ESTALE
 
 

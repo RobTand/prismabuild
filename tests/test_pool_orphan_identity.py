@@ -17,7 +17,7 @@ def test_quarantine_rereads_the_record_it_takes(tmp_path, monkeypatch):
     replacement = {"action_key": KEY, "worker_script": "/new-worker.py",
                    "cas_root": "/cas", "checkout_root": "/new-checkout",
                    "published_unix": 123.0}
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     replaced = False
 
     def replace_after_read(source, *args, **kwargs):

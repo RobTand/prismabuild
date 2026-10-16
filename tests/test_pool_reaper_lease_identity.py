@@ -40,7 +40,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
         first['finish_pending'] = {'status': 'executed', 'detail': {'returncode': 0}}
     cleanup_calls = []
     cleanup = queue.cleanup_action_containers
-    read = pool.record_store.read_queue_record
+    read = pool.record_store._read_json
     later = pool._now() + pool.LEASE_TIMEOUT_S + 1
 
     def observed_cleanup(record, **kwargs):
