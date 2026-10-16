@@ -2694,7 +2694,7 @@ def _holder_token_paths(
         if not _holder_is_dir(holder):
             return [], None
         if names is None:
-            return _glob_visible(holder, pattern), None
+            return immutable_files.match_required(holder, pattern), None
         return sorted(path for path in names(holder)
                       if fnmatch.fnmatchcase(path.name, pattern)), None
     except (FileNotFoundError, NotADirectoryError):
