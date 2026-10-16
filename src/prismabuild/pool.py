@@ -3851,7 +3851,7 @@ class ResourceLedger:
             metadata = self.holder_census().cpu_record(holder).value
         if metadata is not None and "allocation" in metadata:
             return metadata["allocation"]
-        cpus = self.cpu_ids(_glob(self.held_dir / holder, "cpu-*"), tiers)
+        cpus = self.cpu_ids(immutable_files.match_optional(self.held_dir / holder, "cpu-*"), tiers)
         return {kind: [c for c in tiers[kind] if c in cpus]
                 for kind in ("preferred", "fallback")}
 
