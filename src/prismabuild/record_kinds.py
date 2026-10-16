@@ -30,6 +30,12 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("measurement-election", "prismabuild.measurement_reservation.v1", "private queue passes.measurement_reservation", "closed",
+               "prismabuild._measurement_reservation:selection", ("prismabuild._measurement_reservation:elect",), ("bounded", "unbounded"),
+               ("holder deadlines are metadata, not release predictions; supplied fixture census confers no live admission",)),
+    RecordKind("output-retry-stop", "prismabuild.output_retry_stop.v1", "immutable attempt terminal retry-stop evidence", "closed",
+               "prismabuild.pool:PoolQueue._validate_output_retry_stop", ("prismabuild.pool:PoolQueue._spent_output_retry_stop",), ("consumed",),
+               ("legacy absent sealed request is explicit; consumed funding, claim tokens and owner bindings are validated",), stable_paths=True),
     RecordKind("idle-baseline", "prismabuild.idle_baseline.v1", "host private idle-history state", "additive",
                "prismabuild.adaptive_cpu:idle_judgement_with_reference", ("prismabuild.adaptive_cpu:idle_judgement_with_reference",),
                ("within", "excursion"), ("foreign schema resets the window and grants no measured baseline",)),

@@ -47,7 +47,9 @@ def operate(request, store, load):
         campaign, core = load("pbcampaign"), load("prismabuild.core")
         cas = core.PrismaBuildCAS(store / "cas")
         children = [{"action_key": "c" * 64, "params": {}}]
-        path = dc.record_dir(cas.root, plan["parent_key"]) / "data-plans.json"
+        directory = (dc.record_dir(cas.root, plan["parent_key"]) if hasattr(dc, "record_dir")
+                     else campaign.decomposition_dir(cas, plan["parent_key"]))
+        path = directory / "data-plans.json"
         declared["task_data_manifest"] = {"residency_tier": None, "residency_ram": "off", "mover_readers": 1, "mover_mem_gb": 1}
         args = dict(request=declared, plan=plan, children=children, template={}, args=SimpleNamespace(), queue=None, cas=cas)
         if request["op"] == "write":

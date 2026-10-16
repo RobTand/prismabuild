@@ -76,6 +76,9 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family in ("measurement-election", "output-retry-stop"):
+        adapter = runpy.run_path(str(Path(__file__).with_name("compat_election_adapters.py")))["operate"]
+        return adapter(request, store, load)
     if family in ("idle-baseline", "spool-pacing", "spool-refusal", "spool-tick"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_observation_adapters.py")))["operate"]
         return adapter(request, store, load)
