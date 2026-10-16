@@ -1,0 +1,131 @@
+{
+  "base": "416a1eccebaea4ef224e0ddef8f6a1fe424756b4",
+  "branch": "sol/refactor-compatibility-corpus-20261016",
+  "catalogue": {
+    "additive": 89,
+    "caller_input_cases": 11,
+    "cases": 377,
+    "closed": 62,
+    "configuration_source_cases": 3,
+    "goldens": 377,
+    "historical_absence_observations_without_codec_credit": 14,
+    "historical_records": 740,
+    "kinds": 152,
+    "presence_only": 1,
+    "production_writer_cases": 363
+  },
+  "evidence_root": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/compatibility-corpus/",
+  "inventory": {
+    "closed_field_sets": 292,
+    "closed_policy_modules": 51,
+    "complete_kind_capture_gate": "passed",
+    "evidence": "inventory-v24/",
+    "production_constructor_sites": 358,
+    "symbolic_field_expressions": 221,
+    "unversioned": 1,
+    "wire_ids": 279
+  },
+  "nonclaims": [
+    "Prepared bridge is not supported merely because its directory or source is retained.",
+    "D38 and namespace absence observations earn no old-codec credit.",
+    "Private process/sensor/custody observations prove no physical drain, RootGO, throughput or abandonment.",
+    "Original a174 Git object is unavailable; verified 2a byte equivalence is not invented Git ancestry.",
+    "No full 31-card, canonical integration or deployment completion is claimed."
+  ],
+  "preserved_primary_evidence": [
+    "verified-recovered-matrix-last.json",
+    "verified-new-actions-03.json",
+    "verified-recovery-and-controls-03.json",
+    "verified-writer-variants-02.json",
+    "verified-backlog-01.json",
+    "audit-refusals-backlog-01.json"
+  ],
+  "qualification_source_pin": "b98348b6f484f0c3e0531394fee336511d9e17cb",
+  "qualification_state": "awaiting corrected complete native gate and primary audit",
+  "remaining_gates": [
+    "corrected complete current-source native population including all eight architecture cases",
+    "constructor branch reconciliation and explicit uncovered-site report",
+    "fresh complete live census plus all rollback bytes",
+    "original 514-node to current-owner mapping",
+    "root independent integration qualification",
+    "B09 bridge publication only with separate authorization, fleet convergence and actual generation designation",
+    "physical G-to-bridge rollback"
+  ],
+  "requirements": [
+    {
+      "claim": "Catalogue drives actual production adapters and native populations; retired/control/history kinds have source-bound dispositions.",
+      "id": "c31.r01",
+      "source": [
+        "src/prismabuild/record_kinds.py",
+        "tests/compat/support/wire_inventory.py",
+        "tests/compat/support/reconcile_record_writers.py"
+      ],
+      "state": "implemented; final constructor reconciliation pending"
+    },
+    {
+      "claim": "Read-only production-writer fixtures and complete provenance-checked historical closures; no live raw queue/CAS samples.",
+      "id": "c31.r02",
+      "source": [
+        "tests/compat/generations/",
+        "tests/compat/writer-sources/",
+        "tests/compat/support/compat_sources.py"
+      ],
+      "state": "implemented; fresh window validation pending"
+    },
+    {
+      "claim": "Every selected case checks golden writer bytes and both actual reader directions or explicit immutable absence; field and real production-mutant controls remain.",
+      "id": "c31.r03",
+      "source": [
+        "tests/record_compat_contract.py",
+        "tests/test_record_compatibility.py",
+        "tests/test_record_compatibility_core.py",
+        "tests/test_record_compatibility_queue.py",
+        "tests/test_record_compatibility_outputs.py",
+        "tests/test_record_compatibility_storage.py",
+        "tests/test_record_compatibility_ownership.py",
+        "tests/test_record_compatibility_host.py",
+        "tests/test_record_compatibility_controller.py",
+        "tests/test_record_compatibility_decomposition.py",
+        "tests/compat/field_sets.json"
+      ],
+      "state": "qualification pending"
+    },
+    {
+      "claim": "Live generations plus designated rollback; a174 designation only without optional B09 proof member. Prepared bridge has no publication or rollback designation.",
+      "id": "c31.r04",
+      "source": [
+        "docs/compatibility_rollback_designation.json",
+        "src/prismabuild/compatibility_window.py",
+        "tests/compat/support/compat_predeploy.py"
+      ],
+      "state": "product choice resolved; local window implemented; rollout gates pending"
+    },
+    {
+      "id": "B11",
+      "source": [
+        "docs/compatibility_corpus_2026-10-16.md"
+      ],
+      "state": "implementation present; complete local acceptance pending"
+    },
+    {
+      "id": "D10",
+      "source": [
+        "tests/compat/support/compat_isolate.py",
+        "tests/compat/support/audit_compat_actions.py",
+        "tests/compat/support/map_record_test_nodes.py"
+      ],
+      "state": "implementation present; final native/source/import verification pending"
+    }
+  ],
+  "retained_failures": [
+    "receipt-generation-red-04",
+    "complete-unit-01-controller.log",
+    "writer-variants-capture-02",
+    "recovery-capture-01",
+    "recovery-capture-02",
+    "protocol-sanity-native-01-controller.log",
+    "absence-controls-native-02-controller.log",
+    "controls-trace-03-controller.log"
+  ],
+  "scope": "C31/B11/D10 local implementation; root integration and deployment are separate"
+}
