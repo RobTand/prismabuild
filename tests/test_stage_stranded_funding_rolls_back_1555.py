@@ -53,7 +53,7 @@ def _queue(tmp_path: Path, gib: int = 6) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {KIND: gib})
     return q
 
@@ -84,8 +84,8 @@ def _bind(q, template, owner):
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = q.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -155,7 +155,7 @@ def _publish_mover(q, mover, manifest, total, gib=1, batch_ref=None):
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total},
               produced_output_batch=batch_ref)
-    row = pool._read_json(q.item_path(pool.READY, mover))
+    row = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -204,11 +204,11 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     assert po._producer_attempt_state(q, inst) == "dead"
     assert q.withdraw(dead_mover, by="test",
                       reason="producer failed") is not None
-    assert not q.item_path(pool.READY, dead_mover).exists()
-    assert not q.item_path(pool.CLAIMED, dead_mover).exists()
-    assert not q.item_path(pool.DONE, dead_mover).exists()
-    assert not q.item_path(pool.FAILED, dead_mover).exists()
-    assert q.item_path(pool.WITHDRAWN, dead_mover).exists()
+    assert not q.records.item_path(pool.record_store.READY, dead_mover).exists()
+    assert not q.records.item_path(pool.record_store.CLAIMED, dead_mover).exists()
+    assert not q.records.item_path(pool.record_store.DONE, dead_mover).exists()
+    assert not q.records.item_path(pool.record_store.FAILED, dead_mover).exists()
+    assert q.records.item_path(pool.record_store.WITHDRAWN, dead_mover).exists()
     dead_path.unlink()
     assert q.read_output_funding(
         dead_mover, TIER)["state"] == "transferring"
@@ -282,11 +282,11 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     # A funded-but-uncommitted mover never claims through the gate
     # (claim refuses output_funding_pending), so the race row is filed
     # direct: the repair must read any CLAIMED row as live.
-    ready = pool._read_json(q.item_path(pool.READY, mover))
+    ready = pool.record_store.require(q.records.item(pool.record_store.READY, mover))
     assert isinstance(ready, dict)
-    pool._write_json_atomic(q.item_path(pool.CLAIMED, mover), ready)
-    q.item_path(pool.READY, mover).unlink()
-    assert pool._read_json(q.item_path(pool.CLAIMED, mover)) is not None
+    pool._write_json_atomic(q.records.item_path(pool.record_store.CLAIMED, mover), ready)
+    q.records.item_path(pool.record_store.READY, mover).unlink()
+    assert pool.record_store.require(q.records.item(pool.record_store.CLAIMED, mover)) is not None
     q.finish(owner, status="failed", detail={"returncode": 1})
     assert po._producer_attempt_state(q, inst) == "dead"
     # The repair reads a CLAIMED row and refuses, even with the prewrite
@@ -420,7 +420,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
             write = pool._write_json_atomic
 
             def fail_funding_write(path, body, **kwargs):
-                if (path == q.funding_output_path(mover, TIER)
+                if (path == q.records.funding_output_path(mover, TIER)
                         and body.get("state") == "released"):
                     observed_faults.append("funding-write")
                     raise OSError("injected funding write failure")
@@ -495,15 +495,15 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
     if state == "released":
         assert q.release_output_funding(mover, TIER)
     if guard == "lease":
-        pool._write_json_atomic(q.lease_path(mover), {"owner": "live-mover"})
+        pool._write_json_atomic(q.records.lease_path(mover), {"owner": "live-mover"})
     elif guard == "partial":
         q.record_move(mover, {"tier_id": TIER, "complete": False,
                              "bytes_staged": 1})
     elif guard == "terminal":
-        pool._write_json_atomic(q.item_path(pool.FAILED, mover),
+        pool._write_json_atomic(q.records.item_path(pool.record_store.FAILED, mover),
                                 {"action_key": mover, "status": "failed"})
     elif guard == "unknown-producer":
-        q.item_path(pool.FAILED, inst["owner_action_key"]).unlink()
+        q.records.item_path(pool.record_store.FAILED, inst["owner_action_key"]).unlink()
     else:
         lstat = tier_loop.os.lstat
 
@@ -539,8 +539,8 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
             if race == "claim":
                 # An uncommitted batch cannot pass the ordinary claim gate.
                 # File the claim boundary directly, as the earlier fixture does.
-                pool._write_json_atomic(q.item_path(pool.CLAIMED, mover), row)
-                q.item_path(pool.READY, mover).unlink()
+                pool._write_json_atomic(q.records.item_path(pool.record_store.CLAIMED, mover), row)
+                q.records.item_path(pool.record_store.READY, mover).unlink()
         return lock(key, **kwargs)
 
     monkeypatch.setattr(q, "_transition_locked", race_before_lock)
@@ -577,7 +577,7 @@ def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
     """An unreadable token census cannot establish a completed release."""
     q, mover, _, _, *_ = _stranded_with_live_intent(tmp_path)
     ledger = q.tier_ledger(TIER)
-    scan = pool._scan_visible
+    scan = pool.immutable_files.scan_required
 
     def unreadable_holder(path):
         if path == ledger.held_dir / mover:
@@ -585,7 +585,7 @@ def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
         return scan(path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_scan_visible", unreadable_holder)
+        patch.setattr(pool.immutable_files, 'scan_required', unreadable_holder)
         _settle(q)
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0

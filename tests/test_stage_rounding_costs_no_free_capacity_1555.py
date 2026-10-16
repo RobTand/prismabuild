@@ -79,7 +79,7 @@ def _cycle(queue, tmp_path, writable_bytes):
 def test_landed_sub_gib_movers_keep_free_at_writable_minus_in_flight(tmp_path, count):
     """Free tokens equal writable minus in-flight, bounded below by zero."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     sub = GIB // 4
     writable_gib = count + 50
     _cycle(queue, tmp_path, writable_gib * GIB)
@@ -111,7 +111,7 @@ def test_free_holds_in_flight_deduction_with_zero_floor(tmp_path, writable_gib,
                                                         flight_tokens):
     """Free equals writable minus in-flight, bounded below by zero."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, max(writable_gib, flight_tokens) * GIB)
     ledger = queue.tier_ledger(TIER)
     mover = _key(f"1555-flight-{writable_gib}-{flight_tokens}")
@@ -129,7 +129,7 @@ def test_free_holds_in_flight_deduction_with_zero_floor(tmp_path, writable_gib,
 
 def test_empty_tier_reports_zero_rounding(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     record = _cycle(queue, tmp_path, 100 * GIB)
     assert record["landed_gib"] == 0
     assert record["in_flight_gib"] == 0
@@ -143,7 +143,7 @@ def test_empty_tier_reports_zero_rounding(tmp_path):
 def test_in_flight_mover_reports_declared_range_not_zero(tmp_path):
     """One in-flight mover with ceil(2.4 GiB) = 3 tokens reports 0-1 waste."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     consumer = _key("1555-consumer-flight")
     mover = _key("1555-mover-flight")
     span = int(2.4 * GIB)
@@ -164,7 +164,7 @@ def test_in_flight_mover_reports_declared_range_not_zero(tmp_path):
 def test_in_flight_holder_without_plan_leg_reports_unknown(tmp_path):
     """A holder no filed plan names lands in in_flight_unknown_gib."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 100 * GIB)
     ledger = queue.tier_ledger(TIER)
     mover = _key("1555-mover-unknown")
@@ -179,7 +179,7 @@ def test_in_flight_holder_without_plan_leg_reports_unknown(tmp_path):
 def test_mixed_known_and_unknown_excludes_unknown_from_waste(tmp_path):
     """Known rounding counts; unknown tokens stay in the deduction."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     consumer = _key("1555-consumer-mixed")
     known = _key("1555-mover-mixed-known")
     stranger = _key("1555-mover-mixed-unknown")

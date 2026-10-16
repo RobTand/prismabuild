@@ -58,19 +58,19 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
             owner_end = w.q.finish(w.owner, status="failed")
             if attempt < 2:
                 assert w.q.claim(owner="producer-retry")["action_key"] == w.owner
-        assert owner_end.parent.name == pool.FAILED
+        assert owner_end.parent.name == pool.record_store.FAILED
     ended = w.q.finish(mover, status="failed", detail=result, claim_snapshot=claimed)
     # On the regression, it is READY but admission can never claim it again.
-    if ended.parent.name == pool.READY:
-        assert w.q.output_funded_cover(TIER, pool._read_json(ended), KIND, 1) == (0, None)
+    if ended.parent.name == pool.record_store.READY:
+        assert w.q.output_funded_cover(TIER, pool.record_store.read_queue_record(ended), KIND, 1) == (0, None)
         assert w.q.claim(owner="retry-worker") is None
-    assert ended.parent.name == pool.FAILED
-    assert not w.q.item_path(pool.READY, mover).exists()
-    record = pool._read_json(ended)
+    assert ended.parent.name == pool.record_store.FAILED
+    assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
+    record = pool.record_store.read_queue_record(ended)
     assert record["attempts"] == 1
     assert record["max_attempts"] == claimed["max_attempts"] == 3
     attempt = w.q.attempt_outcomes(record)[0]
-    assert attempt["disposition"] == pool.FAILED
+    assert attempt["disposition"] == pool.record_store.FAILED
     assert attempt["status"] == "failed"
     assert attempt["detail"]["returncode"] == result["returncode"]
     assert w.q.read_output_funding(mover, TIER) == funding
@@ -85,26 +85,26 @@ def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
     assert material
     if reap:
         # Only the mover lease expires; the producer stays live.
-        lease = pool._read_json(w.q.lease_path(mover))
+        lease = pool.record_store.read_queue_record(w.q.records.lease_path(mover))
         lease["heartbeat_unix"] = 0.0
-        pool._write_json_atomic(w.q.lease_path(mover), lease)
+        pool._write_json_atomic(w.q.records.lease_path(mover), lease)
         w.q.reap_stale(timeout_s=60)
-        ended = w.q.item_path(pool.FAILED, mover)
+        ended = w.q.records.item_path(pool.record_store.FAILED, mover)
     else:
         ended = w.q.finish(mover, status="failed", detail=result, claim_snapshot=claimed)
-    assert ended.parent.name == pool.FAILED and ended.exists()
-    assert not w.q.item_path(pool.READY, mover).exists()
+    assert ended.parent.name == pool.record_store.FAILED and ended.exists()
+    assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
     assert w.ledger.holder_tokens(mover) == held
     assert {p: p.read_bytes() for p in material} == material
     assert w.q.read_output_funding(mover, TIER) == funding
-    archived = w.q.attempt_outcomes(pool._read_json(ended))[0]
+    archived = w.q.attempt_outcomes(pool.record_store.read_queue_record(ended))[0]
     assert archived["output_retry_stop"]["reason"] == "output_funding_consumed"
 
 
 @pytest.mark.parametrize("fault", ["absent", "corrupt", "generation", "publication", "binding", "tokens", "transferring"])
 def test_unproved_or_unspent_funding_never_claims_a_terminal_override(tmp_path, fault):
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
-    path = w.q.funding_output_path(mover, TIER)
+    path = w.q.records.funding_output_path(mover, TIER)
     changed = dict(funding)
     if fault == "absent":
         path.unlink()
@@ -122,8 +122,8 @@ def test_unproved_or_unspent_funding_never_claims_a_terminal_override(tmp_path, 
         pool._write_json_atomic(path, changed)
     before = path.read_bytes() if path.exists() else None
     ended = w.q.finish(mover, status="failed", claim_snapshot=claimed)
-    assert ended.parent.name == pool.READY
-    record = pool._read_json(ended)
+    assert ended.parent.name == pool.record_store.READY
+    record = pool.record_store.read_queue_record(ended)
     archived = w.q.attempt_outcomes(record)[0]
     assert "output_retry_stop" not in archived
     assert record["attempts"] == 1 and record["max_attempts"] == 3
@@ -134,47 +134,47 @@ def test_ordinary_failure_still_retries_and_can_succeed(tmp_path):
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     key = "a" * 64
     q.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root=tmp_path,
               worker_script="worker.py", resources={"cpu": 1},
               max_attempts=3, retry_safe=True)
     first = q.claim(owner="first")
     assert first is not None
-    assert q.finish(key, status="failed", claim_snapshot=first).parent.name == pool.READY
+    assert q.finish(key, status="failed", claim_snapshot=first).parent.name == pool.record_store.READY
     second = q.claim(owner="second")
     assert second is not None and second["attempts"] == 1
     ended = q.finish(key, status="executed", claim_snapshot=second)
-    assert ended.parent.name == pool.DONE
-    assert [a["disposition"] for a in q.attempt_outcomes(pool._read_json(ended))] == ["requeued", pool.DONE]
+    assert ended.parent.name == pool.record_store.DONE
+    assert [a["disposition"] for a in q.attempt_outcomes(pool.record_store.read_queue_record(ended))] == ["requeued", pool.record_store.DONE]
 
 
-@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED])
+@pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED])
 def test_late_failure_never_concludes_a_live_successor(tmp_path, state):
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
     successor = {**claimed, "published_unix": claimed["published_unix"] + 1,
                  "claimed_by": "new-worker", "claimed_unix": claimed["claimed_unix"] + 1}
-    w.q.item_path(pool.CLAIMED, mover).unlink()
-    path = w.q.item_path(state, mover)
+    w.q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
+    path = w.q.records.item_path(state, mover)
     pool._write_json_atomic(path, successor)
     before = path.read_bytes()
-    lease = w.q.lease_path(mover).read_bytes()
+    lease = w.q.records.lease_path(mover).read_bytes()
     held = w.ledger.holder_tokens(mover)
     w.q.finish(mover, status="failed", claim_snapshot=claimed)
     assert path.read_bytes() == before
-    assert w.q.lease_path(mover).read_bytes() == lease
+    assert w.q.records.lease_path(mover).read_bytes() == lease
     assert w.ledger.holder_tokens(mover) == held
-    assert not w.q.item_path(pool.FAILED, mover).exists()
+    assert not w.q.records.item_path(pool.record_store.FAILED, mover).exists()
     assert w.q.read_output_funding(mover, TIER) == funding
 
 
 def test_archived_stop_remains_valid_after_funding_changes(tmp_path):
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
     ended = w.q.finish(mover, status="failed", claim_snapshot=claimed)
-    record = pool._read_json(ended)
-    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
-    w.q.funding_output_path(mover, TIER).unlink()
-    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    record = pool.record_store.read_queue_record(ended)
+    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.record_store.FAILED
+    w.q.records.funding_output_path(mover, TIER).unlink()
+    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.record_store.FAILED
     assert record["max_attempts"] == 3
 
 
@@ -182,9 +182,9 @@ def test_archived_stop_remains_valid_after_funding_changes(tmp_path):
 def test_corrupt_archived_stop_cannot_authorize_early_failure(tmp_path, field):
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
     ended = w.q.finish(mover, status="failed", claim_snapshot=claimed)
-    record = pool._read_json(ended)
-    path = w.q.attempt_path(record, 1)
-    archived = pool._read_json(path)
+    record = pool.record_store.read_queue_record(ended)
+    path = w.q.records.attempt_path(record, 1)
+    archived = pool.record_store.read_queue_record(path)
     replacement = {"generation": "f" * 32, "published_unix": funding["published_unix"] + 1,
                    "mover_action_key": "f" * 64}[field]
     archived["output_retry_stop"]["funding"][field] = replacement
@@ -198,18 +198,18 @@ def test_corrupt_archived_stop_cannot_authorize_early_failure(tmp_path, field):
 
 def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, monkeypatch):
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
-    w.q.lease_path(mover).unlink()
+    w.q.records.lease_path(mover).unlink()
     now = pool._now()
     monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 1)
     held = w.ledger.holder_tokens(mover)
     w.q.reap_stale(timeout_s=3600)
-    ended = w.q.item_path(pool.FAILED, mover)
+    ended = w.q.records.item_path(pool.record_store.FAILED, mover)
     assert ended.exists()
-    assert not w.q.item_path(pool.READY, mover).exists()
-    record = pool._read_json(ended)
+    assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
+    record = pool.record_store.read_queue_record(ended)
     assert record["attempts"] == 1 and record["max_attempts"] == 3
     assert "unstarted_releases" not in record
-    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    assert w.q.adopted_attempt_summary(record)["disposition"] == pool.record_store.FAILED
     # No copy evidence is unknown occupancy, never proof that storage is free.
     assert w.ledger.holder_tokens(mover) == held
     assert w.q.read_output_funding(mover, TIER) == funding
