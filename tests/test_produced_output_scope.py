@@ -90,7 +90,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
     return queue
 
@@ -130,8 +130,8 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert live is not None
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -228,8 +228,8 @@ def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
         owner, nonce, 64 * 1024 ** 2, tmp_path / f"telemetry-{owner[:8]}.json",
         socket_path=endpoint)
     control = scope.create()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_queue_record(path)
     assert isinstance(live, dict)
     live["resource_scope"] = control
     pool._write_json_atomic(path, live)
@@ -965,7 +965,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
 
     # Window 0: boundary-0 + cotangent genA + scratch temp.
@@ -1212,7 +1212,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     queue.publish(action_key=MOVER0, cas_root="/cas", worker_script="/w.py",
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1},
                   max_attempts=1)
-    assert pool._read_json(queue.item_path(pool.READY, MOVER0)) is not None
+    assert pool.record_store.require(queue.records.item(pool.record_store.READY, MOVER0)) is not None
     assert po.due_mover_rows(queue, instance, template) == []
     assert [(e["batch_id"], e["event"]) for e in
             po.recover_batches(queue, instance, template)] == [
@@ -1244,7 +1244,7 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
     files = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
              str(origin / "checkpoint-0.pt")]
@@ -1485,7 +1485,7 @@ def test_pin_census_taint_retains(tmp_path: Path, broker_endpoint) -> None:
     queue = _queue(tmp_path)
     bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
@@ -1534,7 +1534,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.admit_instance(queue, instance, template)["ok"] is True
     shared = str(origin / "cotangent-0.pt")
 

@@ -188,7 +188,7 @@ class _ScriptedChild:
 
     @property
     def observation(self):
-        lease = json.loads(self.queue.lease_path(self.item["action_key"]).read_text())
+        lease = json.loads(self.queue.records.lease_path(self.item["action_key"]).read_text())
         return lease["progress_observation"]
 
     def publish(self, units, *, phase="run", token=None):
@@ -685,7 +685,7 @@ def test_notice_names_v1_workers_withheld_for_the_helper_and_uses_only_new_ceili
     old_offer = next(offer for offer in queue.offers()
                      if offer["host"] == "watchdog-only")
     old_offer["timeout_ceiling_s"] = 60.0
-    (queue.root / pool.WORKERS / "watchdog-only.json").write_text(
+    (queue.root / pool.record_store.WORKERS / "watchdog-only.json").write_text(
         json.dumps(old_offer))
 
     said = pbrun.progress_contract_notice(
@@ -882,11 +882,11 @@ def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
                   checkout_root=tmp_path, worker_script="/worker.py")
     item = queue.claim(owner="worker", tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert item is not None
-    lease = json.loads(queue.lease_path(key).read_text(encoding="utf-8"))
+    lease = json.loads(queue.records.lease_path(key).read_text(encoding="utf-8"))
     lease["published_unix"] = item["published_unix"]
     lease["progress_observation"] = observation
     lease.update(overrides)
-    queue.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
+    queue.records.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
     return next(row for row in pbstatus.read_pool(queue.root)["jobs"]
                 if row["action_key"] == key)
 

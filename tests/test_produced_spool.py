@@ -150,7 +150,7 @@ def test_local_group_exports_as_real_pb_action_then_stages_and_leases(tmp_path):
         acquire_token=secrets.token_hex(16),
         covers=[{"mover_action_key": mover, "manifest_sha256": batch["manifest_digest"]}],
         expected=None, owner_action_key=fx._hexkey("downstream"),
-        residency_root=str(po.output_fragment_root(spool.queue.root / pool.RESIDENCY)))
+        residency_root=str(po.output_fragment_root(spool.queue.root / pool.record_store.RESIDENCY)))
     assert lease["ok"], lease
     staged = tmp_path / "stage" / "produced-output" / batch["batch_namespace"] / "b1.bin"
     assert staged.read_bytes() == b"hello"
@@ -325,12 +325,12 @@ def test_export_admission_respects_live_producer_aggregate_memory(tmp_path, pare
     claimed = spool.queue.claim(owner="finite-export", tags=[spool.host], capacity=capacity)
     if not can_claim:
         assert claimed is None
-        assert spool.queue.item_path(pool.READY, handle["export_key"]).exists()
+        assert spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).exists()
         assert not destination.exists() and source.exists()
         return
     assert claimed is not None and claimed["action_key"] == handle["export_key"]
     assert spool.queue.ledger().holder_tokens(handle["export_key"])["mem_gb"] == 1
-    assert spool.queue.item_path(pool.CLAIMED, spool.owner).exists()
+    assert spool.queue.records.item_path(pool.record_store.CLAIMED, spool.owner).exists()
     outcome = spool.queue.execute(claimed, timeout_s=120)
     assert outcome.get("returncode") == 0, outcome
     assert spool.poll_group("b1")["complete"]

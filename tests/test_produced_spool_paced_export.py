@@ -61,7 +61,7 @@ def test_an_export_is_unpaced_unless_its_producer_opts_in(tmp_path, env):
     _source, _destination, entries = base.prepare(spool)
     handle = spool.submit_group("b1", entries)
     assert unpaced(sealed(spool))
-    row = json.loads(spool.queue.item_path(pool.READY, handle["export_key"]).read_text())
+    row = json.loads(spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).read_text())
     assert row["resources"] == {"cpu": 1, "mem_gb": 1}
 
 
@@ -158,7 +158,7 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
     assert bound["owner_attempt"] == spool.instance["owner_attempt"]
     holds = spool.queue.tier_ledger(fx.TIER).holder_tokens(spool.owner)
     cas_before = tree_snapshot(Path(spool.cas_root))
-    states = (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED, pool.WITHDRAWN)
+    states = (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
     rows_before = {state: tree_snapshot(spool.queue.root / state) for state in states}
     group_before = tree_snapshot(group)
     assert not destination.exists() and not Path(str(destination) + ".tmp").exists()
@@ -173,7 +173,7 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
         action = sealed(spool)
         assert unpaced(action), "unexpected success must expose the unresolved-price downgrade"
         assert "--pace-tier" not in action["params"]["command"]
-        row = pool._read_json(spool.queue.item_path(pool.READY, handle["export_key"]))
+        row = pool.record_store.require(spool.queue.records.item(pool.record_store.READY, handle["export_key"]))
         assert isinstance(row, dict)
         assert row["resources"] == {"cpu": 1, "mem_gb": 1}
         assert row["dependent_of"] == spool.owner
@@ -216,8 +216,8 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
         "--pace-mb-s", "7", "--pace-tier", fx.TIER]
     assert prewrite.read_bytes() == authority
     assert (group / "reservation.json").read_bytes() == reservation
-    assert list((spool.queue.root / pool.READY).glob("*.json")) == [
-        spool.queue.item_path(pool.READY, handle["export_key"])]
+    assert list((spool.queue.root / pool.record_store.READY).glob("*.json")) == [
+        spool.queue.records.item_path(pool.record_store.READY, handle["export_key"])]
     execute_export(spool, handle, destination, payload, rate=7)
     assert source.read_bytes() == payload and ps._identity(source) == identity
 
@@ -254,7 +254,7 @@ def test_new_explicit_paced_export_cannot_guess_an_unresolved_price(tmp_path, da
         file_price_receipt(spool, key="2" * 64, unix=2000.0, measured=False)
         assert len(spool.queue.export_records(spool.owner, fx.TIER)) == 2
     else:
-        record = pool._read_json(path)
+        record = pool.record_store.read_queue_record(path)
         assert isinstance(record, dict)
         values = {"zero": 0, "negative": -1, "bool": True, "string": "7", "float": 7.0}
         record["tokens"] = [] if damage == "tokens-shape" else {FILL: values[damage]}
@@ -299,13 +299,13 @@ def test_a_sealed_export_replays_after_its_price_disappears(tmp_path, original_p
     manifest = (spool._group("b1") / "manifest.json").read_bytes()
     cas_before = tree_snapshot(Path(spool.cas_root))
     path = spool.queue.root / "tiers" / f"{fx.TIER}.json"
-    tier = pool._read_json(path)
+    tier = pool.record_store.read_queue_record(path)
     assert isinstance(tier, dict)
     tier.pop("tokens", None)
     pool._write_json_atomic(path, tier)
     assert ps.export_fill(spool.queue, fx.TIER, spool.owner) is None
     # Republish an absent row from its immutable action, not today's price or mode.
-    spool.queue.item_path(pool.READY, first["export_key"]).unlink()
+    spool.queue.records.item_path(pool.record_store.READY, first["export_key"]).unlink()
     again = spool.submit_group("b1", entries, paced=not original_paced)
     assert again["export_key"] == first["export_key"]
     assert (spool._group("b1") / "export.json").read_bytes() == record
@@ -328,7 +328,7 @@ def test_a_resolved_price_with_no_free_fill_is_an_admission_refusal(tmp_path):
     denials = spool.queue.latest_denials({handle["export_key"]})
     assert any(denial["reason"] == "tier_reservation_unavailable"
                for denial in denials.get(handle["export_key"], [])), denials
-    assert spool.queue.item_path(pool.READY, handle["export_key"]).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).exists()
     assert not ledger.holder_tokens(handle["export_key"])
     assert ledger.holder_tokens(stranger).get(FILL) == 7
     assert not destination.exists() and source.read_bytes() == b"hello"
@@ -387,7 +387,7 @@ def test_a_replay_keeps_the_price_it_was_sealed_at(tmp_path):
     # Nor does a replay that asks for no pace unseal the one it sealed.
     assert spool.submit_group("b1", entries, paced=False)["export_key"] == first["export_key"]
     assert sealed(spool)["params"]["demand"][FILL_DEMAND] == 1
-    row = json.loads(spool.queue.item_path(pool.READY, first["export_key"]).read_text())
+    row = json.loads(spool.queue.records.item_path(pool.record_store.READY, first["export_key"]).read_text())
     assert row["resources"] == sealed(spool)["params"]["demand"]
 
 
@@ -507,7 +507,7 @@ def test_only_a_rate_is_attributed_by_its_sealed_command(tmp_path, kinds, accept
                       checkout_root="/co", resources=resources)
     if accepted:
         publish()
-        assert queue.item_path(pool.READY, "7" * 64).exists()
+        assert queue.records.item_path(pool.record_store.READY, "7" * 64).exists()
     else:
         with pytest.raises(pool.PoolContractError, match="residency block"):
             publish()
