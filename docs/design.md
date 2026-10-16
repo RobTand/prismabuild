@@ -1614,13 +1614,12 @@ subprocess SIGKILL fault test covers death after result/blob and receipt-temp
 staging but before canonical receipt publication. This is process-fault
 coverage, not power-loss or deployed cross-host-lock evidence.
 
-`run-local` also has one qualification-only, opt-in causal hook:
-`--initial-miss-rendezvous /absolute/manifest.json`. It proves that two exact
-worker processes both observed an initial miss against the same configured CAS
-root before either can
-reach the output lock and publish. It is inert when unset, is not entered on an
-initial cache hit, and is incompatible with `--recompute`. This proves worker/
-miss contention; it makes no task-argv timing claim. The output lock serializes
+`run-local` rechecks the CAS after acquiring the output lock. Two workers
+that initially miss on the same action, CAS and output produce one task
+execution and one receipt; the second worker returns `cache_hit`. A controlled
+two-process test owns the initial-miss barrier. The former qualification-only
+`--initial-miss-rendezvous` protocol was retired by Rob's 2026-10-16 decision.
+The output lock serializes
 workers by the canonical physical path of the declared output, whatever
 checkout root and working directory the caller spelled it with, so nested
 roots naming one file share one lock. Workers whose declared outputs are
@@ -3265,67 +3264,31 @@ The proposed Slurm deployment's cgroup and sealed time limit remain required
 external containment; PrismaBuild has no durable local holder lease or
 lock-acquisition timeout today.
 
-#### Opt-in two-phase initial-miss rendezvous
+#### Controlled initial-miss concurrency qualification (B15, 2026-10-16)
 
-The qualification hook is called immediately after the ordinary first
-`PrismaBuildCAS.lookup(action)` returns `None` and before checkout/output path
-resolution or `_local_output_lock`. Its immutable, canonical, self-hashed
-`prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1` file binds one
-normalized non-root absolute rendezvous namespace, the exact normalized
-non-root absolute CAS root used by both workers, a 128-bit lowercase-hex run
-nonce, the exact action key, exactly two sorted unique lowercase hostnames, and
-a positive finite local-monotonic timeout no greater than one day. The manifest
-must be a read-only regular inode with exactly one link and is read through the
-existing bounded no-follow stable-file primitive. The namespace has exactly
-the `arrivals/` and `ready/` directories; each phase admits only the two exact
-`<hostname>.json` leaves (plus a bounded transient private publication name).
+The initial-miss rendezvous API argument, CLI flag, schemas and coordination
+writers are retired. `run-local --initial-miss-rendezvous` rejects with exit 2
+before opening an action or constructing a CAS. No replacement production hook
+or port is introduced.
 
-For participant `i`, let `M_i` be its initial verified miss. It derives its
-hostname from `socket.gethostname().lower()`, and a self-hashed process identity
-from hostname, PID, Linux `/proc/<pid>/stat` start tick, a fresh invocation
-nonce, and the existing exact loaded-core plus optional launcher runtime
-identity. It no-clobber publishes an immutable
-`initial_miss_rendezvous_arrival.v1` record only after `M_i`. Both workers wait
-for and validate the exact complete arrival set while refusing a CAS receipt.
-Each then makes a fresh CAS-absence observation and publishes an immutable
-`initial_miss_rendezvous_ready.v1` record that binds its process/arrival and the
-canonical digest of that complete arrival set. The same absence/runtime check
-is the last userspace callback before the ready hard link. Only the exact
-complete ready set releases either worker to the output lock. Thus, for both
-participants, `M_i < arrival_i < ready_i < release < any in-protocol result
-publication`; no cross-host wall clock or realtime timestamp participates in
-the proof. A worker stopped after release may resume later and return the
-ordinary post-lock cache hit, carrying the same proof.
+`test_two_workers_recheck_initial_misses_under_output_lock` starts two real
+worker processes against one CAS and physical output. A test-owned lookup
+wrapper performs each worker's ordinary first lookup, reports its actual miss
+and waits at a bounded barrier. Once both misses and the absent receipt/output
+are observed, the test releases both workers into the production output lock
+and unmodified post-lock lookup. It joins both processes and checks one task
+execution effect, one canonical receipt, one execution receipt, valid payload
+bytes and `published` plus `cache_hit` results carrying that same receipt.
+Ordinary hit and miss result keys keep their exact pre-retirement shapes.
+An isolated production mutation bypassing the post-lock cache recheck makes
+this consumer proof fail on two actual task executions.
 
-Arrival, ready, manifest, process, and returned
-`initial_miss_rendezvous_receipt.v1` objects have closed schemas and canonical
-self-digests. Wrong action/run/manifest/host/runtime bindings, corrupt digests,
-duplicate/replayed participants, missing or extra entries, writable files,
-symlinks, special files, persistent hard links, source drift, and a CAS receipt
-visible during either worker's pre-release checks fail closed. The protocol
-does not claim atomic exclusion against an out-of-protocol receipt linked in
-the interval between the last ready pre-link callback and the ready link;
-workers released by that link may legitimately return proof-bearing hits.
-Polling and directory cardinality are bounded and use
-`time.monotonic()`; an unavailable peer times out without task argv. The second
-ready link is the logical release event. If the CAS receipt becomes visible
-while NFS still returns an incomplete ready-directory view, the worker keeps
-performing bounded exact scans through the original monotonic deadline; this
-does not misclassify a legitimate peer publication after release.
-
-This is an integrity protocol inside PrismaBuild's existing cooperative
-filesystem trust boundary, not authentication or a Byzantine quorum. SHA-256
-self-digests detect corruption and cross-contract mismatch but are unkeyed. A
-principal able to write arbitrary correctly formed files as another hostname,
-or to remove namespace entries, can fabricate or suppress the evidence.
-Qualification therefore requires the same isolated worker principal and
-ACL/WORM/retention controls already required for CAS state. The hook
-has CPU-only hostile tests. Its exact V4 two-host run on `gx10-6b77` and Sparky
-also passed the configured shared-NFS causal path for source commit `452c6f6`;
-the frozen command, authority hashes and post-run verification are recorded in
-`docs/two_host_qualification_2026-08-31.md`. That does not
-qualify other mounts, host/power loss, live Slurm, daemon deployment, or a
-hostile namespace principal.
+This is local process-concurrency coverage. The historical two-host shared-NFS
+qualification at source `452c6f6` remains recorded in
+`docs/two_host_qualification_2026-08-31.md`; it is not qualification of this new
+source. Retained historical records are not migrated or deleted. No host/power
+loss, hostile namespace or new cross-host claim is made. The broader C20
+library-interface and manifest extraction work remains separate.
 
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
@@ -3383,7 +3346,8 @@ verification, inode/parent readback, read-only bytes and cleanup remain.
 The old submission journal and Dagster graph schemas have no current
 producer or reader. Existing historical records are not migrated or deleted.
 This is an intentional API retirement; it makes no new live-scheduler claim.
-It does not retire prewarm `--stage` or the initial-miss rendezvous.
+This adapter unit does not retire prewarm `--stage`. Initial-miss rendezvous
+retirement is the separate B15 unit described above.
 
 ### Remaining core live-deployment gates
 
