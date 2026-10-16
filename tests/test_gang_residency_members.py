@@ -194,14 +194,14 @@ def test_a_resident_member_claims_with_its_verdict_and_map(gang_fleet,
     assert gclaim("sparky") == second, denial(second, "sparky")
     assert gclaim("sparklina") == first, denial(first, "sparklina")
 
-    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed["residency_verdict"] == {
         "state": "resident", "leads": [lead],
         "map_path": str(queue.records.residency_map_path(first))}
     environment = queue.launch_environment(claimed)
     assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(first))
     assert environment[pb.QUEUE_ROOT_ENV] == str(queue.root)
-    plain = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, second))
+    plain = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, second))
     assert pb.RESIDENCY_MAP_ENV not in queue.launch_environment(plain)
     # The start barrier releases a whole claimed gang: nobody waits in it.
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
@@ -278,7 +278,7 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # withdrawal checkpoint a covered claimed row is still a live consumer:
     # the sweep retains the lead, because live_claims still names it. This
     # fixture has no worker, so take the checkpoint the worker would take.
-    claimed_row = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    claimed_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed_row is not None, "the withdrawn member's row already left claimed/"
     assert queue.withdrawal_covers(claimed_row) is not None
     queue.finish(first, status="withdrawn")
@@ -363,7 +363,7 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     assert gclaim("sparky") == second, denial(second, "sparky")
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     for key in (first, second):
-        claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+        claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         assert claimed["residency_verdict"]["state"] == "resident"
         environment = queue.launch_environment(claimed)
         assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(key))
@@ -439,7 +439,7 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     assert gclaim("sparky") == second, denial(second, "sparky")
     # The map reaches the planner's member through the declared-manifest
     # branch: the row carries no residency block at all.
-    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed["residency_verdict"]["state"] == "resident"
     environment = queue.launch_environment(claimed)
     assert environment[pb.RESIDENCY_MAP_ENV] == str(queue.records.residency_map_path(first))
@@ -544,11 +544,11 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "requeue-gang")
-    ended = pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead))
     # The lead is live again: a CLAIMED record under a later generation (a READY
     # one would be claimed by the very pass under test).
-    live = dict(pool.record_store.require(queue.records.item(pool.record_store.DONE, lead))
-                or pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead)))
+    live = dict(pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, lead))
+                or pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead)))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
     pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
@@ -570,7 +570,7 @@ def test_a_changed_ending_restarts_the_wait(gang_fleet, monkeypatch, tmp_path):
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "regen-gang")
     path = queue.records.item_path(pool.record_store.FAILED, lead)
-    record = dict(pool.record_store.read_queue_record(path))
+    record = dict(pool.record_store.read_document(path))
     record["published_unix"] = float(record["published_unix"]) + 7
     pool._write_json_atomic(path, record)
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
@@ -825,8 +825,8 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "stuck-mark-gang")
-    ended = pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead))
-    live = dict(pool.record_store.require(queue.records.item(pool.record_store.FAILED, lead)))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead))
+    live = dict(pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, lead)))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
     pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
@@ -867,7 +867,7 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
         claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["elsewhere"])
         assert claimed is not None and claimed["action_key"] == lead
     live_path = queue.records.item_path(state, lead)
-    real_read = pool.record_store.read_queue_record
+    real_read = pool.record_store._read_json
     real_open = os.open
     real_listdir = os.listdir
     real_confirm = queue._gang_terminal_confirmed

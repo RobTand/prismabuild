@@ -30,7 +30,7 @@ def test_idle_fenced_host_admits_restartable_minus_ten(gang_fleet):
     group, keys, incumbent = waiting(gang_fleet)
     key = backfill(publish)
     assert claim("sparklina") == key, "idle gang fence refused proven priority -10 backfill"
-    held = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+    held = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
     assert held["gang_backfill"][0]["group"] == group
     assert queue.ledger("sparklina").held_keys() == [key]
     assert queue.records.item_path(pool.record_store.READY, keys[0]).exists()
@@ -50,7 +50,7 @@ def test_an_equal_priority_reservation_shortfall_never_becomes_a_backfill_loan(g
     election = _gang.elections(queue, group, 2)[0]
     assert _gang.backfill_allowed(queue, election, clock[0])
     key = backfill(publish)
-    assert queue._preemption_eligible(pool.record_store.require(queue.records.item(pool.record_store.READY, key)))
+    assert queue._preemption_eligible(pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)))
     assert claim("sparklina") is None, "a loan bypassed the gang's demand reservation"
     blocked = denial(key, "sparklina")
     assert blocked["reason"] == "deferred_for_gang_reservation"
@@ -95,7 +95,7 @@ def seeded_backfill(gang_fleet):
     assert claim("sparky") is None
     assert claim("sparklina") is None
     election = _gang.elections(queue, group, 2)[0]
-    row = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
     row["gang_backfill"] = [election]
     pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), row)
     return group, keys, incumbent, key
@@ -137,7 +137,7 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
     timing = election["backfill_preemptions"][0]
     assert timing["tokens_returned_unix"] is not None
     assert timing["tokens_returned_unix"] >= timing["requested_unix"]
-    archived = pool.record_store.read_queue_record(queue.records.superseded_dir() /
+    archived = pool.record_store.read_document(queue.records.superseded_dir() /
                               f"{key}.{queue.records.attempt_generation(decision)}.withdrawn-finish.json")
     assert archived["gang_backfill_release"]["tokens_returned_unix"] is not None
 
@@ -179,7 +179,7 @@ def test_backfill_on_both_hosts_reclaims_without_any_fresh_ready_mark(gang_fleet
     group, keys = members("both-backfilled", priority=10, mem_gb=104)
     for index, host in enumerate(("sparklina", "sparky")):
         assert claim(host) is None
-        holder = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, holders[index]))
+        holder = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, holders[index]))
         holder["gang_backfill"] = [_gang.elections(queue, group, 2)[index]]
         pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, holders[index]), holder)
     clock[0] += _gang.READY_FRESH_S + 1
@@ -222,7 +222,7 @@ def claim_backfill_snapshot(queue, key, tick, monkeypatch, *, cpu_sampler, gpu_s
     from test_gang_reservation_1517 import CAPACITY, TIERS
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     tick(0.01)
-    row = pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
                        has_gpu=True, tags=["gb10", "sparklina", _gang.TAG], ready=[row],
                        cpu_sampler=cpu_sampler,
@@ -240,7 +240,7 @@ def test_a_startable_gang_never_lends_its_fresh_ready_host(
         _gang.mark_ready(queue, record, record["members"][1], "sparky", clock[0])
     else:
         assert claim("sparky") == keys[1]
-    ready = pool.record_store.read_queue_record(_gang.state_dir(queue, group) / "ready-0.json")
+    ready = pool.record_store.read_document(_gang.state_dir(queue, group) / "ready-0.json")
     assert 0 <= clock[0] - ready["ready_unix"] <= _gang.READY_FRESH_S
     assert _gang.sibling_readiness(queue, record, record["members"][0],
                                   "sparklina", clock[0])["complete"]
@@ -263,7 +263,7 @@ def test_a_startable_gang_never_lends_its_fresh_ready_host(
 def test_a_stale_ready_member_never_lends_its_host(gang_fleet, fleet, monkeypatch):
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     group, keys, incumbent = waiting(gang_fleet)
-    ready = pool.record_store.read_queue_record(_gang.state_dir(queue, group) / "ready-0.json")
+    ready = pool.record_store.read_document(_gang.state_dir(queue, group) / "ready-0.json")
     clock[0] = ready["ready_unix"] + _gang.READY_FRESH_S + 1
     key = backfill(publish)
     assert claim_backfill_snapshot(queue, key, fleet[5], monkeypatch,
@@ -293,7 +293,7 @@ def test_a_token_short_gang_member_preempts_an_unmarked_incumbent(
     holder = publish("before-election", priority=-10, retry_safe=True,
                      mem_gb=24, tags=["sparklina"])
     assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) == holder
-    assert "gang_backfill" not in pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, holder))
+    assert "gang_backfill" not in pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, holder))
     group, keys = members("ordinary-preemption", priority=10, mem_gb=104)
     assert token_gang_claim(queue, "sparklina", fleet[5], monkeypatch) is None
     decisions = queue.withdrawal_decisions(holder)
@@ -350,7 +350,7 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
                                f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json",
                                {"gang_backfill_release": {**timing, "tokens_returned_unix": clock[0] + 1}})
     path = _gang.state_dir(queue, group) / "elect-0.json"
-    before = pool.record_store.read_queue_record(path)
+    before = pool.record_store.read_document(path)
     entered, release = threading.Event(), threading.Event()
     def hold_member():
         with queue._transition_locked(keys[0]):
@@ -368,13 +368,13 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
     try:
         assert entered.wait(10)
         update()
-        assert pool.record_store.read_queue_record(path) == before, "election writer bypassed the held member transition"
+        assert pool.record_store.read_document(path) == before, "election writer bypassed the held member transition"
     finally:
         release.set()
         thread.join(10)
     assert not thread.is_alive()
     update()
-    after = pool.record_store.read_queue_record(path)
+    after = pool.record_store.read_document(path)
     if writer == "begin":
         assert after["backfill_reclaiming"] is True
     elif writer == "note":

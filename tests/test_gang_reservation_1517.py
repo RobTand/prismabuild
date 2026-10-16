@@ -136,7 +136,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
                           max_attempts=1,
                           **({} if residency is None or (index and not residency_all)
                              else {"residency": residency}))
-            rows.append(pool.record_store.require(queue.records.item(pool.record_store.READY, key)))
+            rows.append(pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)))
         if file_group:
             _gang.publish_group(queue, group, rows, skew_s=skew_s)
         return group, [row["action_key"] for row in rows]

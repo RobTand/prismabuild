@@ -112,7 +112,7 @@ def _publish_sealed(queue, tmp_path, clock, name, *, script, resources, residenc
 
 
 def _row(queue, key):
-    return pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
 
 def _roles(queue, key):
@@ -513,7 +513,7 @@ def test_a_gangs_priority_for_the_precedence_is_the_gang_records(gang_fleet):
     """The one priority that the gang has: the loop-top release reads it, not a member row's."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "which-priority")
-    row = pool.record_store.require(queue.records.item(pool.record_store.READY, second))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, second))
     assert queue._gang_reservation_priority(row, authority=True) is None, "a young gang reserves nothing"
     clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
     assert queue._gang_reservation_priority(row, authority=True) == -10

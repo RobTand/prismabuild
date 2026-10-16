@@ -43,7 +43,7 @@ def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp
     assert not queue.records.item_path(base.pool.record_store.READY, low).exists(), 'new low-priority credit refilled ahead of waiting high priority'
     assert all(queue.records.item_path(base.pool.record_store.READY, key).exists() for key in old)
     for key in old:
-        row = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, key))
+        row = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, key))
         claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='drain-existing',
                               capacity={'cpu': 4, 'mem_gb': 4})
         assert claimed and claimed['action_key'] == key
@@ -53,7 +53,7 @@ def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp
             break
         assert not queue.records.item_path(base.pool.record_store.READY, low).exists()
     assert queue.records.item_path(base.pool.record_store.READY, high).exists()
-    row = base.pool.record_store.require(queue.records.item(base.pool.record_store.READY, high))
+    row = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, high))
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='native-lead',
                           capacity={'cpu': 4, 'mem_gb': 4})
     assert claimed and claimed['action_key'] == high

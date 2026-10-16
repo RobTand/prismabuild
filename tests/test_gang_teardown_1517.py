@@ -39,7 +39,7 @@ def test_a_member_failure_tears_the_gang_down_and_releases_its_fences(gang_fleet
     torn = _gang.teardown(queue, group)
     assert torn is not None and second[:12] in torn["reason"], torn
     # The running sibling is stopped through the ordinary withdrawal path.
-    claimed = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     assert claimed is not None and queue.withdrawal_covers(claimed) is not None
     # Its fences no longer hold lower-priority work off sparky.
     refill = publish("after-teardown", priority=-10, timeout_s=None, cpu=1, gpu=0, mem_gb=1)
@@ -81,7 +81,7 @@ def test_a_claimed_member_never_launches_alone(gang_fleet, monkeypatch):
     # Higher-priority work takes sparklina before first commits.
     urgent = publish("urgent", priority=20, timeout_s=None, cpu=2, gpu=1, mem_gb=100)
     assert gclaim("sparklina") == urgent
-    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, second))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, second))
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     outcome = queue._gang_start_barrier(record, owner="test", heartbeat_s=60.0)
     assert outcome is not None, "the member was released to launch without its sibling"
@@ -95,7 +95,7 @@ def test_the_barrier_releases_when_every_member_is_claimed(gang_fleet):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members, skew_s=0.5)
     for key in (first, second):
-        record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, key))
+        record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         assert queue._gang_start_barrier(record, owner="test", heartbeat_s=60.0) is None
     assert _gang.teardown(queue, group) is None
 
@@ -129,7 +129,7 @@ def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatc
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
     clock[0] += pool.LEASE_TIMEOUT_S + 10
-    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     queue.write_lease(first, owner=str(record.get("claimed_by") or ""), claim_snapshot=record)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
@@ -138,7 +138,7 @@ def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatc
     queue.sweep_gangs()
     torn = _gang.teardown(queue, group)
     assert torn is not None and second[:12] in torn["reason"], torn
-    live = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, first))
+    live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     assert live is not None and queue.withdrawal_covers(live) is not None
 
 
@@ -155,7 +155,7 @@ def test_two_equal_priority_gangs_never_split_the_two_hosts(gang_fleet):
     assert gclaim("sparklina") is None
     assert denial(g1[0], "sparklina")["reason"] == "gang_group_incomplete"
     assert denial(g2[0], "sparklina")["reason"] == "gang_waiting_for_peers"
-    _gang.publish_group(queue, group1, [pool.record_store.require(queue.records.item(pool.record_store.READY, key))
+    _gang.publish_group(queue, group1, [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
                                         for key in g1])
     assert gclaim("sparky") is None, "sparky committed the lower-ranked gang"
     assert denial(g1[1], "sparky")["reason"] == "gang_waiting_for_peers"
