@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import io
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -15,7 +12,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     core = load("prismabuild.core")
     writing = request["op"] == "write"
-    session = core._ProfileSession("sample", SimpleNamespace(container_routes_unsupported=True), store / "profile")
+    session = core._ProfileSession(mode="sample", backend=SimpleNamespace(container_routes_unsupported=True), directory=store / "profile")
     session.directory.mkdir()
     if family == "profile-route":
         path = session.container_route_path

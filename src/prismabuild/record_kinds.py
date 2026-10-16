@@ -30,6 +30,21 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("box-window", "prismabuild.box_window.v1", "terminal detail.resource_profile.box_window", "additive",
+               "prismabuild.pool:resource_profile_summary", ("prismabuild.box_window:read_window",), ("pqteld",),
+               ("ID is a producer label; metric groups remain optional and source-labelled",), negative_field="gpu", negative_value=None),
+    RecordKind("resource-profile", "prismabuild.resource_profile.v1", "terminal detail.resource_profile", "additive",
+               "prismabuild.pool:resource_profile_summary", ("prismabuild.pool:PoolQueue._resource_profile",), ("scope", "io", "rusage"),
+               ("unmeasured groups are absent; fixture observations are not measured fleet cost",), negative_field="scope", negative_value=None),
+    RecordKind("scratch-profile", "prismabuild.local_scratch_io_profile.v1", "private executed recorder result body", "additive",
+               "prismabuild.local_scratch:profile_cost", ("prismabuild.local_scratch:record_profile",), ("read", "write", "both"),
+               ("real eight-byte recorder IO uses supplied clock/filesystem facts; trusted-offer cost boundary is qualified separately from CAS source authentication",), stable_paths=True),
+    RecordKind("scratch-profile-inputs", "prismabuild.local_scratch_io_profiles.v1", "operator configured immutable profile references", "closed",
+               "prismabuild.local_scratch:ProfileInputs.observe", (), ("reference",),
+               ("config boundary uses supplied downstream IO; malformed config grants no profiles",), caller_input=True, stable_paths=True),
+    RecordKind("canary-run", "prismabuild.pbcanary.run.v1", "private canary namespace/run.json", "additive",
+               "pb_gc:_survey_canary", ("pbcanary:build_run_record",), ("legacy", "generation"),
+               ("actual read-only GC survey classifies a private namespace; no sweep is executed",), stable_paths=True),
     RecordKind("profile-route", "prismabuild.profile_container_route.v1", "private profile/container-route marker", "additive",
                "prismabuild.core:_ProfileSession.container_route",
                ("prismabuild.core:_ProfileSession._arm_container_route", "docker:_record_sample_route"), ("armed", "docker"),
