@@ -1189,22 +1189,10 @@ def live_state(queue, action_key: str) -> tuple[str | None, str]:
     dead-consumer sweep skips the key for this cycle.
     """
 
-    for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
-        try:
-            queue.records.item_path(state, action_key).stat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            return None, f"its {state} record could not be read: {exc}"
-        return state, ""
-    try:
-        for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
-            names = {path.stem for path in immutable_files.scan_optional(queue.records.dir(state))}
-            if action_key in names:
-                return state, ""
-    except OSError as exc:
-        return None, f"the queue could not be listed: {exc}"
-    return None, ""
+    answer = queue.records.active_pair(action_key)
+    if isinstance(answer, _pool.record_store.Unknown):
+        return None, answer.reason
+    return _pool.record_store.value_or_raise(answer), ""
 
 
 def handoff_safe(queue, consumer_action_key: str,
@@ -2457,7 +2445,7 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
             continue            # no leg of this plan seals that key
         if not ledger.holder_tokens(mover):
             continue            # the tier no longer accounts for the range
-        if queue.records.item_path(_pool.record_store.CLAIMED, mover).exists():
+        if bool(_pool.record_store.value_or_raise(queue.records.item_presence(_pool.record_store.CLAIMED, mover))):
             continue            # a running copy; its receipt is a prior run's
         receipt = queue.move_record(mover)
         if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:

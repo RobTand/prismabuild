@@ -1057,32 +1057,12 @@ def check_export_receipt(receipt, manifest, record):
 
 
 def _live_rows(queue):
-    """Every ready and claimed record, by key, read fail-closed.
-
-    `pool.Queue.live_records`'s census, except that a record which cannot
-    be read refuses instead of being skipped: the answer decides whether a
-    file may be deleted, and an unread row may be the export that writes
-    it.  A record that moved between the listing and the read is skipped:
-    the caller takes this twice, so a row that stays live is seen once.
-    """
-
-    rows = {}
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        directory = queue.records.dir(state)
-        try:
-            names = sorted(os.listdir(directory))
-        except OSError as exc:
-            raise SpoolError(f"unknown-retain: {state} rows: {exc}") from None
-        for name in names:
-            if not name.endswith(".json") or name.startswith("."):
-                continue
-            try:
-                record = pool.record_store.read_document(directory / name)
-            except (OSError, ValueError, pool.PoolContractError) as exc:
-                raise SpoolError(f"unknown-retain: {state}/{name}: {exc}") from None
-            if isinstance(record, dict):
-                rows[name[:-len(".json")]] = (state, record)
-    return rows
+    capture = queue.records.retention_live_rows()
+    if capture.issues:
+        issue = capture.issues[0]
+        raise SpoolError(f"unknown-retain: {issue.reason}: {issue.error}") from None
+    return {row.address.action_key: (row.address.state, row.result.value)
+            for row in capture.rows}
 
 
 def _export_attempt(queue, record, key, owner):

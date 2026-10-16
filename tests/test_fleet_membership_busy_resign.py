@@ -133,7 +133,7 @@ def _publish_claim(queue: pool.PoolQueue, key: str, **kw) -> dict:
     # ``publish`` takes any 64-character key but ``claim`` needs a hex digest
     # (#1498 and the census checks), so a non-hex key published fine and was
     # then never claimable: state it here instead of as an opaque ``None``.
-    assert pool._is_hex64(key), f"test key {key!r} is not a hex digest"
+    assert pool.record_store.key_shaped(key), f"test key {key!r} is not a hex digest"
     queue.publish(
         action_key=key, cas_root=queue.root / "cas",
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",

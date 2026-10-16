@@ -460,7 +460,7 @@ def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
     if len(names) < span:
         return
     try:
-        if queue.records.item_path(pool.record_store.CLAIMED, mover).exists():
+        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover))):
             return
         done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
     except (OSError, pool.PoolContractError, ValueError):
@@ -992,8 +992,8 @@ def _birth_record(queue: pool.PoolQueue, tier_id: str, mover: str, kind: str,
 
 def _row_is_ready(queue: pool.PoolQueue, mover: str) -> bool:
     """True while the mover's row waits to be claimed, never once claimed."""
-    return (queue.records.item_path(pool.record_store.READY, mover).exists()
-            and not queue.records.item_path(pool.record_store.CLAIMED, mover).exists())
+    return (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover)))
+            and not bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover))))
 
 
 def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
@@ -1127,8 +1127,8 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         raise ValueError(f"the chunk needs its live plan: {exc!r}")
     kind = storage_tiers.capacity_kind_of(tier_id)
     ledger = queue.tier_ledger(tier_id)
-    if not (queue.records.item_path(pool.record_store.READY, mover).exists()
-            or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()):
+    if not (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover)))
+            or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover)))):
         return PublishOutcome("refused", ["prelaunch-mover-unpublished"],
                               None, 0)
     try:
@@ -1343,9 +1343,9 @@ def _republished(record: Mapping[str, object], tier_id: str, mover: str,
 
 def _release_row_state(queue: pool.PoolQueue, mover: str) -> str:
     """One mover's row state: claimed, ready, or gone."""
-    if queue.records.item_path(pool.record_store.CLAIMED, mover).exists():
+    if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover)):
         return "claimed"
-    if queue.records.item_path(pool.record_store.READY, mover).exists():
+    if pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover)):
         return "ready"
     return "gone"
 

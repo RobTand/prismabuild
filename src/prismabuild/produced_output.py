@@ -2419,7 +2419,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
     for owner in owners:
         try:
-            if not queue.records.item_path(pool_mod.record_store.CLAIMED, owner).exists():
+            if not pool_mod.record_store.value_or_raise(queue.records.item_presence(pool_mod.record_store.CLAIMED, owner)):
                 continue
             paths = _owner_instance_paths(scopes_root / owner)
         except OSError as exc:

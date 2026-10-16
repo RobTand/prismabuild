@@ -357,10 +357,6 @@
    "tools/fleet/mount_latency.py",
    "tools/fleet/tier_loop.py"
   ],
-  "_entries": [
-   "src/prismabuild/residency_map.py",
-   "tools/fleet/pb_gc.py"
-  ],
   "_execution_checkout": [
    "src/prismabuild/materialize.py",
    "src/prismabuild/pool.py"
@@ -394,10 +390,6 @@
   "_is_action_key": [
    "tools/fleet/stage_move.py",
    "tools/fleet/stage_release.py"
-  ],
-  "_is_hex64": [
-   "src/prismabuild/pool.py",
-   "tools/fleet/tier_loop.py"
   ],
   "_key": [
    "tools/fleet/bench_failed_mover_reclaim.py",
@@ -448,7 +440,6 @@
   "_read": [
    "src/prismabuild/action_edges.py",
    "src/prismabuild/adaptive_snapshot.py",
-   "src/prismabuild/pool_reconcile.py",
    "src/prismabuild/produced_spool.py",
    "tools/fleet/retire_worker.py"
   ],
