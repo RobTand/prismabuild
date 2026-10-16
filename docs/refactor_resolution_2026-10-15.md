@@ -16,7 +16,8 @@ The discussion is append-only in
 `/home/rob/mailbox/claude-codex-prismabuild-refactor/`. Its pinned source is
 `36cebfbcc189`, based on `6073c9d36555`. Newer source is named below.
 
-The current code checkpoint is `8dacf78510df19bdb746f581b5b30a49e630625c`.
+The last complete configured-suite checkpoint is
+`8dacf78510df19bdb746f581b5b30a49e630625c`.
 It combines C01 qualification/pre-host preparation, the complete C11 capture
 owner and C25 decomposition record operations. Its full configured suite passed
 14,819 cases with 24 unchanged capability/opt-in skips across 1,005 complete
@@ -27,6 +28,17 @@ entries, modes and object identities; their only extra is the generated closure.
 The independently derived case roster matches exactly, including the three
 previously approved decomposition repairs. All 378 expanded public-claim files
 ran, covering 6,296 cases with no failures.
+
+Later integration includes the three authorized retirements and C26's shared
+shard verdict owner. C26's assembled behavioral source is
+`6f4de87cca5c4dff914bed053669aad9d011006e`, followed by the documentation-only
+`7aaac3e0c9f97afc78c0ab779974836a5e3a3922`. Its 121-file consumer closure passed
+2,177 cases and the complete duplication check passed eight more, with no skips.
+All nine actual action chains and source bundles were verified. This is a
+focused assembled-source result. The broader 1,003-file C26 result applies to
+its isolated source, not this accumulation. The
+[2026-10-16 follow-up](refactor_completion_followup_2026-10-16.md) records these
+limits; the frozen earlier audits remain unchanged.
 
 The earlier combined `5ee56bb83bb887749b2d47128566f18002f5911f` run remains
 failed: 14,817 passed, 24 skipped and two architecture checks failed. The
