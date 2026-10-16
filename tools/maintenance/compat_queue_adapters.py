@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 M, C, G, D = "a" * 64, "c" * 64, "7" * 32, "9" * 64
 
@@ -44,10 +45,14 @@ def operate(request, store, load):
         path = (queue.denial_transitions_path(M) if family == "q-denial-transitions" else
                 pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
         if write:
+            tick = [100.0]
+            time.time = lambda: tick[0]
             item = {"action_key": M, "published_unix": 50.0, "attempts": 0}
             queue.record_denial(item, "tokens", {"note": "caf\u00e9 \u03bb"})
-            if variant == "repeat":
+            if variant in ("repeat", "damped"):
+                tick[0] = 101.0 if variant == "damped" else 100.0
                 queue.record_denial(item, "headroom", {})
+                tick[0] = 102.0 if variant == "damped" else 100.0
                 queue.record_denial(item, "tokens", {"note": "caf\u00e9 \u03bb"})
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +63,8 @@ def operate(request, store, load):
             else:
                 value = queue.denial_transitions(M, published_unix=50.0)
                 assert value and value[0]["reason"] == "tokens", "transition reader lost the denial"
+                if variant == "damped":
+                    assert value[0]["count"] == 2 and value[0]["last_unix"] == 102.0, "repeat was not damped"
             return value
     else:
         raise ValueError(f"unknown queue adapter: {family}")
