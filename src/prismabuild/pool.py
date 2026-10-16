@@ -3327,7 +3327,6 @@ class _Insufficient(Exception):
 #: What makes two readings of ``claimed/<key>.json`` the same claim.  The owner
 #: alone would be enough for two different workers, but not for one worker's
 #: two attempts at the same action, which is the case the reaper creates.
-_CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
 
 
 #: The resource fields every ending row carries, absent on a record filed
