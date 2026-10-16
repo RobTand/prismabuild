@@ -3882,7 +3882,7 @@ class ResourceLedger:
         may silently substitute a busy CPU outside that proof. With no filter,
         static and old adaptive decisions keep the original ordered selection.
         """
-        tokens = _glob(self.free_dir, "cpu-*")
+        tokens = immutable_files.match_optional(self.free_dir, "cpu-*")
         if eligible_cpus is None:
             return tokens
         if tiers is None:
