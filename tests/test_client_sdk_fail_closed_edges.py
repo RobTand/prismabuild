@@ -18,7 +18,7 @@ from prismabuild import client, core as pb, pool
 
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -66,7 +66,7 @@ def test_an_empty_claim_row_is_unreadable_not_unclaimed(tmp_path):
     """#1267: a torn write or broken mount is never read as 'not claimed'."""
 
     queue = _queue_at(tmp_path)
-    claimed = queue.item_path(pool.CLAIMED, "c" * 64)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, "c" * 64)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text("")
 
@@ -76,7 +76,7 @@ def test_an_empty_claim_row_is_unreadable_not_unclaimed(tmp_path):
 
 def test_a_non_object_claim_row_still_raises(tmp_path):
     queue = _queue_at(tmp_path)
-    claimed = queue.item_path(pool.CLAIMED, "d" * 64)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, "d" * 64)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps(["a", "list"]))
 
@@ -86,7 +86,7 @@ def test_a_non_object_claim_row_still_raises(tmp_path):
 
 def test_a_real_claim_row_reads(tmp_path):
     queue = _queue_at(tmp_path)
-    claimed = queue.item_path(pool.CLAIMED, "e" * 64)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, "e" * 64)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps({"action_key": "e" * 64}))
 
@@ -103,14 +103,14 @@ def test_a_claim_row_that_completes_mid_read_is_none(tmp_path, monkeypatch):
     """
 
     queue = _queue_at(tmp_path)
-    claimed = queue.item_path(pool.CLAIMED, "f" * 64)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, "f" * 64)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps({"action_key": "f" * 64}))
-    real_read = pool._read_json
+    real_read = pool.record_store.read_queue_record
 
     def completes_first(path):
         Path(path).unlink()
         return real_read(path)
 
-    monkeypatch.setattr(pool, "_read_json", completes_first)
+    monkeypatch.setattr(pool.record_store, '_read_json', completes_first)
     assert client.read_claimed_record(queue, "f" * 64) is None

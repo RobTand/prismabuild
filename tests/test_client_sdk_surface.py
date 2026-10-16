@@ -187,8 +187,8 @@ REEXPORTS = {
     "read_data_manifest": pb.read_data_manifest,
     "manifest_read_entries": manifest_layout.manifest_read_entries,
     "PoolQueue": pool.PoolQueue,
-    "CLAIMED": pool.CLAIMED,
-    "RESIDENCY": pool.RESIDENCY,
+    "CLAIMED": pool.record_store.CLAIMED,
+    "RESIDENCY": pool.record_store.RESIDENCY,
     "POOL_OUTCOME_SCHEMA_V1": pool.POOL_OUTCOME_SCHEMA_V1,
     "validate_residency_map": residency_map.validate_map,
     "read_residency_map": residency_map.read_map,
@@ -326,12 +326,12 @@ def test_the_sdk_imports_no_client_and_no_tool():
 def test_read_claimed_record_reads_the_claimed_row(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
     key = "a" * 64
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {"action_key": key, "cas_root": "/cas", "residency": {"manifest_sha256": "b" * 64}}
     path.write_text(json.dumps(row), encoding="utf-8")
     assert client.read_claimed_record(queue, key) == row
-    assert client.read_claimed_record(queue, key) == pool._read_json(path)
+    assert client.read_claimed_record(queue, key) == pool.record_store.read_queue_record(path)
 
 
 def test_read_claimed_record_is_none_when_not_claimed(tmp_path: Path):
@@ -342,7 +342,7 @@ def test_read_claimed_record_is_none_when_not_claimed(tmp_path: Path):
 def test_read_claimed_record_refuses_a_row_that_is_not_an_object(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
     key = "d" * 64
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(pool.PoolContractError):

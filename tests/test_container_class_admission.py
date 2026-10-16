@@ -76,13 +76,13 @@ def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, mon
     q = pool.PoolQueue(tmp_path / 'queue')
     q.ledger().ensure_capacity(CAPACITY)
     publish(q)
-    before = q.item_path(pool.READY, KEY).read_bytes()
+    before = q.records.item_path(pool.record_store.READY, KEY).read_bytes()
     claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
                       observed_images=[CONTENT], container_class_policy=policy(),
                       container_inventory=snapshot(**change))
     assert claimed is None
-    assert q.item_path(pool.READY, KEY).read_bytes() == before
-    assert not q.item_path(pool.CLAIMED, KEY).exists()
+    assert q.records.item_path(pool.record_store.READY, KEY).read_bytes() == before
+    assert not q.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert q.ledger().available() == CAPACITY
     assert denials(q)[-1]['reason'] == 'container_class_' + reason
 
@@ -129,7 +129,7 @@ def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path
     assert evidence['status'] == 'satisfied'
     assert evidence['observed_unix'] == 1000.
     assert len(evidence['requirements_sha256']) == 64
-    assert evidence == json.loads(q.item_path(pool.CLAIMED, KEY).read_text())['container_class_verdict']
+    assert evidence == json.loads(q.records.item_path(pool.record_store.CLAIMED, KEY).read_text())['container_class_verdict']
 
 
 @pytest.mark.parametrize('container', [True, False])
@@ -185,7 +185,7 @@ def test_expiry_during_reservation_abandons_only_this_handle(tmp_path, monkeypat
     assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
-    assert q.item_path(pool.READY, KEY).exists()
+    assert q.records.item_path(pool.record_store.READY, KEY).exists()
     assert denials(q)[-1]['reason'] == 'container_class_inventory_unknown'
 
 
@@ -236,8 +236,8 @@ def test_expiry_during_intent_write_restores_moved_item_and_returns_own_reservat
     assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
-    assert q.item_path(pool.READY, KEY).exists()
-    assert not q.item_path(pool.CLAIMED, KEY).exists()
+    assert q.records.item_path(pool.record_store.READY, KEY).exists()
+    assert not q.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert denials(q)[-1]['reason'] == 'container_class_inventory_unknown'
 
 
@@ -297,7 +297,7 @@ def test_real_worker_poll_publishes_class_refusal_and_preserves_native_polling(t
     monkeypatch.setattr(loop.pool.PoolQueue, 'serve_once', lambda *a, **k: seen.append(k))
     assert loop._run_loop(Event()) == 0
     q = pool.PoolQueue(tmp_path / 'pb-queue')
-    offer = json.loads((q.root / pool.WORKERS / (socket.gethostname()+'.json')).read_text())
+    offer = json.loads((q.root / pool.record_store.WORKERS / (socket.gethostname()+'.json')).read_text())
     assert offer['container_class_verdict']['reason'] == 'required_image_missing'
     assert offer['container_images'] == [CONTENT, OTHER]
     if draining:

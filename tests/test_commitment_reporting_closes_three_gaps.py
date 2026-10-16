@@ -61,11 +61,11 @@ def _cycle(queue: pool.PoolQueue, discovered: dict) -> list[dict[str, object]]:
 def test_the_commitment_directory_is_made_once_not_per_call(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     made = _count_mkdirs(monkeypatch)
 
     queue.file_tier_commitment({"tier_id": TIER, "waiting": []})
-    assert made == [queue.tier_commitment_path(TIER).parent]
+    assert made == [queue.records.tier_commitment_path(TIER).parent]
 
     made.clear()
     for _ in range(3):
@@ -74,8 +74,8 @@ def test_the_commitment_directory_is_made_once_not_per_call(
     assert queue.tier_commitment(TIER)["waiting"] == []
 
     # A directory an operator deletes comes back on the next write.
-    queue.tier_commitment_path(TIER).unlink()
-    queue.tier_commitment_path(TIER).parent.rmdir()
+    queue.records.tier_commitment_path(TIER).unlink()
+    queue.records.tier_commitment_path(TIER).parent.rmdir()
     queue.file_tier_commitment({"tier_id": TIER, "waiting": []})
     assert queue.tier_commitment(TIER) is not None
 
@@ -83,7 +83,7 @@ def test_the_commitment_directory_is_made_once_not_per_call(
 def test_announcing_a_tier_makes_no_directory_per_call(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     made = _count_mkdirs(monkeypatch)
 
     for _ in range(3):
