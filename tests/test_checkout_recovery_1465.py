@@ -457,7 +457,6 @@ def test_32_distinct_banked_checkouts_are_supported_but_33_are_not(make_case):
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "missing-terminal", "malformed-terminal", "wrong-key", "missing-key",
     "missing-generation", "boolean-generation", "nonfinite-generation",
@@ -1284,7 +1283,7 @@ def test_busy_real_transition_lock_refuses_without_waiting_or_cleanup(case):
                                   "hidepid", "unreadable", "malformed", "empty"])
 def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, monkeypatch, fault):
     path = Path("/proc") / str(os.getpid()) / "mountinfo"
-    actual_reader = pb._read_regular_file_nofollow
+    actual_reader = pb.immutable_files._read_file
     selected = case.directory
     if fault == "same-device-native-bank":
         selected = case.checkout / "native"
@@ -1308,7 +1307,7 @@ def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, 
             return payload
         return actual_reader(candidate, **options)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", mount_census)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', mount_census)
     _refused(case, case.prepare)
 
 
@@ -1334,10 +1333,6 @@ def test_recovery_authority_itself_must_never_be_inside_a_selected_deletion_root
     # refusal must come from bounded deletion ownership, not an omitted bank.
     case.bank()
     _refused(case, lambda: recovery.prepare_checkout_recovery(queue, [case.entry], **options))
-
-
-
-
 
 
 _NATIVE_HOLDER_CODE = r"""
@@ -1605,7 +1600,6 @@ def test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan(case, 
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "empty", "truncated-line", "truncated-complete-record", "malformed", "overlap",
     "bad-device", "bad-inode", "missing-path", "zero-inode-file", "bad-permissions",
@@ -1707,7 +1701,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                                    expected=(report["dev"], report["ino"]))
         _planned(case, proc_root=Path("/proc"))
         process = Path("/proc") / str(holder.pid)
-        actual_read = pb._read_regular_file_nofollow
+        actual_read = pb.immutable_files._read_file
         actual_open = immutable_files.open_directory_nofollow
         actual_readlink = recovery.os.readlink
         map_directory = (process / "map_files").stat()
@@ -1759,7 +1753,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                     raise FileNotFoundError("real process map_files link qualification disappearance")
             return actual_readlink(path, dir_fd=dir_fd)
 
-        monkeypatch.setattr(pb, "_read_regular_file_nofollow", failed_mapping_read)
+        monkeypatch.setattr(pb.immutable_files, '_read_file', failed_mapping_read)
         monkeypatch.setattr(immutable_files, "open_directory_nofollow", failed_mapping_directory)
         monkeypatch.setattr(recovery.os, "readlink", failed_mapping_link)
         result = _refused(case, lambda: case.prepare(proc_root=Path("/proc")))
@@ -1818,7 +1812,6 @@ def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_excep
     (process / "map_files" / "1000-2000").unlink()
     result = _refused(case, case.prepare)
     assert any("executable census incomplete" in error for error in result["errors"]), result
-
 
 
 @pytest.mark.parametrize("drift", ["start-time", "pid-directory"])

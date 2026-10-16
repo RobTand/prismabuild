@@ -155,7 +155,7 @@ def test_torn_bytes_once_then_the_same_epoch_opens(held, monkeypatch):
 
     from prismabuild import core
 
-    real_read = core._read_regular_file_nofollow
+    real_read = core.immutable_files._read_file
     torn: list[Path] = []
 
     def tearing(path, **kwargs):
@@ -164,7 +164,7 @@ def test_torn_bytes_once_then_the_same_epoch_opens(held, monkeypatch):
             return b'{"tier_id": "ram:testhost", "epo'
         return real_read(path, **kwargs)
 
-    monkeypatch.setattr(core, "_read_regular_file_nofollow", tearing)
+    monkeypatch.setattr(core.immutable_files, '_read_file', tearing)
     fd, serving = _open(held)
     try:
         assert torn, "the torn read was never served"

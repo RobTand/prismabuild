@@ -33,6 +33,22 @@ def main_definitions(path, names, *, revision=MAIN, **bindings):
     return SimpleNamespace(**namespace)
 
 
+def historical_core(tmp_path):
+    source = subprocess.run(
+        ["git", "show", f"{MAIN}:src/prismabuild/core.py"], cwd=ROOT,
+        check=True, text=True, capture_output=True).stdout
+    imports = [node for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.ImportFrom)]
+    assert all(node.level == 0 for node in imports)
+    assert all(not (node.module or "").startswith("prismabuild") for node in imports)
+    path = tmp_path / "historical_core.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location("digest_sites_historical_core", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def fleet_module(name):
     path = ROOT / "tools" / "fleet" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"digest_sites_{name}", path)
@@ -53,7 +69,7 @@ def test_checkout_json_digest_hashes_exact_read_bytes(tmp_path):
     path = tmp_path / "record.json"
     path.write_bytes(raw)
     old = main_definitions("src/prismabuild/checkout_recovery.py", ["_json"],
-                           pb=core, MAX_JSON_BYTES=recovery.MAX_JSON_BYTES,
+                           pb=historical_core(tmp_path), MAX_JSON_BYTES=recovery.MAX_JSON_BYTES,
                            _refuse=lambda text: pytest.fail(text))
     assert recovery._json(path, "test record") == old._json(path, "test record")
 

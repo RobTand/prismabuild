@@ -19,8 +19,8 @@ It implements that with::
 ``attempt_outcomes`` raises ``PoolContractError`` for everything it can decide
 by *reading* the record -- a non-contiguous attempt number, a link that is not
 its canonical path, an outcome that is not a JSON object.  But the link it
-checks last is a file, read through ``pb._read_regular_file_nofollow``, and
-``core._open_regular_nofollow`` raises three types that are not
+checks last is a file, read through ``pb.immutable_files._read_file``, and
+``core.immutable_files.open_regular_nofollow`` raises three types that are not
 ``PoolContractError`` at all: a bare ``FileNotFoundError`` when the immutable
 attempt outcome is absent, ``CASUnavailableError`` for every other ``OSError``
 on the stat (ESTALE, EACCES, EIO on ``/mnt/shared``), and ``CASTamperError``
@@ -167,7 +167,7 @@ def test_an_unreadable_attempt_outcome_retains_the_tombstone(
     def unavailable(*args, **kwargs):
         raise pb.CASUnavailableError("cannot inspect pool attempt outcome")
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", unavailable)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', unavailable)
 
     assert queue.sweep_finish_tombstones() == []
     assert tombstone.exists(), "a stale handle discarded the record"
