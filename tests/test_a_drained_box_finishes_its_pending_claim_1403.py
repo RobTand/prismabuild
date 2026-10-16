@@ -110,7 +110,7 @@ def drained_box(tmp_path, monkeypatch):
 
     broker = _fake_broker(monkeypatch)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     queue.publish(action_key=OWNER_KEY, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout",
@@ -128,13 +128,13 @@ def drained_box(tmp_path, monkeypatch):
                   worker_script=str(tmp_path / "worker.py"),
                   resources=RESOURCES, max_attempts=1)
 
-    record = pool._read_json(queue.item_path(pool.CLAIMED, OWNER_KEY))
+    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
     record["resource_scope"] = _scope_control(OWNER_KEY, "c" * 32)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, OWNER_KEY), record)
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY), record)
 
     queue.withdraw(OWNER_KEY, reason="drained for a U4 window",
                    by="u4-R2-20261001T0334Z", signal_child=False)
-    record = pool._read_json(queue.item_path(pool.CLAIMED, OWNER_KEY))
+    record = pool.record_store.require(queue.records.item(pool.record_store.CLAIMED, OWNER_KEY))
     path = queue.finish(OWNER_KEY, status="withdrawn",
                         detail={"returncode": -15,
                                 "termination_reason": "withdrawn"},
@@ -149,8 +149,8 @@ def drained_box(tmp_path, monkeypatch):
     foreign["claimed_by"] = "foreign-box:1:feedface"
     foreign["claimed_host"] = "foreign-box"
     foreign["resource_scope"] = _scope_control(FOREIGN_KEY, "e" * 32)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, FOREIGN_KEY), foreign)
-    pool._write_json_atomic(queue.lease_path(FOREIGN_KEY), {
+    pool._write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY), foreign)
+    pool._write_json_atomic(queue.records.lease_path(FOREIGN_KEY), {
         "schema": pool.POOL_LEASE_SCHEMA_V1,
         "action_key": FOREIGN_KEY,
         "owner": "foreign-box:1:feedface",
@@ -227,18 +227,18 @@ def test_a_drained_box_concludes_its_own_saved_finish(
 
     assert _drain_one_poll(tmp_path, monkeypatch) == 0
 
-    assert not queue.item_path(pool.CLAIMED, OWNER_KEY).exists(), (
+    assert not queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY).exists(), (
         "the drained box never retried its own saved finish: the withdrawn "
         "claim is still held in claimed/ with its saved outcome")
-    assert not queue.lease_path(OWNER_KEY).exists()
+    assert not queue.records.lease_path(OWNER_KEY).exists()
     assert queue.ledger().held() == {}
-    assert queue.item_path(pool.WITHDRAWN, OWNER_KEY).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, OWNER_KEY).exists()
 
-    offer = json.loads((queue.root / pool.WORKERS / f"{HOST}.json").read_text())
+    offer = json.loads((queue.root / pool.record_store.WORKERS / f"{HOST}.json").read_text())
     assert offer["state"] == "draining"
     assert all(value == 0 for value in offer["observed_capacity"].values())
 
-    decoy = json.loads(queue.item_path(pool.READY, DECOY_KEY).read_text())
+    decoy = json.loads(queue.records.item_path(pool.record_store.READY, DECOY_KEY).read_text())
     assert decoy["attempts"] == 0
 
     owner_stops = broker["calls"].count((OWNER_KEY, "stop"))
@@ -260,13 +260,13 @@ def test_a_drained_box_leaves_a_foreign_hosts_saved_finish_alone(
 
     queue, broker = drained_box
     _forbid_execute(monkeypatch)
-    record_before = queue.item_path(pool.CLAIMED, FOREIGN_KEY).read_bytes()
-    lease_before = queue.lease_path(FOREIGN_KEY).read_bytes()
+    record_before = queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY).read_bytes()
+    lease_before = queue.records.lease_path(FOREIGN_KEY).read_bytes()
 
     assert _drain_one_poll(tmp_path, monkeypatch) == 0
 
-    assert queue.item_path(pool.CLAIMED, FOREIGN_KEY).read_bytes() == record_before
-    assert queue.lease_path(FOREIGN_KEY).read_bytes() == lease_before
+    assert queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY).read_bytes() == record_before
+    assert queue.records.lease_path(FOREIGN_KEY).read_bytes() == lease_before
     assert not [op for key, op in broker["calls"] if key == FOREIGN_KEY]
 
 
@@ -288,7 +288,7 @@ def test_a_failed_saved_finish_retry_does_not_stop_the_drain(
     monkeypatch.setattr(pool.PoolQueue, "retry_own_pending_finishes", explode)
     assert _drain_one_poll(tmp_path, monkeypatch) == 0
 
-    assert queue.item_path(pool.CLAIMED, OWNER_KEY).exists()
-    offer = json.loads((queue.root / pool.WORKERS / f"{HOST}.json").read_text())
+    assert queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY).exists()
+    offer = json.loads((queue.root / pool.record_store.WORKERS / f"{HOST}.json").read_text())
     assert offer["state"] == "draining"
     assert all(value == 0 for value in offer["observed_capacity"].values())

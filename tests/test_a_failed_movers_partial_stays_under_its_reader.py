@@ -87,7 +87,7 @@ class _Row:
         self.tmp_path = tmp_path
         self.consumer = consumer
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         assert stage_release.register_stage_root(
@@ -190,7 +190,7 @@ class _Row:
             "--manifest-sha256", self.digest,
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(start + PER_PHASE * SIZE),
-            "--residency-root", str(self.queue.residency_fragment_root()),
+            "--residency-root", str(self.queue.records.residency_fragment_root()),
             "--readers", "1", "--max-readers", "1", "--unpaced"])
         receipt = self.queue.move_record(mover)
         assert isinstance(receipt, dict)
@@ -201,14 +201,14 @@ class _Row:
     def claim_reader(self, phase: str) -> None:
         """The consumer, claimed and reading ``phase``, as its lease says."""
 
-        source = self.queue.item_path(pool.READY, self.consumer)
+        source = self.queue.records.item_path(pool.record_store.READY, self.consumer)
         item = json.loads(source.read_text())
         source.unlink()
         now = time.time()
         item.update({"action_key": self.consumer, "claimed_unix": now - 60.0,
                      "claimed_by": "reader-fixture",
                      "claimed_host": "sparklina"})
-        self.queue.item_path(pool.CLAIMED, self.consumer).write_text(
+        self.queue.records.item_path(pool.record_store.CLAIMED, self.consumer).write_text(
             json.dumps(item))
         self.queue.write_lease(
             self.consumer, owner="reader-fixture", claim_snapshot=item,
@@ -220,7 +220,7 @@ class _Row:
     def read(self, indices: list[int], token: str) -> dict[str, object]:
         """The consumer's next lease, the way PQ's staged lease takes one."""
 
-        residence = self.queue.residency_fragment_root()
+        residence = self.queue.records.residency_fragment_root()
         reader_lease.clear_cover_docs_cache()
         keys = [self.keys[index] for index in indices]
         found = reader_lease.covers_for_keys(
@@ -248,13 +248,13 @@ class _Row:
         events = tier_loop.reclaim_failed_mover_partials(
             self.queue, consumers, pressure={TIER: 1})
         for ordinal, egress in enumerate(EGRESSES):
-            if self.queue.item_path(pool.READY, egress).exists():
+            if self.queue.records.item_path(pool.record_store.READY, egress).exists():
                 # What the egress node does when it runs.
                 stage_release.evict(
                     self.queue, MOVERS[ordinal],
                     consumer_action_key=self.consumer,
                     stage_root=str(self.stage),
-                    residency_root=self.queue.residency_fragment_root())
+                    residency_root=self.queue.records.residency_fragment_root())
         return events
 
     def published(self, events: list[dict[str, object]]) -> list[str]:
@@ -372,10 +372,10 @@ def test_any_reading_sharer_protects_a_shared_mover() -> None:
     passed = _hexkey("sharer-passed")
     waiting = _hexkey("sharer-waiting")
     consumers = [
-        (waiting, {"state": pool.READY, "accepted_phase": None}, plan, TIER),
-        (passed, {"state": pool.CLAIMED, "accepted_phase": "phase-1"},
+        (waiting, {"state": pool.record_store.READY, "accepted_phase": None}, plan, TIER),
+        (passed, {"state": pool.record_store.CLAIMED, "accepted_phase": "phase-1"},
          plan, TIER),
-        (reading, {"state": pool.CLAIMED, "accepted_phase": "phase-0"},
+        (reading, {"state": pool.record_store.CLAIMED, "accepted_phase": "phase-0"},
          plan, TIER),
     ]
     reach = tier_loop._legs_a_reader_can_reach(consumers)
@@ -389,6 +389,6 @@ def test_a_reader_that_has_not_said_where_it_is_protects_its_whole_plan(
         {"name": "phase-0", "mover_row": {"action_key": MOVERS[0]}},
         {"name": "phase-1", "mover_row": {"action_key": MOVERS[1]}}]}
     reach = tier_loop._legs_a_reader_can_reach([
-        (CONSUMER, {"state": pool.CLAIMED, "accepted_phase": accepted},
+        (CONSUMER, {"state": pool.record_store.CLAIMED, "accepted_phase": accepted},
          plan, TIER)])
     assert reach == {MOVERS[0]: [CONSUMER], MOVERS[1]: [CONSUMER]}

@@ -88,7 +88,7 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value,
 
 
 def _offer_path(queue: pool.PoolQueue) -> Path:
-    return queue.root / pool.WORKERS / f"{HOST}.json"
+    return queue.root / pool.record_store.WORKERS / f"{HOST}.json"
 
 
 def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeypatch):
@@ -102,11 +102,11 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     assert _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(Event()) == 0
 
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
-    assert list(queue.dir(pool.CLAIMED).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json")) == []
     offer = json.loads(_offer_path(queue).read_text())
     assert offer["state"] == "draining"
     assert offer["drain_owner"] == "x"
@@ -178,7 +178,7 @@ def test_missing_or_malformed_gates_still_announce_draining(tmp_path, monkeypatc
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     loop = _load_loop(tmp_path, monkeypatch, contents)
     assert loop._run_loop(Event()) == 0
 
@@ -200,12 +200,12 @@ def test_a_stale_draining_offer_reads_as_a_stopped_loop(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="parkedbox", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4}, observed_capacity={"cpu": 0},
                    state="draining", drain_owner="x", drain_reason="y",
                    drain_changed_unix=10.0)
-    path = queue.root / pool.WORKERS / "parkedbox.json"
+    path = queue.root / pool.record_store.WORKERS / "parkedbox.json"
     record = json.loads(path.read_text())
     record["announced_unix"] = time.time() - pool.OFFER_TIMEOUT_S - 1
     path.write_text(json.dumps(record))
@@ -230,7 +230,7 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False, "changed_unix": 1.0}))
     loop = _load_loop(tmp_path, monkeypatch, None,
@@ -274,10 +274,10 @@ def test_live_and_foreign_malformed_offers_stay_readable(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="openbox", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4}, observed_capacity={"cpu": 4})
-    (queue.root / pool.WORKERS / "foreign.json").write_text(json.dumps({
+    (queue.root / pool.record_store.WORKERS / "foreign.json").write_text(json.dumps({
         "schema": pool.POOL_OFFER_SCHEMA_V1, "host": "foreign",
         "tags": ["x86"], "has_gpu": False, "capacity": {"cpu": 4},
         "observed_capacity": {"cpu": 0}, "announced_unix": time.time(),
