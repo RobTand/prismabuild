@@ -33,6 +33,7 @@ import time
 import uuid
 
 from . import core as pb
+from . import immutable_files
 
 # The snapshot bundle travels through the shared CAS, but execution trees stay
 # on each worker's local disk. Same spelling on every box, different storage.
@@ -127,32 +128,15 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
     if tmp not in ("pid_uuid", "pid"):
         raise MaterializationContractError(
             f"atomic record tmp must be pid_uuid or pid, not {tmp!r}")
-    if make_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    if tmp == "pid_uuid":
-        tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    else:
-        tmp_name = f".{path.name}.{os.getpid()}.tmp"
-    tmp_path = path.parent / tmp_name
+    replacement = immutable_files.prepare_atomic_replacement(
+        path, make_parent=make_parent, temporary_style=tmp, fsync=fsync)
     if text == "sorted_lf":
         data = pb._sorted_lf_bytes(dict(payload))
     elif text == "canonical_lf" or trailing_newline:
         data = pb._canonical_file_bytes(dict(payload))
     else:
         data = pb._canonical_bytes(dict(payload))
-    flags = os.O_WRONLY | os.O_CREAT
-    flags |= os.O_EXCL if tmp == "pid_uuid" else os.O_TRUNC
-    descriptor = os.open(tmp_path, flags, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            if fsync:
-                os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    replacement.write(data)
 
 
 def write_bytes_atomic(path: Path, data: bytes, *,
@@ -164,19 +148,9 @@ def write_bytes_atomic(path: Path, data: bytes, *,
     as JSON records.  One spelling so the two can never drift.
     """
 
-    if make_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    os.replace(temporary, path)
+    replacement = immutable_files.prepare_atomic_replacement(
+        path, make_parent=make_parent, cleanup_rename=False)
+    replacement.write(data)
 
 def _run_materializer_git(
     argv: Sequence[str],

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 import errno
 import fnmatch
 import os
@@ -10,6 +11,8 @@ import stat
 import sys
 import tempfile
 import time
+from typing import Literal
+import uuid
 
 if __package__:
     from .digest_primitives import ActionContractError, PrismaBuildError, new_sha256
@@ -742,3 +745,87 @@ def match_required(directory: Path, pattern: str):
 
     return sorted(path for path in scan_required(directory)
                   if fnmatch.fnmatchcase(path.name, pattern))
+
+
+@dataclass(frozen=True)
+class AtomicReplacement:
+    path: Path
+    temporary: Path
+    temporary_style: Literal["pid_uuid", "pid"]
+    fsync: bool
+    cleanup_rename: bool
+
+    def write(self, data: bytes) -> None:
+        flags = os.O_WRONLY | os.O_CREAT
+        flags |= os.O_EXCL if self.temporary_style == "pid_uuid" else os.O_TRUNC
+        descriptor = os.open(self.temporary, flags, 0o644)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                if self.fsync:
+                    os.fsync(handle.fileno())
+            if self.cleanup_rename:
+                os.replace(self.temporary, self.path)
+        except BaseException:
+            self.temporary.unlink(missing_ok=True)
+            raise
+        if not self.cleanup_rename:
+            os.replace(self.temporary, self.path)
+
+
+def prepare_atomic_replacement(
+    path: Path, *, make_parent: bool = True,
+    temporary_style: Literal["pid_uuid", "pid"] = "pid_uuid",
+    fsync: bool = True, cleanup_rename: bool = True,
+) -> AtomicReplacement:
+    """Prepare the native name before a caller encodes its payload.
+
+    No temporary file is opened until write, preserving the JSON profiles'
+    mkdir, temp-name, encode, open ordering. Bytes and JSON keep their
+    distinct cleanup behavior when the final rename fails.
+    """
+    if make_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    if temporary_style == "pid_uuid":
+        name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    else:
+        name = f".{path.name}.{os.getpid()}.tmp"
+    return AtomicReplacement(
+        path, path.parent / name, temporary_style, fsync, cleanup_rename)
+
+
+def publish_exact(
+    path: Path, raw: bytes, *, where: str,
+    conflict_error: type[Exception] = ActionContractError,
+) -> None:
+    """Publish immutable evidence, refusing a divergent canonical winner."""
+    won = publish_immutable(path, raw)
+    if won:
+        return
+    observed = read_immutable_file(path, where=where)
+    if observed != raw:
+        raise conflict_error(
+            f"{where} conflicts with the immutable record already filed: {path}")
+
+
+def publish_mutable(
+    path: Path, raw: bytes, *, mode: int = 0o644,
+) -> bool:
+    """Link writable bytes only if absent, retaining the lane/script profile."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
