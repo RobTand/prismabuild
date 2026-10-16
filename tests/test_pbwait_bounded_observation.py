@@ -29,7 +29,7 @@ KEY = "a" * 64
 
 def _queue(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -60,7 +60,7 @@ def test_fifo_submission_observation_is_bounded_with_a_causal_marker(
     """
 
     queue = _queue(tmp_path)
-    fifo = queue.item_path(pool.READY, KEY)
+    fifo = queue.records.item_path(pool.record_store.READY, KEY)
     marker = tmp_path / "entered-outstanding-submission-read"
     os.mkfifo(fifo)
     code = f'''\
@@ -70,7 +70,7 @@ sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT / "tools" / "fleet")!r}]
 from prismabuild import core as pb, pool
 import pbwait
 queue = pool.PoolQueue(Path({str(queue.root)!r}))
-fifo = queue.item_path(pool.READY, {KEY!r})
+fifo = queue.records.item_path(pool.record_store.READY, {KEY!r})
 marker = Path({str(marker)!r})
 original = Path.read_text
 def blocked(path, *args, **kwargs):
@@ -108,7 +108,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
     real_read = pbrun._bounded_pool_read
 
     def short_verification(section, read, *, budget_s, **kwargs):
@@ -136,7 +136,7 @@ def test_terminal_record_outranks_and_skips_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
         "a landed ending must return before the sealed request is read"))
@@ -153,7 +153,7 @@ def test_unreadable_terminal_record_outranks_a_blocked_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    path = queue.item_path(pool.FAILED, KEY)
+    path = queue.records.item_path(pool.record_store.FAILED, KEY)
     path.write_text("{", encoding="utf-8")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: time.sleep(30))
@@ -167,7 +167,7 @@ def test_preemption_successor_is_observed_after_the_original_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    path = queue.item_path(pool.DONE, KEY)
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     observations = [
@@ -188,7 +188,7 @@ def test_bare_key_follows_an_immediate_preemption_successor_after_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    path = queue.item_path(pool.DONE, KEY)
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     observations = [
@@ -245,7 +245,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     blocked = "a" * 64
     healthy = "b" * 64
     good = {**_outcome(), "action_key": healthy}
-    queue.item_path(pool.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
     healthy_returned = threading.Event()
     released_by_healthy_row = []
 
@@ -311,7 +311,7 @@ def test_retained_observation_reader_stops_before_render_or_another_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     retained = []
 

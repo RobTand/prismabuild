@@ -49,10 +49,10 @@ def test_a_wait_inside_the_finish_window_reports_the_archived_ending(
         # This is the finish window: the claim is entombed, the ending is not
         # filed yet.  Observe it once, exactly as a waiter polling now would.
         if action_key == key and not inside:
-            claimed = sorted(p.name for p in self.dir(pool.CLAIMED).iterdir())
+            claimed = sorted(p.name for p in self.records.dir(pool.record_store.CLAIMED).iterdir())
             inside.append({
                 "claimed": claimed,
-                "done_exists": self.item_path(pool.DONE, key).exists(),
+                "done_exists": self.records.item_path(pool.record_store.DONE, key).exists(),
                 "receipt": cas.lookup(pbwait.recorded_action(cas, key)) is not None,
                 "found": pbrun.outstanding_submission(self, key),
                 "rows": pbwait.wait_for_keys(self, [key], cas=cas, wait_s=0.0),
@@ -71,7 +71,7 @@ def test_a_wait_inside_the_finish_window_reports_the_archived_ending(
     # The preconditions of the race, so the test cannot pass vacuously.
     assert window["receipt"] is True
     assert window["done_exists"] is False
-    assert any(name.startswith(f"{key}.") and name.endswith(pool.TOMBSTONE_SUFFIX)
+    assert any(name.startswith(f"{key}.") and name.endswith(pool.record_store.TOMBSTONE_SUFFIX)
                for name in window["claimed"]), window["claimed"]
     # The fix: the entombed claim is still outstanding pool work, so the wait
     # names its generation and answers with that generation's real ending,
@@ -93,19 +93,19 @@ def test_a_late_finish_record_is_outstanding_pool_work(tmp_path: Path) -> None:
     """``.late-finish`` is the other name the claim gate reads as claimed."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     record = {"action_key": key, "published_unix": 123.5}
-    for suffix in (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX):
-        path = queue.dir(pool.CLAIMED) / f"{key}.1.sparky.7.abcdef01{suffix}"
+    for suffix in (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX):
+        path = queue.records.dir(pool.record_store.CLAIMED) / f"{key}.1.sparky.7.abcdef01{suffix}"
         path.write_text(pbrun.json.dumps(record), encoding="utf-8")
         found = pbrun.outstanding_submission(queue, key)
         assert found is not None and found[:2] == ("pool", 123.5), found
         path.unlink()
     # Another key's tombstone and a malformed one are not this key's work.
-    (queue.dir(pool.CLAIMED) / f"{'b' * 64}.1.h.1.x{pool.TOMBSTONE_SUFFIX}").write_text(
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{'b' * 64}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
         pbrun.json.dumps({"action_key": "b" * 64, "published_unix": 9.0}),
         encoding="utf-8")
-    (queue.dir(pool.CLAIMED) / f"{key}.2.h.1.y{pool.TOMBSTONE_SUFFIX}").write_text(
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{key}.2.h.1.y{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
         "not json", encoding="utf-8")
     assert pbrun.outstanding_submission(queue, key) is None

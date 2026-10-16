@@ -44,8 +44,8 @@ def _outcome() -> dict:
 
 def _stuck_queue(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    record = queue.item_path(pool.DONE, KEY)
+    queue.records.ensure_layout()
+    record = queue.records.item_path(pool.record_store.DONE, KEY)
     os.mkfifo(record)
 
     def land():
