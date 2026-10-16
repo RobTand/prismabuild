@@ -1909,6 +1909,10 @@ launch UUID, entrypoint and generation; it does not count human shard lines or
 classify runtime refusal from prose. A refused interpreter can leave a typed
 terminal companion without a final report. A missing/malformed report otherwise
 leaves the independently requested file population unobserved.
+`pbmergeq` requires its selected `pbtest` generation to provide both verdict and
+progress contracts, so upgrade these co-published tools together. Older running
+`pbmergeq` instances continue using newer `pbtest` generations because the
+outcome records and human output remain compatible.
 
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
