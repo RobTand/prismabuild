@@ -73,8 +73,9 @@ def operate(request, store, load):
         result = gang.sibling_readiness(queue, record, first, "compat-first", 101.0)
         assert result["complete"], "start barrier refused sibling readiness"
     elif family == "gang-teardown":
-        result = gang.teardown(queue, GROUP)
-        assert isinstance(result, dict) and result, "teardown presence was lost"
+        item = json.loads(queue.item_path(pool.READY, first["action_key"]).read_bytes())
+        result = queue._gang_start_barrier(item, owner="compat-first", heartbeat_s=1)
+        assert result and result["termination_reason"] == "gang_torn_down", "start barrier ignored teardown presence"
     else:
         confirmed = gang.note_terminal(queue, GROUP, first["action_key"],
                                        "" if variant == "empty" else "compat", now=102.0, confirm_s=1)

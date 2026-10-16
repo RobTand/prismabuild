@@ -73,7 +73,7 @@ def test_unknown_fields_follow_real_consumer_policy(kind, generations, tmp_path)
     raw = (json.dumps(body, sort_keys=True) + "\n").encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
-            observed = invoke(root, case, tmp_path / suffix, raw=raw, manifest=attestation,
+            observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-unknown-" + suffix + ".json"))
             if kind.field_policy == "closed":
                 assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
@@ -92,7 +92,7 @@ def test_invalid_record_reaches_and_fails_both_real_consumers(kind, generations,
     raw = json.dumps(body).encode()
     for generation, old, manifest in generations:
         for root, attestation, suffix in ((ROOT, None, "new"), (old, manifest, "old")):
-            observed = invoke(root, case, tmp_path / suffix, raw=raw, manifest=attestation,
+            observed = invoke(root, case, tmp_path / generation / suffix, raw=raw, manifest=attestation,
                               evidence=evidence(generation + "/" + kind.name + "-foreign-" + suffix + ".json"))
             assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
             reader = kind.reader.split(":")[1].rsplit(".", 1)[-1]
@@ -112,7 +112,7 @@ def test_nested_closed_fields_are_rejected_by_retained_consumers(case, member, g
         value = body["horizon"]
     value["compat_unknown_field"] = True
     for generation, old, manifest in generations:
-        observed = invoke(old, case, tmp_path / "old", raw=json.dumps(body).encode(), manifest=manifest)
+        observed = invoke(old, case, tmp_path / generation / "old", raw=json.dumps(body).encode(), manifest=manifest)
         assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
 
 
@@ -129,12 +129,12 @@ def test_actual_candidate_writer_mutation_fails_the_unchanged_old_consumer(gener
                 evidence=evidence("mutant-writer.json"))
     assert raw != decoded(GOLDENS["landing/horizon"])
     for generation, old, manifest in generations:
-        observed = invoke(old, "landing/horizon", tmp_path / "old-mutant", raw=raw, manifest=manifest,
+        observed = invoke(old, "landing/horizon", tmp_path / generation / "old-mutant", raw=raw, manifest=manifest,
                           evidence=evidence(generation + "/mutant-old-consumer.json"))
         assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
         assert "compat_unknown_field" in observed["error"]["message"]
         assert any(call[1] == "read_landing" for call in observed["calls"])
-        control = invoke(old, "landing/horizon", tmp_path / "old-control",
+        control = invoke(old, "landing/horizon", tmp_path / generation / "old-control",
                          raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest)
         accepted(control)
         assert observed["driver_sha256"] == control["driver_sha256"]
@@ -150,7 +150,8 @@ def test_closure_tampering_refuses_even_when_the_old_reader_still_accepts(genera
     source.chmod(0o644)
     source.write_bytes(source.read_bytes() + b"\n")
     observed = invoke(altered, "landing/horizon", tmp_path / "store",
-                      raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest)
+                      raw=decoded(GOLDENS["landing/horizon"]), manifest=manifest,
+                      evidence=evidence("closure-hash-mutation.json"))
     assert observed["returncode"] == 2 and "unattested retained import" in observed["attestation_error"]
 
 
@@ -167,6 +168,15 @@ def test_pre_1018_historical_reader_refuses_actual_horizon_writer_but_forward_re
         assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
         assert "horizon" in observed["error"]["message"]
         assert any(call[1] == "read_landing" for call in observed["calls"])
+
+
+def test_empty_legacy_teardown_stops_the_actual_start_barrier(generations, tmp_path):
+    for generation, old, manifest in generations:
+        for root, attestation, label in ((ROOT, None, "new"), (old, manifest, "old")):
+            result = accepted(invoke(root, "gang-teardown/presence", tmp_path / generation / label,
+                                     raw=b"{}\n", manifest=attestation,
+                                     evidence=evidence(generation + "/empty-teardown-" + label + ".json")))
+            assert result["termination_reason"] == "gang_torn_down"
 
 
 def test_pythonpath_poison_cannot_supply_a_retained_dependency(generations, tmp_path, monkeypatch):
