@@ -32,14 +32,14 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 
-from prismabuild import pool, residency_plan  # noqa: E402
+from prismabuild import immutable_files, pool, residency_plan  # noqa: E402
 
 
 def candidates(queue: pool.PoolQueue) -> list[str]:
     """Consumer keys with a filed plan and no ready or claimed consumer row."""
 
     keys = []
-    for path in sorted(pool.immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)):
+    for path in sorted(immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)):
         key = path.stem
         if path.suffix != ".json" or not path.is_file():
             continue

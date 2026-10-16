@@ -237,7 +237,7 @@ def superseded_consumers(queue: pool.PoolQueue) -> set[str] | None:
                  / residency_plan.SUPERSEDED)
     try:
         return {marker.name.split(".", 1)[0]
-                for marker in pool.immutable_files.scan_optional(directory)}
+                for marker in pb.immutable_files.scan_optional(directory)}
     except (OSError, ValueError):
         return None
 

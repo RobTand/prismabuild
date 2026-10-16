@@ -512,7 +512,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
                   ) -> list[tuple[Path, dict[str, object] | None]]:
     """Every entry of one queue state directory with its record, name order.
 
-    ``pool.immutable_files.scan_optional`` then ``pool.record_store.read_document`` per entry, with the same answers
+    ``pb.immutable_files.scan_optional`` then ``pool.record_store.read_document`` per entry, with the same answers
     and the same raises.  Inside a tier-loop cycle
     (:func:`queue_records_from`) the directory is listed only when it changed
     and a record read only when its file did; each caller still gets its own
@@ -522,7 +522,7 @@ def queue_records(queue: pool.PoolQueue, state: str,
     reader = _QUEUE_RECORDS.get()
     if reader is None:
         return [(path, pool.record_store.read_document(path))
-                for path in pool.immutable_files.scan_optional(queue.records.dir(state))]
+                for path in pb.immutable_files.scan_optional(queue.records.dir(state))]
     return reader.read(queue.records.dir(state), select=lambda _entry: True,
                        parse=_queue_record_bytes,
                        thaw=_queue_record_from_bytes)  # type: ignore[return-value]
@@ -1096,7 +1096,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pool.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
+                      for path in pb.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
     except OSError as exc:
         return paths, [f"claimed: {exc}"], own_paths
     records: list[tuple[str, dict[str, object]]] = []
@@ -1950,7 +1950,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     try:
         keys = sorted(path.name[:-len(".json")] if path.name.endswith(".json")
                       else path.name
-                      for path in pool.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
+                      for path in pb.immutable_files.scan_optional(queue.records.dir(pool.record_store.CLAIMED)))
     except OSError as exc:
         return paths, [f"claimed: {exc}"]
     records: list[tuple[str, dict[str, object]]] = []

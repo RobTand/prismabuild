@@ -81,7 +81,7 @@ import role_log_identity  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
-from prismabuild import filesystem_capacity, fleet_roster, local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
@@ -630,7 +630,7 @@ def _held_spool(ledger) -> int:
     """
 
     try:
-        holders = pool.immutable_files.scan_required(ledger.held_dir)
+        holders = immutable_files.scan_required(ledger.held_dir)
     except FileNotFoundError:
         return 0
     return sum(1 for holder in holders

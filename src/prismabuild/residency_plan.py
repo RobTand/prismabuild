@@ -87,6 +87,7 @@ import re
 import time
 
 from . import core as pb
+from . import immutable_files
 from . import manifest_layout
 from . import pool as _pool
 from . import residency_map
@@ -935,7 +936,7 @@ def _read_marker(path: Path) -> tuple[str, dict[str, object] | None, str | None]
     """
 
     try:
-        paths = _pool.immutable_files.match_optional(path.parent, path.name)
+        paths = immutable_files.match_optional(path.parent, path.name)
     except OSError as exc:                                    # pragma: no cover
         return "unreadable", None, f"{type(exc).__name__}: {exc}"
     if not paths:
@@ -1214,7 +1215,7 @@ def live_state(queue, action_key: str) -> tuple[str | None, str]:
         return state, ""
     try:
         for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
-            names = {path.stem for path in _pool.immutable_files.scan_optional(queue.records.dir(state))}
+            names = {path.stem for path in immutable_files.scan_optional(queue.records.dir(state))}
             if action_key in names:
                 return state, ""
     except OSError as exc:
@@ -1644,7 +1645,7 @@ def plan_interest(queue, mover_action_key: str, *,
     root = str(queue.root)
     try:
         filed = sorted(
-            path.stem for path in _pool.immutable_files.scan_optional(queue.root / _pool.record_store.RESIDENCY_PLANS)
+            path.stem for path in immutable_files.scan_optional(queue.root / _pool.record_store.RESIDENCY_PLANS)
             if path.suffix == ".json" and len(path.stem) == 64
             and set(path.stem) <= _HEX)
     except OSError:
