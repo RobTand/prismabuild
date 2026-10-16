@@ -721,7 +721,7 @@ def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
         try:
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ValueError("not a regular queue record")
-            record = pool._read_json(path)
+            record = pool.record_store.read_queue_record(path)
             if record is None:
                 # A rename may have raced this census. Unknown, rather than
                 # a confident empty answer; a later screen can settle it.
@@ -865,7 +865,7 @@ def _pool_sidecar(path: Path) -> dict | None | Exception:
     if reader is not None:
         return reader.sidecar(path)
     try:
-        return pool._read_json(path)
+        return pool.record_store.read_queue_record(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -1028,9 +1028,9 @@ def read_pool(queue_root: str | Path) -> dict:
     sampling time, so a later stalled read cannot extend any earlier lifetime.
     """
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    workers, worker_notes = _pool_records(queue.root / pool.WORKERS)
-    ready, ready_notes = _pool_records(queue.dir(pool.READY))
-    claimed, claim_notes = _pool_records(queue.dir(pool.CLAIMED))
+    workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS)
+    ready, ready_notes = _pool_records(queue.records.dir(pool.record_store.READY))
+    claimed, claim_notes = _pool_records(queue.records.dir(pool.record_store.CLAIMED))
     admission = {}
     for host, offer in workers.items():
         if _valid_pool_offer(host, offer):
@@ -1042,12 +1042,12 @@ def read_pool(queue_root: str | Path) -> dict:
                 'gpu': _pool_sidecar(base / 'gpu-state.json') if offer.get('has_gpu') else None,
             }
     sidecars = {}
-    for state, records in ((pool.READY, ready), (pool.CLAIMED, claimed)):
+    for state, records in ((pool.record_store.READY, ready), (pool.record_store.CLAIMED, claimed)):
         for key, record in records.items():
             if _valid_pool_item(key, record):
-                path = queue.passes_path(key) if state == pool.READY else queue.lease_path(key)
+                path = queue.records.passes_path(key) if state == pool.record_store.READY else queue.records.lease_path(key)
                 sidecars[state, key] = _pool_sidecar(path)
-    prewarms = {key: _pool_sidecar(queue.prewarm_path(key))
+    prewarms = {key: _pool_sidecar(queue.records.prewarm_path(key))
                 for key, record in ready.items() if _valid_pool_item(key, record)}
     denial_records, denial_notes = _pool_claim_denials(queue)
     now = time.time()
@@ -1134,9 +1134,9 @@ def read_pool(queue_root: str | Path) -> dict:
             },
         })
     jobs: list[dict] = []
-    valid_counts = {pool.READY: len(ready) if not ready_notes else None,
-                    pool.CLAIMED: len(claimed) if not claim_notes else None}
-    for state, records in ((pool.READY, ready), (pool.CLAIMED, claimed)):
+    valid_counts = {pool.record_store.READY: len(ready) if not ready_notes else None,
+                    pool.record_store.CLAIMED: len(claimed) if not claim_notes else None}
+    for state, records in ((pool.record_store.READY, ready), (pool.record_store.CLAIMED, claimed)):
         for key, record in records.items():
             row = {"action_key": key, "action_key_prefix": key[:12], "transport": "pool",
                    "state": state.upper(), "node": None, "reason": None}
@@ -1152,10 +1152,10 @@ def read_pool(queue_root: str | Path) -> dict:
                            submitted_host=record.get('published_by'),
                            tested_repository=pool.tested_repository_of(record),
                            unstarted_releases=_releases(record),
-                           age_s=_age(record.get('claimed_unix') if state == pool.CLAIMED
+                           age_s=_age(record.get('claimed_unix') if state == pool.record_store.CLAIMED
                                       else record.get('published_unix'), now))
                 row['admission_denials'] = _claim_denials_for(record, denial_records, now=now)
-                if state == pool.READY:
+                if state == pool.record_store.READY:
                     denial = sidecar or {}
                     count, first = denial.get('passes', 0), denial.get('first_unix')
                     hosts = sorted({str(offer['host']) for offer in queue._matching_offers(record, live=live)})
@@ -1250,9 +1250,9 @@ def read_pool(queue_root: str | Path) -> dict:
                 notes.append(f"pool {state}/{key}: {exc}")
                 unreadable.append(f"pool {state}/{key}: {exc}")
             jobs.append(row)
-    empty = (valid_counts[pool.READY] == 0 and valid_counts[pool.CLAIMED] == 0)
+    empty = (valid_counts[pool.record_store.READY] == 0 and valid_counts[pool.record_store.CLAIMED] == 0)
     return {"nodes": nodes, "jobs": jobs, "notes": notes,
-            "queue": {"ready": valid_counts[pool.READY], "claimed": valid_counts[pool.CLAIMED],
+            "queue": {"ready": valid_counts[pool.record_store.READY], "claimed": valid_counts[pool.record_store.CLAIMED],
                       "empty": empty if all(v is not None for v in valid_counts.values()) else None,
                       "complete": not unreadable, "unreadable": unreadable,
                       "live_workers": len(live),
@@ -1300,7 +1300,7 @@ def _starvation_sidecar(path: Path) -> dict | None | Exception:
     if reader is not None:
         return reader.sidecar(path)
     try:
-        return pool._read_json(path)
+        return pool.record_store.read_queue_record(path)
     except (OSError, ValueError) as exc:
         return exc
 
@@ -1450,7 +1450,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
              "ready" if key in ready else "absent")
     accepted: str | None = None
     if state == "claimed":
-        lease = _starvation_sidecar(queue.lease_path(key))
+        lease = _starvation_sidecar(queue.records.lease_path(key))
         if isinstance(lease, Exception):
             notes.append(f"starvation plan {prefix} lease: {lease}")
             unreadable.append(f"starvation plan {prefix} lease: {lease}")
@@ -1460,7 +1460,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     # skipped by the reader, exactly as the consumer's own compose sees it.
     try:
         fragments = residency_map.read_fragments(
-            queue.residency_fragment_root(), key)
+            queue.records.residency_fragment_root(), key)
     except (OSError, ValueError) as exc:
         notes.append(f"starvation plan {prefix} fragments: {exc}")
         unreadable.append(f"starvation plan {prefix} fragments: {exc}")
@@ -1856,9 +1856,9 @@ def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict
     notes.extend(denial_notes)
     movers: set[str] = set()
     live: set[str] = set()
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            with os.scandir(queue.dir(state)) as entries:
+            with os.scandir(queue.records.dir(state)) as entries:
                 paths = sorted(Path(entry.path) for entry in entries
                                if entry.name.endswith(".json"))
         except OSError as exc:
@@ -1966,7 +1966,7 @@ def _starvation_dependents(queue: pool.PoolQueue, *, notes: list[str],
               if isinstance(record.get("dependent_of"), str)}
     out: list[dict] = []
     for key, (state, record) in sorted(live.items()):
-        if state != pool.CLAIMED:
+        if state != pool.record_store.CLAIMED:
             continue
         residency = record.get("residency")
         planned = isinstance(residency, Mapping) and bool(residency.get("leads"))
@@ -2002,7 +2002,7 @@ def _starvation_host_events(queue: pool.PoolQueue, *, notes: list[str],
 
     out: list[dict] = []
     try:
-        names = sorted(os.listdir(queue.host_events_dir()))
+        names = sorted(os.listdir(queue.records.host_events_dir()))
     except FileNotFoundError:
         return out
     except OSError as exc:
@@ -2091,8 +2091,8 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     report_paths.extend(("host", host, queue.root / pool.RESERVATIONS / host /
                          pool.CENSUS_UNREADABLE) for host in hosts)
     try:
-        report_paths.extend(("tier", tier_id, queue.root / pool.TIER_RESERVATIONS /
-                             queue._check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
+        report_paths.extend(("tier", tier_id, queue.root / pool.record_store.TIER_RESERVATIONS /
+                             queue.records.check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
                             for tier_id in queue.tier_ids())
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier census reports: {exc}")
@@ -2100,7 +2100,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     reports: list[dict] = []
     for kind, name, report_path in report_paths:
         try:
-            report = pool._read_json(report_path)
+            report = pool.record_store.read_queue_record(report_path)
         except (OSError, pool.PoolContractError) as exc:
             notes.append(f"starvation {kind} ledger {name} census report: {exc}")
             unreadable.append(f"starvation {kind} ledger {name} census report: {exc}")
@@ -2229,7 +2229,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         if job.get("state") != "CLAIMED":
             continue
         key = str(job.get("action_key"))
-        claim = _starvation_sidecar(queue.item_path(pool.CLAIMED, key))
+        claim = _starvation_sidecar(queue.records.item_path(pool.record_store.CLAIMED, key))
         if isinstance(claim, Exception) or not isinstance(claim, dict):
             notes.append(f"starvation claim {key[:12]}: {claim}")
             unreadable.append(f"starvation claim {key[:12]}: {claim}")
@@ -2237,7 +2237,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         residency = claim.get("residency")
         if not isinstance(residency, Mapping) or not residency.get("leads"):
             continue  # Not a consumer: nothing to wait on.
-        lease = _starvation_sidecar(queue.lease_path(key))
+        lease = _starvation_sidecar(queue.records.lease_path(key))
         if isinstance(lease, Exception):
             notes.append(f"starvation lease {key[:12]}: {lease}")
             unreadable.append(f"starvation lease {key[:12]}: {lease}")
@@ -2265,7 +2265,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         })
     plans: list[dict] = []
     try:
-        with os.scandir(queue.root / pool.RESIDENCY_PLANS) as entries:
+        with os.scandir(queue.root / pool.record_store.RESIDENCY_PLANS) as entries:
             plan_paths = sorted(Path(entry.path) for entry in entries
                                 if entry.name.endswith(".json"))
     except FileNotFoundError:
@@ -2402,7 +2402,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
 
     entries: list[tuple[float, os.DirEntry]] = []
     withdrawal_mtimes: dict[str, float] = {}
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         directory = Path(queue_root) / state
         try:
             with os.scandir(directory) as scan:
@@ -2410,7 +2410,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
                     if not entry.name.endswith(".json") or not entry.is_file():
                         continue
                     entries.append((entry.stat().st_mtime, entry))
-                    if state == pool.WITHDRAWN:
+                    if state == pool.record_store.WITHDRAWN:
                         withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
         except FileNotFoundError:
             try:
@@ -2422,7 +2422,7 @@ def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
             raise  # The directory exists, but a selected entry was not readable.
     # A cancellation is durable before its visible summary is written. Keep
     # that ending visible if the operator crashed between the two writes.
-    decisions = Path(queue_root) / pool.WITHDRAWN / "decisions"
+    decisions = Path(queue_root) / pool.record_store.WITHDRAWN / "decisions"
     try:
         with os.scandir(decisions) as scan:
             directories = [entry for entry in scan if entry.is_dir()]
@@ -2506,7 +2506,7 @@ def _read_ending(entry: os.DirEntry, queue_root: str | Path) -> dict:
         raise _EndingRecordTooLarge
     path = Path(entry.path)
     if path.parent.parent.name == "decisions":
-        return pool.PoolQueue(Path(queue_root))._read_withdrawal_decision(path)
+        return pool.PoolQueue(Path(queue_root)).records.withdrawal_decision(path)
     with path.open("rb") as handle:
         raw = handle.read(MAX_ENDING_RECORD_BYTES + 1)
     if len(raw) > MAX_ENDING_RECORD_BYTES:
@@ -2901,7 +2901,7 @@ def queue_root_note(queue_root: str | Path, *, raise_errors: bool = False) -> st
         if not stat.S_ISDIR(root_stat.st_mode):
             return f"no queue root at {root}: the path is not a directory"
         filed_in = []
-        for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
             try:
                 terminal_stat = (root / state).stat()
             except FileNotFoundError:

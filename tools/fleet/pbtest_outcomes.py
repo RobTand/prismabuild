@@ -511,7 +511,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             return None
 
         def location(self, report) -> str | None:
-            return skip_location(report, self.config.invocation_params.dir)
+            return skip_location(report, self.config.invocation_params.records.dir)
 
         def pytest_collection_finish(self, session) -> None:
             self.collected = [item.nodeid for item in session.items]
@@ -569,7 +569,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 if config is not None:
                     try:
                         rootdir = os.path.relpath(
-                            config.rootpath, config.invocation_params.dir)
+                            config.rootpath, config.invocation_params.records.dir)
                     except Exception:
                         rootdir = ""
                 name = source_file(report.nodeid, rootdir)
@@ -602,7 +602,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             record = {
                 "schema": SCHEMA,
                 "rootdir_relative": (os.path.relpath(config.rootpath,
-                    config.invocation_params.dir) if config is not None else "."),
+                    config.invocation_params.records.dir) if config is not None else "."),
                 "collect_only": bool(config is not None
                                      and config.getoption("collectonly", False)),
                 "collected": self.collected,

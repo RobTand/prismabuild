@@ -2776,9 +2776,9 @@ def detach_line(
             "published_unix": published_unix,
             "job_id": str(job_id) if job_id is not None else None,
             "submission": str(submission) if submission is not None else None,
-            "done": str(queue / pool.DONE / f"{key}.json"),
-            "failed": str(queue / pool.FAILED / f"{key}.json"),
-            "withdrawn": str(queue / pool.WITHDRAWN / f"{key}.json"),
+            "done": str(queue / pool.record_store.DONE / f"{key}.json"),
+            "failed": str(queue / pool.record_store.FAILED / f"{key}.json"),
+            "withdrawn": str(queue / pool.record_store.WITHDRAWN / f"{key}.json"),
         },
         sort_keys=True,
     )
@@ -2796,8 +2796,8 @@ def published_generation(q, key: str, path) -> float | None:
     """
 
     candidates = [Path(path)]
-    for state in (pool.CLAIMED, pool.DONE, pool.FAILED):
-        candidates.append(q.item_path(state, key))
+    for state in (pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED):
+        candidates.append(q.records.item_path(state, key))
     for candidate in candidates:
         try:
             value = json.loads(candidate.read_text(encoding="utf-8"))
@@ -2905,11 +2905,11 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     with q._transition_locked(key):
         records = [record for _, record in q.withdrawal_decisions(key)]
         records.extend(record for _, record in q.archived_preemption_outcomes(key))
-        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
-                      pool.WITHDRAWN):
+        for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
+                      pool.record_store.WITHDRAWN):
             try:
                 record = json.loads(
-                    q.item_path(state, key).read_text(encoding="utf-8"))
+                    q.records.item_path(state, key).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             if isinstance(record, dict):
@@ -2956,8 +2956,8 @@ def outcome_poll(
             return float(value)
         return float("-inf")
 
-    watched = [q.item_path(state, key)
-               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    watched = [q.records.item_path(state, key)
+               for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
     found = []
     broken = []
     publication_errors = []
@@ -3460,11 +3460,11 @@ def _diagnosed_outcome_render_value(q, outcome_path: str, outcome: dict) -> dict
         diagnostic = {
             "kind": "terminal_summary_conflict",
             "action_key": outcome["action_key"],
-            "generation": q.attempt_generation(outcome),
+            "generation": q.records.attempt_generation(outcome),
             "published_unix": outcome["published_unix"],
             "attempt": adopted["attempt"],
             "summary_path": outcome_path,
-            "attempt_path": str(q.attempt_path(outcome, adopted["attempt"])),
+            "attempt_path": str(q.records.attempt_path(outcome, adopted["attempt"])),
             "mismatched_fields": exc.fields,
             "detail_fields": [name[:128] for name in fields[:32]],
             "detail_field_count": len(fields),
@@ -3527,7 +3527,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         # disposition names.
         archived_source = (
             isinstance(outcome.get("attempts"), int)
-            and Path(outcome_path) == q.attempt_path(
+            and Path(outcome_path) == q.records.attempt_path(
                 outcome, outcome["attempts"]))
         if not archived_source and disposition != Path(outcome_path).parent.name:
             raise _TerminalSummaryConflict(
@@ -3562,12 +3562,12 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     withdrawn_attempt = None
     if "withdrawn_attempt" in outcome:
         retained = outcome["withdrawn_attempt"]
-        if (not isinstance(retained, dict) or status != pool.WITHDRAWN
+        if (not isinstance(retained, dict) or status != pool.record_store.WITHDRAWN
                 or any(retained.get(field) != outcome.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
         stopped = q.adopted_attempt_summary(retained)
-        if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
+        if stopped["status"] != pool.record_store.WITHDRAWN or stopped["disposition"] != pool.record_store.WITHDRAWN:
             raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
         for field in ("resource_scope_cleanup", "container_cleanup"):
             if stopped["detail"].get(field) != outcome.get(field):
@@ -3628,10 +3628,10 @@ def outstanding_submission(q, key: str, *, lane_root=None):
         generation = lane.get("published_unix")
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("slurm", float(generation), lane))
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
             item = json.loads(
-                q.item_path(state, key).read_text(encoding="utf-8"))
+                q.records.item_path(state, key).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         generation = item.get("published_unix") if isinstance(item, dict) else None
@@ -3645,9 +3645,9 @@ def outstanding_submission(q, key: str, *, lane_root=None):
     # existed and a caller reading ``done/`` found nothing (the 6d88c0b15b18
     # canary's leg 3).  The pool's own claim gate treats both suffixes as a
     # live claim (``already_claimed``); agree with it.
-    suffixes = (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX)
+    suffixes = (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX)
     try:
-        names = os.listdir(q.dir(pool.CLAIMED))
+        names = os.listdir(q.records.dir(pool.record_store.CLAIMED))
     except OSError:
         names = []
     for name in names:
@@ -3655,7 +3655,7 @@ def outstanding_submission(q, key: str, *, lane_root=None):
             continue
         try:
             item = json.loads(
-                (q.dir(pool.CLAIMED) / name).read_text(encoding="utf-8"))
+                (q.records.dir(pool.record_store.CLAIMED) / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             # Gone because the finish just filed its ending, or not a record:
             # either way the terminal read that follows answers.
@@ -3777,7 +3777,7 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         if not job_id:
             return None
         return found
-    if q.item_path(pool.READY, key).exists():
+    if q.records.item_path(pool.record_store.READY, key).exists():
         return found
     age = q.lease_age(key)
     if age is not None and age < pool.LEASE_TIMEOUT_S:
@@ -3797,8 +3797,8 @@ def _attachment_value(q, key: str, *, lane_root=None):
             attempt=int(submission.get("attempt") or 1))
         job_id = str(submission.get("job_id") or "")
     else:
-        ready = q.item_path(pool.READY, key)
-        record = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+        ready = q.records.item_path(pool.record_store.READY, key)
+        record = ready if ready.exists() else q.records.item_path(pool.record_store.CLAIMED, key)
         job_id = ""
     return {"transport": transport, "generation": generation,
             "job_id": job_id, "submission": str(record)}
@@ -4604,7 +4604,7 @@ def cached_outcome(
     print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
           file=sys.stderr, flush=True)
     host = socket.gethostname()
-    existing = Path(queue_root) / pool.DONE / f"{key}.json"
+    existing = Path(queue_root) / pool.record_store.DONE / f"{key}.json"
     if not existing.exists():
         slurm_lane.publish_outcome(
             queue_root=queue_root,
@@ -5231,7 +5231,7 @@ def _file_slurm_withdrawal(
 
     key = str(submission["action_key"])
     published_unix = _submission_generation(submission)
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         filed = queue_root / state / f"{key}.json"
         filed_record = slurm_lane._read_json_object(filed)
         if filed_record is None:
@@ -5239,7 +5239,7 @@ def _file_slurm_withdrawal(
         theirs = slurm_lane._record_generation(filed_record)
         if theirs is None or theirs != published_unix:
             continue
-        if state == pool.WITHDRAWN:
+        if state == pool.record_store.WITHDRAWN:
             # A bare marker is a withdrawal still in flight (or one whose
             # scancel never landed); only a record carrying the job's ending
             # says this generation is over.
@@ -5347,7 +5347,7 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     """
 
     key = str(submission["action_key"])
-    filed = queue_root / pool.WITHDRAWN / f"{key}.json"
+    filed = queue_root / pool.record_store.WITHDRAWN / f"{key}.json"
     try:
         record = json.loads(filed.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -9042,7 +9042,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
                     f"pbrun: renewing {key[:12]}: retired "
                     f"{len(renewal['retired'])} predecessor cancellation "
                     f"marker(s); their decisions stay under "
-                    f"{q.superseded_dir()}", file=sys.stderr, flush=True)
+                    f"{q.records.superseded_dir()}", file=sys.stderr, flush=True)
             publication = publication_row(
                 action, args=args, queue=q,
                 tested_repository=template.get("tested_repository"))
@@ -9356,7 +9356,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
     superseding = None
     try:
         superseding = json.loads(
-            q.item_path("withdrawn", key).read_text(encoding="utf-8"))
+            q.records.item_path("withdrawn", key).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         superseding = None
 
@@ -9415,15 +9415,15 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             # The same display path ``_attachment_value`` names, read once:
             # this process started nothing, so it reports where the run it
             # joined lives rather than a submission of its own.
-            ready = q.item_path(pool.READY, key)
+            ready = q.records.item_path(pool.record_store.READY, key)
             print(detach_line(
                 key,
                 transport="pool",
                 status="attached",
                 queue_root=q.root,
                 published_unix=generation,
-                submission=ready if ready.exists() else q.item_path(
-                    pool.CLAIMED, key),
+                submission=ready if ready.exists() else q.records.item_path(
+                    pool.record_store.CLAIMED, key),
             ), flush=True)
             return 0
         print(detach_line(

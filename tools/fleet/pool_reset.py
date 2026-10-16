@@ -311,7 +311,7 @@ def plan_resets(
         # same note on ``fleet_submit.submit``.
         cas_root = SH / "cas"
 
-    failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
+    failed = sorted(queue.records.dir(pool.record_store.FAILED).glob("*.json"))
     # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
     # a cancelled action still reaches ``failed/``: a worker running bytes that
     # predate ``withdraw`` files its own outcome there (the verb writes
@@ -724,7 +724,7 @@ def _file_reset(plan: Mapping, *, reason: str,
     """
 
     for path in plan["paths"]:
-        record = pool._read_json(path)
+        record = pool.record_store.read_queue_record(path)
         if record is None:
             continue
         record["status"] = "reset"

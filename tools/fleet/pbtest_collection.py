@@ -19,7 +19,7 @@ def ignored_named_paths(config) -> set[str]:
     ignored: set[str] = set()
     for arg in config.args:
         name = str(arg).split("::", 1)[0]
-        path = (config.invocation_params.dir / name).resolve()
+        path = (config.invocation_params.records.dir / name).resolve()
         for folder, module in conftests:
             if folder != path.parent and folder not in path.parents:
                 continue
