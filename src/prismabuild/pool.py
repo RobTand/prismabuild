@@ -4566,7 +4566,7 @@ class ResourceLedger:
                     raise _Insufficient(kind)
             if adaptive_gpu:
                 metadata = dict(adaptive_gpu, borrowed_gpu=max(
-                    0, wanted.get("gpu", 0) - len(_glob(destination, "gpu-*"))))
+                    0, wanted.get("gpu", 0) - len(immutable_files.match_optional(destination, "gpu-*"))))
                 _write_json_atomic(destination / gpu_admission.METADATA, metadata)
             if adaptive is not None and cpu_tiers is not None:
                 allocation = self.cpu_allocation(handle, cpu_tiers)
