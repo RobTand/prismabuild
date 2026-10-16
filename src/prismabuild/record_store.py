@@ -13,6 +13,7 @@ import errno
 import json
 import math
 import os
+import uuid
 from pathlib import Path
 
 from . import digest_primitives, immutable_files
@@ -1149,6 +1150,169 @@ class RecordStore:
         for path in immutable_files.match_optional(base, pattern):
             yield path, read_document(path)
 
+
+    def prepare_lane_state(self, state: str) -> Path:
+        directory = self.root / state
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def lane_item_address(self, state: str, key: str) -> Path:
+        return self.prepare_lane_state(state) / f"{key}.json"
+
+    def worker_directory(self) -> Path:
+        return self.root / WORKERS
+
+    def ready_transition_directory(self) -> Path:
+        return self.root / "ready-transitions"
+
+    @staticmethod
+    def claim_tombstone_name(key: str, when: float, host: str, pid: int, nonce: str) -> str:
+        return f"{key}.{int(when * 1_000_000)}.{host}.{pid}.{nonce}{TOMBSTONE_SUFFIX}"
+
+    @staticmethod
+    def ready_transition_name(key: str, when: float, nonce: str, kind: str) -> str:
+        return f"{key}.{int(when * 1_000_000)}.{nonce}.{kind}.json"
+
+    def unreadable_capture_path(self, key: str) -> Path:
+        return self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.unreadable.raw"
+
+    def mover_archive_path(self, digest: str) -> Path:
+        return self.mover_archive_dir() / f"{digest}.json"
+
+    def withdrawn_finish_path(self, key: str, record: Mapping[str, object]) -> Path:
+        return self.superseded_dir() / f"{key}.{self.attempt_generation(record)}.withdrawn-finish.json"
+
+    @staticmethod
+    def summary_lock_path(path: Path) -> Path:
+        return path.parent.parent / ".summary-locks" / f"{path.stem}.lock"
+
+    def lane_withdrawal_archive(self, key: str, when: float) -> Path:
+        directory = self.prepare_lane_state(WITHDRAWN) / "superseded"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{key}.{when:.6f}.withdrawal.json"
+
+    def worker_offer_path(self, host: str) -> Path:
+        return self.root / WORKERS / f"{host}.json"
+
+    def file_superseded(
+        self, record: Mapping[str, object] | None, *, key: str, kind: str,
+        when: float, **stamps: object,
+    ) -> Path:
+        payload = dict(record or {})
+        payload["action_key"] = key
+        payload.update(stamps)
+        path = self.superseded_dir() / f"{key}.{when:.6f}.{kind}.json"
+        self.replace_record_at(path, payload)
+        return path
+
+    def withdrawal_capture_path(self, key: str) -> Path:
+        return self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.withdrawal-source"
+
+    def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        _write_json(path, payload)
+
+
+    def replace_stage_holder_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        _write_json(path, payload, text="sorted_lf", tmp="pid", fsync=False)
+
+    def replace_reader_scope_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        _write_json(path, payload, text="sorted_lf", tmp="pid")
+
+    def replace_cycle_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        self._replace_cycle(path, payload)
+
+
+    def replace_record_bytes_at(self, path: Path, raw: bytes) -> None:
+        _write_bytes(path, raw)
+
+
+    def file_publication_ending_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        immutable_files.publish_exact(
+            path, digest_primitives._canonical_bytes(payload),
+            where="publication ending", conflict_error=PoolContractError)
+
+    def file_attempt_log_at(self, path: Path, raw: bytes, *, stream: str) -> None:
+        immutable_files.publish_exact(
+            path, raw, where=f"pool attempt {stream}", conflict_error=PoolContractError)
+
+    def file_record_if_absent_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        immutable_files.publish_immutable(path, digest_primitives._canonical_bytes(payload))
+
+
+    def file_receipt_reconciliation_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        immutable_files.publish_exact(
+            path, digest_primitives._canonical_bytes(payload) + b"\n",
+            where="pool receipt reconciliation", conflict_error=PoolContractError)
+
+    def replace_lane_item_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        _write_json(path, payload, trailing_newline=True)
+
+    def file_lane_item_if_absent(self, path: Path, payload: Mapping[str, object]) -> bool:
+        return immutable_files.publish_mutable(
+            path, digest_primitives._canonical_bytes(dict(payload)) + b"\n")
+
+    @staticmethod
+    def _replace_cycle(path: Path, record: Mapping[str, object]) -> None:
+        """Publish a record a loop rewrites every cycle, making its directory once.
+
+        The directory is made only when the write finds it missing, so the
+        steady state costs no ``mkdir`` per call (#960): on a starved NFS
+        mount each one is an RPC, the reason ``ensure_layout`` runs once per
+        process (#595).  A directory an operator deletes comes back on the
+        next write.
+        """
+
+        try:
+            _write_json(path, record, make_parent=False)
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_json(path, record, make_parent=False)
+
+
+    def file_withdrawal_decision(self, record: Mapping[str, object]) -> dict[str, object]:
+        path = self.withdrawal_decision_path(record)
+        if path is None:
+            return dict(record)
+        immutable_files.publish_immutable(path, digest_primitives._canonical_bytes(record))
+        return self.withdrawal_decision(path)
+
+
+    def file_residency_plan_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        immutable_files.publish_exact(
+            path, digest_primitives._canonical_bytes(payload),
+            where="residency plan", conflict_error=PoolContractError)
+
+    def file_residency_supersession_at(self, path: Path, payload: Mapping[str, object]) -> None:
+        immutable_files.publish_exact(
+            path, digest_primitives._canonical_bytes(payload),
+            where="residency plan supersession", conflict_error=PoolContractError)
+
+    def file_released_origin_index_at(self, path: Path, raw: bytes) -> None:
+        immutable_files.publish_exact(
+            path, raw, where="produced-output origin consumer release index",
+            conflict_error=PoolContractError)
+
+
+def _write_json(
+    path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
+    trailing_newline: bool = False, text: str = "canonical",
+    tmp: str = "pid_uuid", fsync: bool = True,
+) -> None:
+    replacement = immutable_files.prepare_atomic_replacement(
+        path, make_parent=make_parent, temporary_style=tmp, fsync=fsync)
+    if text == "sorted_lf":
+        data = digest_primitives._sorted_lf_bytes(dict(payload))
+    elif text == "canonical_lf" or trailing_newline:
+        data = digest_primitives._canonical_bytes(dict(payload)) + b"\n"
+    else:
+        data = digest_primitives._canonical_bytes(dict(payload))
+    replacement.write(data)
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    replacement = immutable_files.prepare_atomic_replacement(
+        path, cleanup_rename=False)
+    replacement.write(data)
 
 
 def read_document(path: Path) -> dict[str, object] | None:

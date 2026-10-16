@@ -147,7 +147,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 if count > MAX_RECORDS:
                     raise CensusUnavailable("measurement census record cap exceeded")
                 name = entry.name
-                is_mark = state == pool.record_store.CLAIMED and name.endswith((pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX))
+                is_mark = state == pool.record_store.CLAIMED and name.endswith(
+                    (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX),
+                )
                 if not name.endswith(".json") and not is_mark:
                     continue  # leases/status/progress are not publications
                 key = name[:64]
@@ -231,7 +233,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
     elections: dict[str, dict] = {}
     for key, chosen in selected.items():
         versions = rows.get(key, [])
-        same = [row for row in versions if queue.records.attempt_generation(row) == chosen["generation"]]
+        same = [row for row in versions if queue.records.attempt_generation(
+            row,
+        ) == chosen["generation"]]
         if same:
             if key not in measurements:
                 raise CensusUnavailable("elected measurement sealed identity unavailable")
@@ -245,7 +249,9 @@ def _scan_publications(queue: PoolQueue) -> dict:
             row = _read(queue.records.item_path(state, key), optional=True)
             if row is None:
                 continue
-            stamp = row.get("withdrawn_unix" if state == pool.record_store.WITHDRAWN else "finished_unix")
+            stamp = row.get(
+                "withdrawn_unix" if state == pool.record_store.WITHDRAWN else "finished_unix",
+            )
             if (row.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1 or row.get("action_key") != key
                     or not isinstance(row.get("status"), str) or not row["status"]
                     or (state == pool.record_store.WITHDRAWN and row["status"] != "withdrawn")
@@ -430,7 +436,9 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
                     continue
                 queue.records.attempt_generation(row)
                 version = (key, float(row["published_unix"]))
-                (ready_versions if state == pool_mod.record_store.READY else claimed_versions).add(version)
+                (ready_versions if state == pool_mod.record_store.READY else claimed_versions).add(
+                    version,
+                )
                 rows.append({"published_unix": version[1], "resources": row.get("resources")})
             members[key] = rows
     gangs: dict[str, dict] = {}
@@ -1163,5 +1171,5 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
                   "opportunity_unix": max([pool._now(), *ends])}
         prior[FIELD] = chosen
         prior["action_key"] = item["action_key"]
-        pool._write_json_atomic(queue.records.passes_path(item["action_key"]), prior)
+        queue.records.replace_record_at(queue.records.passes_path(item["action_key"]), prior)
         return chosen

@@ -184,7 +184,12 @@ def _file(path: Path, value: Mapping[str, object], *, where: str) -> None:
 
     raw = _canonical(value) + b"\n"
     try:
-        pool_mod._publish_immutable(path, raw, where=where)
+        immutable_files.publish_exact(
+            path,
+            raw,
+            where=where,
+            conflict_error=pool_mod.PoolContractError,
+        )
     except pool_mod.PoolContractError as exc:
         raise ActionEdgeError(str(exc)) from None
 

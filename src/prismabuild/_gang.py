@@ -21,6 +21,8 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 """
 from __future__ import annotations
 
+from prismabuild import materialize
+
 from collections.abc import Mapping
 import math
 import os
@@ -116,7 +118,7 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
     from . import pool
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
-    pool._write_json_atomic(temporary, payload)
+    materialize._write_json_atomic(temporary, payload)
     try:
         os.link(temporary, path)
         return True
@@ -221,7 +223,7 @@ def elect_gang_member(queue, record: Mapping[str, object], entry: Mapping[str, o
 def mark_ready(queue, record: Mapping[str, object], entry: Mapping[str, object],
                host: str, now: float) -> None:
     from . import pool
-    pool._write_json_atomic(
+    materialize._write_json_atomic(
         state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json",
         {"schema": READY_SCHEMA, "group": record["group"], "index": entry["index"],
          "action_key": entry["action_key"], "host": host, "ready_unix": float(now)})
@@ -236,7 +238,9 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     for other in record["members"]:  # type: ignore[union-attr]
         if other["index"] == entry["index"]:
             continue
-        claimed = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]))
+        claimed = _gang_read(
+            queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]),
+        )
         if (claimed is not None and claimed.get("action_key") == other["action_key"]
                 and float(claimed.get("published_unix", math.nan)) == float(other["published_unix"])):
             other_host = claimed.get("claimed_host")
@@ -347,7 +351,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
         return now - float(stamp) >= confirm_s
-    pool._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
+    materialize._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
                                    "member": key, "signature": signature,
                                    "first_seen_unix": float(now)})
     return False
@@ -455,7 +459,7 @@ def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
         if standing is None:
             return False
         standing["backfill_reclaiming"] = True
-        pool._write_json_atomic(path, standing)
+        materialize._write_json_atomic(path, standing)
         return True
 
 
@@ -508,7 +512,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
         else:
             observations.append(dict(timing))
         standing["backfill_preemptions"] = observations
-        pool._write_json_atomic(path, standing)
+        materialize._write_json_atomic(path, standing)
         return True
 
 
@@ -529,7 +533,9 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
             f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json")
         finished = _gang_read(archive)
         if finished is None:
-            finished = _gang_read(queue.records.item_path(pool.record_store.WITHDRAWN, str(timing["holder"])))
+            finished = _gang_read(
+                queue.records.item_path(pool.record_store.WITHDRAWN, str(timing["holder"])),
+            )
         release = (finished or {}).get("gang_backfill_release")
         if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
                 and release.get("tokens_returned_unix") is not None):

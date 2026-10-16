@@ -244,8 +244,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         # too; an earlier CAS read is no license to reconcile a changed ending.
         _quiescent(q, key, record)
         _require(_read(terminal_path)[1] == terminal_raw, "ending changed during reconciliation")
-        pool._publish_immutable(supplement_path, pb._canonical_file_bytes(supplement),
-                                where="pool receipt reconciliation")
+        q.records.file_receipt_reconciliation_at(supplement_path, supplement)
         observed, raw = _read(supplement_path, readonly=True)
         _require(raw == pb._canonical_file_bytes(supplement), "reconciliation readback differs")
         return {**observed, "reconciliation_path": str(supplement_path)}
