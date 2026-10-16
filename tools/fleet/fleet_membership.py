@@ -348,7 +348,7 @@ def claimed_census(
     """(owned claim snapshots, unknown paths). Malformed is unknown, never empty."""
     owned: list[dict[str, Any]] = []
     unknown: list[str] = []
-    claimed_dir = queue.records.dir(pool_module.CLAIMED)
+    claimed_dir = queue.records.dir(pool_module.record_store.CLAIMED)
     if not claimed_dir.is_dir():
         return [], [f"claimed directory unreadable: {claimed_dir}"]
     try:
@@ -461,22 +461,22 @@ def terminal_of(
     the filed ``withdrawn/`` decision of this generation as the terminal.
     """
     key = str(snapshot["action_key"])
-    for state in (pool_module.DONE, pool_module.FAILED):
+    for state in (pool_module.record_store.DONE, pool_module.record_store.FAILED):
         try:
             record = json.loads(queue.records.item_path(state, key).read_text())
         except (OSError, ValueError):
             continue
         if isinstance(record, dict) and _terminal_matches(record, snapshot):
-            return ("done" if state == pool_module.DONE else "failed", record)
+            return ("done" if state == pool_module.record_store.DONE else "failed", record)
     try:
-        claimed_gone = not queue.records.item_path(pool_module.CLAIMED, key).exists()
+        claimed_gone = not queue.records.item_path(pool_module.record_store.CLAIMED, key).exists()
     except OSError:
         return None
     if not claimed_gone:
         return None
     try:
         withdrawn = json.loads(
-            queue.records.item_path(pool_module.WITHDRAWN, key).read_text())
+            queue.records.item_path(pool_module.record_store.WITHDRAWN, key).read_text())
     except (OSError, ValueError):
         return None
     if (isinstance(withdrawn, dict)
@@ -750,7 +750,7 @@ def _resign_withdraw(queue_root: str, action_key: str, reason: str, by: str,
 def _resign_claimed_exists(queue_root: str, action_key: str) -> bool:
     """Whether a claim still occupies CLAIMED (holder-concluded check)."""
     queue = pool_module.PoolQueue(Path(queue_root))
-    return queue.records.item_path(pool_module.CLAIMED, action_key).exists()
+    return queue.records.item_path(pool_module.record_store.CLAIMED, action_key).exists()
 
 
 def _resign_terminal_of(queue_root: str,
@@ -1481,7 +1481,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
         return out
     try:
         live = json.loads(queue.records.item_path(
-            pool_module.WITHDRAWN, key).read_text())
+            pool_module.record_store.WITHDRAWN, key).read_text())
     except (OSError, ValueError):
         live = None
     decision = None
@@ -1502,7 +1502,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
     out["decision"] = decision
     try:
         ready_raw: str | None = queue.records.item_path(
-            pool_module.READY, key).read_text()
+            pool_module.record_store.READY, key).read_text()
     except FileNotFoundError:
         ready_raw = None  # proven absence: the slot is free
     except OSError as exc:
@@ -1673,7 +1673,7 @@ def resume_owed(
     """
     owed: list[dict[str, Any]] = []
     skipped: list[str] = []
-    directory = queue.records.dir(pool_module.WITHDRAWN)
+    directory = queue.records.dir(pool_module.record_store.WITHDRAWN)
     if not directory.is_dir():
         return [], [f"withdrawn directory unreadable: {directory}"]
     try:

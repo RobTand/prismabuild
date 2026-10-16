@@ -21,7 +21,7 @@ def declared_range_index(queue) -> dict[str, int] | None:
     try:
         plans_dir = queue.root / pool_mod.record_store.RESIDENCY_PLANS
         names = sorted(
-            path.stem for path in pool_mod._scan(plans_dir)
+            path.stem for path in pool_mod.immutable_files.scan_optional(plans_dir)
             if path.suffix == ".json" and len(path.stem) == 64
             and set(path.stem) <= set("0123456789abcdef"))
     except (OSError, pool_mod.PoolContractError, ValueError):
