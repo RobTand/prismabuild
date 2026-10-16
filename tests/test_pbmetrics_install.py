@@ -329,3 +329,20 @@ def test_install_refused_without_a_readable_roster(install_fixture):
     assert result.returncode != 0
     assert "cannot read the fleet roster" in result.stderr
     assert not calls.exists()
+
+
+@pytest.mark.parametrize("metrics", [False, True])
+def test_installer_checks_every_matching_declaration_without_recorder_policy(install_fixture, metrics):
+    config, calls, run = install_fixture
+    path = config.parents[3] / "runtime/tools/fleet/fleet_boxes.json"
+    path.write_text(json.dumps({"boxes": {
+        "old": {"_alias": "sparky", "roles": {"metrics": []} if metrics else {}},
+        "sparky": {"roles": {}}}}))
+    result = run()
+    if metrics:
+        assert result.returncode != 0
+        assert "declares the metrics role on old" in result.stderr
+        assert not calls.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "is-active netdata" in calls.read_text()
