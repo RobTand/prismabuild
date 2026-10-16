@@ -711,7 +711,7 @@ def _file_reset(plan: Mapping, *, reason: str,
     the queue uses, and it is what this uses now.
 
     **The rewritten record stays readable.**  Changing ``status`` while leaving
-    ``attempt_history`` in place made ``pbrun.outcome_summary`` refuse the
+    ``attempt_history`` in place made ``action_client.outcome_summary`` refuse the
     record: it adopts the immutable attempt whenever those links are present,
     and the attempt still says ``failed``.  The links are kept under a name of
     their own, exactly as ``pool.withdraw`` keeps them.

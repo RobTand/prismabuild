@@ -122,7 +122,7 @@ def test_immutable_summary_verification_is_bounded_per_key(
         time.sleep(30)
 
     monkeypatch.setattr(pbrun.action_wait, "read_observation", short_verification)
-    monkeypatch.setattr(pbrun, "outcome_summary", blocked)
+    monkeypatch.setattr(pbrun.action_client, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
@@ -327,7 +327,7 @@ def test_retained_observation_reader_stops_before_render_or_another_poll(
 
     monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "bounded_outcome_render", forbidden)
+    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_render", forbidden)
     try:
         row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)
         assert pbwait.verdict([row]) == 74

@@ -342,7 +342,7 @@ def test_a_failed_producer_never_releases_its_consumer(
     assert _without_summary(dr.release_tick(queue)) == [], "once per change"
     assert ae.read_release(queue.root, pending) is None
     assert ae.read_published(queue.root, pending) is None
-    assert pbrun.await_release(queue, pending, wait_s=0.01) == pbrun.GAVE_UP_EXIT
+    assert pbrun.await_release(queue, pending, wait_s=0.01) == pbrun.action_client.GAVE_UP_EXIT
     # The failed producer's batch is an orphan: nothing unreleased will read
     # a failed key, so #914 sweeps it.
     assert ae.held_producer_batches(queue) == set()

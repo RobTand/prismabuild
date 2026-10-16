@@ -124,6 +124,6 @@ def test_an_uncovered_lost_race_files_a_generation_stamped_record(
 
     found = pbrun.action_wait.await_ending(queue, KEY, wait_s=0.1, generation=generation)
     assert found is not None
-    assert pbrun.outcome_summary(queue, found[0], found[1])["status"] == (
+    assert pbrun.action_client.outcome_summary(queue, found[0], found[1])["status"] == (
         "finish_lost_race"
     )

@@ -26,6 +26,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild import action_client  # noqa: E402
 from prismabuild import pool
 from prismabuild.resource_scope import ResourceScope, scope_pids
 import pbrun
@@ -318,7 +319,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
 
     def follow():
         try:
-            outcome.append(pbrun.await_outcome(q, key, wait_s=480 if real_scope else 120,
+            outcome.append(action_client.await_outcome(q, key, wait_s=480 if real_scope else 120,
                                               generation=first["published_unix"]))
         except BaseException as exc:
             errors.append(repr(exc))

@@ -75,7 +75,7 @@ def test_conflicting_detail_is_a_read_only_structured_refusal(tmp_path, status):
     # The existing synchronous launcher still refuses, rather than adopting
     # a diagnostic snapshot as a successful terminal outcome.
     with pytest.raises(pool.PoolContractError, match="adopted immutable"):
-        pbrun.await_outcome(queue, KEY, wait_s=0)
+        pbrun.action_client.await_outcome(queue, KEY, wait_s=0)
 
 
 def test_conflict_does_not_abort_other_keys_and_json_is_supported(tmp_path, monkeypatch, capsys):

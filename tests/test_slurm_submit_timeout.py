@@ -257,7 +257,7 @@ def test_pbrun_reports_an_unknown_fate_as_no_verdict(
     )
 
     err = capsys.readouterr().err
-    assert code == pbrun.GAVE_UP_EXIT
+    assert code == pbrun.action_client.GAVE_UP_EXIT
     assert "the fate of this submission is unknown" in err
     assert "slurm refused this action" not in err
     assert f"pb-{KEY[:12]}" in err

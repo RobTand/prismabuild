@@ -68,7 +68,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert history[0]['claimed_by'] == 'successor', (
         'an unstarted original claim supplied the successor execution outcome')
     assert history[0]['stdout'] == 'successor output'
-    assert pbrun.await_outcome(queue, key, wait_s=1,
+    assert pbrun.action_client.await_outcome(queue, key, wait_s=1,
                               generation=first['published_unix']) == 0
     assert queue.ledger().held() == {}
 

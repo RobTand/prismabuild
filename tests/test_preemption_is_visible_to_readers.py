@@ -240,7 +240,7 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     landed = pbrun.action_wait.await_ending(q, bg, wait_s=0, generation=original_generation)
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
-    summary = pbrun.outcome_summary(q, *landed)
+    summary = pbrun.action_client.outcome_summary(q, *landed)
     assert summary['status'] == status
     assert summary['returncode'] == retry_code
     assert summary['detail']['stdout'] == 'causal retry'

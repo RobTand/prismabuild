@@ -42,6 +42,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_client  # noqa: E402
 from prismabuild import action_wait, endings  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
@@ -50,7 +51,7 @@ import pbrun  # noqa: E402
 #: What this exits with when it stopped waiting before the work finished.
 #: ``pbrun`` spells it the same way and means the same thing by it: the work is
 #: still running.
-GAVE_UP_EXIT = pbrun.GAVE_UP_EXIT
+GAVE_UP_EXIT = action_client.GAVE_UP_EXIT
 
 #: What this exits with when the key an operator typed names nothing this can
 #: wait on.  ``pbrun --withdraw`` exits 2 for the same two refusals, and the
@@ -145,7 +146,7 @@ def _prefix_candidates(q, text: str, *, lane_root=None) -> list[str]:
 
 def _prefix_unavailable(message: str) -> SystemExit:
     print(f"pbwait: prefix resolution unavailable: {message}", file=sys.stderr)
-    return SystemExit(pbrun.RECORD_WRITE_FAILED_EXIT)
+    return SystemExit(action_client.RECORD_WRITE_FAILED_EXIT)
 
 
 def resolve_key(q, name: str, *, lane_root=None) -> str:
@@ -214,7 +215,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
             q, key, generation, report_unreadable=True)
         outcome = {
             "generation": next_generation,
-            **pbrun.encode_outcome_ending(landed),
+            **action_client.encode_outcome_ending(landed),
         }
     except action_wait.UnreadableTerminal as exc:
         # Keep the already selected generation with an unreadable record. The
@@ -312,7 +313,7 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None, budget_
                  or isinstance(next_generation, bool))):
         raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid generation")
-    landed = pbrun.decode_outcome_ending(q, key, next_generation, raw_outcome)
+    landed = action_client.decode_outcome_ending(q, key, next_generation, raw_outcome)
     action = value.get("action")
     if action is not None and not isinstance(action, dict):
         raise action_wait.OutcomeReadUnavailable(
@@ -379,7 +380,7 @@ def _from_ending(q, ending: endings.ObservedEnding) -> dict:
                   f"publication {ending.successor_published_unix!r}; no execution verdict"),
         )
     outcome_path, outcome = ending
-    rendered = pbrun.bounded_outcome_render(
+    rendered = action_client.bounded_outcome_render(
         q, outcome_path, outcome, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
         diagnose_conflicts=True)
     diagnostic = rendered.get("integrity_error")
@@ -588,7 +589,7 @@ def _look_once_checked(
                 queue_root=q.root if queue_root is None else queue_root,
                 wait_s=0.0, **lane_commands,
             )
-            landed, generation = pbrun.bounded_outcome_observation(
+            landed, generation = action_client.bounded_outcome_observation(
                 q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
             if state is not None:
                 state["generation"] = generation
@@ -615,7 +616,7 @@ def _look_once_checked(
                 queue_root=q.root if queue_root is None else queue_root,
                 wait_s=0.0, **lane_commands,
             )
-            landed, generation = pbrun.bounded_outcome_observation(
+            landed, generation = action_client.bounded_outcome_observation(
                 q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
             if state is not None:
                 state["generation"] = generation
@@ -645,7 +646,7 @@ def _look_once_checked(
             wait_s=remaining_s(),
             **lane_commands,
         )
-        landed, generation = pbrun.bounded_outcome_observation(
+        landed, generation = action_client.bounded_outcome_observation(
             q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         if state is not None:
             state["generation"] = generation
@@ -763,11 +764,11 @@ def verdict(rows) -> int:
     """
 
     if any(row["status"] == "record_error" for row in rows):
-        return pbrun.RECORD_WRITE_FAILED_EXIT
+        return action_client.RECORD_WRITE_FAILED_EXIT
     if any(not row["succeeded"] and row["status"] not in {"waiting", "superseded"} for row in rows):
         return 1
     if any(row["status"] == "superseded" for row in rows):
-        return pbrun.PUBLICATION_SUPERSEDED_EXIT
+        return action_client.PUBLICATION_SUPERSEDED_EXIT
     if any(row["status"] == "waiting" for row in rows):
         return GAVE_UP_EXIT
     return 0

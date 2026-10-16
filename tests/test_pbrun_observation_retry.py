@@ -103,7 +103,7 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)
     started = time.monotonic()
-    assert pbrun.await_outcome(queue, KEY, wait_s=5) == expected
+    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=5) == expected
     assert stops == ["pool outcome observation"]
     assert time.monotonic() - started < 5
 
@@ -134,8 +134,8 @@ def test_patient_wait_starts_each_reader_only_after_the_last_was_reaped(
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=0.5) == \
-            pbrun.RECORD_WRITE_FAILED_EXIT
+        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0.5) == \
+            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(children) >= 2
         assert unreaped_at_fork == []
         for pid in children:
@@ -152,8 +152,8 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.item_path("done", KEY))
     _fast_reads(monkeypatch)
-    assert pbrun.await_outcome(queue, KEY, wait_s=0.3) == \
-        pbrun.RECORD_WRITE_FAILED_EXIT
+    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0.3) == \
+        pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert f"pbrun: unavailable pool outcome for {KEY[:12]} when the wait ended" in err
     assert "may already have landed" in err
@@ -198,8 +198,8 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
     started = time.monotonic()
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=0.5) == \
-            pbrun.RECORD_WRITE_FAILED_EXIT
+        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0.5) == \
+            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert 0.5 <= time.monotonic() - started < 5
         assert len(forks) == 1 and retained == forks
         err = capsys.readouterr().err
@@ -237,8 +237,8 @@ def test_zero_patience_keeps_two_bounded_reads_and_exit_74(
     _fast_reads(monkeypatch)
     monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=0) == \
-            pbrun.RECORD_WRITE_FAILED_EXIT
+        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0) == \
+            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(forks) == 2
         err = capsys.readouterr().err
         assert f"pbrun: unavailable pool outcome for {KEY[:12]}: " \

@@ -70,7 +70,7 @@ print(rc)
                     + str(marker.exists()))
     assert completed.returncode == 0, completed.stderr
     assert marker.read_text(encoding="utf-8") == "entered"
-    assert completed.stdout == f"{pbrun.RECORD_WRITE_FAILED_EXIT}\n"
+    assert completed.stdout == f"{pbrun.action_client.RECORD_WRITE_FAILED_EXIT}\n"
     assert "unavailable detached attachment" in completed.stderr
     assert "attachment discovery timed out" in completed.stderr
 

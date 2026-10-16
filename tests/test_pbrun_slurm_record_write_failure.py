@@ -97,8 +97,8 @@ def test_a_queue_it_cannot_write_is_reported_rather_than_raised(
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=queue,
     )
 
-    assert code == pbrun.RECORD_WRITE_FAILED_EXIT
-    assert code not in (pbrun.GAVE_UP_EXIT, pbrun.WITHDRAWN_EXIT, 0)
+    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert code not in (pbrun.action_client.GAVE_UP_EXIT, pbrun.action_client.WITHDRAWN_EXIT, 0)
     err = capsys.readouterr().err
     assert str(done) in err
     assert "Permission denied" in err
@@ -194,7 +194,7 @@ def test_a_failure_after_sbatch_accepted_is_not_reported_as_a_bad_tag(
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=tmp_path / "queue",
     )
 
-    assert code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert "Fix the --tag" not in err
     assert "already recorded" in err

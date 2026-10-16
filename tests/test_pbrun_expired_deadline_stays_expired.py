@@ -63,7 +63,7 @@ def _observe(monkeypatch, clock: FakeClock) -> list[float]:
         return None, generation
 
     monkeypatch.setattr(pbrun.action_wait, "time", clock)
-    monkeypatch.setattr(pbrun, "bounded_outcome_observation", observation)
+    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_observation", observation)
     return budgets
 
 
@@ -74,10 +74,10 @@ def test_a_wait_whose_deadline_passed_before_the_first_read_starts_none(
     clock = FakeClock(jumps={1: 2.0})
     budgets = _observe(monkeypatch, clock)
 
-    code = pbrun.await_outcome(object(), KEY, wait_s=1.0)
+    code = pbrun.action_client.await_outcome(object(), KEY, wait_s=1.0)
     expired_at = 1002.0
 
-    assert code == pbrun.GAVE_UP_EXIT
+    assert code == pbrun.action_client.GAVE_UP_EXIT
     assert budgets == [], "an expired wait started a read"
     assert clock.now - expired_at < pbrun.action_wait.POLL_S
     assert clock.now == expired_at, "an expired wait spent time"
@@ -100,7 +100,7 @@ def test_no_read_gets_more_than_the_caller_has_left(
     clock = FakeClock(jumps={1: late_s})
     budgets = _observe(monkeypatch, clock)
 
-    assert pbrun.await_outcome(object(), KEY, wait_s=wait_s) == pbrun.GAVE_UP_EXIT
+    assert pbrun.action_client.await_outcome(object(), KEY, wait_s=wait_s) == pbrun.action_client.GAVE_UP_EXIT
     assert budgets == pytest.approx(expected)
 
 
@@ -116,7 +116,7 @@ def _released(monkeypatch, clock: FakeClock) -> list[dict]:
     monkeypatch.setattr(pbrun, "time", clock)
     monkeypatch.setattr(pbrun.action_edges, "read_published", lambda _root, _pending: {
         "action_key": KEY, "published_unix": 1.0})
-    monkeypatch.setattr(pbrun, "await_outcome", await_outcome)
+    monkeypatch.setattr(pbrun.action_client, "await_outcome", await_outcome)
     return waits
 
 
@@ -132,7 +132,7 @@ def test_a_release_read_after_the_deadline_is_not_turned_into_a_probe(
     clock = FakeClock(jumps={1: 3.0})
     waits = _released(monkeypatch, clock)
 
-    assert pbrun.await_release(_Queue(), PENDING, wait_s=2.0) == pbrun.GAVE_UP_EXIT
+    assert pbrun.await_release(_Queue(), PENDING, wait_s=2.0) == pbrun.action_client.GAVE_UP_EXIT
     assert waits == []
     err = capsys.readouterr().err
     assert f"was released as {KEY[:12]}" in err

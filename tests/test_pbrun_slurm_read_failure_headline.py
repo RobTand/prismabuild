@@ -81,7 +81,7 @@ def test_a_read_the_lane_could_not_make_is_not_reported_as_an_unwritten_record(
     )
 
     err = capsys.readouterr().err
-    assert code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert "could not write its record" not in err
     # The facts PR #54 put on the line are the reason this is not a traceback,
     # so they have to survive the narrowing.
@@ -114,7 +114,7 @@ def test_a_record_that_will_not_write_keeps_the_headline_it_had(
         (queue / "failed").chmod(0o755)
 
     err = capsys.readouterr().err
-    assert code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert "could not write its record" in err
     assert "slurm job:" in err
 
@@ -133,7 +133,7 @@ def test_a_pre_submission_filesystem_failure_does_not_claim_slurm_took_the_actio
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600, wait_s=1, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0,
-    ) == pbrun.RECORD_WRITE_FAILED_EXIT
+    ) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert 'slurm took this action' not in err
     assert 'could not write its record' not in err

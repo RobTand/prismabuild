@@ -3122,7 +3122,7 @@ def run(
     code said, and so does a cancellation -- an operator's decision is not a
     defect to retry around.
 
-    ``wait_s`` is one budget for the whole run, as ``pbrun.await_outcome``
+    ``wait_s`` is one budget for the whole run, as ``action_client.await_outcome``
     holds one deadline across the pool's retries: each attempt's ``wait`` is
     given what is left of it, so three attempts cannot turn a 30 minute
     ``--wait-s`` into ninety.  A retry submitted after the budget is spent

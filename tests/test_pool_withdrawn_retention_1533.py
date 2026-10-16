@@ -210,7 +210,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
     queue, live, path, record = _conclude(queue, item, monkeypatch)
     key = live["action_key"]
     if reader == "outcome_summary":
-        summary = pbrun.outcome_summary(queue, path, record)
+        summary = pbrun.action_client.outcome_summary(queue, path, record)
         assert summary["status"] == "withdrawn" and summary["adopted"] is None
         assert summary["returncode"] is None
     elif reader == "attempt_ending":
@@ -229,7 +229,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
         rows = [row for row in pbstatus.read_endings(queue.root, limit=10) if row["action_key"] == key]
         assert rows and all(row["status"] == "withdrawn" and row["unreadable"] is None for row in rows)
     elif reader == "pbrun":
-        assert pbrun.await_outcome(queue, key, wait_s=1) == pbrun.WITHDRAWN_EXIT
+        assert pbrun.action_client.await_outcome(queue, key, wait_s=1) == pbrun.action_client.WITHDRAWN_EXIT
     else:
         assert pbwait._from_ending(queue, (path, record))["status"] == "withdrawn"
 

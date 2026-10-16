@@ -102,7 +102,7 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
         deadline=time.monotonic() + 0.3, lane_root=tmp_path / "lane",
     )
     assert row["status"] == "record_error"
-    assert pbwait.verdict([row]) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert pbwait.verdict([row]) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert "pbwait observation timed out" in row["note"]
     assert "still unavailable when the wait ended" in row["note"]
     assert "may already have landed" in row["note"]

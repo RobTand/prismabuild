@@ -187,4 +187,4 @@ def test_corrupt_exact_decision_is_unavailable_instead_of_an_execution_verdict(
     decision.write_bytes(raw)
     decision.chmod(0o444)
 
-    assert pbrun.await_outcome(queue, KEY, wait_s=0, generation=generation) == 74
+    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0, generation=generation) == 74

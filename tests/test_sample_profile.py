@@ -1173,7 +1173,7 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
 
 
 def test_pbrun_prints_the_blob_for_a_profiled_ending():
-    line = pbrun.outcome_headline({
+    line = pbrun.action_client.outcome_headline({
         "status": "executed", "finished_host": "dl380g10",
         "detail": {"elapsed_s": 61.0, "profile": _profile_record()},
     })

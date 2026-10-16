@@ -61,7 +61,7 @@ def test_malformed_ipc_refuses_without_following_or_changing_queue_state(
 
     with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
         if consumer == "pbrun":
-            pbrun.bounded_outcome_observation(queue, KEY, generation, budget_s=5)
+            pbrun.action_client.bounded_outcome_observation(queue, KEY, generation, budget_s=5)
         else:
             pbwait.bounded_observation(
                 queue, KEY, pb.PrismaBuildCAS(queue.root / "cas"), generation,
@@ -89,7 +89,7 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
 
     monkeypatch.setattr(pbrun.action_wait, "read_observation", unavailable_once)
 
-    assert pbrun.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 76
     assert observations == 2
 
@@ -102,7 +102,7 @@ def test_staging_canary_uses_no_execution_evidence_from_publication_ending(
     def unexpected_render(*args, **kwargs):
         pytest.fail("canary tried to render a superseded publication as an attempt")
 
-    monkeypatch.setattr(pbrun, "bounded_outcome_render", unexpected_render)
+    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_render", unexpected_render)
 
     assert pbcanary.staging_wait_evidence(
         {"queue_root": str(queue.root)}, KEY, original["published_unix"],

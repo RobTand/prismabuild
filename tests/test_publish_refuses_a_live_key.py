@@ -253,7 +253,7 @@ def test_pbrun_attaches_a_duplicate_pool_submission_instead_of_restamping(
 
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    unfinished = {pbrun.GAVE_UP_EXIT, pbrun.RECORD_WRITE_FAILED_EXIT}
+    unfinished = {pbrun.action_client.GAVE_UP_EXIT, pbrun.action_client.RECORD_WRITE_FAILED_EXIT}
 
     assert _run_pbrun(tmp_path, monkeypatch, work) in unfinished
     capsys.readouterr()

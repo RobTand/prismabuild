@@ -37,7 +37,7 @@ def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch
         SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
     )
     if waiter == 'pbrun':
-        assert pbrun.await_outcome(q, key, wait_s=60, generation=1.0) == 1
+        assert pbrun.action_client.await_outcome(q, key, wait_s=60, generation=1.0) == 1
         assert 'not valid JSON' in capsys.readouterr().err
     else:
         # ``pbwait`` now owns its bounded observations in its own parent loop;
@@ -94,7 +94,7 @@ def test_pbwait_reports_an_unwritable_ending(tmp_path, monkeypatch, fleet, capsy
         directory.chmod(0o755)
     assert rows[0]['status'] == 'record_error'
     assert rows[0]['job'].isdigit()
-    assert pbwait.verdict(rows) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert pbwait.verdict(rows) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert 'Permission denied' in rows[0]['note']
     assert 'pbwait.py' in capsys.readouterr().err
 
@@ -109,7 +109,7 @@ def test_withdraw_write_failure_reports_whether_cancel_was_sent(tmp_path, monkey
     def refuse(*args, **kwargs):
         raise PermissionError(13, 'Permission denied', str(q.root / 'withdrawn' / '.record.tmp'))
     monkeypatch.setattr(pbrun, '_file_slurm_withdrawal' if stage == 'before' else '_stamp_scancel_accepted', refuse)
-    assert pbrun.withdraw_slurm_main([key], queue_root=q.root) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert pbrun.withdraw_slurm_main([key], queue_root=q.root) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert bool(cancelled) == (stage == 'after')
     assert ('no cancellation was sent' if stage == 'before' else 'scancel accepted') in err

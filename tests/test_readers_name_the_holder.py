@@ -130,8 +130,8 @@ def test_the_two_readers_agree_with_pbrun(lost_claim) -> None:
     q, path, record = lost_claim
     import pbrun
 
-    summary = pbrun.outcome_summary(q, path, record)
-    assert f"held by {HELD_BY}" in pbrun.outcome_headline(summary)
+    summary = pbrun.action_client.outcome_summary(q, path, record)
+    assert f"held by {HELD_BY}" in pbrun.action_client.outcome_headline(summary)
 
     status_row = next(row for row in pbstatus.read_endings(q.root, limit=10)
                       if row["action_key"] == KEY)

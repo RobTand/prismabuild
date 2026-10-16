@@ -1474,7 +1474,7 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
     )
-    assert code == pbrun.WITHDRAWN_EXIT
+    assert code == pbrun.action_client.WITHDRAWN_EXIT
 
 
 #: A runtime every box can open.  These tests submit from ``tmp_path``, which

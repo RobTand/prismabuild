@@ -143,7 +143,7 @@ def test_no_ending_files_no_terminal_record(
         queue_root=queue, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
     )
 
-    assert code == pbrun.GAVE_UP_EXIT
+    assert code == pbrun.action_client.GAVE_UP_EXIT
     for state in ("done", "failed", "withdrawn"):
         assert not (queue / state / f"{key}.json").exists()
     assert not (fleet / "cancelled").exists()
@@ -177,7 +177,7 @@ def test_wait_s_is_one_budget_across_retries(
     ``wait``, so with ``--wait-s 60`` a first attempt that failed at 40 s let
     the second wait until 100 s (``assert elapsed <= 70`` failed with
     ``elapsed == 105.0``).  The pool holds one deadline across retries
-    (``pbrun.await_outcome``); the lane now does the same."""
+    (``pbrun.action_client.await_outcome``); the lane now does the same."""
 
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")

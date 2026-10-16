@@ -242,8 +242,8 @@ raise SystemExit(wl.main())
         assert _await(lambda: not Path(control["cgroup_path"]).exists())
 
         # The submitter is told, rather than waiting out ``--wait-s``.
-        rc = pbrun.await_outcome(queue, key, wait_s=1.0)
-        assert rc == pbrun.WITHDRAWN_EXIT
+        rc = pbrun.action_client.await_outcome(queue, key, wait_s=1.0)
+        assert rc == pbrun.action_client.WITHDRAWN_EXIT
     finally:
         if worker.poll() is None:
             # This child belongs to the test. Do not leak it on an assertion;

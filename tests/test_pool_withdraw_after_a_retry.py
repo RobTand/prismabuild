@@ -5,7 +5,7 @@ requeue has already touched carries ``attempt_history``, and every reader of a
 terminal record adopts the immutable attempt whenever that key is present.
 The adopted attempt's disposition is ``requeued``, the directory is
 ``withdrawn``, and ``outcome_summary`` refuses the disagreement, so
-``pbrun.await_outcome`` and ``pbwait`` raised ``PoolContractError`` instead of
+``pbrun.action_client.await_outcome`` and ``pbwait`` raised ``PoolContractError`` instead of
 reporting that somebody had cancelled the work.
 
 A withdrawal is an operator verb, not an attempt. The links are kept under a
@@ -83,13 +83,13 @@ def test_a_withdrawal_after_a_retry_is_readable(
     path = withdrawn.item_path(pool.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
-    summary = pbrun.outcome_summary(withdrawn, path, record)
+    summary = pbrun.action_client.outcome_summary(withdrawn, path, record)
     assert summary["status"] == "withdrawn"
     assert summary["withdrawn_by"] == "rob"
     assert summary["adopted"] is None
 
     monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    assert pbrun.await_outcome(withdrawn, KEY, wait_s=1.0) == pbrun.WITHDRAWN_EXIT
+    assert pbrun.action_client.await_outcome(withdrawn, KEY, wait_s=1.0) == pbrun.action_client.WITHDRAWN_EXIT
     assert pbwait._from_ending(withdrawn, (path, record))["status"] == "withdrawn"
 
 

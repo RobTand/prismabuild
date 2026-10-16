@@ -85,7 +85,7 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
     assert float(ending["published_unix"]) == first
     assert ending["status"] == "executed"
     assert ending["attempts"] == 1
-    summary = pbrun.outcome_summary(queue, path, ending)
+    summary = pbrun.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "executed"
     assert summary["detail"]["stdout"] == "first run\n"
     assert path == queue.attempt_path(ending, ending["attempts"])
@@ -105,7 +105,7 @@ def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> No
     _run(queue, status="executed", returncode=0, stdout="later run\n")
     assert second != first
 
-    assert pbrun.await_outcome(
+    assert pbrun.action_client.await_outcome(
         queue, KEY, wait_s=30.0, generation=first) == 0
 
 
@@ -126,7 +126,7 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
-    summary = pbrun.outcome_summary(queue, path, ending)
+    summary = pbrun.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "failed"
     assert summary["returncode"] == 7
     assert summary["detail"]["stdout"] == "first failed\n"
@@ -162,7 +162,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
     assert attempts[0]["stdout"] == "first attempt\n"
     assert attempts[-1]["stdout"] == "causal retry\n"
     assert path == queue.attempt_path(ending, 2)
-    summary = pbrun.outcome_summary(queue, path, ending)
+    summary = pbrun.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "failed"
     assert summary["returncode"] == 9
     assert summary["detail"]["stdout"] == "causal retry\n"

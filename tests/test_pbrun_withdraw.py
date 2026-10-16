@@ -58,7 +58,7 @@ class _Queue:
 
 def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):
     monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    return pbrun.await_outcome(queue, key, wait_s=wait_s)
+    return pbrun.action_client.await_outcome(queue, key, wait_s=wait_s)
 
 
 @pytest.fixture()
@@ -87,7 +87,7 @@ def test_a_withdrawn_action_is_reported_not_waited_out(
         "reason": "ten merges stale", "withdrawn_host": "sparky"}))
     rc = _wait(monkeypatch, q, "abc")
     err = capsys.readouterr().err
-    assert rc == pbrun.WITHDRAWN_EXIT, "the command did not run; do not exit 0"
+    assert rc == pbrun.action_client.WITHDRAWN_EXIT, "the command did not run; do not exit 0"
     assert rc != 0
     assert "withdrawn by rob@sparky" in err and "ten merges stale" in err
     assert "gave up waiting" not in err
@@ -244,7 +244,7 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
     q.finish(KEY_A, status="executed", detail={"returncode": 0})
 
     monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    assert pbrun.await_outcome(q, KEY_A, wait_s=5.0) == 0
+    assert pbrun.action_client.await_outcome(q, KEY_A, wait_s=5.0) == 0
     err = capsys.readouterr().err
     assert "withdrawn by" not in err and "four suites" not in err
 

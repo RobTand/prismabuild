@@ -615,16 +615,16 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
     if type(generation) not in (int, float) or not math.isfinite(generation):
         return None
     import pbrun
-    from prismabuild import action_wait, endings
+    from prismabuild import action_client, action_wait, endings
     from pbcanary_legs import leg3
     try:
         q = pbrun.pool.PoolQueue(Path(paths["queue_root"]))
-        landed, observed_generation = pbrun.bounded_outcome_observation(
+        landed, observed_generation = action_client.bounded_outcome_observation(
             q, action_key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         if (landed is None or isinstance(landed, endings.PublicationSupersession)
                 or observed_generation != generation):
             return None
-        rendered = pbrun.bounded_outcome_render(
+        rendered = action_client.bounded_outcome_render(
             q, landed[0], landed[1], budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         summary = rendered["summary"]
         if summary["status"] != "failed" or summary["action_key"] != action_key:

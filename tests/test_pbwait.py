@@ -118,7 +118,7 @@ pbwait.resolve_key(queue, "a", lane_root=Path({str(lane_root)!r}))
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail("prefix resolution exceeded its reader budget; marker="
                     + str(marker.exists()) + "; stdout=" + stdout)
-    assert completed.returncode == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert completed.returncode == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert marker.read_text(encoding="utf-8") == "entered"
     assert "prefix resolution timed out" in completed.stderr
 
@@ -156,7 +156,7 @@ def test_prefix_resolution_retained_reader_stops_before_another_scan(
     try:
         with pytest.raises(SystemExit) as raised:
             pbwait.resolve_key(queue, "a")
-        assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+        assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(retained) == 1
         shown = capsys.readouterr().err
         assert '"pid": ' + str(retained[0]) in shown
@@ -199,7 +199,7 @@ def test_prefix_resolution_filesystem_error_is_exit_seventy_four(
     monkeypatch.setattr(pbwait, "_prefix_candidates", unavailable)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
-    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert "prefix resolution unavailable" in capsys.readouterr().err
 
 
@@ -215,7 +215,7 @@ def test_prefix_reader_setup_error_is_exit_seventy_four(
     monkeypatch.setattr(pbrun.action_wait, "read_observation", cannot_fork)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
-    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert "Too many open files" in capsys.readouterr().err
 
 
@@ -273,7 +273,7 @@ def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool
         assert slurm_lane.resolve_recorded(key[:12], root=lane_root) == []
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, key[:12], lane_root=lane_root)
-    assert raised.value.code == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
 
 
 # --------------------------------------------------------------------------

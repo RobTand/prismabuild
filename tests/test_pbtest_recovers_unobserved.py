@@ -66,9 +66,10 @@ def test_recovery_program_uses_remaining_original_budget(monkeypatch, now, expec
     calls = []
     monkeypatch.setattr(time, "monotonic", lambda: now)
     monkeypatch.setattr(runpy, "run_path", lambda path: {
-        "SH": Path("/unused-fixture"), "GAVE_UP_EXIT": 75,
+        "SH": Path("/unused-fixture"),
         "pool": SimpleNamespace(PoolQueue=lambda path: path),
-        "await_outcome": lambda queue, key, **kw: calls.append((key, kw)) or 0,
+        "action_client": SimpleNamespace(GAVE_UP_EXIT=75,
+            await_outcome=lambda queue, key, **kw: calls.append((key, kw)) or 0),
     })
     monkeypatch.setattr(sys, "argv", ["-c", "fixture-pbrun", KEY, "1234.5", "1012"])
     with pytest.raises(SystemExit) as exc:

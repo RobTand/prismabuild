@@ -57,6 +57,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_client  # noqa: E402
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
@@ -176,9 +177,9 @@ from pathlib import Path
 reader = runpy.run_path(sys.argv[1])
 remaining = float(sys.argv[4]) - time.monotonic()
 if remaining <= 0:
-    sys.exit(reader['GAVE_UP_EXIT'])
+    sys.exit(reader['action_client'].GAVE_UP_EXIT)
 queue = reader['pool'].PoolQueue(reader['SH'] / 'pb-queue')
-sys.exit(reader['await_outcome'](queue, sys.argv[2], wait_s=remaining,
+sys.exit(reader['action_client'].await_outcome(queue, sys.argv[2], wait_s=remaining,
                                generation=float(sys.argv[3])))
 """
 
@@ -249,7 +250,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
         drain_shard(index, proc.stdout, lines, submitted=submitted)
         proc.wait()
         result["returncode"] = proc.returncode
-        if proc.returncode == pbrun.RECORD_WRITE_FAILED_EXIT:
+        if proc.returncode == action_client.RECORD_WRITE_FAILED_EXIT:
             recovery = recovery_command(lines, result["action_key"], deadline)
             if recovery is not None:
                 _say(f"shard {index:>3} pbtest: recovering the same generation's "
