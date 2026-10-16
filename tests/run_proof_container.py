@@ -37,6 +37,7 @@ print(json.dumps({"image": image, "affinity": affinity,
                   "dependency_files_verified": len(manifest["files"]),
                   "source": str(root), "tests": tests}), flush=True)
 command = ["docker", "run", "--rm", "--network", "none", "--user", "0:0",
+           "--entrypoint", required["entrypoint"],
            "--cpuset-cpus", ",".join(map(str, affinity)),
            "--memory", f"{required['container_memory_gib']}g",
            "--pids-limit", "256", "--mount", f"type=bind,src={root},dst=/source,readonly",
@@ -58,7 +59,7 @@ bootstrap = (
     "assert os.sched_getaffinity(0) == expected, 'container changed PB CPU affinity'; "
     "runpy.run_module('pytest', run_name='__main__', alter_sys=True)"
 )
-command.extend([image, "python", "-B", "-c", bootstrap, "-q", "-rA",
+command.extend([image, "-B", "-c", bootstrap, "-q", "-rA",
                 "-o", "addopts=", "-p", "no:cacheprovider",
                 "--basetemp=/var/lib/pb-proof-qualification", *tests])
 raise SystemExit(subprocess.run(command, check=False).returncode)
