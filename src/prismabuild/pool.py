@@ -712,7 +712,6 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: retirement happened, so a later missing or truncated checkpoint refuses
 #: instead of reading as "no retirements".
 MOVERS_RETIREMENT_LOCK = "checkpoint.lock"
-MOVERS_ARCHIVE = "movers-archive"
 #: One checkpoint document names its own digest over the canonical body with
 #: the digest field removed; the state marker names the revision it followed.
 MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1 = (
