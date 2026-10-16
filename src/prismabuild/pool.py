@@ -2659,7 +2659,7 @@ def _holder_is_dir(path: Path) -> bool:
     and that holder's tokens drop out of the census: on the strict census
     this reissued dead names with no backing.  This check gives one answer
     everywhere.  An entry that vanished (ENOENT, ENOTDIR) is not a holder,
-    exactly as :func:`_scan` treats a vanished directory.  Any other error
+    exactly as :func:`immutable_files.scan_optional` treats a vanished directory.  Any other error
     propagates, and each caller decides what an unreadable holder means.
     """
 
