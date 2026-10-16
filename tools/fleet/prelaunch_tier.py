@@ -144,8 +144,8 @@ def _declared_legs(plan: Mapping[str, object]) -> list[dict]:
 def _mover_live(queue, mover_key: str) -> bool:
     """True when one mover row stands ready or claimed now."""
     try:
-        return (queue.records.item_path(pool.record_store.READY, mover_key).exists()
-                or queue.records.item_path(pool.record_store.CLAIMED, mover_key).exists())
+        return (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover_key)))
+                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover_key))))
     except OSError:
         return False
 
@@ -422,28 +422,11 @@ def reserve_pass(queue, tier_id: str, units: Sequence[Unit], *, admitted,
     return (events, authority)
 
 def _live_mover_row(queue, mover_key: str) -> tuple[dict | None, bool]:
-    """One published mover row, preferring ready over claimed.
-
-    Returns the row with False, or (None, True) when the row stands
-    but will not read. A missing row is (None, False): the window has
-    not published this leg yet, and a later pass binds it.
-    """
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        path = queue.records.item_path(state, mover_key)
-        try:
-            present = path.exists()
-        except OSError:
-            return (None, True)
-        if not present:
-            continue
-        try:
-            row = pool.read_queue_record(path)
-        except (OSError, ValueError, pool.PoolContractError):
-            return (None, True)
-        if row is None:
-            continue
-        return (row, False)
-    return (None, False)
+    """One published mover row, preferring ready over claimed."""
+    observation = queue.records.bindable_mover(mover_key)
+    if isinstance(observation, pool.record_store.Unknown):
+        return None, True
+    return pool.record_store.value_or_raise(observation), False
 
 
 def publish_declared(queue, tier_id: str, unit: Unit,

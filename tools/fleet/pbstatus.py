@@ -1958,7 +1958,7 @@ def _starvation_dependents(queue: pool.PoolQueue, *, notes: list[str],
     census of ``ready/`` and ``claimed/`` for all of them.
     """
 
-    live, listed = queue.live_records()
+    live, listed = queue.records.advisory_live_rows()
     for error in listed:
         notes.append(f"starvation dependents: {error}")
         unreadable.append(f"starvation dependents: {error}")

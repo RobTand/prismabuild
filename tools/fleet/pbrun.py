@@ -3777,7 +3777,7 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         if not job_id:
             return None
         return found
-    if q.records.item_path(pool.record_store.READY, key).exists():
+    if bool(pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key))):
         return found
     age = q.lease_age(key)
     if age is not None and age < pool.LEASE_TIMEOUT_S:
