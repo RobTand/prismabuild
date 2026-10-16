@@ -164,6 +164,7 @@ def main():
     code = 0
     calls = set()
     setup_calls = set()
+    executed_lines, setup_lines = {}, {}
     consumer_started = False
     source_codes, checked_codes, code_hashes = {}, set(), {}
     code_errors = []
@@ -173,6 +174,8 @@ def main():
         if request["op"] != "read" or consumer_started:
             raise RuntimeError("consumer boundary must occur once, after fixture setup")
         setup_calls.update(calls)
+        setup_lines.update({path: sorted(lines) for path, lines in executed_lines.items()})
+        executed_lines.clear()
         calls.clear()
         consumer_started = True
 
@@ -205,15 +208,27 @@ def main():
                     actual.co_qualname + "@" + str(actual.co_firstlineno)] = hashlib.sha256(marshal.dumps(actual)).hexdigest()
             calls.add((str(Path(filename).relative_to(root)), actual.co_name, actual.co_firstlineno, actual.co_qualname))
 
+    def traced(frame, event, arg):
+        if frame.f_code.co_filename.startswith(str(root) + "/"):
+            if event == "line":
+                path = str(Path(frame.f_code.co_filename).relative_to(root))
+                executed_lines.setdefault(path, set()).add(frame.f_lineno)
+            return traced
+        return None
+
     try:
         adapter = runpy.run_path(str(args.adapters))["operate"]
         sys.setprofile(entered)
+        sys.settrace(traced)
         output["result"] = adapter(request, args.store, lambda name: load_module(root, name))
     except Exception as error:
         code = 1
         output["error"] = {"type": type(error).__name__, "message": str(error)}
     finally:
+        sys.settrace(None)
         sys.setprofile(None)
+        output["executed_lines"] = {path: sorted(lines) for path, lines in executed_lines.items()}
+        output["setup_lines"] = setup_lines
         output["calls"] = sorted(calls)
         output["setup_calls"] = sorted(setup_calls)
         output["consumer_boundary"] = consumer_started
