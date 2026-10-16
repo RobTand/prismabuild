@@ -138,12 +138,12 @@ def _claim(queue: pool.PoolQueue, consumer: str, *, phase: str,
     the two apart, so this helper takes both.
     """
 
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": consumer, "claimed_unix": claimed_unix,
                  "claimed_by": "horizon-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, consumer).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, consumer).write_text(json.dumps(item))
     queue.write_lease(
         consumer, owner="horizon-fixture", claim_snapshot=item,
         progress_observation={
@@ -212,7 +212,7 @@ def _cycle(queue: pool.PoolQueue, stage: Path, *, gib: int) -> None:
 
 def _fixture_queue(tmp_path: Path, gib: int) -> tuple[pool.PoolQueue, Path]:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": gib})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -272,7 +272,7 @@ def test_a_window_publishes_only_to_its_refill_horizon(tmp_path: Path) -> None:
     _cycle(queue, stage, gib=capacity)
 
     published = {ordinal for ordinal in range(PHASES)
-                 if queue.item_path(pool.READY, _mover("reader", ordinal)).exists()}
+                 if queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()}
     assert published == {1, 2}, published
 
 
@@ -297,7 +297,7 @@ def test_a_gated_newcomer_is_relieved_by_ranges_past_the_horizon(
 
     _cycle(queue, stage, gib=capacity)
 
-    assert queue.item_path(pool.READY, lead).exists()
+    assert queue.records.item_path(pool.record_store.READY, lead).exists()
     for ordinal in (6, 7):
         assert not _held(queue, _mover("reader", ordinal)), ordinal
         assert not any(path.exists() for path in files[ordinal]), ordinal
@@ -339,13 +339,13 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str,
             "sha256": DIGEST}}
     assert queue.tier_ledger(TIER).acquire(
         mover, {"stage_gib": storage_tiers.stage_tokens_for_bytes(size)})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": manifest,
         "entries": entries})
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256=manifest, generation="b" * 32,
         entries={key: {**dict(mention),  # type: ignore[dict-item]
@@ -414,11 +414,11 @@ def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
 
     _cycle(queue, stage, gib=capacity)
 
-    assert queue.item_path(pool.READY, layer_3).exists()
+    assert queue.records.item_path(pool.record_store.READY, layer_3).exists()
     assert _claim_shortage(queue, layer_3, 14) is None
     for ordinal in range(4):
         egress = plan["phases"][ordinal]["egress_row"]["action_key"]  # type: ignore[index]
-        assert queue.item_path(pool.READY, egress).exists(), CAPTURE_NAMES[ordinal]
+        assert queue.records.item_path(pool.record_store.READY, egress).exists(), CAPTURE_NAMES[ordinal]
     _assert_farthest_evicted(files, queue, kept=range(13), evicted=range(13, WIDE))
     assert_ledger_matches_the_stage(queue)
 
@@ -465,7 +465,7 @@ def test_a_running_consumer_regated_after_its_lead_retires_still_preempts(
 
     _cycle(queue, stage, gib=capacity)
 
-    assert queue.item_path(pool.READY, layer_3).exists()
+    assert queue.records.item_path(pool.record_store.READY, layer_3).exists()
     assert _claim_shortage(queue, layer_3, 14) is None
     _assert_farthest_evicted(files, queue, kept=range(13), evicted=range(13, WIDE))
     assert_ledger_matches_the_stage(queue)
@@ -530,7 +530,7 @@ def test_a_pinned_range_past_the_horizon_is_declined_whole(
     assert _held(queue, _mover("reader", 7))
     assert all(path.exists() for path in files[7])
     marks, tainted = reader_lease.retiring_for(
-        reader_lease.leases_root(queue, queue.residency_fragment_root()),
+        reader_lease.leases_root(queue, queue.records.residency_fragment_root()),
         _mover("reader", 7))
     assert (marks, tainted) == ([], [])
     assert_ledger_matches_the_stage(queue)
@@ -552,13 +552,13 @@ def test_an_evicted_range_is_published_again_when_its_reader_nears_it(
     _newcomer(queue)
     _cycle(queue, stage, gib=capacity)
     assert not _held(queue, _mover("reader", 7))
-    assert not queue.item_path(pool.READY, _mover("reader", 7)).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _mover("reader", 7)).exists()
 
     # The worker's next heartbeat, filed into the lease the claim wrote.
     # ``write_lease`` would refuse it here: the fixture claims as
     # ``dl380g10`` from whichever box runs the test, and a second write
     # compares the two (``AmbiguousClaimHolder``).
-    lease_path = queue.lease_path(READER)
+    lease_path = queue.records.lease_path(READER)
     lease = json.loads(lease_path.read_text())
     lease["progress_observation"] = {
         "source": "action-progress",
@@ -568,10 +568,10 @@ def test_an_evicted_range_is_published_again_when_its_reader_nears_it(
 
     _cycle(queue, stage, gib=capacity)
 
-    assert queue.item_path(pool.READY, _mover("reader", 7)).exists()
+    assert queue.records.item_path(pool.record_store.READY, _mover("reader", 7)).exists()
     for ordinal in range(5):
         egress = _hexkey(f"readeregress{ordinal}")
-        assert queue.item_path(pool.READY, egress).exists(), ordinal
+        assert queue.records.item_path(pool.record_store.READY, egress).exists(), ordinal
 
 
 def test_a_window_claimed_before_the_horizon_keeps_its_ranges(
@@ -598,9 +598,9 @@ def test_a_window_claimed_before_the_horizon_keeps_its_ranges(
 
     _assert_farthest_evicted(files, queue, kept=range(4), evicted=range(0))
     for ordinal in (5, 6):
-        assert queue.item_path(pool.READY, _mover("reader", ordinal)).exists()
+        assert queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()
     for ordinal in (4, 7):
-        assert not queue.item_path(pool.READY, _mover("reader", ordinal)).exists()
+        assert not queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()
     assert_ledger_matches_the_stage(queue)
 
 
@@ -622,7 +622,7 @@ def _horizon(queue: pool.PoolQueue, **overrides) -> dict[str, object] | None:
 
 def test_the_horizon_is_the_docstring_arithmetic(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     horizon = _horizon(queue)
     assert horizon is not None
     assert horizon["consumption_basis"] == "measured"
@@ -649,7 +649,7 @@ def test_a_declared_read_rate_prices_consumption_when_it_is_the_larger(
     in, and the horizon moved as the loop probed the pool."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     horizon = _horizon(queue, reported_unix=reported_unix,
                        declared_bytes_per_s=declared_mb_s * storage_tiers.MB)
     assert horizon is not None
@@ -670,7 +670,7 @@ def test_a_declared_read_rate_prices_consumption_when_it_is_the_larger(
 def test_an_undefined_horizon_leaves_the_window_as_it_was(
         tmp_path: Path, override: dict[str, object]) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     assert _horizon(queue, **override) is None
 
 

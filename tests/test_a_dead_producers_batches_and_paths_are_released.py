@@ -231,7 +231,7 @@ class _Producer:
         staged.parent.mkdir(parents=True, exist_ok=True)
         staged.write_bytes(payload)
         residency_map.write_fragment(
-            po.output_fragment_root(q.root / pool.RESIDENCY), {
+            po.output_fragment_root(q.root / pool.record_store.RESIDENCY), {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": namespace,
                 "mover_action_key": mover, "tier_id": TIER,
@@ -250,7 +250,7 @@ class _Producer:
         receipt = stage_release.evict(
             q, mover, consumer_action_key=namespace,
             stage_root=str(self.fleet.stage),
-            residency_root=po.output_fragment_root(q.root / pool.RESIDENCY))
+            residency_root=po.output_fragment_root(q.root / pool.record_store.RESIDENCY))
         assert receipt.get("complete") is True, receipt
         assert self.fleet.ledger.holder_tokens(mover) == {}
         assert not staged.exists()

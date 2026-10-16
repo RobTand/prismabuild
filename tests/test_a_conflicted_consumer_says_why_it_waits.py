@@ -48,8 +48,8 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
 
 def _census(world) -> dict:
     queue = world.queue
-    ready = {path.stem for path in queue.dir(pool.READY).glob("*.json")}
-    claimed = {path.stem for path in queue.dir(pool.CLAIMED).glob("*.json")}
+    ready = {path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")}
+    claimed = {path.stem for path in queue.records.dir(pool.record_store.CLAIMED).glob("*.json")}
     notes: list[str] = []
     unreadable: list[str] = []
     entry = pbstatus._starvation_plan_entry(

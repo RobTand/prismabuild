@@ -25,7 +25,7 @@ from test_pbrun_residency_stage_submission import _detach_key  # noqa: E402
 
 
 def _archived(queue: pool.PoolQueue, key: str) -> list[Path]:
-    directory = queue.residency_plan_path(key).parent / residency_plan.SUPERSEDED
+    directory = queue.records.residency_plan_path(key).parent / residency_plan.SUPERSEDED
     if not directory.is_dir():
         return []
     return [path for path in directory.iterdir()
@@ -40,12 +40,12 @@ def test_finishing_a_consumer_with_no_live_children_retires_its_plan(
     queue = prepared["queue"]
     assert pbrun.main() == 0
     key = _detach_key(capsys)
-    assert queue.residency_plan_path(key).exists()
+    assert queue.records.residency_plan_path(key).exists()
 
     submission._claim(queue, key)
     queue.finish(key, status="executed")
 
-    assert not queue.residency_plan_path(key).exists(), (
+    assert not queue.records.residency_plan_path(key).exists(), (
         "the concluded consumer's plan is still in the census")
     assert residency_plan.read(queue, key) is None
     assert _archived(queue, key), "the plan body was deleted, not archived"
@@ -61,11 +61,11 @@ def test_a_plan_whose_children_are_still_queued_stays_filed(
     submission._tier_cycle(queue, tmp_path / "stage")
     plan = residency_plan.read(queue, key)
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
-    assert queue.item_path(pool.READY, lead).exists()
+    assert queue.records.item_path(pool.record_store.READY, lead).exists()
 
     submission._claim(queue, key)
     queue.finish(key, status="executed")
 
-    assert queue.residency_plan_path(key).exists(), (
+    assert queue.records.residency_plan_path(key).exists(), (
         "a queued child still needs the plan to be reaped")
     assert not _archived(queue, key)
