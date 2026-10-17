@@ -1,5 +1,6 @@
 """Detached attachment discovery must not park its caller on a queue read."""
 from __future__ import annotations
+from prismabuild import submission
 
 from pathlib import Path
 import json

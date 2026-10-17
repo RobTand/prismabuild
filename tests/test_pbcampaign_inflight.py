@@ -92,7 +92,7 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
     keys, events = _window_fakes(monkeypatch, [
         {0: "cache_hit"}, {0: "cache_hit"}, {1: "cache_hit"},
     ], submitted_status="cache_hit")
-    queue = pool.PoolQueue(pbcampaign.configured_store().root / "pb-queue")
+    queue = pool.PoolQueue(pbcampaign.store_for(pbcampaign.__file__).root / "pb-queue")
     path = queue.item_path(pool.CLAIMED, keys[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
@@ -118,7 +118,7 @@ def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
     keys, events = _window_fakes(monkeypatch, [
         {0: "executed"}, {0: "executed", 1: "executed"}, {1: "executed"},
     ])
-    queue = pool.PoolQueue(pbcampaign.configured_store().root / "pb-queue")
+    queue = pool.PoolQueue(pbcampaign.store_for(pbcampaign.__file__).root / "pb-queue")
     path = queue.dir(pool.CLAIMED) / f"{keys[0]}.1.sparky.7.abcdef01{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')

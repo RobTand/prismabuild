@@ -5,6 +5,7 @@ listing succeeds, then opening the named record blocks.  These tests exercise
 the actual forked reader boundary; they never point at a fleet queue.
 """
 from __future__ import annotations
+import pbstatus
 import pbrun
 
 import fcntl
@@ -191,11 +192,11 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "starttime_ticks": pbstatus._starttime_ticks(pid),
                           "since_unix": time.time()})
 
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(pbstatus._reader, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(pbstatus._reader, "_stop_reader", retain)
     try:
         assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == 0
         assert len(retained) == 2  # observation and verification both delivered
@@ -220,11 +221,11 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "starttime_ticks": pbstatus._starttime_ticks(pid),
                           "since_unix": time.time()})
 
     monkeypatch.setattr(action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(pbstatus._reader, "_stop_reader", retain)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
@@ -259,7 +260,7 @@ def test_interrupt_reaps_the_owned_outcome_reader(
 ) -> None:
     queue = _blocked_fifo_queue(tmp_path)
     children: list[int] = []
-    fork = pbrun.pbstatus.os.fork
+    fork = pbstatus.os.fork
 
     def tracked_fork():
         pid = fork()
@@ -270,8 +271,8 @@ def test_interrupt_reaps_the_owned_outcome_reader(
     def interrupt(*_args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus._reader.select, "select", interrupt)
+    monkeypatch.setattr(pbstatus.os, "fork", tracked_fork)
+    monkeypatch.setattr(pbstatus._reader.select, "select", interrupt)
     with pytest.raises(KeyboardInterrupt):
         action_client.report_pool_outcome(queue, KEY, wait_s=0)
     assert len(children) == 1

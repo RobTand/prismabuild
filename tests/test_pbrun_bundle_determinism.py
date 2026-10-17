@@ -138,14 +138,14 @@ def test_the_pack_command_pins_every_setting_that_moves_its_bytes(
 
     checkout = _repository(tmp_path / "checkout", files=4)
     recorded: list[list[str]] = []
-    real_run = pbrun.subprocess.run
+    real_run = submit_core.subprocess.run
 
     def record(argv, *args, **kwargs):
         if isinstance(argv, list):
             recorded.append([str(part) for part in argv])
         return real_run(argv, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun.subprocess, "run", record)
+    monkeypatch.setattr(submit_core.subprocess, "run", record)
     _seal(checkout, tmp_path / "cas")
 
     packs = [argv for argv in recorded if "pack-objects" in argv]
@@ -154,7 +154,7 @@ def test_the_pack_command_pins_every_setting_that_moves_its_bytes(
     pinned = {
         argv[index + 1] for index, part in enumerate(argv) if part == "-c"
     }
-    for key, value in pbrun.BUNDLE_PACK_CONFIGURATION:
+    for key, value in submit_core.BUNDLE_PACK_CONFIGURATION:
         assert f"{key}={value}" in pinned, (
             f"{key} is not pinned on the pack command line"
         )

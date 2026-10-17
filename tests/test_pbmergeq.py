@@ -488,7 +488,7 @@ pbtest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pbtest)
 from prismabuild import capability_eligibility, contracts
 from dataclasses import replace
-configured = replace(pbtest.configured_store(), root=pathlib.Path(sys.argv[2]) / 'fleet',
+configured = replace(pbtest.store_for(pbtest.__file__), root=pathlib.Path(sys.argv[2]) / 'fleet',
     queue_root=pathlib.Path(sys.argv[2]) / 'fleet' / 'pb-queue',
     cas_root=pathlib.Path(sys.argv[2]) / 'fleet' / 'cas')
 pbtest.configured_store = lambda: configured

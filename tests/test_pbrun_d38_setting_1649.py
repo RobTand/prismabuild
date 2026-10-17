@@ -1,5 +1,6 @@
 """Reviewed fleet configuration selects D38 enforcement, with private evidence."""
 from __future__ import annotations
+from submission_support import patch_store
 from prismabuild import submission as submit_core
 
 import json
