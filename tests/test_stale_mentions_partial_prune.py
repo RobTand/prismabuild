@@ -80,7 +80,7 @@ def _receipts_for(receipts, mover: str) -> list[dict]:
 
 
 def _tokens(queue, mover: str) -> dict:
-    return queue.tier_ledger(TIER).holder_tokens(mover)
+    return queue.tier(TIER).holdings(mover)
 
 
 def _acquire_pin(queue, consumer: str, mover: str) -> dict:
@@ -206,7 +206,7 @@ def test_the_successor_adopts_the_survivor_with_zero_recopy(
     # The shortened donor is a per-path cache, never a whole-range donor:
     # whole-range adoption refuses it and leaves donor and tokens untouched.
     root = queue.records.residency_fragment_root()
-    holder = queue.tier_ledger(TIER).holder_tokens(mover)
+    holder = queue.tier(TIER).holdings(mover)
     refused = tier_loop.adopt(
         queue, old_key=mover, new_key=base._key(),
         consumer_action_key=base._key(), tier_id=TIER, phase="head",
@@ -214,7 +214,7 @@ def test_the_successor_adopts_the_survivor_with_zero_recopy(
         residency_root=root)
     assert not refused["adopted"] and refused["reason"] == "donor_range_shortened", (
         refused)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == holder
+    assert queue.tier(TIER).holdings(mover) == holder
     assert os.stat(coherent).st_ino == inode
 
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)

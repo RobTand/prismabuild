@@ -93,8 +93,8 @@ def _fixture(tmp_path: Path):
         step, _authority = pt.reserve_pass(queue, STAGE, units,
                                            admitted=lambda unit: True)
         events.extend(step)
-    ledger = queue.tier_ledger(STAGE)
-    assert int(ledger.holder_tokens(units[0].holder).get("stage_gib", 0)) == 10, events
+    ledger = queue.tier(STAGE)
+    assert int(ledger.holdings(units[0].holder).get('stage_gib', 0)) == 10, events
     window_plan = _window_plan(queue, WINDOW)
     residency_plan.freeze(queue, window_plan)
     queue.publish(
@@ -137,9 +137,8 @@ def test_the_sweep_reaches_the_asked_room(tmp_path: Path) -> None:
     queue, stage, orphans, prefix = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
-    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
-    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[1])
-    ledger = queue.tier_ledger(STAGE)
-    held_prefix = sum(
-        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in prefix)
+    assert not queue.tier(STAGE).holdings(orphans[0])
+    assert not queue.tier(STAGE).holdings(orphans[1])
+    ledger = queue.tier(STAGE)
+    held_prefix = sum((int(ledger.holdings(key).get('stage_gib', 0)) for key in prefix))
     assert held_prefix == 10, "the admitted prefix stays"

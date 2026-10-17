@@ -90,8 +90,8 @@ def _co_owner(fleet, names) -> tuple[str, str]:
     queue.finish(mover, status="executed", detail={"returncode": 0})
     # The owner under test holds the one token its fixture minted; the mint
     # sets the tier's capacity, so this owner's token needs a second one.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1}) is True
+    queue.tier(TIER).mint({'stage_gib': 2})
+    assert queue.tier(TIER).take(mover, {'stage_gib': 1}) is True
     return consumer, mover
 
 
@@ -231,7 +231,7 @@ def test_removing_the_co_owner_can_evict_the_whole_owner(fleet):
             and entry.get("complete") is True], third
     assert not residency_map.fragment_path(root, consumer, mover).exists()
     assert not any(_path(stage, name).exists() for name in NAMES)
-    assert mover not in queue.tier_ledger(TIER).held_keys()
+    assert mover not in queue.tier(TIER).holders()
 
 
 def test_rewriting_the_co_owner_fragment_reruns_the_census(fleet):
