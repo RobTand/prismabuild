@@ -19,6 +19,7 @@ makes -- that an action executed under SLURM is the same execution the pull
 queue would have performed -- and only an end-to-end run can support it.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -40,6 +41,7 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WORKER = REPOSITORY / "tools" / "prismabuild_worker.py"
@@ -331,7 +333,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # /mnt/shared/prismabuild-fleet/pb-queue, and every test that runs a job to
     # its ending wrote a terminal record into the live queue -- 324 of them,
     # counted on 2026-09-05, each naming a /tmp/pytest-of-rob path.
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     return state
 
 
@@ -1030,7 +1032,7 @@ def test_withdraw_cancels_the_job_the_record_names(
     tmp_path: Path, fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     job = _submit(tmp_path, resources=sl.LaneResources(), seed="withdraw")
-    assert pbrun.withdraw_slurm_main([job.action_key[:12]], by="test") == 0
+    assert submit_core.withdraw_slurm_main([job.action_key[:12]], by="test", store=pbrun.configured_store(), display=pbrun.render) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     assert f"cancelled slurm job {job.job_id}" in capsys.readouterr().err
 
@@ -1043,8 +1045,8 @@ def test_withdraw_refuses_a_prefix_that_names_two_actions(
 
     _submit(tmp_path, resources=sl.LaneResources(), seed="a")
     _submit(tmp_path, resources=sl.LaneResources(), seed="b")
-    assert pbrun.withdraw_slurm_main([""], by="test") == 2
-    assert pbrun.withdraw_slurm_main(["0123456789ab"], by="test") == 2
+    assert submit_core.withdraw_slurm_main([""], by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
+    assert submit_core.withdraw_slurm_main(["0123456789ab"], by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
     assert not (fleet / "cancelled").exists()
     assert "no slurm submission matches" in capsys.readouterr().err
 
@@ -1060,7 +1062,7 @@ def test_withdrawing_four_and_missing_one_still_withdraws_three(
         for index in range(3)
     ]
     keys = [job.action_key for job in jobs] + ["deadbeefdead"]
-    assert pbrun.withdraw_slurm_main(keys, by="test") == 2
+    assert submit_core.withdraw_slurm_main(keys, by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
     assert sorted((fleet / "cancelled").read_text().split()) == sorted(
         job.job_id for job in jobs)
 
@@ -1250,12 +1252,12 @@ def test_pbrun_reports_a_slurm_execution_the_way_it_reports_a_pool_one(
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
     assert code == 0
     assert cas.lookup(action) is not None
     err = capsys.readouterr().err
@@ -1277,11 +1279,11 @@ def test_a_priority_reaches_sbatch_through_the_whole_lane(
     action = _paper_action(tmp_path, "priority-chain")
     request = cas.publish_action_request(action)
 
-    pbrun.slurm_outcome(
+    submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
 
@@ -1304,13 +1306,13 @@ def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
     action = _paper_action(tmp_path, "notices")
     request = cas.publish_action_request(action)
 
-    pbrun.slurm_outcome(
+    submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
         placement_notice="pbrun: PINNED to sparky -- test notice",
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     err = capsys.readouterr().err
     assert "pbrun: PINNED to sparky -- test notice" in err
@@ -1326,12 +1328,12 @@ def test_a_gpu_action_is_not_told_its_slot_has_no_device(
     action = _paper_action(tmp_path, "has-a-device")
     request = cas.publish_action_request(action)
 
-    pbrun.slurm_outcome(
+    submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["gb10"],
         demand={"gpu": 1, "mem_gb": 16}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     assert "no GPU" not in capsys.readouterr().err
 
@@ -1365,12 +1367,12 @@ def test_an_attached_pbrun_joins_a_running_job_instead_of_submitting_again(
     def ends_while_we_wait(_seconds: float) -> None:
         state.write_text("COMPLETED|0:0\n")
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, queue_root=queue,
         poll_s=0.0, sleep=ends_while_we_wait,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     # Nothing new was submitted, and the ending filed is the recorded job's.
     assert [row["job_id"] for row in _submissions(fleet)] == [int(running.job_id)]
@@ -1407,11 +1409,11 @@ def test_a_recorded_submission_the_controller_forgot_is_submitted_afresh(
     # nothing about it, which is not the same as knowing what it did.
     (fleet / f"{forgotten.job_id}.state").unlink()
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, queue_root=queue, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     submitted = [row["job_id"] for row in _submissions(fleet)]
     assert len(submitted) == 2 and submitted[0] == int(forgotten.job_id)
@@ -1429,11 +1431,11 @@ def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, "ghost")
     request = cas.publish_action_request(action)
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
     assert code == 1
     assert "published no receipt" in capsys.readouterr().err
 
@@ -1451,11 +1453,11 @@ def test_a_job_slurm_killed_at_the_time_limit_is_reported_as_a_timeout(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, "over-time")
     request = cas.publish_action_request(action)
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
     err = capsys.readouterr().err
     assert code == 1
     assert "failed (TIMEOUT)" in err
@@ -1469,12 +1471,12 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, "stopped")
     request = cas.publish_action_request(action)
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    )
-    assert code == pbrun.action_client.WITHDRAWN_EXIT
+    store=pbrun.configured_store(), display=pbrun.render)
+    assert code == submit_core.action_client.WITHDRAWN_EXIT
 
 
 #: A runtime every box can open.  These tests submit from ``tmp_path``, which
@@ -1507,18 +1509,18 @@ def _slurm_main_kwargs(
         raise AssertionError("the slurm path built a PoolQueue")
 
     seen: dict[str, object] = {}
-    monkeypatch.setattr(pbrun.pool, "PoolQueue", refuse)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(submit_core.pool, "PoolQueue", refuse)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd: tmp_path)
     payload = tmp_path / "bundle.bin"
     payload.write_bytes(b"not really a bundle\n")
     entry, _ = pb.PrismaBuildCAS(tmp_path / "fleet" / "cas").ingest_input(
         payload, input_id="pbrun.checkout-snapshot")
     monkeypatch.setattr(
-        pbrun, "build_git_checkout_snapshot", lambda *_a, **_kw: {"input": entry})
+        submit_core, 'snapshot_checkout', lambda *_a, **_kw: {"input": entry})
     monkeypatch.setattr(
-        pbrun.pb.PrismaBuildCAS, "publish_action_request",
+        submit_core.pb.PrismaBuildCAS, "publish_action_request",
         lambda self, action: Path("/requests/test.json"))
 
     def capture(action, **kwargs):
@@ -1528,7 +1530,7 @@ def _slurm_main_kwargs(
         return finish_submission(kwargs["report"], key=action["action_key"],
                                  transport="slurm")
 
-    monkeypatch.setattr(pbrun, "slurm_outcome", capture)
+    monkeypatch.setattr(submit_core, "slurm_outcome", capture)
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--transport", "slurm", "--cwd", str(tmp_path),
         *argv_tail, "--", "/bin/true",
@@ -1560,8 +1562,8 @@ def test_main_hands_the_slurm_path_the_pin_notice_it_would_have_printed(
     seen = _slurm_main_kwargs(tmp_path, monkeypatch, "--here")
     notice = str(seen["placement_notice"])
     assert "PINNED" in notice
-    assert pbrun.NO_CENSUS in notice
-    assert pbrun.UNANNOUNCED_CENSUS not in notice
+    assert submit_core.NO_CENSUS in notice
+    assert submit_core.UNANNOUNCED_CENSUS not in notice
 
 
 def test_the_priority_a_caller_asked_for_reaches_the_lane(
@@ -1588,21 +1590,21 @@ def test_the_transport_default_is_still_the_pull_queue(
     """
 
     routed: list[str] = []
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    monkeypatch.setattr(pbrun.pool, "PoolQueue", lambda root: ("queue", root))
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    monkeypatch.setattr(submit_core.pool, "PoolQueue", lambda root: ("queue", root))
     monkeypatch.setattr(
-        pbrun, "withdraw_main",
+        submit_core, "withdraw_main",
         lambda queue, prefixes, **_kw: routed.append("pool") or 0)
     monkeypatch.setattr(
-        pbrun, "withdraw_slurm_main",
+        submit_core, "withdraw_slurm_main",
         lambda prefixes, **_kw: routed.append("slurm") or 0)
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--withdraw", "abc123abc123"])
 
-    monkeypatch.delenv(pbrun.DEFAULT_TRANSPORT_ENV, raising=False)
+    monkeypatch.delenv(submit_core.DEFAULT_TRANSPORT_ENV, raising=False)
     assert pbrun.main() == 0
     assert routed == ["pool"]
 
-    monkeypatch.setenv(pbrun.DEFAULT_TRANSPORT_ENV, "slurm")
+    monkeypatch.setenv(submit_core.DEFAULT_TRANSPORT_ENV, "slurm")
     assert pbrun.main() == 0
     assert routed == ["pool", "slurm"]
 
@@ -1626,12 +1628,12 @@ def test_a_refusal_from_sbatch_reaches_the_caller_as_a_refusal(
     action = _paper_action(tmp_path, "refused")
     request = cas.publish_action_request(action)
     with pytest.raises(SystemExit) as refusal:
-        pbrun.slurm_outcome(
+        submit_core.slurm_outcome(
             action, cas=cas, request_path=request, tags=["nosuchbox"],
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False, timeout_s=600.0,
             wait_s=60.0, retry_safe=False, max_attempts=1,
             runtime_root=REPOSITORY, poll_s=0.0,
-        )
+        store=pbrun.configured_store(), display=pbrun.render)
     message = str(refusal.value)
     assert "slurm refused this action" in message
     assert "nosuchbox" in message
