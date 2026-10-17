@@ -7,6 +7,7 @@ therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
 
+import functools
 import json
 import multiprocessing
 import os
@@ -25,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import filesystem_floor as ff  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import pool, tier_holdings  # noqa: E402
 
 GIB = ff.GIB
 HOST = socket.gethostname()
@@ -621,16 +622,19 @@ def test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage(
 def _contend(queue_root: str, tier: str, host: str, rounds: int, errors, wins) -> None:
     os.environ[ff.MODE_ENV] = "enforce"
     queue = pool.PoolQueue(queue_root)
-    ledgers = [queue.ledger(host), queue.tier(tier)]
+    host_ledger, tier_owner = queue.ledger(host), queue.tier(tier)
+    takes = [host_ledger.acquire, tier_owner.take]
+    returns = [host_ledger.release, functools.partial(
+        tier_owner.release_unspent, authority=tier_holdings.Unspent.NEVER_STARTED)]
     kinds = ["spool_gb", "stage_gib"]
     try:
         for i in range(rounds):
             which = (os.getpid() + i) % 2
             key = f"k{os.getpid()}-{i}"
-            if ledgers[which].acquire(key, {kinds[which]: 1}):
+            if takes[which](key, {kinds[which]: 1}):
                 with wins.get_lock():
                     wins.value += 1
-                ledgers[which].release(key)
+                returns[which](key)
             ff.refresh_local(queue_root, force=True)
     except Exception as exc:                                    # noqa: BLE001
         errors.put(repr(exc))

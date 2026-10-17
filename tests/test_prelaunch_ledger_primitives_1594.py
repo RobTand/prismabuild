@@ -468,7 +468,8 @@ def test_a_partial_ram_split_moves_both_halves_by_the_moved_count(
 
     tier = ram_queue.tier(RAM_TIER)
     host = ram_queue.ledger(HOST)
-    assert tier.take(SRC, {'ram_gib': 6})
+    pending = tier.begin_take(SRC, {'ram_gib': 6})
+    assert pending is not None and tier.commit_take(SRC, pending) == 6
     assert host.acquire("ram-host:" + SRC, {"mem_gb": 6})
     faults: list = []
 
@@ -492,7 +493,8 @@ def test_a_failed_ram_host_half_is_named_not_swallowed(
 
     tier = ram_queue.tier(RAM_TIER)
     host = ram_queue.ledger(HOST)
-    assert tier.take(SRC, {'ram_gib': 6})
+    pending = tier.begin_take(SRC, {'ram_gib': 6})
+    assert pending is not None and tier.commit_take(SRC, pending) == 6
     assert host.acquire("ram-host:" + SRC, {"mem_gb": 6})
     real_count = pool.ResourceLedger.transfer_count
 
