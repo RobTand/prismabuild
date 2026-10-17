@@ -21,6 +21,7 @@ renames a second machine would.  Nothing touches the live queue.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows, FleetWorld
 
 from pathlib import Path
 import sys
@@ -49,12 +50,6 @@ def _as_host(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
 
 
-def _queue(root: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(root)
-    q.records.ensure_layout()
-    return q
-
-
 GIB = 1 << 30
 
 
@@ -76,18 +71,6 @@ def _range_block(tier: str, range_bytes: int) -> dict[str, object]:
     }
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        tags=[],
-        **kw,
-    )
-
-
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
     """The denial log is host-local; read the one belonging to ``q``'s host."""
 
@@ -106,15 +89,29 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     """One 40 GiB stage, two 30 GiB movers on different boxes: one runs."""
 
     _as_host(monkeypatch, "dl380g10")
-    minter = _queue(shared_root)
+    minter = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
     minter.tier(TIER).mint({'stage_gib': 40, 'fill_mb_s_pool_side': 242})
 
     _as_host(monkeypatch, "sparky")
-    sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 30, FILL: 200},
-             residency=_range_block(TIER, 30 * GIB))
-    _publish(sparky, ON_SPARKLINA, {"cpu": 1, STAGE: 30, FILL: 200},
-             residency=_range_block(TIER, 30 * GIB))
+    sparky = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
+    ActionRows(sparky).publish(
+        ON_SPARKY,
+        cas_root=sparky.root / 'cas',
+        checkout_root=sparky.root / 'co',
+        worker_script=sparky.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 30, FILL: 200},
+        tags=[],
+        residency=_range_block(TIER, 30 * GIB),
+    )
+    ActionRows(sparky).publish(
+        ON_SPARKLINA,
+        cas_root=sparky.root / 'cas',
+        checkout_root=sparky.root / 'co',
+        worker_script=sparky.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 30, FILL: 200},
+        tags=[],
+        residency=_range_block(TIER, 30 * GIB),
+    )
     first = sparky.claim(owner="sparky-worker", capacity={"cpu": 8})
     assert first is not None
     winner = first["action_key"]
@@ -125,7 +122,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     # The other box now looks at the remaining row.  It has CPU to spare and
     # the placement matches; only the tier is short.
     _as_host(monkeypatch, "sparklina")
-    sparklina = _queue(shared_root)
+    sparklina = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
     loser = ON_SPARKLINA if winner == ON_SPARKY else ON_SPARKY
     assert sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8}) is None
 
@@ -168,21 +165,42 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
     """The refused box keeps claiming everything else it can seat."""
 
     _as_host(monkeypatch, "dl380g10")
-    _queue(shared_root).tier(TIER).mint({'stage_gib': 1})
+    FleetWorld(shared_root.parent, queue_name=shared_root.name).queue.tier(TIER).mint({'stage_gib': 1})
 
     _as_host(monkeypatch, "sparky")
-    sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 1},
-             residency=_range_block(TIER, 1))
+    sparky = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
+    ActionRows(sparky).publish(
+        ON_SPARKY,
+        cas_root=sparky.root / 'cas',
+        checkout_root=sparky.root / 'co',
+        worker_script=sparky.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 1},
+        tags=[],
+        residency=_range_block(TIER, 1),
+    )
     held = sparky.claim(owner="sparky-worker", capacity={"cpu": 8})
     assert held is not None and held["action_key"] == ON_SPARKY
 
     _as_host(monkeypatch, "sparklina")
-    sparklina = _queue(shared_root)
-    _publish(sparklina, ON_SPARKLINA, {"cpu": 1, STAGE: 1},
-             residency=_range_block(TIER, 1))
+    sparklina = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
+    ActionRows(sparklina).publish(
+        ON_SPARKLINA,
+        cas_root=sparklina.root / 'cas',
+        checkout_root=sparklina.root / 'co',
+        worker_script=sparklina.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 1},
+        tags=[],
+        residency=_range_block(TIER, 1),
+    )
     ordinary = "3" * 64
-    _publish(sparklina, ordinary, {"cpu": 1})
+    ActionRows(sparklina).publish(
+        ordinary,
+        cas_root=sparklina.root / 'cas',
+        checkout_root=sparklina.root / 'co',
+        worker_script=sparklina.root / 'worker.py',
+        resources={'cpu': 1},
+        tags=[],
+    )
     claimed = sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8})
     # The tier-hungry row was passed over; the ordinary row ran.
     assert claimed is not None and claimed["action_key"] == ordinary
@@ -194,18 +212,32 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
     shared_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _as_host(monkeypatch, "dl380g10")
-    _queue(shared_root).tier(TIER).mint({'stage_gib': 4})
+    FleetWorld(shared_root.parent, queue_name=shared_root.name).queue.tier(TIER).mint({'stage_gib': 4})
     _as_host(monkeypatch, "sparky")
-    sparky = _queue(shared_root)
-    _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 5},
-             residency=_range_block(TIER, 5 * GIB))
+    sparky = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
+    ActionRows(sparky).publish(
+        ON_SPARKY,
+        cas_root=sparky.root / 'cas',
+        checkout_root=sparky.root / 'co',
+        worker_script=sparky.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 5},
+        tags=[],
+        residency=_range_block(TIER, 5 * GIB),
+    )
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
     denial = _denial(sparky, ON_SPARKY)
     assert denial is not None and denial["reason"] == "never_fits_tier_capacity"
 
     # A tier nobody has minted at all is a different answer from a busy one.
     unknown = "4" * 64
-    _publish(sparky, unknown, {"cpu": 1, "stage_gib@prismabuild-stage:nowhere": 1},
-             residency=_range_block("prismabuild-stage:nowhere", 1))
+    ActionRows(sparky).publish(
+        unknown,
+        cas_root=sparky.root / 'cas',
+        checkout_root=sparky.root / 'co',
+        worker_script=sparky.root / 'worker.py',
+        resources={'cpu': 1, 'stage_gib@prismabuild-stage:nowhere': 1},
+        tags=[],
+        residency=_range_block('prismabuild-stage:nowhere', 1),
+    )
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
     assert _denial(sparky, unknown)["reason"] == "tier_unknown"

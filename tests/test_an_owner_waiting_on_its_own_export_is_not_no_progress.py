@@ -19,6 +19,7 @@ launch token and lands export bytes in finite steps on an injected clock.
 The real execution loop, watch and export verdict decide each outcome.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 from dataclasses import dataclass
 import json
@@ -75,7 +76,7 @@ def clock(monkeypatch, request):
     unix_origin, monotonic_origin = getattr(request, "param", (FIXED_UNIX, 0.0))
     clock = _Clock(unix_origin=unix_origin, monotonic_origin=monotonic_origin)
     monkeypatch.setattr(pool, "time", clock)
-    monkeypatch.setattr(pool, "_now", clock.time)
+    FleetClock(source=clock.time).install(monkeypatch, scope="pool")
     monkeypatch.setattr(progress, "time", clock)
     monkeypatch.setattr(pb, "time", clock)
     monkeypatch.setattr(pool.materialize, "time", clock)
@@ -250,18 +251,17 @@ def _seal_export(tmp_path: Path, item, *, seed: str, owner: str | None = None
     return str(action["action_key"]), destination
 
 
-def _publish(queue: pool.PoolQueue, item, export: str) -> None:
-    queue.publish(action_key=export, cas_root=item["cas_root"],
-                  checkout_root=item["checkout_root"],
-                  worker_script=item["worker_script"],
-                  dependent_of=str(item["action_key"]))
-
-
 def _claim(queue: pool.PoolQueue, item, export: str, *,
            claimed_unix: float = 1.0) -> None:
     """Hand ``export`` to ``claimed/``, as a claim on another box would."""
 
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     source = queue.records.item_path(pool.record_store.READY, export)
     record = json.loads(source.read_text())
     source.unlink()
@@ -474,7 +474,13 @@ def test_a_refused_or_withheld_export_is_not_waited_on(
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="denied")
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     ready = json.loads(queue.records.item_path(pool.record_store.READY, export).read_text())
     queue._record_denial_transition(ready, host="sparky", reason=reason,
                                     decision_reason=None)
@@ -496,7 +502,13 @@ def test_an_export_the_spool_refused_is_not_waited_on(tmp_path: Path) -> None:
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="spoolrefused")
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     filed = (queue.root / produced_spool.REFUSALS_SUBDIR / str(item["action_key"])
              / f"spoolrefused.{export[:16]}.export.local-source-changed.json")
     filed.parent.mkdir(parents=True)
@@ -517,7 +529,13 @@ def test_a_queued_export_is_waited_on_for_one_window(tmp_path: Path) -> None:
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="queued")
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     path = _declare(queue, item, [export], since_unix=100.0)
 
     first = _verdict(queue, item, path, now=1000.0)
