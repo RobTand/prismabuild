@@ -22,8 +22,8 @@ from prismabuild import residency_plan
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from prewarm_fixture import Fleet, data_manifest, phase_table  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import manifest_promotion  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import manifest_promotion  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 HOST = "dl380g10"
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -482,7 +482,7 @@ def test_priority_zero_is_not_minus_ten(tmp_path):
 def _driven_cycle(fleet, tmp_path, stage_root):
     """One real tier_loop cycle over a stub stage tier (never the live one)."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
 

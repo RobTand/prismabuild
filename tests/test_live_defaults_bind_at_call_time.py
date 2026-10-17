@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 from test_slurm_lane import _paper_action  # noqa: E402
 

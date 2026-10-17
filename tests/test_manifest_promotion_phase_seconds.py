@@ -17,7 +17,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from prewarm_fixture import Fleet, phase_table  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import manifest_promotion  # noqa: E402
+from prismabuild import manifest_promotion  # noqa: E402
 
 from test_manifest_rows_gain_residency_plans import (  # noqa: E402
     NAMED_FILES, _manifest_row, _ready_item, _stage_tier)
