@@ -107,8 +107,7 @@ def test_declared_window_without_room_stalls_for_room(tmp_path) -> None:
               if event.get("event") == "window-stalled"]
     assert any(event.get("reason") == "prelaunch_waiting_for_room"
                for event in stalls)
-    assert queue.tier_ledger(TIER).holder_tokens(unit.holder).get(
-        "stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(unit.holder).get('stage_gib', 0) == 0
 
 
 def test_undeclared_window_calls_window_without_held_flag(
@@ -138,7 +137,7 @@ def test_undeclared_window_calls_window_without_held_flag(
 def test_multi_tier_gang_gets_unsupported_and_no_holder(tmp_path) -> None:
     """A gang across tiers reserves nowhere and names its reason."""
     queue = _queue(tmp_path, stage_gib=300)
-    queue.mint_tier_capacity(OTHER_TIER, {"stage_gib": 300})
+    queue.tier(OTHER_TIER).mint({'stage_gib': 300})
     tiers = {TIER: _stage(queue, TIER), OTHER_TIER: _stage(queue, OTHER_TIER)}
     group = _hexkey("gang-group")[:32]
     first = _hexkey("gang-first")
@@ -155,7 +154,7 @@ def test_multi_tier_gang_gets_unsupported_and_no_holder(tmp_path) -> None:
                and event.get("reason") == pt.UNSUPPORTED_MULTI_TIER
                for event in events)
     for tier_id in (TIER, OTHER_TIER):
-        held = queue.tier_ledger(tier_id).held_keys()
+        held = queue.tier(tier_id).holders()
         assert not [key for key in held
                     if key.startswith(pg.HOLDER_PREFIX)]
 
@@ -182,8 +181,7 @@ def test_superseded_declared_unit_releases_its_group(tmp_path) -> None:
     events = tier_loop.residency_window(queue, tiers=tiers)
     assert any(event.get("event") == "prelaunch-group-released"
                for event in events)
-    assert queue.tier_ledger(TIER).holder_tokens(unit.holder).get(
-        "stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(unit.holder).get('stage_gib', 0) == 0
 
 
 def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
@@ -197,8 +195,8 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
                         "host": "dl380g10", "mountpoint": str(ram),
                         "epoch": EPOCH}}
     holder = pg.holder_name(_hexkey("ram-unit"), RAM_TIER, ["phase-a"])
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(holder, {"ram_gib": 2})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(holder, {'ram_gib': 2})
     queue.record_move(holder, {
         "consumer_action_key": _hexkey("ram-consumer"), "tier_id": RAM_TIER,
         "ram_root": str(ram), "manifest_sha256": MANIFEST,
@@ -209,4 +207,4 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
         queue, tiers=tiers)
     assert all(event.get("holder") != holder and event.get("mover") != holder
                for event in events)
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(holder) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(holder) == {'ram_gib': 2}

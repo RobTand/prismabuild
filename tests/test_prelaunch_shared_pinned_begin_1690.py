@@ -36,6 +36,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan, TIER)
+from prismabuild import tier_holdings
 
 CAPACITY = 156
 # Four chunks: 40 + 40 + 40 + 1 = 121.
@@ -55,7 +56,7 @@ def _stage(queue, tier):
 
 
 def _holder_tokens(queue, name) -> int:
-    return int(queue.tier_ledger(TIER).holder_tokens(name).get("stage_gib", 0))
+    return int(queue.tier(TIER).holdings(name).get('stage_gib', 0))
 
 
 def _movers_of(unit):
@@ -121,8 +122,7 @@ def _land_range(queue, stage_root: Path, *, consumer: str, mover: str,
         f"/pool/{manifest[:8]}/{name}/part-0.bin", 0)
     entries = {key: {"stage_path": str(path), "bytes": size, "offset": 0,
                      "sha256": "b" * 64}}
-    assert queue.tier_ledger(TIER).acquire(
-        mover, {"stage_gib": storage_tiers.stage_tokens_for_bytes(size)})
+    assert queue.tier(TIER).take(mover, {'stage_gib': storage_tiers.stage_tokens_for_bytes(size)})
     residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
@@ -223,7 +223,7 @@ def _state_1690(tmp_path):
             residency_root=queue.root / pool.record_store.RESIDENCY,
             reason="orphan-sweep")
         assert receipt["complete"] is True, receipt
-        assert not queue.tier_ledger(TIER).holder_tokens(mover)
+        assert not queue.tier(TIER).holdings(mover)
     # The incident's own ledger shape: the pinned pair hold 80, the
     # swept pair stand done with no tokens.
     assert _holder_tokens(queue, movers[0]) == 40
@@ -231,11 +231,11 @@ def _state_1690(tmp_path):
     for mover in movers:
         done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
         assert isinstance(done, dict) and done.get("status") == "executed"
-    ledger = queue.tier_ledger(TIER)
-    held = int(ledger.held().get("stage_gib", 0))
+    ledger = queue.tier(TIER)
+    held = int(ledger.holdings().get('stage_gib', 0))
     assert held == 80, held
-    assert ledger.acquire("filler-1690", {"stage_gib": 6}) is True
-    assert ledger.available().get("stage_gib") == 70
+    assert ledger.take('filler-1690', {'stage_gib': 6}) is True
+    assert ledger.free_supply().get('stage_gib') == 70
     second = _hexkey("second-consumer-1690")
     plan_two = _declared_shared_plan(queue, second, SPECS, label="second",
                                      manifest=manifest)
@@ -246,12 +246,12 @@ def _state_1690(tmp_path):
 
 def _claim_chunk(queue, gib: int) -> str:
     """Claim one staged chunk through its fence with no second charge."""
-    ledger = queue.tier_ledger(TIER)
-    free_before = ledger.available().get("stage_gib")
+    ledger = queue.tier(TIER)
+    free_before = ledger.free_supply().get('stage_gib')
     got = queue.claim(tags=["dl380g10"], owner="w-1690-chunk")
     assert got is not None, "a staged chunk must claim"
     mover = str(got["action_key"])
-    assert ledger.available().get("stage_gib") == free_before
+    assert ledger.free_supply().get('stage_gib') == free_before
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     return mover
@@ -297,7 +297,7 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
     queue.finish(mover, status="executed")
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
     assert isinstance(done, dict) and done.get("status") == "executed"
-    assert queue.tier_ledger(TIER).holder_tokens(mover)
+    assert queue.tier(TIER).holdings(mover)
 
 
 def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
@@ -316,8 +316,8 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
                       unit.demand_gib, _movers_of(unit))
     assert (found.h, found.p, found.m, found.s) == (0, 41, 0, 80)
     assert pg.incremental_need_gib(found, unit.demand_gib) == 0
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.available().get("stage_gib") == 70 - 41
+    ledger = queue.tier(TIER)
+    assert ledger.free_supply().get('stage_gib') == 70 - 41
     events, _authority = pt.reserve_pass(queue, TIER, units,
                                          admitted=lambda found: True)
     assert any(event["event"] == "prelaunch-acquisition-committed"
@@ -329,13 +329,13 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     total = _holder_tokens(queue, unit.holder) + sum(
         _holder_tokens(queue, mover) for mover in _movers_of(unit))
     assert total == 121, total
-    capacity, _unreadable = ledger.capacity_census()
+    capacity, _unreadable = ledger.mint_census()
     assert capacity.get("stage_gib", 0) == CAPACITY
     # No token is held twice: the group holder, the pinned pair and
     # the filler name disjoint sets under the same capacity.
     names: set[str] = set()
     for holder in [unit.holder, "filler-1690", *_movers_of(unit)]:
-        held = set(pool.held_names_visible(ledger, holder))
+        held = set(ledger.holder_state(holder))
         assert not (held & names), holder
         names |= held
     seen: list[dict] = []
@@ -378,13 +378,13 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     assert isinstance(row, dict)
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "resident", verdict
-    held_before = dict(ledger.held())
+    held_before = dict(ledger.holdings())
     got = queue.claim(tags=["dl380g10"], owner="w-1690-consumer")
     assert got is not None and got["action_key"] == second, got
     assert got["residency_verdict"]["state"] == "resident"
-    assert dict(ledger.held()) == held_before
-    assert ledger.available().get("stage_gib", 0) >= 0
-    capacity, _unreadable = ledger.capacity_census()
+    assert dict(ledger.holdings()) == held_before
+    assert ledger.free_supply().get('stage_gib', 0) >= 0
+    capacity, _unreadable = ledger.mint_census()
     assert sum(held_before.values()) <= capacity.get("stage_gib", 0)
 
 
@@ -419,7 +419,7 @@ def test_a_declined_begin_reports_its_need_and_reason(tmp_path) -> None:
     """No room: the begin names its amount and the ledger's own reason."""
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     tiers = {TIER: _stage(queue, TIER)}
-    queue.tier_ledger(TIER).acquire("squatter-1690", {"stage_gib": 150})
+    queue.tier(TIER).take('squatter-1690', {'stage_gib': 150})
     second = _hexkey("starved-1690")
     plan = _declared_plan(queue, second, SPECS, tag="starved1690")
     from test_prelaunch_tier_publish_1594 import _live
@@ -469,11 +469,11 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
     units = pt.declared_units(queue, {TIER: {"tier": "stage"}},
                               [_consumer(second)])
     unit = units[0]
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.available().get("stage_gib") == CAPACITY
+    ledger = queue.tier(TIER)
+    assert ledger.free_supply().get('stage_gib') == CAPACITY
     # Another process holds the tier mint lock: the same-thread lock
     # would nest, so refuse the guard the way the held lock answers.
-    real_ledger = queue.tier_ledger
+    real_ledger = queue.tier
 
     def busy_ledger(tier_id: str):
         found = real_ledger(tier_id)
@@ -485,7 +485,7 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
         found._mutation_guard = refused
         return found
 
-    monkeypatch.setattr(queue, "tier_ledger", busy_ledger)
+    monkeypatch.setattr(queue, 'tier', busy_ledger)
     events, _authority = pt.reserve_pass(queue, TIER, units,
                                          admitted=lambda found: True)
     declines = [event for event in events
@@ -494,7 +494,7 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
     assert declines[0]["need_gib"] == 121
     assert declines[0]["reason"] == (
         "ledger lock busy: another writer holds the tier mint lock")
-    assert ledger.available().get("stage_gib") == CAPACITY
+    assert ledger.free_supply().get('stage_gib') == CAPACITY
     seen: list[dict] = []
     seen.extend(tier_loop.residency_window(queue, tiers=tiers))
     stalls = [event for event in seen
@@ -509,19 +509,18 @@ def _prepared_shared_recovery(tmp_path):
     """Lose an unstaged chunk's row and tokens after the shared group commits."""
     import prelaunch_tier as pt
     queue, tiers, consumer, plan, movers = _state_1690(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     unit = pt.declared_units(queue, tiers, [_consumer(consumer)])[0]
     for _ in range(10):
         tier_loop.residency_window(queue, tiers=tiers)
-        assert ledger.held().get("stage_gib", 0) <= CAPACITY
+        assert ledger.holdings().get('stage_gib', 0) <= CAPACITY
     found = pg.census(queue, TIER, unit.unit, unit.holder,
                       unit.demand_gib, movers)
     assert (found.h, found.p, found.m, found.s) == (0, 0, 41, 80)
     assert found.receipts["committed.json"]["demand_gib"] == 121
     assert queue.records.item_path(pool.record_store.READY, movers[2]).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, movers[2]).exists()
-    shared = {mover: set(pool.held_names_visible(ledger, mover))
-              for mover in movers[:2]}
+    shared = {mover: set(ledger.holder_state(mover)) for mover in movers[:2]}
     # The orphan sweep removed this range. Its replacement has not run,
     # so this fault loses tokens without leaving staged bytes uncovered.
     namespace = residency_plan.share_namespace(
@@ -529,7 +528,7 @@ def _prepared_shared_recovery(tmp_path):
         80 * storage_tiers.GIB, 120 * storage_tiers.GIB)
     assert not residency_map.read_fragments(
         queue.records.residency_fragment_root(), namespace)
-    assert ledger.release(movers[2]) == 40
+    assert ledger.release_unspent(movers[2], authority=tier_holdings.Unspent.NEVER_STARTED) == 40
     queue.records.item_path(pool.record_store.READY, movers[2]).unlink()
     found = pg.census(queue, TIER, unit.unit, unit.holder,
                       unit.demand_gib, movers)
@@ -543,11 +542,11 @@ def test_shared_recovery_preserves_request_amount_and_admits(
     """Recovery reports its actual request, then admits through shared pins."""
     queue, tiers, consumer, plan, movers, unit, shared = (
         _prepared_shared_recovery(tmp_path))
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     intent_before = (unit.receipt_dir / "intent.json").read_bytes()
     if shortage:
-        assert ledger.acquire("recovery-obstruction", {"stage_gib": 50})
-        assert ledger.available()["stage_gib"] == 19
+        assert ledger.take('recovery-obstruction', {'stage_gib': 50})
+        assert ledger.free_supply()['stage_gib'] == 19
         events = tier_loop.residency_window(queue, tiers=tiers)
         decline = next(event for event in events
                        if event["event"] == "prelaunch-begin-declined"
@@ -562,10 +561,10 @@ def test_shared_recovery_preserves_request_amount_and_admits(
         for stall in stalls:
             assert stall["blocked_gib"] == stall["need_gib"] == 40
             assert stall["decline_reason"] == decline["reason"]
-        assert ledger.available()["stage_gib"] == 19
-        assert ledger.release("recovery-obstruction") == 50
+        assert ledger.free_supply()['stage_gib'] == 19
+        assert ledger.release_unspent('recovery-obstruction', authority=tier_holdings.Unspent.NEVER_STARTED) == 50
 
-    free_before = ledger.available()["stage_gib"]
+    free_before = ledger.free_supply()['stage_gib']
     events = tier_loop.residency_window(queue, tiers=tiers)
     recovered = next(event for event in events
                      if event["event"] == "prelaunch-group-topped-up"
@@ -578,17 +577,17 @@ def test_shared_recovery_preserves_request_amount_and_admits(
     amounts.extend(stall[field] for stall in stalls
                    for field in ("blocked_gib", "need_gib"))
     assert amounts == [40] * len(amounts), (recovered, stalls)
-    assert ledger.available()["stage_gib"] == free_before - 40
+    assert ledger.free_supply()['stage_gib'] == free_before - 40
     assert all("decline_reason" not in stall for stall in stalls)
 
     for _ in range(6):
         tier_loop.residency_window(queue, tiers=tiers)
-        assert ledger.held().get("stage_gib", 0) <= CAPACITY
+        assert ledger.holdings().get('stage_gib', 0) <= CAPACITY
         for mover, tokens in shared.items():
-            assert set(pool.held_names_visible(ledger, mover)) == tokens
+            assert set(ledger.holder_state(mover)) == tokens
     names = set()
     for holder in [unit.holder, "filler-1690", *movers]:
-        held = set(pool.held_names_visible(ledger, holder))
+        held = set(ledger.holder_state(holder))
         assert not names.intersection(held)
         names.update(held)
     assert len(names) == 127
@@ -605,11 +604,11 @@ def test_shared_recovery_preserves_request_amount_and_admits(
         queue, tier_loop._planned_consumers(queue, tiers))
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
-    held_before = dict(ledger.held())
+    held_before = dict(ledger.holdings())
     claimed = queue.claim(tags=["dl380g10"], owner="w-1690-recovered")
     assert claimed is not None and claimed["action_key"] == consumer
     assert claimed["residency_verdict"]["state"] == "resident"
-    assert dict(ledger.held()) == held_before
+    assert dict(ledger.holdings()) == held_before
     assert held_before["stage_gib"] == 127 <= CAPACITY
     for mover, gib in zip(movers, (40, 40, 40, 1)):
         assert _holder_tokens(queue, mover) == gib
