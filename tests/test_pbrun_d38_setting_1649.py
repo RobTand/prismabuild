@@ -11,6 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# The preflight fixture seals live evidence and declares an x86 receipt.
+pytestmark = pytest.mark.pbtest_capability("d38_x86_receipt_fixture")
+
 import test_pbrun_d38_gate as h
 
 d38_gate = h.d38_gate

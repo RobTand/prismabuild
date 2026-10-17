@@ -1,0 +1,6 @@
+{
+  "schema": "prismabuild.pbtest_capabilities.v1",
+  "capabilities": {
+    "d38_x86_receipt_fixture": {"tags": ["x86"]}
+  }
+}
