@@ -35,6 +35,17 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("out-ledger", None, "private produced-output instance/commitments.json envelope", "additive",
+               "prismabuild.produced_output:_read_commitments", ("prismabuild.produced_output:_write_commitments",),
+               ("staged", "origin", "admission", "empty", "preserved"),
+               ("absent admission is legacy null; batch-only updates preserve a previously bound admission",), negative_field="batches", stable_paths=True),
+    RecordKind("scope-telemetry", None, "host-local authority and shared attempt telemetry JSON", "additive",
+               "prismabuild.adaptive_cpu:record_completion", ("prismabuild.resource_scope:ResourceScope.sample",), ("complete", "partial"),
+               ("partial or stale attribution grants no learned CPU credit",), negative_field="complete", negative_value=False, stable_paths=True),
+    RecordKind("controller-wave", None, "external controller wave-state.json", "closed",
+               "prismabuild.pool:PoolQueue._awaited_wave_members", (), ("legacy", "published", "empty"),
+               ("members may omit published_unix; writer is external to this repository",), negative_field="waves", caller_input=True),
+
     RecordKind("state-cpu-profile", None, "host-local adaptive profiles.json; never restored from the shared diagnostic copy", "additive",
                "prismabuild.adaptive_cpu:Controller.decision", ("prismabuild.adaptive_cpu:record_completion", "prismabuild.adaptive_cpu:Controller.decision"),
                ("learned", "single", "replay", "live"), ("insufficient samples grant no learned CPU discount",), negative_field=None, stable_paths=True,

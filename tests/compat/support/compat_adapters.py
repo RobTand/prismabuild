@@ -118,6 +118,8 @@ def operate(request, store, load):
     if family.startswith("input-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_input_adapters.py")))["operate"]
         return adapter(request, store, load)
+    if family in ("out-ledger", "scope-telemetry", "controller-wave"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_carrier_envelope_adapters.py")))["operate"](request, store, load)
     if family in ("state-cpu-profile", "state-cpu-jobs", "state-cpu-borrow", "state-export-rates", "state-cpu-sample", "state-gpu"):
         return runpy.run_path(str(Path(__file__).with_name("compat_adaptive_state_adapters.py")))["operate"](request, store, load)
     if family.startswith("state-"):
