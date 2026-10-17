@@ -10,6 +10,7 @@ half that cannot land refuses window growth until it does.
 """
 
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 
 from pathlib import Path
@@ -28,8 +29,7 @@ RAM_TIER = storage_tiers.tier_id("ram", HOST)
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     ledger = queue.ledger(HOST)
     ledger.ensure_capacity({"cpu": 80, "mem_gb": 256})
     queue.tier(RAM_TIER).mint({'ram_gib': 300, storage_tiers.FILL_KIND: 4096})

@@ -55,10 +55,6 @@ def _payload() -> bytes:
     return bytes([i % 251 + 1 for i in range(SIZE)])
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 def _manifest(tmp_path: Path, *, name: str = "manifest.json",
               null_digest: bool = False) -> tuple[Path, str, dict]:
     origin = tmp_path / "origin"
@@ -134,7 +130,7 @@ def _sidecar_identity(queue: pool.PoolQueue, consumer: str,
 
 
 def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
 
@@ -160,7 +156,7 @@ def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
 
 
 def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -209,7 +205,7 @@ def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
 
 
 def test_live_pin_survives_overlapping_copy(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -252,7 +248,7 @@ def test_simultaneous_first_publication_converges(tmp_path: Path) -> None:
     both receipts complete and both sidecars name one incarnation.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     outcomes: dict[str, object] = {}
     barrier = threading.Barrier(2)
@@ -283,7 +279,7 @@ def test_simultaneous_first_publication_converges(tmp_path: Path) -> None:
 
 
 def test_concurrent_overlapping_copies_stay_correct(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     outcomes: dict[str, object] = {}
     barrier = threading.Barrier(2)
@@ -312,7 +308,7 @@ def test_concurrent_overlapping_copies_stay_correct(tmp_path: Path) -> None:
 
 
 def test_crash_partial_temp_recovered(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
@@ -327,7 +323,7 @@ def test_crash_partial_temp_recovered(tmp_path: Path) -> None:
 
 
 def test_different_bytes_under_shared_name_refuse(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
@@ -364,7 +360,7 @@ def test_null_digest_overlap_converges(tmp_path: Path) -> None:
     actually changed refuses instead of invalidating.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(
         tmp_path, name="manifest-null.json", null_digest=True)
     # Manifest entries carry an explicit null digest.
@@ -399,7 +395,7 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
 
     import time
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -467,7 +463,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     """
 
     monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 1.0, raising=False)
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
 
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
@@ -498,7 +494,7 @@ def test_unreadable_proof_state_refuses(tmp_path: Path) -> None:
     refuses with a named error and keeps the published bytes.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)

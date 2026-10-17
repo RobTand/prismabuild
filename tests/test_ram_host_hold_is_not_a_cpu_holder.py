@@ -11,6 +11,7 @@ dl380g10 was refused for as long as the RAM tier held any bytes.
 The memory side must still count the hold: a row that needs the memory the
 fill took is refused, and admitted once the fill releases it.
 """
+from fleet_world import ActionRows
 from pathlib import Path
 import sys
 import time
@@ -44,12 +45,6 @@ def _queue_with_ram_fill(tmp_path, gib):
     return queue
 
 
-def _publish(queue, tmp_path, key, resources):
-    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources=resources)
-
-
 @pytest.mark.parametrize('measurement', [False, True])
 def test_a_ram_fill_hold_does_not_refuse_a_cpu_row(tmp_path, monkeypatch, measurement):
     """The refusal dl380g10 hit: a bounded row beside a RAM fill's hold."""
@@ -63,7 +58,13 @@ def test_a_ram_fill_hold_does_not_refuse_a_cpu_row(tmp_path, monkeypatch, measur
     assert controller.last_decision.get('reason') != 'holder_reservation_unknown'
     assert decision is not None, controller.last_decision
 
-    _publish(queue, tmp_path, 'b' * 64, {'cpu': 1, 'mem_gb': 1})
+    ActionRows(queue).publish(
+        'b' * 64,
+        cas_root=str(tmp_path / 'cas'),
+        checkout_root=str(tmp_path),
+        worker_script='worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+    )
     claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'b' * 64
 
@@ -72,7 +73,13 @@ def test_a_ram_fill_hold_does_not_block_an_unbounded_row(tmp_path, monkeypatch):
     """An undeclared-CPU row needs an empty host; a memory hold leaves it empty."""
     queue = _queue_with_ram_fill(tmp_path, 2)
     cpu_sampler = _idle_host(monkeypatch)
-    _publish(queue, tmp_path, 'c' * 64, {'mem_gb': 1})
+    ActionRows(queue).publish(
+        'c' * 64,
+        cas_root=str(tmp_path / 'cas'),
+        checkout_root=str(tmp_path),
+        worker_script='worker.py',
+        resources={'mem_gb': 1},
+    )
     assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
@@ -80,7 +87,13 @@ def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
     """Exempt from the CPU census, never from the memory pool."""
     queue = _queue_with_ram_fill(tmp_path, 7)
     cpu_sampler = _idle_host(monkeypatch)
-    _publish(queue, tmp_path, 'd' * 64, {'cpu': 1, 'mem_gb': 2})
+    ActionRows(queue).publish(
+        'd' * 64,
+        cas_root=str(tmp_path / 'cas'),
+        checkout_root=str(tmp_path),
+        worker_script='worker.py',
+        resources={'cpu': 1, 'mem_gb': 2},
+    )
     assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.tier('ram:' + str(queue.ledger().host))._release_host(GRANT) == 7
     claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)

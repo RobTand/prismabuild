@@ -56,10 +56,6 @@ def _changed() -> bytes:
     return other
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
     origin = tmp_path / "origin"
     origin.mkdir(parents=True, exist_ok=True)
@@ -113,7 +109,7 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
 
 
 def test_same_consumer_changed_origin_refuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
     digest = hashlib.sha256(_payload()).hexdigest()
@@ -167,7 +163,7 @@ def test_same_consumer_changed_origin_refuses(tmp_path: Path) -> None:
 
 
 def test_same_consumer_unchanged_origin_reuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
 
     first = _run_stage(queue, tmp_path, manifest, manifest_sha,
@@ -188,7 +184,7 @@ def test_same_consumer_unchanged_origin_reuses(tmp_path: Path) -> None:
 
 
 def test_cross_consumer_changed_origin_refuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
 
@@ -219,7 +215,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
     and read them back. Locks in the working path; not a RED test.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
 
