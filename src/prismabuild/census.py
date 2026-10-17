@@ -129,6 +129,7 @@ def movers(queue_root, *, view="live", limit=DEFAULT_MOVER_RECEIPTS, reader=None
     reader, ok, counts = _fresh(reader), True, {}
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         count = 0
+        complete = True
         try:
             listed = reader.queue_records(Path(queue_root) / state)
         except OSError:
@@ -138,11 +139,12 @@ def movers(queue_root, *, view="live", limit=DEFAULT_MOVER_RECEIPTS, reader=None
             record = parsed.record
             if not isinstance(record, dict):
                 ok = False
+                complete = False
                 continue
             residency = record.get("residency")
             if isinstance(residency, Mapping) and "range_start_bytes" in residency:
                 count += 1
-        counts[state] = count
+        counts[state] = count if complete else None
     return _section(counts, inputs=inputs, complete=ok)
 
 
@@ -833,7 +835,7 @@ def _starvation_holders(queue: pool.PoolQueue, tier_id: str,
 def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                            *, ready: set[str], claimed: set[str],
                            notes: list[str], unreadable: list[str],
-                           now: float, reader=None) -> dict:
+                           now: float, reader=None, active_complete: bool = True) -> dict:
     """One residency plan's promotion state, derived, never decided."""
 
     prefix = key[:12]
@@ -853,7 +855,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     ram_tier_id = plan.get("ram_tier_id")
     ram_tier_id = str(ram_tier_id) if isinstance(ram_tier_id, str) else None
     state = ("claimed" if key in claimed else
-             "ready" if key in ready else "absent")
+             "ready" if key in ready else "absent" if active_complete else None)
+    if not active_complete:
+        unreadable.append(f"starvation plan {prefix}: active queue population incomplete")
     accepted: str | None = None
     if state == "claimed":
         lease = _pool_sidecar(queue.records.lease_path(key), reader=reader)
@@ -893,6 +897,13 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     staged = _starvation_holders(queue, tier_id, mover_keys, notes)
     ram_staged = (_starvation_holders(queue, ram_tier_id, ram_keys, notes)
                   if ram_tier_id is not None else {})
+    if any(value is None for value in (*staged.values(), *ram_staged.values())):
+        unreadable.append(f"starvation plan {prefix}: tier holder observations incomplete")
+
+    def observed_publication(mover: str, holdings: Mapping[str, bool | None]) -> bool | None:
+        if mover in ready or mover in claimed or holdings.get(mover) is True:
+            return True
+        return False if active_complete and holdings.get(mover) is False else None
     # Reservations and residency, reported apart (#759).  ``_starvation_
     # holders`` above answers the ledger's question -- what is booked -- and
     # the cursor used to print that as ``staged``, which is how it called the
@@ -932,10 +943,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
         if "mover_row" in phase:
             mover_key = str(phase["mover_row"]["action_key"])
             stage = {"mover_action_key_prefix": mover_key[:12],
-                     "published": mover_key in ready or mover_key in claimed
-                                  or bool(staged.get(mover_key)),
+                     "published": observed_publication(mover_key, staged),
                      "staged": _resident(mover_key),
-                     "reserved": bool(staged.get(mover_key)),
+                     "reserved": staged.get(mover_key),
                      "fragment": mover_key in fragment_movers}
             stage_fragment = mover_key in fragment_movers
         elif isinstance(phase.get("stage_chunks"), list):
@@ -952,10 +962,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                 stage_chunks.append({
                     "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
                     "mover_action_key_prefix": chunk_key[:12],
-                    "published": chunk_key in ready or chunk_key in claimed
-                                 or bool(staged.get(chunk_key)),
+                    "published": observed_publication(chunk_key, staged),
                     "staged": _resident(chunk_key),
-                    "reserved": bool(staged.get(chunk_key)),
+                    "reserved": staged.get(chunk_key),
                     "fragment": chunk_fragment,
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         ram: dict | None = None
@@ -963,10 +972,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
         if "ram_mover_row" in phase:
             ram_key = str(phase["ram_mover_row"]["action_key"])
             ram = {"mover_action_key_prefix": ram_key[:12],
-                   "published": ram_key in ready or ram_key in claimed
-                                or bool(ram_staged.get(ram_key)),
+                   "published": observed_publication(ram_key, ram_staged),
                    "staged": _resident(ram_key, ram=True),
-                   "reserved": bool(ram_staged.get(ram_key)),
+                   "reserved": ram_staged.get(ram_key),
                    # The question the ram tier exists to answer: which phases
                    # have promotion fragments and which have none.
                    "fragment": ram_key in fragment_movers,
@@ -983,10 +991,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                 ram_chunks.append({
                     "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
                     "mover_action_key_prefix": chunk_key[:12],
-                    "published": chunk_key in ready or chunk_key in claimed
-                                 or bool(ram_staged.get(chunk_key)),
+                    "published": observed_publication(chunk_key, ram_staged),
                     "staged": _resident(chunk_key, ram=True),
-                    "reserved": bool(ram_staged.get(chunk_key)),
+                    "reserved": ram_staged.get(chunk_key),
                     "fragment": chunk_key in fragment_movers,
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         phases.append({"name": str(phase["name"]),
@@ -1600,12 +1607,15 @@ def starvation(queue_root: str | Path, *, now: float | None = None, reader=None)
     jobs = census.get("jobs", [])
     ready = {str(job["action_key"]) for job in jobs if job.get("state") == "READY"}
     claimed = {str(job["action_key"]) for job in jobs if job.get("state") == "CLAIMED"}
-    wait_section = waits(queue_root, jobs=jobs, reader=reader)
+    wait_section = waits(queue_root, jobs=jobs, reader=reader,
+                         consumers_complete=census["queue"].get("claimed") is not None)
     waiting = wait_section.value["waiting_claims"]
     notes.extend(wait_section.value["notes"])
     unreadable.extend(wait_section.value["unreadable"])
     plan_section = plans(queue_root, view="starvation", now=moment, reader=reader,
-                         ready=ready, claimed=claimed)
+                         ready=ready, claimed=claimed,
+                         active_complete=all(census["queue"].get(state) is not None
+                                             for state in ("ready", "claimed")))
     plan_rows = plan_section.value["residency_plans"]
     notes.extend(plan_section.value["notes"])
     unreadable.extend(plan_section.value["unreadable"])
@@ -1646,14 +1656,18 @@ def starvation(queue_root: str | Path, *, now: float | None = None, reader=None)
             "not_observable": _starvation_gaps()}
 
 def waits(queue_root, *, view="claims", jobs=None, consumers=None, plan_files=None,
-          reader=None, census_reader=None) -> Section[dict]:
+          reader=None, census_reader=None, consumers_complete: bool = True,
+          plans_complete: bool = True) -> Section[dict]:
     queue = pool.PoolQueue(Path(queue_root).absolute())
     if view == "promotion":
-        return _promotion_waits(queue, consumers, plan_files, reader=reader, census_reader=census_reader)
+        return _promotion_waits(queue, consumers, plan_files, reader=reader, census_reader=census_reader,
+                                consumers_complete=consumers_complete, plans_complete=plans_complete)
     if view != "claims":
         raise ValueError(f"unknown wait census view: {view}")
     if jobs is None:
-        jobs = action_rows(queue_root, reader=reader).value["jobs"]
+        active = action_rows(queue_root, reader=reader).value
+        jobs = active["jobs"]
+        consumers_complete = consumers_complete and active["queue"].get("claimed") is not None
     notes, unreadable = [], []
     waiting: list[dict] = []
     for job in jobs:
@@ -1699,12 +1713,14 @@ def waits(queue_root, *, view="claims", jobs=None, consumers=None, plan_files=No
         })
     return _section({"waiting_claims": waiting, "notes": notes, "unreadable": unreadable},
                     inputs={"queue_root": str(queue.root), "claims": tuple(
-                        str(job.get("action_key")) for job in jobs if job.get("state") == "CLAIMED")},
-                    errors=unreadable)
+                        str(job.get("action_key")) for job in jobs if job.get("state") == "CLAIMED"),
+                        "consumers_complete": consumers_complete},
+                    errors=unreadable, complete=consumers_complete)
 
 
 def plans(queue_root, *, view="cursors", now=None, reader=None, ready=None, claimed=None,
-          listing=None, listing_error=None, active=None, announced=None, census_reader=None) -> Section[dict]:
+          listing=None, listing_error=None, active=None, announced=None, census_reader=None,
+          active_complete: bool = True) -> Section[dict]:
     moment = time.time() if now is None else now
     queue = pool.PoolQueue(Path(queue_root).absolute())
     inputs = {"queue_root": str(queue.root), "view": view, "sampled_unix": moment}
@@ -1716,6 +1732,14 @@ def plans(queue_root, *, view="cursors", now=None, reader=None, ready=None, clai
         return _section(value, inputs=inputs, errors=value["unreadable"])
     if view != "starvation":
         raise ValueError(f"unknown plan census view: {view}")
+    if ready is None or claimed is None:
+        captured = action_rows(queue_root, reader=reader).value
+        if ready is None:
+            ready = {str(job["action_key"]) for job in captured["jobs"] if job.get("state") == "READY"}
+        if claimed is None:
+            claimed = {str(job["action_key"]) for job in captured["jobs"] if job.get("state") == "CLAIMED"}
+        active_complete = active_complete and all(captured["queue"].get(state) is not None
+                                                   for state in ("ready", "claimed"))
     notes, unreadable = [], []
     plans: list[dict] = []
     try:
@@ -1736,10 +1760,12 @@ def plans(queue_root, *, view="cursors", now=None, reader=None, ready=None, clai
             continue
         plans.append(_starvation_plan_entry(
             queue, path.stem, raw, ready=ready, claimed=claimed,
-            notes=notes, unreadable=unreadable, now=moment, reader=reader))
+            notes=notes, unreadable=unreadable, now=moment, reader=reader,
+            active_complete=active_complete))
     return _section({"residency_plans": plans, "notes": notes, "unreadable": unreadable},
-                    inputs={**inputs, "ready": tuple(sorted(ready)), "claimed": tuple(sorted(claimed))},
-                    errors=unreadable)
+                    inputs={**inputs, "ready": tuple(sorted(ready)), "claimed": tuple(sorted(claimed)),
+                            "active_complete": active_complete},
+                    errors=unreadable, complete=active_complete)
 
 
 def recent_ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
@@ -2467,7 +2493,7 @@ class _PlanCensus:
     valid: bool
     unreadable: bool
     tier_id: str = ""
-    state: str = ""
+    state: str | None = ""
     legs: tuple | None = None
 
 def _plan_slot(reader: KeptReads, entry: pool.record_store.HistoryEntry) -> dict:
@@ -2531,7 +2557,7 @@ def _project_plan(entry: Mapping[str, object], unreadable: list[str]) -> _PlanCe
             counted.append((leg, (staged, len(phases), float(missing))))
         legs = tuple(counted)
     return _PlanCensus(valid=True, unreadable=bool(unreadable),
-                       tier_id=str(entry["tier_id"]), state=str(entry["state"]),
+                       tier_id=str(entry["tier_id"]), state=entry["state"],
                        legs=legs)
 
 def _plan_inputs(
@@ -2620,7 +2646,7 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
                  claimed_listed: set[str],
                  announced: Mapping[str, Mapping[str, object]],
                  receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
-                 now: float, census_reader=None) -> _PlanCensus:
+                 now: float, census_reader=None, active_complete: bool = True) -> _PlanCensus:
     """One plan's census, reused while nothing it read has changed.
 
     The census (``_starvation_plan_entry``) lists the consumer's
@@ -2635,6 +2661,8 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
 
     slot = _plan_slot(reader, entry)
     key = path.stem
+    if not active_complete:
+        slot.pop("census", None)
     kept = slot.get("census")
     if kept is not None:
         fences, movers, ram_tier_id, inputs, census = kept
@@ -2670,11 +2698,12 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
     unreadable: list[str] = []
     census = _project_plan(_starvation_plan_entry(
         queue, key, raw, ready=ready, claimed=claimed, notes=notes,
-        unreadable=unreadable, now=now, reader=census_reader), unreadable)
+        unreadable=unreadable, now=now, reader=census_reader,
+        active_complete=active_complete), unreadable)
     # Only a census with nothing to report is kept: a ledger holder that
     # could not be read is a note, not an unreadable plan, and its ``False``
     # must be read again rather than kept.
-    if (census.valid and not census.unreadable and not notes
+    if (active_complete and census.valid and not census.unreadable and not notes
             and fences is not None and inputs is not None
             and reader.still(fences)):
         slot["census"] = (fences, movers, ram_tier_id, inputs, census)
@@ -2927,6 +2956,7 @@ _SKEW_S = pool.cpu_admission.MAX_SAMPLE_AGE_S
 
 def _promotion_active(queue, reader):
     ok = True
+    incomplete_states = set()
     queue_root = queue.root
     depth: dict[tuple[str, str], int] = defaultdict(int)
     ready: set[str] = set()
@@ -2938,6 +2968,7 @@ def _promotion_active(queue, reader):
             listed = reader.queue_records(Path(queue_root) / state)
         except OSError:
             ok = False
+            incomplete_states.add(state)
             continue
         for path, parsed in listed:
             key = path.name[:-len(".json")]
@@ -2947,8 +2978,8 @@ def _promotion_active(queue, reader):
             if not isinstance(record, dict) or record.get("action_key") != key:
                 # The census sets below classify plans; a row nobody could
                 # read classifies nothing, exactly as read_pool treats it.
-                if not isinstance(record, dict):
-                    ok = False
+                ok = False
+                incomplete_states.add(state)
                 continue
             (claimed if state == pool.record_store.CLAIMED else ready).add(key)
             residency = record.get("residency")
@@ -2959,13 +2990,16 @@ def _promotion_active(queue, reader):
                        state)] += 1
             elif state == pool.record_store.CLAIMED and residency.get("leads"):
                 consumers.append(key)
-    return _section({"depth": depth, "ready": ready, "claimed": claimed,
-                     "claimed_listed": claimed_listed, "consumers": consumers},
+    return _section({"depth": depth, "incomplete_states": tuple(sorted(incomplete_states)),
+                     "ready": ready, "claimed": claimed,
+                     "claimed_listed": claimed_listed, "consumers": consumers,
+                     "active_complete": ok},
                     inputs={"queue_root": str(queue.root), "states": ("ready", "claimed")}, complete=ok)
 
 
-def _promotion_waits(queue, consumers, plan_files, *, reader, census_reader):
-    ok = True
+def _promotion_waits(queue, consumers, plan_files, *, reader, census_reader,
+                     consumers_complete, plans_complete):
+    ok = consumers_complete and plans_complete
     waiting: dict[str, int] = defaultdict(int)
     quiet_max: dict[str, float] = {}
     for key in consumers:
@@ -2996,11 +3030,12 @@ def _promotion_waits(queue, consumers, plan_files, *, reader, census_reader):
             quiet_max[tier_id] = max(quiet_max.get(tier_id, quiet), quiet)
     return _section({"waiting": waiting, "quiet_max": quiet_max},
                     inputs={"queue_root": str(queue.root), "consumers": tuple(consumers),
-                            "plans": tuple(plan_files)}, complete=ok)
+                            "plans": tuple(plan_files), "consumers_complete": consumers_complete,
+                            "plans_complete": plans_complete}, complete=ok)
 
 
 def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced, *, reader, census_reader, now):
-    ok = True
+    ok = active["active_complete"]
     ready, claimed = active["ready"], active["claimed"]
     claimed_listed = active["claimed_listed"]
     plans: dict[tuple[str, str], int] = defaultdict(int)
@@ -3024,12 +3059,14 @@ def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced,
         census = _plan_census(reader, queue, path, entry, ready=ready,
                               claimed=claimed, claimed_listed=claimed_listed,
                               announced=announced,
-                              receipts=receipts, now=now, census_reader=census_reader)
+                              receipts=receipts, now=now, census_reader=census_reader,
+                              active_complete=active["active_complete"])
         unreadable = unreadable or census.unreadable
         if not census.valid:
             invalid_plans += 1
             continue
-        plans[(census.tier_id, census.state)] += 1
+        if census.state is not None:
+            plans[(census.tier_id, census.state)] += 1
         if census.legs is None:
             ok = False
             continue
@@ -3047,7 +3084,8 @@ def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced,
                      "unstaged_phases": unstaged_phases, "unstaged_bytes": unstaged_bytes,
                      "invalid_plans": invalid_plans, "receipts": receipts},
                     inputs={"queue_root": str(queue.root), "ready": tuple(sorted(ready)),
-                            "claimed": tuple(sorted(claimed)), "sampled_unix": now}, complete=ok)
+                            "claimed": tuple(sorted(claimed)), "sampled_unix": now,
+                            "active_complete": active["active_complete"]}, complete=ok)
 
 
 def _delivery(queue, receipts, *, reader, now, window_seconds):
@@ -3089,7 +3127,13 @@ def _delivery(queue, receipts, *, reader, now, window_seconds):
                      "move_pool_read": move_pool_read, "move_rates": move_rates},
                     inputs={"queue_root": str(queue.root), "now": now,
                             "window_seconds": window_seconds},
-                    bound={"mover_receipts": _MOVE_RECEIPT_CAP}, complete=ok)
+                    bound={"mover_receipts": _MOVE_RECEIPT_CAP}, complete=ok and move_complete)
+
+
+def _qualified_counts(observed, population, *, complete):
+    """Full counts require population coverage; observed values stay in their section."""
+    return {key: observed.get(key, 0) if complete else None
+            for key in set(observed) | set(population)}
 
 
 def promotion(queue_root: Path, *, now: float, window_seconds: float,
@@ -3110,7 +3154,9 @@ def promotion(queue_root: Path, *, now: float, window_seconds: float,
         plan_listing, plan_listing_error = [], exc
     plan_files = {path.name: entry for path, entry in plan_listing if entry is not None}
     wait_section = waits(queue_root, view="promotion", consumers=active_section.value["consumers"],
-                         plan_files=plan_files, reader=reader, census_reader=census_reader)
+                         plan_files=plan_files, reader=reader, census_reader=census_reader,
+                         consumers_complete=active_section.value["active_complete"],
+                         plans_complete=plan_listing_error is None)
     plan_section = plans(queue_root, view="promotion", listing=plan_listing,
                          listing_error=plan_listing_error, active=active_section.value,
                          announced=announced, now=now, reader=reader, census_reader=census_reader)
@@ -3118,10 +3164,28 @@ def promotion(queue_root: Path, *, now: float, window_seconds: float,
                               reader=reader, now=now, window_seconds=window_seconds)
     sections = {"tiers": tier_section, "movers": active_section, "waits": wait_section,
                 "plans": plan_section, "delivery": delivery_section}
-    return _section({"tiers": sorted(set(tier_ids) | set(announced)),
-                     "depth": active_section.value["depth"], **wait_section.value,
+    known_tiers = sorted(set(tier_ids) | set(announced))
+    values = {"tiers": known_tiers, **wait_section.value,
                      **{k: v for k, v in plan_section.value.items() if k != "receipts"},
-                     **delivery_section.value, "sections": sections},
+                     **delivery_section.value, "sections": sections}
+    values["depth"] = {}
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        observed = {key: count for key, count in active_section.value["depth"].items() if key[1] == state}
+        values["depth"].update(_qualified_counts(observed, ((tier, state) for tier in known_tiers),
+            complete=state not in active_section.value["incomplete_states"]))
+    values["waiting"] = _qualified_counts(wait_section.value["waiting"], known_tiers,
+        complete=wait_section.completeness == "complete")
+    values["plans"] = _qualified_counts(plan_section.value["plans"],
+        ((tier, state) for tier in known_tiers for state in ("claimed", "ready", "absent")),
+        complete=plan_section.completeness == "complete")
+    for field in ("staged_phases", "unstaged_phases", "unstaged_bytes"):
+        values[field] = _qualified_counts(plan_section.value[field],
+            ((tier, leg) for tier in known_tiers for leg in ("stage", "ram")),
+            complete=plan_section.completeness == "complete")
+    for field in ("move_jobs", "measured_jobs"):
+        values[field] = _qualified_counts(delivery_section.value[field], known_tiers,
+            complete=delivery_section.completeness == "complete")
+    return _section(values,
                     inputs={"queue_root": str(queue_root), "sampled_unix": now},
                     complete=all(part.completeness == "complete" for part in sections.values()))
 

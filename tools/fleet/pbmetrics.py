@@ -625,24 +625,16 @@ def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,
         "by tier and queue state. Known tiers always read, zero included; the "
         "single unknown tier reads only when a record names no usable tier.",
     )
-    for tier_id in facts.value["tiers"]:
-        for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-            tier_depth.add(facts.value["depth"].get((tier_id, state), 0),
-                           tier=tier_id, state=state)
     for (tier_id, state), count in sorted(facts.value["depth"].items()):
-        if tier_id not in facts.value["tiers"]:
-            tier_depth.add(count, tier=tier_id, state=state)
+        tier_depth.add(count, tier=tier_id, state=state)
     waiting_family = metrics.family(
         "prismabuild_starvation_waiting_consumers",
         "Claimed consumers the quiet/grace rule reads as waiting on data, by "
         "the tier their frozen plan names. Known tiers always read, zero "
         "included; the unknown tier counts waiters with no readable plan.",
     )
-    for tier_id in facts.value["tiers"]:
-        waiting_family.add(facts.value["waiting"].get(tier_id, 0), tier=tier_id)
     for tier_id, count in sorted(facts.value["waiting"].items()):
-        if tier_id not in facts.value["tiers"]:
-            waiting_family.add(count, tier=tier_id)
+        waiting_family.add(count, tier=tier_id)
     quiet_family = metrics.family(
         "prismabuild_starvation_waiting_quiet_max_seconds",
         "Longest progress quiet among the tier's waiting consumers; absent, "
@@ -655,13 +647,8 @@ def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,
         "Filed residency plans by tier and consumer queue state; the invalid "
         "state counts unreadable or rejected plans under the unknown tier.",
     )
-    for tier_id in facts.value["tiers"]:
-        for state in ("claimed", "ready", "absent"):
-            plans_family.add(facts.value["plans"].get((tier_id, state), 0),
-                             tier=tier_id, state=state)
     for (tier_id, state), count in sorted(facts.value["plans"].items()):
-        if tier_id not in facts.value["tiers"]:
-            plans_family.add(count, tier=tier_id, state=state)
+        plans_family.add(count, tier=tier_id, state=state)
     if facts.value["invalid_plans"]:
         plans_family.add(facts.value["invalid_plans"], tier=_UNKNOWN_TIER, state="invalid")
     staged_family = metrics.family(
@@ -678,14 +665,12 @@ def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,
         "prismabuild_residency_unstaged_bytes",
         "Bytes in the promotion backlog, by tier and leg.",
     )
-    for tier_id in facts.value["tiers"]:
-        for leg in ("stage", "ram"):
-            staged_family.add(facts.value["staged_phases"].get((tier_id, leg), 0),
-                              tier=tier_id, leg=leg)
-            unstaged_family.add(facts.value["unstaged_phases"].get((tier_id, leg), 0),
-                                tier=tier_id, leg=leg)
-            backlog_family.add(facts.value["unstaged_bytes"].get((tier_id, leg), 0.0),
-                               tier=tier_id, leg=leg)
+    for (tier_id, leg), value in sorted(facts.value["staged_phases"].items()):
+        staged_family.add(value, tier=tier_id, leg=leg)
+    for (tier_id, leg), value in sorted(facts.value["unstaged_phases"].items()):
+        unstaged_family.add(value, tier=tier_id, leg=leg)
+    for (tier_id, leg), value in sorted(facts.value["unstaged_bytes"].items()):
+        backlog_family.add(value, tier=tier_id, leg=leg)
     metrics.family(
         "prismabuild_tier_move_window_seconds",
         "Configured lookback window for the per-tier movement receipt gauges.",
@@ -700,22 +685,16 @@ def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,
         "Movement receipts filed in the window, by tier; a restart-safe "
         "gauge, not a counter.",
     )
-    for tier_id in facts.value["tiers"]:
-        move_jobs_family.add(facts.value["move_jobs"].get(tier_id, 0), tier=tier_id)
     for tier_id, count in sorted(facts.value["move_jobs"].items()):
-        if tier_id not in facts.value["tiers"]:
-            move_jobs_family.add(count, tier=tier_id)
+        move_jobs_family.add(count, tier=tier_id)
     measured_family = metrics.family(
         "prismabuild_tier_move_measured_jobs",
         "In-window receipts whose window read the staged bytes off the pool, "
         "by tier, under the fill fold's own share test; the remainder is "
         "adoption served resident. Jobs beside measured is the hit rate.",
     )
-    for tier_id in facts.value["tiers"]:
-        measured_family.add(facts.value["measured_jobs"].get(tier_id, 0), tier=tier_id)
     for tier_id, count in sorted(facts.value["measured_jobs"].items()):
-        if tier_id not in facts.value["tiers"]:
-            measured_family.add(count, tier=tier_id)
+        measured_family.add(count, tier=tier_id)
     staged_bytes_family = metrics.family(
         "prismabuild_tier_move_staged_bytes",
         "Bytes movers reported staging in the window, by tier, over receipts "

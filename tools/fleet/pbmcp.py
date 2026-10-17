@@ -52,6 +52,7 @@ What it deliberately does not do:
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import json
 import math
@@ -1442,7 +1443,12 @@ class Session:
         found = call.read("tiers", lambda: fleet_census.tiers(self.queue_root).value)
         found = found if isinstance(found, dict) else {}
         live = call.read("movers-live",
-                         lambda: fleet_census.movers(self.queue_root).value)
+                         lambda: asdict(fleet_census.movers(self.queue_root)))
+        live_complete = isinstance(live, Mapping) and live["completeness"] == "complete"
+        if isinstance(live, Mapping) and not live_complete:
+            call.unavailable.append({"section": "movers-live", "type": "PartialCensus",
+                                     "error": "; ".join(live["errors"])})
+        live = live["value"] if isinstance(live, Mapping) else None
         filed = call.read("movers-filed",
                           lambda: fleet_census.movers(self.queue_root, view="filed").value)
         tiers = found.get("tiers")
@@ -1452,7 +1458,8 @@ class Session:
                      and row.get("tier_id") == wanted]
         rows = None
         if isinstance(tiers, list):
-            rows = [self._one_tier_movers(tier, live, filed) for tier in tiers]
+            rows = [self._one_tier_movers(tier, live, filed, live_complete=live_complete)
+                    for tier in tiers]
         return {
             "queue_root": str(self.queue_root),
             "tier_filter": wanted,
@@ -1462,7 +1469,7 @@ class Session:
 
     @staticmethod
     def _one_tier_movers(tier: Mapping[str, object], live: object,
-                         filed: object) -> dict:
+                         filed: object, *, live_complete: bool = True) -> dict:
         ident = tier.get("tier_id")
         ready = claimed = None
         depth = None
@@ -1473,7 +1480,7 @@ class Session:
             claimed = [row for row in live
                        if row.get("state") == pool.record_store.CLAIMED
                        and row.get("tier_id") == ident]
-            depth = len(ready) + len(claimed)
+            depth = len(ready) + len(claimed) if live_complete else None
         receipts = receipts_filed = truncated = None
         if isinstance(filed, Mapping):
             receipts = [row for row in (filed.get("receipts") or [])

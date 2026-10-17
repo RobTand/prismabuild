@@ -16176,6 +16176,13 @@ its release/reaper policy of tolerating failed scans; that fallback cannot prove
 an empty observed tier population. A failed census scan retains partial coverage
 and marks the existing starvation/scrape completeness false.
 
+Partial active populations and unreadable holdings remain unknown in plan
+state, reservation and publication facts. Known positive observations survive.
+The mover protocol keeps readable rows, reports incomplete coverage through its
+existing envelope and leaves full depth null. Prometheus count maps receive
+zero defaults only from complete sections; incomplete population counts are
+withheld. Raw observed counts remain available inside their independent section.
+
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.
 Starvation uses retained latest observations without a time gate and joins them

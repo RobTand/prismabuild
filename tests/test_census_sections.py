@@ -103,6 +103,69 @@ def test_unreadable_tier_listing_cannot_prove_an_empty_population(tmp_path):
                                          window_seconds=20.0) is False
 
 
+def test_partial_movers_keep_known_rows_without_empty_depth_credit(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    path = fleet.queue.records.item_path(pool.record_store.READY, fixture._hexkey("mover1"))
+    known = json.loads(path.read_text())
+    known["action_key"] = "e" * 64
+    fleet.queue.records.item_path(pool.record_store.READY, known["action_key"]).write_text(json.dumps(known))
+    path.write_text("{")
+    counts = census.movers(fleet.queue_root, view="counts")
+    assert counts.completeness == "partial"
+    assert counts.value["ready"] is None
+    assert counts.value["claimed"] == 0
+    answer = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
+                           repo_link=fleet.repo_link, deadline_s=10).call("pb_movers")
+    stage = next(row for row in answer["tiers"] if row["tier_id"] == fixture.STAGE_TIER)
+    assert answer["complete"] is False
+    assert any(row["section"] == "movers-live" for row in answer["unavailable"])
+    assert stage["queue_depth"] is None
+    assert [row["action_key"] for row in stage["ready_movers"]] == [known["action_key"]]
+    text = pbmetrics.collect_metrics(fleet.queue_root, now=time.time())
+    assert 'prismabuild_mover_queue_depth{state="ready"}' not in text
+    assert 'prismabuild_mover_queue_depth{state="claimed"} 0' in text
+    assert not any(line.startswith("prismabuild_mover_queue_depth_tier{")
+                   and 'state="ready"' in line for line in text.splitlines())
+
+
+def test_partial_active_population_never_becomes_an_absent_plan(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    claimed = fleet.queue.records.dir(pool.record_store.CLAIMED)
+    claimed.rename(tmp_path / "saved-claimed")
+    claimed.symlink_to(claimed.name, target_is_directory=True)
+    plans = census.plans(fleet.queue_root, view="starvation")
+    assert plans.completeness == "partial"
+    row = next(row for row in plans.value["residency_plans"]
+               if row["consumer_action_key_prefix"] == fixture.CONSUMER_KEY[:12])
+    assert row["state"] is None
+    assert row["phases"][1]["stage"]["published"] is True
+    assert census.waits(fleet.queue_root).completeness == "partial"
+    facts = census.promotion(fleet.queue_root, now=time.time(), window_seconds=3600)
+    assert facts.value["depth"][(fixture.STAGE_TIER, "claimed")] is None
+    assert facts.value["depth"][(fixture.STAGE_TIER, "ready")] == 1
+    assert facts.value["plans"][(fixture.STAGE_TIER, "absent")] is None
+    assert facts.value["sections"]["delivery"].completeness == "complete"
+    text = pbmetrics.collect_metrics(fleet.queue_root, now=time.time())
+    assert not any(line.startswith("prismabuild_residency_plans{")
+                   and 'state="absent"' in line for line in text.splitlines())
+
+
+def test_unknown_holder_stays_unknown_in_plan_reservation_and_publication(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    ledger = fleet.queue.tier_ledger(fixture.STAGE_TIER)
+    holder = ledger.held_dir / fixture._hexkey("mover0")
+    holder.rename(tmp_path / "saved-holder")
+    holder.symlink_to(holder.name, target_is_directory=True)
+    plans = census.plans(fleet.queue_root, view="starvation")
+    assert plans.completeness == "partial"
+    row = next(row for row in plans.value["residency_plans"]
+               if row["consumer_action_key_prefix"] == fixture.CONSUMER_KEY[:12])
+    assert row["phases"][0]["stage"]["reserved"] is None
+    assert row["phases"][0]["stage"]["published"] is None
+    assert row["phases"][1]["stage"]["reserved"] is False
+    assert census.starvation(fleet.queue_root)["complete"] is False
+
+
 def test_blocked_origin_commands_keep_the_original_json_spelling():
     ref = {"unicode": "é", "nested": {"z": float("nan"), "a": 1}}
     expected = json.dumps(ref, sort_keys=True, separators=(",", ":"))
