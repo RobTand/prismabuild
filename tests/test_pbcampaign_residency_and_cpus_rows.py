@@ -31,7 +31,7 @@ from prismabuild import submission
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     RAM_TIER, TIER, _manifest,

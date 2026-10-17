@@ -45,7 +45,7 @@ from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, reader_lease, residency_map,
     residency_plan, storage_tiers, window_credit)
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402

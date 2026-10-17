@@ -4,7 +4,7 @@ from test_stale_material_done_owner_retires import (
     residency_map, reader_lease, staged_name,
 )
 import json
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from prismabuild import staged_path
 
 
