@@ -15,6 +15,7 @@ import json
 import math
 import os
 import socket
+import stat as statmod
 import uuid
 from pathlib import Path
 
@@ -1641,13 +1642,28 @@ class RecordStore:
     def cancellation_prefix(self, wanted: str) -> list[str]:
         seen: set[str] = set()
         for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-            for path in immutable_files.match_optional(self.dir(state), f"{wanted}*.json"):
-                seen.add(path.stem)
-        for directory in immutable_files.match_optional(
-            self.dir(WITHDRAWN) / "decisions",
-            f"{wanted}*",
-        ):
-            if directory.is_dir() and immutable_files.match_optional(directory, "*.json"):
+            try:
+                listed = immutable_files.match_required(self.dir(state), f"{wanted}*.json")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            seen.update(path.stem for path in listed)
+        try:
+            decisions = immutable_files.match_required(
+                self.dir(WITHDRAWN) / "decisions", f"{wanted}*")
+        except (FileNotFoundError, NotADirectoryError):
+            decisions = []
+        for directory in decisions:
+            try:
+                info = directory.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if not statmod.S_ISDIR(info.st_mode):
+                continue
+            try:
+                entries = immutable_files.match_required(directory, "*.json")
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if entries:
                 seen.add(directory.name)
         return sorted(seen)
 
@@ -1798,7 +1814,7 @@ class RecordStore:
     def inspection_live_records(self, key: str) -> dict[str, JsonRecord]:
         records: dict[str, JsonRecord] = {}
         for state in (READY, CLAIMED):
-            record = self.inspection_slot(state, key)
+            record = value_or_raise(self.item(state, key))
             if record is not None:
                 records[state] = record
         return records
