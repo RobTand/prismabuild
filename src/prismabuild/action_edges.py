@@ -44,6 +44,7 @@ from . import core as pb
 from . import data_manifest as manifest_codec
 from . import produced_output as po
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
+from prismabuild import output_vocabulary
 
 DEFERRED_SUBDIR = "deferred"
 RELEASES_SUBDIR = "deferred-releases"
@@ -770,7 +771,7 @@ def declared_template_id(cas_root: str | Path, action_key: str) -> str | None:
 def require_write_only_template(queue_root: str | Path, template_id: str) -> None:
     """Refuse an edge whose template is not filed as write-only."""
 
-    path = (Path(queue_root) / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    path = (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
             / f"{_name(template_id, where='template id')}.json")
     try:
         template = po.validate_template(json.loads(path.read_text()))
@@ -799,7 +800,7 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
     is not reclaimed.  ``None`` when there is none or more than one.
     """
 
-    scopes = (Path(queue_root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
               / _hex64(producer_key, where="producer key"))
     try:
         names = sorted(os.listdir(scopes))
@@ -912,7 +913,7 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     changed.
     """
 
-    scope = (Path(queue_root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scope = (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
              / producer_key / f"{template_id}.{nonce}")
     try:
         instance = po.validate_instance(json.loads(

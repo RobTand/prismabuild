@@ -223,6 +223,7 @@ from . import window_credit
 from . import publication_canary
 from . import local_scratch
 from . import filesystem_floor
+from prismabuild import output_vocabulary
 
 if TYPE_CHECKING:
     from .record_store import KeyStanding
@@ -13458,7 +13459,7 @@ class PoolQueue:
         # Deterministic instance path (no scan).
         try:
             inst_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key
+                         / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner_key
                          / f"{template_id}.{owner_nonce}" / "instance.json")
             try:
                 with open(inst_path, "rb") as handle:
@@ -13489,7 +13490,7 @@ class PoolQueue:
         # Deterministic template path (no scan).
         try:
             tmpl_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_TEMPLATES_SUBDIR
+                         / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
                          / f"{template_id}.json")
             try:
                 with open(tmpl_path, "rb") as handle:
@@ -13606,7 +13607,7 @@ class PoolQueue:
         total = bound_range[1] - bound_range[0]
         try:
             inst_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key
+                         / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner_key
                          / f"{template_id}.{owner_nonce}" / "instance.json")
             try:
                 with open(inst_path, "rb") as handle:
@@ -16120,7 +16121,7 @@ class PoolQueue:
                 f"declared {sorted(declared_grouped.items())} != "
                 f"expected {sorted(expected.items())}")
         ref = {
-            "schema": produced_mod.PRODUCED_OUTPUT_REF_SCHEMA_V1,
+            "schema": output_vocabulary.PRODUCED_OUTPUT_REF_SCHEMA_V1,
             "template_id": str(validated["template_id"]),
             "template_sha256": produced_mod.template_sha256(validated),
         }
@@ -16284,7 +16285,7 @@ class PoolQueue:
             ) from None
         try:
             with open(self.root / "residency"
-                      / produced_mod.OUTPUT_TEMPLATES_SUBDIR
+                      / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
                       / f"{ref['template_id']}.json", "rb") as handle:
                 raw_tmpl = handle.read(1024 * 1024 + 1)
         except FileNotFoundError:

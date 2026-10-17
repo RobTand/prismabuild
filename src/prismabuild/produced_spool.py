@@ -26,6 +26,7 @@ from . import core, movement_actions, pool, produced_output as po, reader_lease
 from . import adaptive_cpu, filesystem_capacity, resource_scope, runtime_publication, storage_tiers
 from . import immutable_files
 from .record_store import Absent, Present, QueueRow, RecordStore, Unknown
+from prismabuild import output_vocabulary
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -1760,7 +1761,7 @@ def declared_roots(queue, cas_root):
     per process.  Returns ``(roots, errors)``.
     """
 
-    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     errors = []
     try:
         owners = po._scope_owners(scopes)
@@ -1803,7 +1804,7 @@ def _namespace_instance(queue, directory, groups):
             owner = reservation.get("owner")
     if not isinstance(owner, str) or len(owner) != 64:
         return None
-    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     try:
         paths = po._owner_instance_paths(scopes / owner)
     except OSError:

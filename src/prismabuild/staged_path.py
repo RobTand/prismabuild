@@ -4671,12 +4671,12 @@ def recover_orphaned_range(
         scope_paths = {os.path.normpath(str(stage / relative))
                        for relative in names}
         parse_counts = memo.counts()
-        fragment_owners, fragment_taint = fragment_owners(
+        fragment_mentions, fragment_taint = fragment_owners(
             fragment_root, scope_paths, memo=memo)
         if fragment_taint:
             return refuse(f"fragment census unreadable: "
                           f"{'; '.join(fragment_taint[:3])}")
-        attributed = set(fragment_owners)
+        attributed = set(fragment_mentions)
         pin_owners, pin_taint = reader_lease.live_for(
             queue, None, residency_root=residency_root, memo=memo.pins)
         if pin_taint:
