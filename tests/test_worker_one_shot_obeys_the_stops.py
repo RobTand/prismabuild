@@ -89,7 +89,8 @@ def test_a_stopped_host_is_stopped_for_the_one_shot_too(tmp_path, draining, load
     queue, seen, stdout = exercise(tmp_path, draining=draining, loaded=loaded,
                                   live=live)
     assert seen == {}, "serve_once ran while the host was stopped"
-    assert queue.records.item_path(pool.record_store.READY, KEY).exists(), "the item was claimed anyway"
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists(
+    ), "the item was claimed anyway"
     assert why in json.loads(stdout)["declined"]
 
 

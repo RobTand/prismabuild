@@ -158,7 +158,8 @@ def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=Fal
          mock.patch.object(sys, "argv", argv):
             assert module.main() == (0 if generation else 75)
         if actual_queue is not None:
-            assert actual_queue.records.item_path(pool.record_store.READY, key).read_bytes() == ready
+            assert actual_queue.records.item_path(pool.record_store.READY, key).read_bytes(
+            ) == ready
             assert actual_queue.terminal_keys() == frozenset()
             assert list(actual_queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
             assert actual_queue.offers() == []

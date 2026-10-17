@@ -236,7 +236,9 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert ledger.available().get("cpu", 0) == 0
             sibling.finish(ORDINARY, status="executed", claim_snapshot=ordinary)
             ordinary = None
-            assert _read(queue.records.item_path(pool.record_store.DONE, ORDINARY))["status"] == "executed"
+            assert _read(
+                queue.records.item_path(pool.record_store.DONE, ORDINARY),
+            )["status"] == "executed"
             assert ledger.holder_tokens(FIRST) == DEMAND
             assert ledger.available() == {"cpu": 1, "mem_gb": 7}
         except BaseException as exc:
@@ -279,7 +281,10 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
         assert KIND not in offer["observed_capacity"]
         assert executions == []
         assert ledger.held_keys() == []
-        assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in (FIRST, SECOND))
+        assert all(
+            (queue.records.item_path(pool.record_store.READY, key).exists(
+            ) for key in (FIRST, SECOND)),
+        )
         pytest.fail(
             "worker.main never entered execution: both real claims denied "
             "never_fits_capacity for disk_metadata=1; persisted declared/live "

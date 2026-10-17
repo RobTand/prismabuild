@@ -47,7 +47,8 @@ def test_once_requires_known_matching_receipts(tmp_path, loaded, published, verd
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                       checkout_root=str(tmp_path), worker_script="worker.py",
                       resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
-    ready_before = {key: queue.records.item_path(pool.record_store.READY, key).read_bytes() for key in keys}
+    ready_before = {key: queue.records.item_path(pool.record_store.READY, key).read_bytes(
+    ) for key in keys}
     for name, kind in (("loaded.json", loaded), ("published.json", published)):
         if RECEIPTS[kind] is not None:
             (tmp_path / name).write_text(RECEIPTS[kind])
@@ -133,16 +134,27 @@ raise SystemExit(code)
             "schema", "actor", "pid", "host", "loaded_commit", "loaded_generation",
             "published_commit", "published_generation")})
         drifts[-1]["mode"] = stat.S_IMODE(path.stat().st_mode)
-    done = [json.loads(path.read_text()) for path in queue.records.dir(pool.record_store.DONE).glob("*.json")]
+    done = [json.loads(
+        path.read_text(),
+    ) for path in queue.records.dir(pool.record_store.DONE).glob(
+        "*.json",
+    )]
     observed = {
         "exit": child.returncode,
         "executions": _json_lines(tmp_path / "executions.jsonl"),
         "outcomes": _json_lines(tmp_path / "outcomes.jsonl"),
         "done": [(record["action_key"], record["status"]) for record in done],
-        "failed": sorted(path.stem for path in queue.records.dir(pool.record_store.FAILED).glob("*.json")),
+        "failed": sorted(
+            (path.stem for path in queue.records.dir(pool.record_store.FAILED).glob("*.json")),
+        ),
         "terminal_keys": sorted(queue.terminal_keys()),
-        "claimed": sorted(path.name for path in queue.records.dir(pool.record_store.CLAIMED).iterdir()),
-        "ready": {path.stem: path.read_bytes() for path in queue.records.dir(pool.record_store.READY).glob("*.json")},
+        "claimed": sorted(
+            (path.name for path in queue.records.dir(pool.record_store.CLAIMED).iterdir()),
+        ),
+        "ready": {path.stem: path.read_bytes(
+        ) for path in queue.records.dir(pool.record_store.READY).glob(
+            "*.json",
+        )},
         "drifts": drifts,
     }
     expected = {
