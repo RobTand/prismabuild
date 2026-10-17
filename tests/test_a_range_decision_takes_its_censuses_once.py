@@ -49,6 +49,7 @@ import test_stale_material_done_owner_retires as stale  # noqa: E402
 from kept_read_clock import after_paths
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import stage_move  # noqa: E402
 
@@ -174,7 +175,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
         "params": {"command": ["python3", "stage_move.py",
                                "--range-start-bytes", str(start),
                                "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest, "bytes": len(blob)}],
     }
     shard = cas / "requests" / key[:2]

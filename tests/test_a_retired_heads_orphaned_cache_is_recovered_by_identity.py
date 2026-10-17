@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import stage_move  # noqa: E402
@@ -60,7 +61,7 @@ def _manifest_blob(cas_root: Path, mount: Path) -> str:
     """A real v1 manifest in the CAS, addressed by its own digest."""
 
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {},
         "mount_prefix": str(mount),
         "entry_count": len(NAMES), "total_bytes": SPAN,
@@ -107,7 +108,7 @@ def _seal_action(cas: pb.PrismaBuildCAS, checkout: Path, *, command: object,
     tests below change what a request *seals* instead of pretending to.
     """
 
-    manifest_input = {"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+    manifest_input = {"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                       "sha256": digest, "bytes": 1024}
     params: dict[str, object] = {
         "cwd": ".",
@@ -946,7 +947,7 @@ def test_a_request_that_does_not_validate_under_its_key_is_refused(
         "action_key": head,
         "params": {"command": _head_command(stage),
                    "data_manifest": {"input": {
-                       "id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+                       "id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                        "sha256": digest, "bytes": 1024},
                        "mount_prefix": "/unused",
                        "entry_count": len(NAMES)}}}))

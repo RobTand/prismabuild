@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import ram_promote  # noqa: E402
@@ -86,7 +87,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
     payload = _payload()
     (origin / "calib.bin").write_bytes(payload)
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "promotion-handoff-fixture"},
         "mount_prefix": str(origin),
         "entries": [{"path": str(origin / "calib.bin"), "offset": 0,
@@ -153,7 +154,7 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     manifest_input, _ = cas.ingest_input(
-        manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        manifest, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     checkout = tmp_path / "promotion-checkout"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task_code.py").write_text(
