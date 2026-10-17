@@ -10,6 +10,7 @@ import pytest
 from fleet_world import Clock
 from prismabuild import pool, record_store
 from test_lifecycle_recovery_crashes import KEY, _publication
+from test_lifecycle_review_repairs import _new_claim
 
 
 def _resumed_finish_message(descriptor):
@@ -125,3 +126,64 @@ def test_a_restored_finisher_cannot_replace_a_later_generations_terminal(
             except ProcessLookupError:
                 pass
             os.waitpid(child, 0)
+
+
+def test_restoration_before_mark_capture_retains_the_recovered_claim(tmp_path, monkeypatch):
+    queue, item = _new_claim(tmp_path)
+    entomb = queue._entomb_claim
+
+    def restored_before_return(*args, **kwargs):
+        result = entomb(*args, **kwargs)
+        assert result[1]
+        assert queue.sweep_finish_tombstones(grace_s=-1) == [KEY]
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, "_entomb_claim", restored_before_return)
+        result = queue.finish(KEY, status="executed", claim_snapshot=item)
+    assert result == queue.records.attempt_path(item, 1)
+    assert queue.records.item_path(record_store.CLAIMED, KEY).exists()
+    assert queue.records.lease_path(KEY).exists()
+    assert queue.ledger().held() == {"cpu": 1}
+    assert not queue.records.item_path(record_store.DONE, KEY).exists()
+    assert queue.reap_stale(timeout_s=-1) == [KEY]
+    assert record_store.read_document(queue.records.item_path(record_store.DONE, KEY))["published_unix"] == item["published_unix"]
+    assert queue.ledger().held() == {} and not queue.records.finishing_paths()
+
+
+@pytest.mark.parametrize("observation", ["replacement", "unknown"])
+def test_publication_retains_an_unverified_finishing_mark(tmp_path, monkeypatch, observation):
+    queue, item = _new_claim(tmp_path)
+    release = queue._release_reservation
+    identity = queue.records.finishing_mark_identity
+    released_mark = []
+
+    def release_before_observation(*args, **kwargs):
+        result = release(*args, **kwargs)
+        marks = queue.records.finishing_paths()
+        assert len(marks) == 1
+        mark = marks[0]
+        if observation == "replacement":
+            before = identity(mark)
+            queue.records.replace_record_at(mark, record_store.read_document(mark))
+            assert identity(mark) != before
+        released_mark.append(mark)
+        return result
+
+    def observed_identity(path):
+        if released_mark and observation == "unknown":
+            raise OSError("finishing mark metadata unavailable")
+        return identity(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, "_release_reservation", release_before_observation)
+        patch.setattr(queue.records, "finishing_mark_identity", observed_identity)
+        result = queue.finish(KEY, status="executed", claim_snapshot=item)
+    assert result == queue.records.attempt_path(item, 1)
+    assert not queue.records.item_path(record_store.DONE, KEY).exists()
+    assert released_mark[0].exists()
+    assert queue.ledger().held() == {}
+    assert queue.sweep_finish_tombstones(grace_s=-1) == [KEY]
+    assert queue.reap_stale(timeout_s=-1) == [KEY]
+    assert record_store.read_document(queue.records.item_path(record_store.DONE, KEY))["published_unix"] == item["published_unix"]
+    assert not queue.records.finishing_paths()
