@@ -1625,6 +1625,25 @@ class RecordStore:
         return Present(True)
 
 
+    def reader_release_event_path(self, consumer: str, host: str) -> Path:
+        return self.consumer_events_dir(consumer) / f"{host}{RELEASE_EVENTS_SUFFIX}"
+
+    @staticmethod
+    def append_reader_release_line_at(path: Path, line: str) -> list[str]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as stream:
+            stream.write(line + "\n")
+        with open(path) as stream:
+            return stream.readlines()
+
+    @staticmethod
+    def replace_reader_release_lines_at(path: Path, lines: list[str]) -> None:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        with open(temporary, "w") as stream:
+            stream.writelines(lines)
+        os.replace(temporary, path)
+
+
 def _write_json(
     path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
     trailing_newline: bool = False, text: str = "canonical",
@@ -1724,3 +1743,13 @@ def key_shaped(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(character in "0123456789abcdef" for character in value))
 
+
+
+#: That event's file, ``residency-events/<consumer>/<host>`` + this: beside
+#: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
+#: one writer, the host's tier loop, and a reader is not it.
+RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
+
+
+def reader_release_line(record: Mapping[str, object]) -> str:
+    return json.dumps(record, sort_keys=True, default=str)

@@ -2721,10 +2721,6 @@ RELEASE_RETRYABLE_ERRNOS = frozenset({
 RELEASE_RETRY_DELAYS_S = (0.05, 0.2, 0.8)
 #: The tier event a failed release files for its consumer (#1002's file).
 RELEASE_FAILED_EVENT = "reader-release-failed"
-#: That event's file, ``residency-events/<consumer>/<host>`` + this: beside
-#: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
-#: one writer, the host's tier loop, and a reader is not it.
-RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
 
 
 def _errno_name(code: int | None) -> str | None:
@@ -2991,30 +2987,22 @@ def _file_release_failure(queue, failure: ReleaseFailure) -> None:
     host = socket.gethostname()
     record = failure.record()
     consumer = record.pop("consumer_action_key")
-    line = json.dumps({"unix": time.time(), "event": RELEASE_FAILED_EVENT,
-                       "consumer": consumer, "host": host,
-                       "pid": os.getpid(), **record},
-                      sort_keys=True, default=str)
+    line = pool_mod.record_store.reader_release_line({
+        "unix": time.time(), "event": RELEASE_FAILED_EVENT,
+        "consumer": consumer, "host": host, "pid": os.getpid(), **record,
+    })
     print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
     if not isinstance(consumer, str):
         return
     try:
-        directory = queue.records.consumer_events_dir(consumer)
+        path = queue.records.reader_release_event_path(consumer, host)
     except (AttributeError, ValueError):
         return
-    path = directory / f"{host}{RELEASE_EVENTS_SUFFIX}"
     keep = pool_mod.MAX_CONSUMER_EVENT_LINES
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        with open(path, "a") as stream:
-            stream.write(line + "\n")
-        with open(path) as stream:
-            lines = stream.readlines()
+        lines = queue.records.append_reader_release_line_at(path, line)
         if len(lines) >= 2 * keep:
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(temporary, "w") as stream:
-                stream.writelines(lines[-keep:])
-            os.replace(temporary, path)
+            queue.records.replace_reader_release_lines_at(path, lines[-keep:])
     except OSError as exc:
         print(f"PrismaBuild: {RELEASE_FAILED_EVENT} event unwritten: "
               f"{exc!r}", file=sys.stderr, flush=True)
@@ -3436,7 +3424,6 @@ __all__ = [
     "RELEASE_RETRYABLE_ERRNOS",
     "RELEASE_RETRY_DELAYS_S",
     "RELEASE_FAILED_EVENT",
-    "RELEASE_EVENTS_SUFFIX",
     "acquire",
     "attestation_path",
     "attestation_proves_empty",

@@ -421,7 +421,7 @@ def test_the_failure_file_keeps_its_newest_lines(world, monkeypatch) -> None:
                                         mine["ref_id"], **kwargs)
     files = sorted(world.queue.records.consumer_events_dir(CONSUMER).iterdir())
     assert [item.name for item in files] == [
-        f"{socket.gethostname()}{reader_lease.RELEASE_EVENTS_SUFFIX}"]
+        f"{socket.gethostname()}{pool.record_store.RELEASE_EVENTS_SUFFIX}"]
     lines = files[0].read_text().splitlines()
     assert len(lines) == 3, "four lines rotate to the newest two, then one more"
     assert [json.loads(line)["step"] for line in lines] == ["unlink"] * 3
