@@ -105,7 +105,10 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
     assert pbcampaign.pbwait.verdict(pbcampaign.rows_for(submissions, waited)) == 0
 
 
-@pytest.mark.parametrize("suffix", [pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX])
+@pytest.mark.parametrize(
+    "suffix",
+    [pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX],
+)
 def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
     monkeypatch, tmp_path, suffix,
 ):

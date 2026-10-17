@@ -94,7 +94,9 @@ def test_gpu_budget_row_seals_the_same_action_as_pbrun(
     manifest = _manifest(tmp_path, [row])
     assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
     campaign_key = _one_json_line(capsys.readouterr())["action_key"]
-    record = json.loads((queue.records.dir(pool.record_store.READY) / f"{campaign_key}.json").read_text())
+    record = json.loads(
+        (queue.records.dir(pool.record_store.READY) / f"{campaign_key}.json").read_text(),
+    )
     request = Path(record["cas_root"]) / "requests" / campaign_key[:2] / f"{campaign_key}.json"
     params = json.loads(request.read_text())["params"]
     assert params["gpu_memory_gb"] == float(budget)

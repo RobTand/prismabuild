@@ -101,7 +101,9 @@ def test_fresh_cpu_carry_cannot_outlive_the_unknown_cutoff(fleet, repeated):
     holder, measurement, first, started = _unmeasured(fleet)
     tick(FAIRNESS_BOUND_S - 2)
     assert claim() is None
-    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     records = queue._host_denial_records()
     carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])

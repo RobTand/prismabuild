@@ -372,7 +372,9 @@ def test_repeat_handoff_never_retargets_successor(
     out = queue.withdraw(key, reason=f"resign {owner}: again", by=owner,
                          membership_handoff=pre["snapshot"])
     assert out["status"] == "already_withdrawn", out
-    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()) == successor
+    assert json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    ) == successor
     live_after = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
     assert live_after["published_unix"] == live_a["published_unix"]
     assert live_after["membership_handoff"] == live_a["membership_handoff"]
