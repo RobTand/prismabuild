@@ -6906,3 +6906,543 @@ def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
     Returns the event to log.  Raises ``ActionEdgeError`` (or ``SystemExit``
     from pbrun's own refusals) when the consumer cannot be released yet.
     """
+
+    from prismabuild import produced_output as produced_mod
+
+    cas_root = Path(str(record["cas_root"]))
+    template = restore_template(record["template"], cas_root=cas_root)
+    cas = template["cas"]
+    pinned = action_edges.read_release(q.root, pending_id)
+    if pinned is None:
+        static = None
+        if record["static_manifest"] is not None:
+            static, _ = pb.read_data_manifest(
+                cas.input_path(record["static_manifest"]))
+        if static is not None and static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            # Each edge's batches go where the plan reads them (#946).
+            manifest = action_edges.place_after_slots(q.root, static, producers)
+        else:
+            refs: list[dict[str, object]] = []
+            for producer in producers:
+                refs.extend(action_edges.committed_batch_refs(
+                    q.root, producer_key=str(producer["key"]),
+                    nonce=str(producer["nonce"]),
+                    template_id=str(producer["template_id"])))
+            try:
+                batches = produced_mod.origin_batch_manifest(q.root, refs)
+            except produced_mod.ProducedOutputError as exc:
+                raise action_edges.ActionEdgeError(str(exc)) from None
+            manifest = action_edges.merged_manifest(static, batches)
+        runtime = sealing_runtime(template, store=store)
+        manifest_input, _ = cas.ingest_bytes(
+            pb._canonical_file_bytes(manifest),
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    else:
+        manifest_input = dict(pinned["manifest_input"])
+        manifest, _ = pb.read_data_manifest(cas.input_path(manifest_input))
+    summary = {"input": manifest_input, "mount_prefix": manifest["mount_prefix"],
+               "entry_count": manifest["entry_count"],
+               "total_bytes": manifest["total_bytes"]}
+    if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+        # As ``freeze_action_template`` seals a submitted v2 plan.
+        summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+        summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
+    command = action_edges.resolve_command(
+        template["params"]["command"], cas.input_path(manifest_input),
+        str(manifest_input["sha256"]))
+    action = seal(
+        template, command=command, extra_inputs=[manifest_input],
+        extra_params={"data_manifest": summary})
+    key = str(action["action_key"])
+    all_refs = list((manifest["annotations"] or {}).get(
+        _ORIGIN_BATCHES_ANNOTATION) or [])
+    if pinned is None:
+        pinned = action_edges.file_release(
+            q.root, pending_id, action_key=key,
+            producers=[dict(item) for item in producers], refs=all_refs,
+            manifest_input=manifest_input, runtime=runtime)
+        resumed = False
+    else:
+        resumed = True
+    if str(pinned["action_key"]) != key:
+        raise action_edges.ActionEdgeError(
+            f"release-key-mismatch: the pinned release names "
+            f"{str(pinned['action_key'])[:12]}, and this runtime seals "
+            f"{key[:12]}")
+    match RecordStore(q.root).standing(key):
+        case Present(QueueRow(state, existing)):
+            pass
+        case Present(Moving()):
+            state, existing = "moving", None
+        case Absent():
+            state, existing = "absent", None
+        case Unknown():
+            state, existing = "unknown", None
+    if state == "absent":
+        if resumed:
+            # About to publish: the generation must still be there, and the
+            # pinned batches must still be the ones the release pinned.
+            # ``lstat`` only, as at submission, unless an origin's timestamps
+            # alone moved and its content must be read (#1111).
+            sealing_runtime(template, store=store)
+            try:
+                produced_mod.load_origin_batches(q.root, all_refs)
+            except produced_mod.ProducedOutputError as exc:
+                raise action_edges.ActionEdgeError(str(exc)) from None
+        options = SubmissionRequest(**dict(record["publication"]))
+        sealed = {**template,
+                  "params": {**template["params"], "data_manifest": summary},
+                  "inputs": [*template["inputs"], manifest_input],
+                  _ORIGIN_BATCHES_TEMPLATE_KEY: all_refs}
+        report = action_client.ClientReport()
+        publish(action, {"template": sealed, "cwd": Path(options.cwd),
+            "portable_checkout": True,
+            "offer_queue": lambda: bounded_offer_snapshot(q), "attach": True}, args=options, store=store,
+            display=display, report=report, gate_before_request=True,
+            placement_announced=True)
+        generation = report.identity.published_unix
+        report.finish(action_client.ClientSubmitted(report.identity))
+    elif state == "unknown" or existing is None or isinstance(
+            existing.get("published_unix"), bool) or not isinstance(
+            existing.get("published_unix"), (int, float)):
+        raise action_edges.ActionEdgeError(
+            f"release-row-unreadable: {key[:12]} reads {state}")
+    else:
+        # Published before a crash kept this from being recorded: that row
+        # is the release's generation, whatever became of it since.
+        generation = float(existing["published_unix"])
+    if generation is None:
+        raise action_edges.ActionEdgeError(
+            f"release-generation-unknown: {key[:12]} was published with no "
+            "generation stamp")
+    action_edges.file_published(q.root, pending_id, action_key=key,
+                                published_unix=float(generation))
+    return {"event": action_edges.RELEASED_EVENT, "pending_id": pending_id,
+            "action_key": key, "published_unix": float(generation),
+            "resumed": resumed, "runtime": dict(pinned["runtime"]),
+            "producers": [dict(item) for item in pinned["producers"]],
+            "refs": all_refs, "manifest_sha256": str(manifest_input["sha256"])}
+
+
+def publish_consumer_row(q, action: Mapping[str, object],
+                         template: Mapping[str, object], *, key: str,
+                         args: SubmissionRequest, cas,
+                         attach: bool = False,
+                         staged_plan=None, producer: ProducerPublication | None = None,
+                         before_publish=None, store: FleetStore, display: DisplaySink = discard_display) -> tuple[object, float | None]:
+    """Publish one sealed action's row, with its window when it stages.
+
+    Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
+    the queue was already carrying the key and this call attached to it.
+    ``main`` and the deferred release (#913) are its two callers, so a
+    released consumer is published exactly as a submitted one is.
+    ``attach`` is the release's: a staged row it finds already live is the
+    one it published before a crash, and it waits on that row instead of
+    refusing.
+
+    Everything the window will ever publish is sealed and written down before
+    the consumer's own row goes in, so a crash between the two leaves a
+    frozen plan and no queue rows rather than a half-published window.
+
+    ``before_publish`` is called, with nothing fallible left but the publish
+    itself, immediately before the row goes in.  A submission that supersedes
+    an ended key files its immutable record there (#1585): every refusal the
+    window's preparation can raise -- the stage tier, the phase table, the
+    seal, the row's own checks -- comes first, so none can strand a record at
+    a replacement that never published.
+    """
+
+    staged = None
+    if args.residency == "stage" or staged_plan is not None:
+        # One ownership transaction, under the consumer's existing transition
+        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
+        # withdrawn terminal every cycle, and between ``freeze`` and the
+        # consumer's own row it would see a filed plan nobody owns and reap
+        # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
+        # all take this same lock and nest inside it (#708 review).
+        with q._transition_locked(key):
+            if staged_plan is None:
+                staged = residency_stage_rows(
+                    template, consumer_action_key=key,
+                    tier=resolve_stage_tier(q, args.residency_tier),
+                    args=args, queue=q, cas=cas, store=store)
+            else:
+                if residency_plan.superseded(q, staged_plan) is not None:
+                    raise SubmissionRefused("decomposed child's immutable data plan was superseded; refusing automatic revival")
+                staged = {"plan": staged_plan}
+            # A seal is a new generation of this consumer's window, and so is
+            # a resubmission that reuses its frozen plan.  The predecessor's
+            # *visible* child cancellations -- an operator's withdrawal, or
+            # the dead-consumer pass that stopped a dead consumer's movers --
+            # do not cover it, but the window reads them as live and would
+            # supersede it before its second phase ever published.  So the
+            # plan is filed first, which is what makes this consumer's
+            # interest visible to the dead-consumer pass, and then the
+            # predecessor's markers are retired as evidence under this
+            # consumer's lock and every mover's (#708 review, #1114).  A
+            # cancellation filed after that is the new plan's own decision
+            # and still supersedes it; automatic publication never retires
+            # one.  A release re-attaching to its own live row (#913) renews
+            # nothing: that window already owns its markers.
+            renew = not (attach and staged.get("reused_frozen_plan"))
+            try:
+                renewal = residency_plan.seal_window(
+                    q, staged["plan"], renew=renew)
+            except residency_plan.ResidencyPlanError as exc:
+                raise SubmissionRefused(f"pbrun: {exc}") from None
+            if renewal["retired"]:
+                emit_display(display, 
+                    f"pbrun: renewing {key[:12]}: retired "
+                    f"{len(renewal['retired'])} predecessor cancellation "
+                    f"marker(s); their decisions stay under "
+                    f"{q.superseded_dir()}", channel="stderr", flush=True)
+            publication = publication_row(
+                action, args=args, queue=q,
+                tested_repository=template.get("tested_repository"), store=store)
+            publication["residency"] = staged["residency"]
+            if template.get("produced_output_template") is not None:
+                publication["produced_output_template"] = template[
+                    "produced_output_template"]
+            if before_publish is not None:
+                before_publish()
+            if attach:
+                # A release resuming after a crash (#913) finds its own row:
+                # the plan above was first-writer and reused, and the row is
+                # the one generation to wait on, not a second copy.
+                queued_path, generation = publish_or_attach(
+                    q, publication, key=key, display=display)
+            else:
+                # Not ``publish_or_attach``: a staged submission has already
+                # frozen its window plan, which is first-writer and has its
+                # own answer for a second seal of the same body, and the
+                # duplicate #812 describes is a plain shard submission.
+                queued_path = publish_or_refuse(q, publication)
+                generation = published_generation(q, key, queued_path)
+            # The consumer's row and nothing else.  Every phase of the
+            # frozen plan is the tiers loop's to publish, the first included:
+            # the loop adopts before it publishes, and its adoption pass skips
+            # any leg whose row already exists, so a lead published here could
+            # never be taken over from a range already on the tier.  One
+            # publisher also means no interleaving to arbitrate.  A cold lead
+            # therefore waits for the next cycle, which staged submissions
+            # already depend on for phases 1..n.
+            lead = staged["plan"]["phases"][0]
+            emit_display(display, f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
+                  f"{staged['plan']['tier_id']}; phase {lead['name']!r} "
+                  f"({lead['stage_gib']} GiB) next, for the tiers loop to "
+                  f"adopt or publish",
+                  channel="stderr", flush=True)
+    else:
+        publication = (producer_publication_row(action, args=args, producer=producer, store=store)
+            if producer is not None else publication_row(
+                action, args=args, queue=q,
+                tested_repository=template.get("tested_repository"), store=store))
+        if template.get("produced_output_template") is not None:
+            publication["produced_output_template"] = template[
+                "produced_output_template"]
+        if before_publish is not None:
+            before_publish()
+        queued_path, generation = publish_or_attach(q, publication, key=key, display=display)
+    return queued_path, generation
+
+
+def release_origin_consumer(batch_ref: str, consumer_key: str, *,
+                                reason: str, by: str, store: FleetStore, display: DisplaySink = discard_display) -> int:
+    """``--release-origin-consumer``: release one declaration (#926, #945)."""
+
+    from prismabuild import produced_output as produced_mod
+
+    text = batch_ref
+    if not batch_ref.lstrip().startswith("{"):
+        try:
+            text = Path(batch_ref).read_text()
+        except OSError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --release-origin-consumer: BATCH_REF is neither JSON "
+                f"nor a readable file: {exc}") from None
+    try:
+        ref = json.loads(text)
+    except ValueError as exc:
+        raise SubmissionRefused(
+            f"pbrun: --release-origin-consumer: BATCH_REF is not JSON: {exc}"
+        ) from None
+    q = pool.PoolQueue(store.queue_root)
+    # What an unpublished declaration's release compares against (#945): the
+    # generation live now, and the CAS its sealed request sits in.  Unknown,
+    # it refuses that case alone.
+    try:
+        live_runtime = (store.root / "repo").resolve(strict=True)
+    except OSError:
+        live_runtime = None
+    try:
+        result = produced_mod.release_origin_consumer(
+            q, ref, consumer_action_key=consumer_key, by=by, reason=reason,
+            live_runtime=live_runtime, cas_root=store.cas_root)
+    except (produced_mod.ProducedOutputError, OSError, ValueError) as exc:
+        raise SubmissionRefused(f"pbrun: --release-origin-consumer: {exc}") from None
+    emit_display(display, json.dumps({**result, "consumer_action_key": consumer_key,
+                      "ref": ref}, sort_keys=True), flush=True)
+    return 0
+
+
+def _prepare_and_publish(args, *, publication_canary_intent=None,
+                       authorize_canary=None, report=None, store: FleetStore, display: DisplaySink = discard_display):
+    """Seal, publish and submit; an attached wait is returned, not run."""
+
+    report = report if report is not None else action_client.ClientReport()
+    prepared = prepare(args, store=store, display=display)
+    if args.after:
+        return register_deferred(prepared, args, report=report, store=store, display=display)
+    template = prepared["template"]
+    action = (seal(
+        template, extra_params={"publication_canary": publication_canary_intent})
+        if publication_canary_intent is not None else seal(template))
+    key = str(action["action_key"])
+
+    return publish(action, prepared, args=args, store=store, display=display,
+        report=report, publication_canary_intent=publication_canary_intent,
+        authorize_canary=authorize_canary)
+
+
+def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
+            display: DisplaySink = discard_display, report=None,
+            publication_canary_intent=None, authorize_canary=None,
+            placement_announced: bool = False, gate_before_request: bool = False):
+    """The sole sealed-action cache, attach, gate and publication tail."""
+    report = report if report is not None else action_client.ClientReport()
+    template = prepared["template"]
+    cwd = prepared["cwd"]
+    portable_checkout = prepared["portable_checkout"]
+    producer = prepared.get("producer")
+    tags = list(producer.tags) if producer is not None else action["params"]["placement"]["required_tags"]
+    demand = dict(producer.resources) if producer is not None else action["params"]["demand"]
+    cas = template["cas"]
+    key = str(action["action_key"])
+    if args.as_sealed_by is not None and key != args.as_sealed_by:
+        raise SubmissionRefused(
+            f"pbrun: --as-sealed-by expected {args.as_sealed_by}, but current "
+            f"work seals to {key}; nothing submitted. Restore the original "
+            "checkout, command, inputs and options, or omit --as-sealed-by "
+            "to request different work. A changed sealing contract can also "
+            "prevent reproduction by this client."
+        )
+
+    if publication_canary_intent is not None:
+        # The placement verdict runs BEFORE the grant (#1278).  The grant is
+        # one per runtime generation and host and is never replenished, so a
+        # submission refused at placement after the mint would spend the
+        # slot on work that never ran.
+        announce_placement(
+            prepared["offer_queue"](), action, args=args, cwd=cwd,
+            portable_checkout=portable_checkout, display=display)
+        placement_announced = True
+        authorize_canary(action)
+    if gate_before_request:
+        d38_gate.require(args, action, cas=cas, queue_root=store.queue_root,
+                         transport=args.transport, store=store, display=display)
+    request_path = prepared.get("request_path") or cas.publish_action_request(action)
+
+    cached = cas.lookup(action) if args.detach else None
+    if cached is not None:
+        identity = action_client.CachedClientIdentity(key, store.queue_root, Path(cas.root),
+            action_client.ClientTransport(args.transport), cached['result']['sha256'])
+        report.publish_identity(identity)
+        # Nothing to submit and nothing to wait for.  The attached path lets
+        # the worker discover this and file an ending, which is right when
+        # somebody is holding the terminal open; detached, that ending would be
+        # a job scheduled, a checkout materialized and a node occupied to learn
+        # what this process already knows.  A campaign re-run is the case: every
+        # row a hit, no new job ids.
+        emit_display(display, f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+              channel="stderr", flush=True)
+        emit_display(display, sorted_json(action_client.detached_submission_record(
+            key,
+            transport=args.transport,
+            status="cache_hit",
+            queue_root=store.queue_root,
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(identity))
+
+    if args.detach:
+        # Not in the CAS, but perhaps already running: a campaign whose waiter
+        # died is re-run to find out where it got to, and every row still on a
+        # node must be attached to rather than submitted again.
+        try:
+            live = bounded_attachment(pool.PoolQueue(store.queue_root), key)
+        except (action_wait.OutcomeReadUnavailable, OSError) as exc:
+            emit_display(display, f"pbrun: unavailable detached attachment for {key[:12]}: {exc}",
+                  channel="stderr", flush=True)
+            return report.finish(action_client.ClientUnavailable(
+                key, None, action_wait.WaitEnd.UNRETRIED))
+        if live is not None:
+            transport, generation = live["transport"], live["generation"]
+            record, job_id = live["submission"], live["job_id"]
+            identity = (action_client.PoolClientIdentity(key, generation, store.queue_root,
+                Path(cas.root), Path(record) if record is not None else None,
+                action_client.ClientArrival.ATTACHED)
+                if transport == 'pool' else action_client.SlurmClientIdentity(
+                    key, generation, store.queue_root, Path(cas.root),
+                    Path(record) if record is not None else None, job_id,
+                    action_client.ClientArrival.ATTACHED))
+            report.publish_identity(identity)
+            emit_display(display, f"pbrun: {key[:12]} is already running "
+                  f"({transport}{' job ' + job_id if job_id else ''}); "
+                  f"attaching to it rather than submitting a second copy",
+                  channel="stderr", flush=True)
+            emit_display(display, sorted_json(action_client.detached_submission_record(
+                key,
+                transport=transport,
+                status="attached",
+                queue_root=store.queue_root,
+                published_unix=generation,
+                job_id=job_id or None,
+                submission=record,
+            )), flush=True)
+            return report.finish(action_client.ClientSubmitted(identity))
+
+    # D38: new GPU work needs preflight evidence before anything runnable is
+    # published, on every transport.  There is no liveness or cache exemption
+    # here: a read taken now is stale by the time the queue decides whether the
+    # key is new.  Without evidence this process publishes and submits nothing;
+    # it may only wait on a pool run it can see, or refuse.  (The detached
+    # branches above already answered a cache hit and a live attachment without
+    # publishing.)
+    verdict = None if gate_before_request else d38_gate.judge_publication(
+        args, action, cas=cas, queue_root=store.queue_root,
+        transport=args.transport, store=store, display=display,
+        demand=demand, required_tags=tags)
+    if verdict is not None:
+        if not args.detach:
+            try:
+                live = bounded_attachment(pool.PoolQueue(store.queue_root), key)
+            except (action_wait.OutcomeReadUnavailable, OSError):
+                live = None
+            if live is not None and live["transport"] == "pool":
+                report.publish_identity(action_client.PoolClientIdentity(key, live['generation'],
+                    store.queue_root, Path(cas.root),
+                    Path(live['submission']) if live['submission'] is not None else None,
+                    action_client.ClientArrival.ATTACHED))
+                emit_display(display, f"pbrun: {key[:12]} is already running on the pool; "
+                      f"waiting on that run, and publishing nothing, because "
+                      f"D38 evidence is missing", channel="stderr", flush=True)
+                return functools.partial(
+                    action_client.report_pool_outcome, pool.PoolQueue(store.queue_root), key,
+                    wait_s=args.wait_s, generation=live["generation"], report=report)
+        raise d38_gate.refusal_exit(verdict, action, display=display)
+
+    if args.transport == "slurm" and producer is not None:
+        resources = slurm_lane.LaneResources.from_demand(demand)
+        job = slurm_lane.submit(action, request_path=request_path, cas=cas,
+            worker_script=producer.worker_script, placement=tags, resources=resources,
+            partition=slurm_lane.partition_for(resources, tags), timeout_s=args.timeout_s,
+            root=producer.lane_root, job_entry=producer.job_entry, sbatch=producer.sbatch,
+            priority=args.priority, retry_safe=producer.retry_safe, max_attempts=args.max_attempts)
+        slurm_lane.supersede_withdrawal(store.queue_root, key, job.published_unix)
+        identity = action_client.SlurmClientIdentity(key, job.published_unix, store.queue_root,
+            Path(cas.root), job.record_path, job.job_id, action_client.ClientArrival.SUBMITTED)
+        report.publish_identity(identity)
+        return report.finish(action_client.ClientSubmitted(identity))
+    if args.transport == "slurm":
+        # Everything below this point reads the pull queue -- worker offers,
+        # the placement census, the ready directory -- and none of it describes
+        # a SLURM fleet.  Worse, it would answer *wrongly*: a retained offer
+        # from a loop that has been stopped for the cutover would refuse a
+        # submission the scheduler can place perfectly well.  The capability
+        # check SLURM keeps is its own: an unknown Feature or an impossible
+        # GRES makes ``sbatch`` refuse at submit time, which is the same moment
+        # and the same intent as ``capability_verdict`` below.
+        return slurm_outcome(
+            action,
+            cas=cas,
+            request_path=request_path,
+            # Built here because only ``main`` knows the checkout and the
+            # flags it was asked with.  The census is unavailable rather than
+            # empty: this branch builds no PoolQueue on purpose, and worker
+            # offers do not describe a SLURM fleet.
+            placement_notice=pin_notice(
+                _NoCensus(),
+                {"tags": tags, "needs_gpu": bool(demand.get("gpu")),
+                 "resources": demand},
+                cwd=cwd,
+                hostname=socket.gethostname(),
+                here=args.here,
+                portable_checkout=portable_checkout,
+                unknown_census=NO_CENSUS,
+            ),
+            tags=tags,
+            demand=demand,
+            exclusive=args.exclusive,
+            timeout_s=args.timeout_s,
+            wait_s=args.wait_s,
+            retry_safe=args.retry_safe,
+            max_attempts=args.max_attempts,
+            priority=args.priority,
+            priority_reason=args.priority_reason,
+            anywhere=args.anywhere,
+            detach=args.detach,
+            report=report,
+        store=store, display=display)
+
+    q = pool.PoolQueue(store.queue_root)
+
+    if not placement_announced:
+        announce_placement(
+            prepared["offer_queue"](), action, args=args, cwd=cwd,
+            portable_checkout=portable_checkout, display=display)
+
+    # Read the decision this submission is about to supersede, so the caller is
+    # told rather than surprised.  ``publish`` retires the marker -- a key is a
+    # content hash, so re-submitting one is how anybody asks for the same work
+    # again -- and a submission that silently revived somebody's cancellation
+    # would be as bad as the blacklist it replaced.
+    superseding = None
+    try:
+        superseding = json.loads(
+            q.item_path("withdrawn", key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        superseding = None
+
+    # A consumer of consumed produced-output batches is filed against them
+    # before its row exists, so their retirement cannot run ahead of it.  A
+    # crash after this and before the row leaves the batches held and
+    # reported, never deleted (#914).  From the first declaration through
+    # the row this process holds the key's transition lock, so an operator
+    # cannot release the declaration while the row is still to come (#945).
+    origin_refs = template.get(_ORIGIN_BATCHES_TEMPLATE_KEY) or []
+    with submission_window(q, key, origin_refs):
+        if origin_refs:
+            declare_origin_consumers(q, origin_refs, consumer_action_key=key)
+        # Filed before the row, so an edge that names the replaced key
+        # follows this one from the moment it can run (#913), but only once
+        # everything that can still refuse has had its say (#1585): the
+        # record is immutable, and one filed for a replacement that then
+        # refused named a key that never published, which the corrected
+        # submission (another key) could not replace and a reader following
+        # it could not find.  What can be refused now is refused now, with
+        # nothing written; the record itself goes in right before the row.
+        supersede = None
+        if args.supersedes is not None:
+            check_supersession(q, args.supersedes, new=key,
+                                       new_kind=action_edges.PRODUCER_KEY)
+
+            def supersede() -> None:
+                file_supersession(q, args.supersedes, new=key,
+                                          new_kind=action_edges.PRODUCER_KEY, display=display)
+
+        queued_path, generation = publish_consumer_row(
+            q, action, template, key=key, args=args, cas=cas,
+            before_publish=supersede, store=store, display=display,
+            staged_plan=prepared.get("staged_plan"), producer=producer,
+            attach=prepared.get("attach", False))
+    identity = action_client.PoolClientIdentity(key, generation, q.root, Path(cas.root),
+        queued_path, (action_client.ClientArrival.SUBMITTED if queued_path is not None
+                      else action_client.ClientArrival.ATTACHED))
+    report.publish_identity(identity)
+    # Say that the slot has no device, every time.  The mask is correct and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    if superseding is not None and queued_path is not None:
+        # Only a publication retires a marker.  An attached duplicate
+        # published nothing, so it superseded nothing.
+        who = superseding.get("withdrawn_by") or "an operator"
+        why = str(superseding.get("reason") or "").strip()
