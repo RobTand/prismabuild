@@ -117,7 +117,7 @@ def test_a_claimed_window_stops_when_its_consumer_fails(
     ready_record = pool.record_store.read_document(ready_path)
     assert ready_record is not None
     ready_record["max_attempts"] = 1
-    pool.record_store._write_json(ready_path, ready_record)
+    pool.immutable_files.write_json_atomic(ready_path, ready_record)
     claimed = fleet.queue.claim()
     assert claimed is not None and claimed["action_key"] == key
 

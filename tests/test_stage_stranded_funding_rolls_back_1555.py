@@ -88,7 +88,7 @@ def _bind(q, template, owner):
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool.record_store._write_json(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": control["nonce"],
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
@@ -284,7 +284,7 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     # direct: the repair must read any CLAIMED row as live.
     ready = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(ready, dict)
-    pool.record_store._write_json(q.records.item_path(pool.record_store.CLAIMED, mover), ready)
+    pool.immutable_files.write_json_atomic(q.records.item_path(pool.record_store.CLAIMED, mover), ready)
     q.records.item_path(pool.record_store.READY, mover).unlink()
     assert pool.record_store.value_or_raise(
         q.records.item(pool.record_store.CLAIMED, mover),
@@ -419,7 +419,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
 
             patch.setattr(pool.ResourceLedger, "release", fail_release)
         else:
-            write = pool.record_store._write_json
+            write = pool.immutable_files.write_json_atomic
 
             def fail_funding_write(path, body, **kwargs):
                 if (path == q.records.funding_output_path(mover, TIER)
@@ -428,7 +428,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
                     raise OSError("injected funding write failure")
                 return write(path, body, **kwargs)
 
-            patch.setattr(pool.record_store, '_write_json', fail_funding_write)
+            patch.setattr(pool.immutable_files, 'write_json_atomic', fail_funding_write)
         _cycle(q, tmp_path, receipts)
         assert fault in observed_faults, f"cycle never reached the {fault} fault"
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
@@ -497,12 +497,12 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
     if state == "released":
         assert q.release_output_funding(mover, TIER)
     if guard == "lease":
-        pool.record_store._write_json(q.records.lease_path(mover), {"owner": "live-mover"})
+        pool.immutable_files.write_json_atomic(q.records.lease_path(mover), {"owner": "live-mover"})
     elif guard == "partial":
         q.record_move(mover, {"tier_id": TIER, "complete": False,
                              "bytes_staged": 1})
     elif guard == "terminal":
-        pool.record_store._write_json(q.records.item_path(pool.record_store.FAILED, mover),
+        pool.immutable_files.write_json_atomic(q.records.item_path(pool.record_store.FAILED, mover),
                                 {"action_key": mover, "status": "failed"})
     elif guard == "unknown-producer":
         q.records.item_path(pool.record_store.FAILED, inst["owner_action_key"]).unlink()
@@ -541,7 +541,7 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
             if race == "claim":
                 # An uncommitted batch cannot pass the ordinary claim gate.
                 # File the claim boundary directly, as the earlier fixture does.
-                pool.record_store._write_json(
+                pool.immutable_files.write_json_atomic(
                     q.records.item_path(pool.record_store.CLAIMED, mover),
                     row,
                 )

@@ -92,7 +92,7 @@ def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
         # Only the mover lease expires; the producer stays live.
         lease = pool.record_store.read_document(w.q.records.lease_path(mover))
         lease["heartbeat_unix"] = 0.0
-        pool.record_store._write_json(w.q.records.lease_path(mover), lease)
+        pool.immutable_files.write_json_atomic(w.q.records.lease_path(mover), lease)
         w.q.reap_stale(timeout_s=60)
         ended = w.q.records.item_path(pool.record_store.FAILED, mover)
     else:
@@ -124,7 +124,7 @@ def test_unproved_or_unspent_funding_never_claims_a_terminal_override(tmp_path, 
             "transferring": ("state", "transferring"),
         }[fault]
         changed[field] = value
-        pool.record_store._write_json(path, changed)
+        pool.immutable_files.write_json_atomic(path, changed)
     before = path.read_bytes() if path.exists() else None
     ended = w.q.finish(mover, status="failed", claim_snapshot=claimed)
     assert ended.parent.name == pool.record_store.READY
@@ -167,7 +167,7 @@ def test_late_failure_never_concludes_a_live_successor(tmp_path, state):
                  "claimed_by": "new-worker", "claimed_unix": claimed["claimed_unix"] + 1}
     w.q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
     path = w.q.records.item_path(state, mover)
-    pool.record_store._write_json(path, successor)
+    pool.immutable_files.write_json_atomic(path, successor)
     before = path.read_bytes()
     lease = w.q.records.lease_path(mover).read_bytes()
     held = w.ledger.holder_tokens(mover)
@@ -201,7 +201,7 @@ def test_corrupt_archived_stop_cannot_authorize_early_failure(tmp_path, field):
     archived["output_retry_stop"]["funding"][field] = replacement
     # Deliberate immutable-evidence corruption, confined to this private queue.
     path.chmod(0o644)
-    pool.record_store._write_json(path, archived)
+    pool.immutable_files.write_json_atomic(path, archived)
     path.chmod(0o444)
     with pytest.raises(pool.PoolContractError, match="binding differs"):
         w.q.attempt_ending(record)
