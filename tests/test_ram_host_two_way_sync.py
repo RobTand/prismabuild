@@ -14,6 +14,8 @@ from fleet_world import FleetWorld
 
 
 from pathlib import Path
+import errno
+import os
 import sys
 
 import pytest
@@ -256,15 +258,15 @@ def test_an_unguarded_host_read_refuses_instead_of_aborting(
     _mover_row(queue, tmp_path, mover)
     _claim_path_take(queue, mover, {"ram_gib": 100})
     mirror = "ram-host:" + mover
-    real_holder_tokens = pool.ResourceLedger.holder_tokens
+    directory = queue.ledger(HOST).held_dir / mirror
+    real_scandir = os.scandir
 
-    def failing_holder_tokens(self, action_key):
-        if action_key == mirror:
-            raise OSError("boom: host ledger unreadable")
-        return real_holder_tokens(self, action_key)
+    def failing_scandir(path):
+        if not isinstance(path, int) and os.fspath(path) == str(directory):
+            raise OSError(errno.EACCES, "boom: host ledger unreadable", str(path))
+        return real_scandir(path)
 
-    monkeypatch.setattr(pool.ResourceLedger, "holder_tokens",
-                        failing_holder_tokens)
+    monkeypatch.setattr(os, "scandir", failing_scandir)
     verdict = queue.tier(RAM_TIER).reconcile_mirror(())  # must not raise
     monkeypatch.undo()
 

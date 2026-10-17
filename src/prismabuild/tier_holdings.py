@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import os
 
-from . import immutable_files, kept_reads, posix_lock, record_store, storage_tiers
+from . import holder_census, immutable_files, kept_reads, posix_lock, record_store, storage_tiers
 from .digest_primitives import raw_sha256
 from .record_store import PoolContractError
 
@@ -424,11 +424,28 @@ class TierLedger:
             self._trim_host_to_occupancy(str(holder))
         return released
 
+    @staticmethod
+    def _mirror_holders(ledger: ResourceLedger) -> list[str]:
+        try:
+            names = record_store.RecordStore.required_directory_names_at(ledger.held_dir)
+        except FileNotFoundError:
+            return []
+        return [name for name in names if not holder_census.is_private_holder(name)]
+
+    @staticmethod
+    def _host_mirror_tokens(ledger: ResourceLedger, mirror: str) -> set[str]:
+        try:
+            return {path.name for path in immutable_files.match_required(
+                ledger.held_dir / mirror, "*-*")}
+        except FileNotFoundError:
+            return set()
+
     def _sync_host_mirror(self, ledger: ResourceLedger, holder: str,
                           target: int) -> tuple[bool, dict[str, object] | None]:
         mirror = storage_tiers.RAM_HOST_MEMORY_PREFIX + holder
         try:
-            current = int(ledger.holder_tokens(mirror).get('mem_gb', 0))
+            current = sum(name.rsplit("-", 1)[0] == "mem_gb"
+                          for name in self._host_mirror_tokens(ledger, mirror))
         except (OSError, PoolContractError, ValueError):
             return False, None
         if current == target:
@@ -452,19 +469,19 @@ class TierLedger:
                            'gib': target, 'detail': f'trim failed: {exc!r}'}
         released = int(released_counts.get('mem_gb', 0))
         if released:
-            return True, {'reason': 'ram-host-hold-trimmed', 'holder': mirror,
-                          'released_gib': released}
-        return True, None
+            return released == current - target, {
+                'reason': 'ram-host-hold-trimmed', 'holder': mirror,
+                'released_gib': released}
+        return False, None
 
     def reconcile_mirror(self, expected_holders: Iterable[str], *, release_orphans: bool=True) -> dict[str, object]:
         if storage_tiers.tier_kind_of(str(self.tier_id)) != 'ram':
             return {'events': [], 'converged': True}
         host = self._ram_host()
         try:
-            tier = self._ledger
-            tier_live = set(tier.held_keys())
+            tier_live = set(self._mirror_holders(self._ledger))
             host_ledger = self._host_ledgers(host)
-            holders = host_ledger.held_keys()
+            holders = self._mirror_holders(host_ledger)
         except (OSError, PoolContractError, ValueError):
             return {'events': [], 'converged': False}
         expected = {str(name) for name in expected_holders}
@@ -473,11 +490,11 @@ class TierLedger:
         prefix = storage_tiers.RAM_HOST_MEMORY_PREFIX
         for holder in sorted(tier_live):
             try:
-                tokens = tier.holder_tokens(holder)
+                target = sum(name.rsplit("-", 1)[0] == storage_tiers.RAM_CAPACITY_KIND
+                             for name in self.holder_state(holder))
             except (OSError, PoolContractError, ValueError):
                 converged = False
                 continue
-            target = int(tokens.get(storage_tiers.RAM_CAPACITY_KIND, 0))
             synced, event = self._sync_host_mirror(host_ledger, holder, target)
             converged = converged and synced
             if event is not None:
@@ -490,7 +507,14 @@ class TierLedger:
             suffix = holder[len(prefix):]
             if suffix in tier_live or suffix in expected:
                 continue
-            released = self._release_host(suffix)
+            try:
+                tokens = self._host_mirror_tokens(host_ledger, holder)
+                released = host_ledger.release(holder)
+            except (OSError, PoolContractError, ValueError):
+                converged = False
+                continue
+            if released != len(tokens):
+                converged = False
             if released:
                 events.append({'reason': 'orphan_ram_host_hold', 'holder': holder, 'released_gib': released})
         return {'events': events, 'converged': converged}

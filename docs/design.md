@@ -7216,6 +7216,16 @@ half runs before discovery, so admission uses one current-cycle verdict.
 Failed top-ups keep existing host holds, and orphan cleanup waits for the
 complete in-cycle consumer census.
 
+Mirror reconciliation requires error-visible tier and host holder populations,
+including directory-type observations, before treating a name as an orphan.
+It reads each tier holder through `holder_state` and each host mirror through
+the required token-name reader. A failed scan is unknown, retains that mirror,
+and makes the pass unconverged. Tolerant `ResourceLedger` count queries retain
+their separate lower-bound contract. Trim and orphan returns compare actual
+returned tokens with the observed delta or orphan count; a partial return is
+unconverged and the next cycle retries the remainder. These owner-local rules
+correct inherited mirror behavior without a ledger schema or transaction change.
+
 ### The resource PB could not see
 
 `cpu`, `gpu` and `mem_gb` are reserved on the box that executes the action.
