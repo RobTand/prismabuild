@@ -23,6 +23,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from fleet_world import Admission, FleetWorld
 
 # Real fixture launchers are visible to the host-wide cancellation census.
 # Fixed keys let another xdist worker's private queue cancel this one's action.
@@ -32,18 +33,14 @@ KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(
+        capacity={"cpu": 8, "mem_gb": 16},
+        default_demand={"cpu": 1, "mem_gb": 1})).queue
 
 
 @pytest.fixture()
 def plain_queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
