@@ -12,7 +12,7 @@ KEY = "c" * 64
 def _widowed_queue(tmp_path, host):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
-    pool.record_store._write_json(queue.records.lease_path(KEY), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(KEY), {
         "action_key": KEY, "host": host,
         "heartbeat_unix": pool._now() - 10_000,
     })

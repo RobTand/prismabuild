@@ -210,7 +210,7 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
     destination = queue.records.item_path(pool.record_store.FAILED, KEY_INVALID)
     outcome = {"action_key": KEY_INVALID, "status": "worker_failed",
                "published_unix": 1.0}
-    real_write = pool.record_store._write_json
+    real_write = pool.immutable_files.write_json_atomic
     real_publish = immutable_files.publish_immutable
 
     def race_write(path: Path, payload: object) -> object:
@@ -223,7 +223,7 @@ def test_concurrent_failed_outcome_wins_over_quarantine(
             real_write(destination, outcome)
         return real_publish(path, payload)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', race_write)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', race_write)
     monkeypatch.setattr(immutable_files, "publish_immutable", race_publish)
     assert queue.quarantine_orphans() == [KEY_INVALID]
     assert json.loads(destination.read_text()) == outcome

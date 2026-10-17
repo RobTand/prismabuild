@@ -217,7 +217,7 @@ def test_a_claim_lost_before_its_record_was_rewritten_is_released(
     record = json.loads(path.read_text())
     for field in ("claimed_by", "claimed_unix", "claimed_host"):
         record.pop(field, None)
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
     queue.records.lease_path(KEY).unlink()
 
     assert _reap_later(queue) == [KEY]
