@@ -20,7 +20,7 @@ def publish(store, directory, lease):
 
 def world(tmp_path, *, capacity=20):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.mint_tier_capacity("local:test-host", {"local_gib": capacity})
+    queue.tier('local:test-host').mint({'local_gib': capacity})
     return resident_sets.ResidentSets(queue.root)
 
 
@@ -238,7 +238,7 @@ def test_eviction_recovers_persisted_state_with_all_three_trees(tmp_path, monkey
     for tree in trees:
         tree.mkdir(parents=True)
         (tree / "weights").write_bytes(b"weights")
-    ledger = queue.tier_ledger("local:test-host")
+    ledger = queue.tier('local:test-host')
     original_release = type(ledger).release
     def release(instance, owner, *args, **kwargs):
         assert not any(tree.exists() for tree in trees)
@@ -247,7 +247,7 @@ def test_eviction_recovers_persisted_state_with_all_three_trees(tmp_path, monkey
     result = local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=201)
     assert result["state"] == "absent" and result["bytes"] == 0
     assert not any(tree.exists() for tree in trees)
-    assert pool.held_names_visible(ledger, set_id) == set()
+    assert ledger.holder_state(set_id) == set()
     assert Path(store.read(set_id)["canonical_root"]).joinpath("weights").read_bytes() == b"weights"
 
 
@@ -272,8 +272,8 @@ def test_close_preserves_pinned_bytes_and_eviction_deletes_every_tree_before_tok
         local_resident.pin(store, set_id, "test-host", spec,
             {"action_key": "a" * 64, "nonce": "b" * 32, "scope_id": "test-scope"}, now=122)
     local_resident.release_pin(store, set_id, "test-host", spec, token)
-    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-    tokens = pool.held_names_visible(ledger, set_id)
+    ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
+    tokens = ledger.holder_state(set_id)
     original_delete = local_resident.shutil.rmtree
     original_release = type(ledger).release
     def delete(tree):
@@ -291,10 +291,10 @@ def test_close_preserves_pinned_bytes_and_eviction_deletes_every_tree_before_tok
         local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=123)
     assert store.read_copy(set_id, "test-host")["state"] == "evicting"
     assert store.read_copy(set_id, "test-host")["bytes"] == 7
-    assert pool.held_names_visible(ledger, set_id) == tokens
+    assert ledger.holder_state(set_id) == tokens
     assert trees[1].exists()
     monkeypatch.setattr(local_resident.shutil, "rmtree", original_delete)
     result = local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=124)
     assert result["state"] == "absent" and result["bytes"] == 0
     assert not any(tree.exists() for tree in trees)
-    assert pool.held_names_visible(ledger, set_id) == set()
+    assert ledger.holder_state(set_id) == set()

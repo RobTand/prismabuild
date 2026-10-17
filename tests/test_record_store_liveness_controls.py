@@ -19,6 +19,7 @@ from test_one_publisher_parses_unchanged_publication_metadata_once import (
     MOVER as PUBLICATION_MOVER,
 )
 from prismabuild import residency_map, kept_reads
+from prismabuild import tier_holdings
 
 
 def _unreadable_stat(monkeypatch, target, error):
@@ -44,8 +45,8 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     row = _publish(queue, plan, mover)
     assert pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
                             float(row['published_unix'])).status == 'published'
-    ledger = queue.tier_ledger(TIER)
-    before = ledger.holder_tokens(mover)
+    ledger = queue.tier(TIER)
+    before = ledger.holdings(mover)
     assert before == {'stage_gib': 2}
     funding_before = queue.read_funding(mover, TIER)
     assert funding_before['state'] == 'transferring'
@@ -56,9 +57,7 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     )
     events = pg.release_unit(queue, TIER, unit, holder, [mover], terminal=True)
     assert seen, 'the underlying native metadata failure was never exercised'
-    assert ledger.holder_tokens(
-        mover,
-    ) == before, 'unknown claimed evidence released the actual chunk tokens'
+    assert ledger.holdings(mover) == before, 'unknown claimed evidence released the actual chunk tokens'
     assert queue.read_funding(mover, TIER) == funding_before
     assert 'prelaunch-unknown-evidence' in events
 
@@ -102,7 +101,7 @@ def test_uncertain_reclaim_keeps_actual_reservation(tmp_path, monkeypatch, state
 @pytest.mark.parametrize('error', [errno.EIO, errno.ESTALE])
 def test_unreadable_claim_keeps_the_actual_output_window_obligation(owner, monkeypatch, error):
     queue, key, _bound, _template = owner
-    queue.tier_ledger('prismabuild-stage:dl380g10').release(key)
+    queue.tier('prismabuild-stage:dl380g10').release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
     assert po.unheld_window_gib(queue, 'prismabuild-stage:dl380g10')['gib'] == 2
     seen = _unreadable_stat(
         monkeypatch,
@@ -130,11 +129,11 @@ def test_uncertain_claim_keeps_incomplete_ram_promotion(tmp_path, monkeypatch, e
     )
     target = queue.records.item_path(pool.record_store.CLAIMED, incomplete.MOVER)
     target.write_text('{}')
-    before = queue.tier_ledger(incomplete.RAM_TIER).holder_tokens(incomplete.MOVER)
+    before = queue.tier(incomplete.RAM_TIER).holdings(incomplete.MOVER)
     seen = _unreadable_stat(monkeypatch, target, error)
     events = tier_loop.release_incomplete_ram_promotions(queue, tiers=incomplete._tiers(ram))
     assert seen
-    assert queue.tier_ledger(incomplete.RAM_TIER).holder_tokens(incomplete.MOVER) == before
+    assert queue.tier(incomplete.RAM_TIER).holdings(incomplete.MOVER) == before
     assert any(row['event'] == 'ram-mover-incomplete-retained' for row in events)
 
 
@@ -145,14 +144,14 @@ def test_uncertain_claim_keeps_prior_epoch_tokens(tmp_path, monkeypatch, error):
     epochs._ram_resident(queue, tmp_path, epoch=epochs.OLD_EPOCH)
     target = queue.records.item_path(pool.record_store.CLAIMED, epochs.RAM_MOVER)
     target.write_text('{}')
-    before = queue.tier_ledger(epochs.RAM_TIER).holder_tokens(epochs.RAM_MOVER)
+    before = queue.tier(epochs.RAM_TIER).holdings(epochs.RAM_MOVER)
     seen = _unreadable_stat(monkeypatch, target, error)
     events = tier_loop.drop_prior_ram_epochs(
         queue,
         {epochs.RAM_TIER: epochs._ram_record(tmp_path, epoch=epochs.NEW_EPOCH)},
     )
     assert seen
-    assert queue.tier_ledger(epochs.RAM_TIER).holder_tokens(epochs.RAM_MOVER) == before
+    assert queue.tier(epochs.RAM_TIER).holdings(epochs.RAM_MOVER) == before
     assert any('deferred' in str(row['event']) for row in events)
 
 
