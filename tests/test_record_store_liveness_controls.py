@@ -222,3 +222,27 @@ def test_claim_owner_census_never_certifies_idle_from_unknown_claim_metadata(tmp
     assert seen, 'the native claim metadata query was not reached'
     assert pids is None, 'an extant claim with unknown ownership was reported as idle'
     assert refused is not None
+
+
+@pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
+def test_finish_never_rewrites_an_ending_when_its_presence_is_unknown(tmp_path, monkeypatch, error):
+    queue = orphan._queue(tmp_path)
+    key = orphan.KEY
+    queue.publish(action_key=key, cas_root='/cas', checkout_root='/checkout',
+                  worker_script='/worker.py', resources={'cpu': 1, 'mem_gb': 3})
+    queue.claim(capacity={'cpu': 1, 'mem_gb': 3})
+    queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
+    path = queue.records.item_path(pool.record_store.DONE, key)
+    path.write_bytes(b'')
+    tokens = queue.ledger().holder_tokens(key)
+    assert tokens == {'cpu': 1, 'mem_gb': 3}
+    seen = _unreadable_stat(monkeypatch, path, error)
+    refused = None
+    try:
+        queue.finish(key, status='executed')
+    except (OSError, pool.PoolContractError) as exc:
+        refused = exc
+    assert seen
+    assert path.read_bytes() == b'', 'unknown presence authorized replacement of the real prior ending'
+    assert refused is not None
+    assert queue.ledger().holder_tokens(key) == tokens
