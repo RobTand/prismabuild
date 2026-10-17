@@ -15,7 +15,7 @@ def render_submission(event: Display) -> None:
           end=event.end, flush=event.flush)
 
 
-def request_arguments(request, *, order=(), include_defaults=("cwd", "transport", "cpus"), omit=()):
+def request_arguments(request, *, order=(), include_defaults=("cwd", "transport", "cpus"), omit=(), scalar_text=None):
     """Render a typed request at the pbrun process boundary."""
     from collections.abc import Sequence
     from dataclasses import fields
@@ -49,6 +49,6 @@ def request_arguments(request, *, order=(), include_defaults=("cwd", "transport"
             for entry in value:
                 result.extend([flag, str(entry)])
         else:
-            rendered = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+            rendered = (scalar_text or {}).get(name, str(value))
             result.extend([flag, rendered])
     return [*result, "--", *request.command]

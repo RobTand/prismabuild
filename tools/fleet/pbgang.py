@@ -289,8 +289,11 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
     order = ("cwd", "detach", "tag", "gang_group", "gang_size", "gang_index", "priority",
              "timeout_s", "priority_reason", "demand", "cpus", "env",
              *(aliases.get(name, name) for name in FLAG_FIELDS))
+    numeric = {"timeout_s": member.get("timeout_s", manifest.get("timeout_s")),
+               "gpu_memory_gb": member.get("gpu_memory_gb")}
+    scalar_text = {name: str(value) for name, value in numeric.items() if value is not None}
     return [sys.executable, str(HERE / "pbrun.py"), *request_arguments(request, order=order,
-        include_defaults={"cwd", "priority", *explicit}, omit={"transport"})]
+        include_defaults={"cwd", "priority", *explicit}, omit={"transport"}, scalar_text=scalar_text)]
 
 
 def withdraw(keys: list[str], reason: str) -> None:

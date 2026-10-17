@@ -42,7 +42,7 @@ def test_the_published_configuration_declares_the_fleet_interpreters() -> None:
     declared = document["gpu_interpreters"]
 
     assert declared and all(Path(path).is_absolute() for path in declared)
-    assert hook.CONTENDS.pattern == hook.contends_pattern(tuple(declared)).pattern
+    assert hook.configured_contends_pattern().pattern == hook.contends_pattern(tuple(declared)).pattern
 
 
 def test_the_hook_names_no_client_venv_in_code() -> None:
