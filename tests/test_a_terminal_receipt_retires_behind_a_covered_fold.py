@@ -50,6 +50,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import kept_reads
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
 import pb_gc  # noqa: E402
+from record_store_trust import ObservedTrust
 import tier_loop  # noqa: E402
 
 #: The queue-root kind this requirement adds, spelled as the other kinds are.
@@ -142,13 +143,13 @@ def _egress(queue: pool.PoolQueue, label: str, *, consumer: str, unix: float,
 class _Loop:
     """A tmp_path queue and stage, and the loop's own kept reads."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, trust=None) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
         self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.queue.mint_tier_capacity(TIER, {"stage_gib": 10})
-        self.receipts = tier_loop.ReceiptCache()
+        self.receipts = tier_loop.ReceiptCache(trust=trust)
 
     def cycle(self, identity: dict[str, object] = IDENTITY_A,
               receipts: tier_loop.ReceiptCache | None = None,
@@ -1063,7 +1064,8 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     """
 
 
-    loop = _Loop(tmp_path)
+    trust = ObservedTrust()
+    loop = _Loop(tmp_path, trust=trust)
     queue = loop.queue
     terminal = _key("terminal")
     _terminal(queue, pool.record_store.DONE, terminal)
@@ -1072,10 +1074,7 @@ def test_a_tampered_projection_after_a_warm_cache_is_never_reused(
     _sweep(_survey(queue))
     loop.cycle()                       # warm the cache
 
-    monkeypatch.setattr(
-        kept_reads, '_object_filesystem_type',
-        lambda info, *, path=None, descriptor=None,
-        follow_symlinks=True: None)
+    trust.available = False
     checkpoint = queue.records.mover_retirement_checkpoint_path()
     body = json.loads(checkpoint.read_text())
     body["entries"][key]["projection"]["disk_pacing"][

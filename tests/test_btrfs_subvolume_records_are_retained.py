@@ -283,7 +283,7 @@ class _KernelFacts:
 
 @pytest.fixture
 def kernel(tmp_path, monkeypatch):
-    directory = tmp_path / "ready"
+    directory = tmp_path / "movers"
     directory.mkdir()
     record = directory / "r.json"
     record.write_bytes(b'{"v": 1}')
@@ -644,7 +644,7 @@ def test_metrics_history_retains_exact_file_evidence_after_relisting(kernel):
 
     def scrape():
         reader.begin()
-        out = list(reader.history(kernel.directory, select=_select))
+        out = list(reader.queue_store(kernel.directory.parent).mover_entries())
         reader.end()
         return out
 

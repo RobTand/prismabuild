@@ -343,7 +343,12 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
         for mover, document in found:
             assert id(document) in remembered, (directory, mover)
     receipts = loop.queue.root / tier_loop.MOVER_RECEIPTS
-    kept = loop.receipts.records._captures._slots[str(receipts)].value
+    parsed = loop.receipts.records.parsed
+    store = pool.record_store.RecordStore.kept(
+        loop.queue.root, records=loop.receipts.records)
+    kept = {path.name: (None, record)
+            for path, record in store.receipt_records_at(receipts)}
+    assert loop.receipts.records.parsed == parsed, "the retained receipt query reparsed"
     assert len(kept) >= 6000, len(kept)
     for name, (_version, record) in kept.items():
         assert record == pool.record_store.read_document(receipts / name), name

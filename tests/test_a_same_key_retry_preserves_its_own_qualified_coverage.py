@@ -294,10 +294,8 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     # worker's scratch filesystem (Btrfs subvolume devices can be unknown).
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
-    fixture_trust = validated_resume_trust(
+    kwargs['trust'] = validated_resume_trust(
         monkeypatch, [fragment, material], filesystem)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence',
-                        fixture_trust.file_fence)
 
     parsing = threading.Event()
     release = threading.Event()
@@ -425,22 +423,14 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
             return repeated
         return observed
 
-    def filesystem(_device):
-        if trust in ("same-tick", "no-clock"):
-            return "zfs"
-        if trust == "trust-lost":
-            return "nfs4" if changed else "zfs"
-        return None if trust == "unknown" else trust
-
+    from record_store_trust import ObservedTrust
+    resume_trust = ObservedTrust()
+    resume_trust.available = trust not in ("nfs4", "unknown")
+    resume_trust.fence = (
+        None if trust == "no-clock" else repeated.st_ctime_ns
+        if trust == "same-tick" else repeated.st_ctime_ns + 1)
+    kwargs["trust"] = resume_trust
     monkeypatch.setattr(stage_move.os, "fstat", observed_fstat)
-    monkeypatch.setattr(kept_reads, '_filesystem_type', filesystem)
-    if trust == "unknown":
-        def unreadable_mount_id(_descriptor, _info):
-            raise PermissionError("the fixture mount ID is unavailable")
-        monkeypatch.setattr(kept_reads, "_descriptor_mount_id", unreadable_mount_id)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: (
-        None if trust == "no-clock" else
-        repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
     real_ownership = queue.recorded_stage_ownership
     new_digest = "5" * 64
 
@@ -455,6 +445,8 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
         fragment.write_bytes(replacement)
         assert fragment.stat().st_size == repeated.st_size
         changed = True
+        if trust == "trust-lost":
+            resume_trust.available = False
         with real_ownership(*positional, **keywords) as granted:
             yield granted
 

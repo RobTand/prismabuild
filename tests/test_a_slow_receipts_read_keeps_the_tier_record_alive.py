@@ -34,6 +34,7 @@ Every fixture is a temp queue and a temp stage root; nothing touches a real
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -127,14 +128,42 @@ class _Loop:
         monkeypatch.setattr(self.queue, "announce_tier", announce)
 
         if mode == "listing":
-            real_select = tier_loop._receipt_name
+            native_scandir = os.scandir
+            receipt_roots = {
+                self.queue.root / pool.record_store.PREWARM,
+                self.queue.root / tier_loop.MOVER_RECEIPTS,
+            }
+            loop = self
 
-            def select(entry):
-                if self.reading and entry.name.startswith(SLOW_PREFIX):
-                    self.charge()
-                return real_select(entry)
+            class ReceiptEntries:
+                def __init__(self, entries):
+                    self.entries = entries
 
-            monkeypatch.setattr(tier_loop, "_receipt_name", select)
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    entry = next(self.entries)
+                    if loop.reading and entry.name.startswith(SLOW_PREFIX):
+                        loop.charge()
+                    return entry
+
+                def __enter__(self):
+                    self.entries.__enter__()
+                    return self
+
+                def __exit__(self, *args):
+                    return self.entries.__exit__(*args)
+
+                def close(self):
+                    self.entries.close()
+
+            def scandir(directory):
+                entries = native_scandir(directory)
+                return (ReceiptEntries(entries) if Path(directory) in receipt_roots
+                        else entries)
+
+            monkeypatch.setattr(os, "scandir", scandir)
         else:
             # The fake clock charges each read in full, one after another:
             # a model of a serial read.  Readers run concurrently (#1153),
@@ -143,14 +172,14 @@ class _Loop:
             # The parallel read's checkpoints are tested on a real clock in
             # ``test_a_fresh_tier_loop_announces_before_its_cold_read``.
             monkeypatch.setattr(tier_loop, "RECEIPT_READERS", 1)
-            real_parse = pool.record_store._read_json
+            native_read = Path.read_bytes
 
-            def parse(path, *args, **kwargs):
-                if self.reading and Path(path).name.startswith(SLOW_PREFIX):
+            def read_bytes(path):
+                if self.reading and path.name.startswith(SLOW_PREFIX):
                     self.charge()
-                return real_parse(path, *args, **kwargs)
+                return native_read(path)
 
-            monkeypatch.setattr(pool.record_store, '_read_json', parse)
+            monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
     def stamp(self) -> float:
         record = json.loads(self.queue.records.tier_record_path(TIER).read_text())
