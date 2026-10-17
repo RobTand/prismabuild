@@ -43,21 +43,28 @@ def c13_inventory(revision):
                 self.scope.pop()
             visit_AsyncFunctionDef = visit_FunctionDef
             def visit_ClassDef(self, node):
+                rows.append({'kind':'class', 'line':node.lineno,
+                             'scope':'.'.join([*self.scope,node.name]),
+                             'decorators':[ast.dump(d,include_attributes=False) for d in node.decorator_list],
+                             'ast':ast.dump(node,include_attributes=False)})
                 self.scope.append(node.name)
                 self.generic_visit(node)
                 self.scope.pop()
             def generic_visit(self, node):
                 fields = {ast.Assert:'assert',ast.If:'if',ast.IfExp:'if-expression',
                           ast.Call:'call',ast.Import:'import',ast.ImportFrom:'import',
-                          ast.Raise:'raise',ast.With:'with',ast.Match:'match'}
+                          ast.Raise:'raise',ast.With:'with',ast.Match:'match',
+                          ast.Assign:'assignment',ast.AnnAssign:'annotated-assignment',
+                          ast.AugAssign:'augmented-assignment',ast.NamedExpr:'named-expression',
+                          ast.Delete:'delete',ast.While:'while',ast.For:'for',
+                          ast.comprehension:'comprehension'}
                 kind = fields.get(type(node))
                 if kind:
                     item = node.test if isinstance(node,(ast.If,ast.IfExp)) else node
                     rows.append({'kind':kind,'line':node.lineno,'scope':'.'.join(self.scope),
                                  'ast':ast.dump(item,include_attributes=False)})
                 elif isinstance(node,ast.Constant) and isinstance(node.value,str):
-                    if any(t in node.value for t in ('produced_output','commitments','prewrite','prismabuild','python','mock.patch')):
-                        rows.append({'kind':'quoted','line':node.lineno,'scope':'.'.join(self.scope),'value':node.value})
+                    rows.append({'kind':'quoted','line':node.lineno,'scope':'.'.join(self.scope),'value':node.value})
                 super().generic_visit(node)
         Visit().visit(tree)
         result['files'][path] = {'git_blob':subprocess.check_output(['git','hash-object','--stdin'],input=raw).decode().strip(),'occurrences':rows}

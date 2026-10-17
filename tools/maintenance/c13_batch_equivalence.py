@@ -152,7 +152,7 @@ def c13_occurrences(source,manifest,path):
     for n in ast.walk(tree):
         if isinstance(n,ast.Assert):
             assertions.append(ast.dump(n,include_attributes=False))
-        elif isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)):
+        elif isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
             decorators.extend(ast.dump(d,include_attributes=False) for d in n.decorator_list)
     return Counter(assertions),Counter(decorators)
 
