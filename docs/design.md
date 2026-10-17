@@ -18589,5 +18589,8 @@ presence or invalid history retains the claim and reservation. The reaper now
 archives the prior terminal before publishing an adopted terminal, as worker
 finish does. Recovery of an interrupted terminal publication completes only
 its recorded historical unlink after checking the verified attempt, the archived
-record and the still-matching older terminal. Live successors and unknown proof
+record and the still-matching prior terminal. The archive must be bound to the
+winning attempt's generation and disposition. A legacy prior terminal without a
+generation stamp requires the same complete archived-byte match; its missing
+stamp supplies no absence or ordering proof. Live successors and unknown proof
 retain their authority.

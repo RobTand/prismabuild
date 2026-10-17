@@ -1888,12 +1888,13 @@ def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
         return not listed
     earlier = endings.publication_generation(prior.get("published_unix"))
     current = endings.publication_generation(outcome.get("published_unix"))
-    if earlier is None or current is None:
+    if current is None:
         return False
-    if earlier > current:
-        return True
-    if earlier == current:
-        return False
+    if earlier is not None:
+        if earlier > current:
+            return True
+        if earlier == current:
+            return False
     # Interpretation stays in C06. A mutable summary does not verify history.
     adopted = queue.attempt_ending(outcome)
     if any(outcome.get(field) != adopted[field]
@@ -1904,6 +1905,8 @@ def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
             continue
         if (not isinstance(archived, Mapping)
                 or archived.get("action_key") != key
+                or archived.get("superseded_by_published_unix") != outcome.get("published_unix")
+                or archived.get("superseded_by_state") != adopted["disposition"]
                 or any(field not in archived or archived[field] != value for field, value in prior.items())
                 or any(archived.get(field) != value for field, value in summary.items()
                        if field not in {"state", "superseded_path"})):
