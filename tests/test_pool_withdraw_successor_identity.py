@@ -1,4 +1,5 @@
 """A withdrawal already superseded cannot mutate the successor claim (#318)."""
+import pbstatus
 from prismabuild import submission as submit_core
 import pytest
 from prismabuild import pool, resource_scope

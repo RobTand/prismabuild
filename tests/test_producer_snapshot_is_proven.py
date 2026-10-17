@@ -101,7 +101,7 @@ def _producer_action(checkout: Path) -> dict:
 def sealed(tmp_path: Path) -> tuple[dict, pb.PrismaBuildCAS, Path]:
     """One Tessera action re-sealed around a snapshot, as the lane does."""
 
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     checkout = _producer_checkout(tmp_path)
     action, _ = fleet_submit.seal_checkout_into_action(

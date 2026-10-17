@@ -10,6 +10,7 @@ payload is still using.
 """
 
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 from pathlib import Path
