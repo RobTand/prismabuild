@@ -55,7 +55,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     assert [row['claimed_by'] for row in history] == (
         ['successor'] if republish else ['original', 'successor'])
     assert history[-1]['stdout'] == 'successor result'
-    assert pbrun.action_client.await_outcome(queue, key, wait_s=1,
+    assert pbrun.action_client.report_pool_outcome(queue, key, wait_s=1,
                               generation=retry['published_unix']) == 0
     assert queue.ledger().held() == {}
 
@@ -102,6 +102,6 @@ def test_late_ready_cleanup_refusal_is_recoverable_without_ending_the_retry(scop
     assert successor is not None
     recovered.finish(key, status='executed', detail={'returncode': 0},
                      claim_snapshot=successor)
-    assert pbrun.action_client.await_outcome(recovered, key, wait_s=1,
+    assert pbrun.action_client.report_pool_outcome(recovered, key, wait_s=1,
                               generation=first['published_unix']) == 0
     assert recovered.ledger().held() == {}

@@ -94,7 +94,7 @@ def test_pbrun_does_not_print_the_failed_attempts_stderr_for_a_withdrawal(
 
     retried.withdraw(KEY, by="rob", reason="not needed", signal_child=False)
 
-    code = pbrun.action_client.await_outcome(retried, KEY, wait_s=1.0)
+    code = pbrun.action_client.report_pool_outcome(retried, KEY, wait_s=1.0)
     printed = capsys.readouterr()
 
     assert code == pbrun.action_client.WITHDRAWN_EXIT

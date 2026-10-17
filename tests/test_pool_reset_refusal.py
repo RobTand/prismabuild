@@ -32,7 +32,7 @@ sys.stderr.write("pbrun: live code closure differs from the action-pinned closur
 raise SystemExit(2)
 """
 
-ACK = {"schema": pool_reset.pbrun.DETACH_SCHEMA_V1, "action_key": "c" * 64,
+ACK = {"schema": pool_reset.pbrun.action_client.DETACH_SCHEMA_V1, "action_key": "c" * 64,
        "transport": "pool", "status": "submitted", "published_unix": 123.0}
 ACCEPTS = "import json; print(" + repr(json.dumps(ACK)) + ")\n"
 
