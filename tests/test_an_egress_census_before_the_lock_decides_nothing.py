@@ -94,7 +94,7 @@ def fleet(tmp_path: Path):
     try:
         queue = pool.PoolQueue(root / "pb-queue")
         queue.records.ensure_layout()
-        queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+        queue.tier(TIER).mint({'stage_gib': 8})
         stage = root / "stage"
         stage.mkdir()
         stage = stage.resolve()
@@ -158,7 +158,7 @@ def _land(queue: pool.PoolQueue, stage: Path, root: Path) -> list[Path]:
         "range_start_bytes": 0, "range_end_bytes": storage_tiers.GIB,
         "bytes_staged": storage_tiers.GIB, "complete": True})
     queue.finish(MOVER, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 1}
     return list(paths.values())
 
 
@@ -206,7 +206,7 @@ def test_a_pin_filed_after_the_hint_declines_the_whole_egress(
     assert receipt["complete"] is False, receipt
     assert "pinned" in receipt["declined"], receipt
     assert all(path.exists() for path in paths), "a pinned range went"
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 1}
     assert residency_map.fragment_path(root, CONSUMER, MOVER).exists()
 
 

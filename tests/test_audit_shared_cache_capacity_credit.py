@@ -92,7 +92,7 @@ def _manifest_bytes(pool_dir: Path) -> tuple[dict, Path]:
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 8})  # standing supply admits A, B
+    queue.tier(TIER).mint({KIND: 8})  # standing supply admits A, B
     (tmp_path / "stage").mkdir(parents=True, exist_ok=True)
     assert stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage") == "registered"
@@ -179,17 +179,14 @@ def _supply(queue: pool.PoolQueue, writable: int) -> dict[str, int]:
         return {"landed": int(out["landed"]), "in_flight": int(out["in_flight"]),
                 "supply": int(out["supply"])}
     landed, in_flight = tier_loop.landed_and_in_flight(queue, TIER, KIND)
-    queue.mint_tier_capacity(TIER, {KIND: writable + landed})
+    queue.tier(TIER).mint({KIND: writable + landed})
     return {"landed": landed, "in_flight": in_flight,
             "supply": writable + landed}
 
 
 def _ledger_numbers(queue: pool.PoolQueue) -> dict[str, int]:
-    ledger = queue.tier_ledger(TIER)
-    return {"capacity": int(ledger.capacity().get(KIND, 0)),
-            "held": sum(int(ledger.holder_tokens(k).get(KIND, 0))
-                        for k in ledger.held_keys()),
-            "free": int(ledger.available().get(KIND, 0))}
+    ledger = queue.tier(TIER)
+    return {'capacity': int(ledger.mint_supply().get(KIND, 0)), 'held': sum((int(ledger.holdings(k).get(KIND, 0)) for k in ledger.holders())), 'free': int(ledger.free_supply().get(KIND, 0))}
 
 
 def test_shared_egress_leaves_no_stealable_phantom(tmp_path: Path) -> None:
@@ -206,9 +203,9 @@ def test_shared_egress_leaves_no_stealable_phantom(tmp_path: Path) -> None:
     _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
     staged = [p for p in (tmp_path / "stage").rglob("*")
               if p.is_file() and p.name != stage_release.STAGE_ROOT_MARKER]
     assert len(staged) == 1, "one extent staged once, two owners"
@@ -283,8 +280,8 @@ def test_mixed_shared_and_deleted_splits_freed_from_decharged(tmp_path: Path) ->
     _publish_mover(queue, MOVER_B, 0, MIB, manifest_sha, total)
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, 2 * MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 2
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(MOVER_A).get(KIND) == 2
     _supply(queue, W_MODEL_TIGHT)
 
     first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
@@ -311,7 +308,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
     _supply(queue, W_MODEL_TIGHT)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     real_settle = pool.PoolQueue.release_tier_holder_for_egress
     calls = {"n": 0}
@@ -334,8 +331,8 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     finally:
         pool.PoolQueue.release_tier_holder_for_egress = real_settle  # type: ignore[method-assign]
     # Conservative: nothing freed or destroyed; fragment still vouches.
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.free_supply().get(KIND, 0) == 0
 
     second = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                  stage_root=str(tmp_path / "stage"))
@@ -352,28 +349,28 @@ def test_retire_held_is_idempotent_and_reclaimable(tmp_path: Path) -> None:
     inside an honestly backed wanted bound (no transient excess)."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {KIND: 4})
-    assert ledger.acquire(MOVER_A, {KIND: 3}) is True
-    destroyed = ledger.retire_held(MOVER_A, {KIND: 2})
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({KIND: 4})
+    assert ledger.take(MOVER_A, {KIND: 3}) is True
+    destroyed = ledger.retire_duplicate(MOVER_A, {KIND: 2})
     assert destroyed == {KIND: 2}
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.capacity().get(KIND) == 2
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.mint_supply().get(KIND) == 2
     # Capped at the remainder, then a true no-op once nothing is held.
-    assert ledger.retire_held(MOVER_A, {KIND: 2}) == {KIND: 1}
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
-    assert ledger.retire_held(MOVER_A, {KIND: 1}) == {}
-    dead = sorted(path.name for path in (ledger.minted_dir / "dead").iterdir())
+    assert ledger.retire_duplicate(MOVER_A, {KIND: 2}) == {KIND: 1}
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
+    assert ledger.retire_duplicate(MOVER_A, {KIND: 1}) == {}
+    dead = sorted((path.name for path in (ledger.paths.minted / 'dead').iterdir()))
     assert len(dead) == 3, dead
     # Honest regrowth to 6 reclaims exactly the dead slots inside the
     # wanted bound: capacity returns whole, free exact, then stable.
-    result = queue.mint_tier_capacity(TIER, {KIND: 6})
+    result = queue.tier(TIER).mint({KIND: 6})
     assert result["reclaimed"] == {KIND: 3}, result
-    assert ledger.capacity().get(KIND) == 6
-    assert ledger.available().get(KIND) == 6
-    result = queue.mint_tier_capacity(TIER, {KIND: 6})
+    assert ledger.mint_supply().get(KIND) == 6
+    assert ledger.free_supply().get(KIND) == 6
+    result = queue.tier(TIER).mint({KIND: 6})
     assert result["reclaimed"] == {}, result
-    assert ledger.capacity().get(KIND) == 6
+    assert ledger.mint_supply().get(KIND) == 6
 
 
 def test_reclaim_dedupes_a_live_duplicate_without_reissue(tmp_path: Path) -> None:
@@ -383,23 +380,23 @@ def test_reclaim_dedupes_a_live_duplicate_without_reissue(tmp_path: Path) -> Non
     pre-placed, exactly the aftermath of a rename the destroy raced."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {KIND: 4})
-    assert ledger.acquire(MOVER_A, {KIND: 2}) is True
-    assert ledger.retire_held(MOVER_A, {KIND: 1}) == {KIND: 1}
-    dead_dir = ledger.minted_dir / "dead"
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({KIND: 4})
+    assert ledger.take(MOVER_A, {KIND: 2}) is True
+    assert ledger.retire_duplicate(MOVER_A, {KIND: 1}) == {KIND: 1}
+    dead_dir = ledger.paths.minted / 'dead'
     (victim,) = sorted(path.name for path in dead_dir.iterdir())
-    (ledger.held_dir / MOVER_B).mkdir(parents=True, exist_ok=True)
-    Path(ledger.held_dir / MOVER_B / victim).write_bytes(b"x")
-    result = queue.mint_tier_capacity(TIER, {KIND: 4})
+    (ledger.paths.held / MOVER_B).mkdir(parents=True, exist_ok=True)
+    Path(ledger.paths.held / MOVER_B / victim).write_bytes(b'x')
+    result = queue.tier(TIER).mint({KIND: 4})
     assert result["reclaimed"] == {}, result
     assert not (dead_dir / victim).exists()
-    assert (ledger.minted_dir / victim).exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
-    assert ledger.capacity().get(KIND) == 4
-    result = queue.mint_tier_capacity(TIER, {KIND: 4})
-    assert ledger.capacity().get(KIND) == 4
+    assert (ledger.paths.minted / victim).exists()
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
+    assert ledger.mint_supply().get(KIND) == 4
+    result = queue.tier(TIER).mint({KIND: 4})
+    assert ledger.mint_supply().get(KIND) == 4
 
 
 def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
@@ -410,15 +407,15 @@ def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
     follow-up mint is stable."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {KIND: 4})
-    assert ledger.acquire(MOVER_A, {KIND: 2}) is True
-    assert ledger.retire_held(MOVER_A, {KIND: 1}) == {KIND: 1}
-    dead_dir = ledger.minted_dir / "dead"
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({KIND: 4})
+    assert ledger.take(MOVER_A, {KIND: 2}) is True
+    assert ledger.retire_duplicate(MOVER_A, {KIND: 1}) == {KIND: 1}
+    dead_dir = ledger.paths.minted / 'dead'
     (victim,) = sorted(path.name for path in dead_dir.iterdir())
     spare = tmp_path / "spare-token"
     spare.write_bytes(b"x")
-    (ledger.held_dir / MOVER_B).mkdir(parents=True, exist_ok=True)
+    (ledger.paths.held / MOVER_B).mkdir(parents=True, exist_ok=True)
     real_rename = os.rename
     fired = {"n": 0}
 
@@ -433,19 +430,18 @@ def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
     monkey = pytest.MonkeyPatch()
     monkey.setattr(os, "rename", _rename_in)
     try:
-        result = queue.mint_tier_capacity(TIER, {KIND: 4})
+        result = queue.tier(TIER).mint({KIND: 4})
     finally:
         monkey.undo()
     assert fired["n"] == 1
     assert result["reclaimed"] == {KIND: 1}, result
     assert not (dead_dir / victim).exists()
-    assert (ledger.minted_dir / victim).exists()
-    held = sum(ledger.holder_tokens(k).get(KIND, 0)
-               for k in (MOVER_A, MOVER_B))
-    assert ledger.capacity().get(KIND) == 4
-    assert ledger.available().get(KIND, 0) == 4 - held
-    result = queue.mint_tier_capacity(TIER, {KIND: 4})
-    assert ledger.capacity().get(KIND) == 4
+    assert (ledger.paths.minted / victim).exists()
+    held = sum((ledger.holdings(k).get(KIND, 0) for k in (MOVER_A, MOVER_B)))
+    assert ledger.mint_supply().get(KIND) == 4
+    assert ledger.free_supply().get(KIND, 0) == 4 - held
+    result = queue.tier(TIER).mint({KIND: 4})
+    assert ledger.mint_supply().get(KIND) == 4
 
 
 # -- R3: the actual cycle, fractional buckets, failed decharge -------------
@@ -503,7 +499,7 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     # the pool the two real movers measured, never the record's advisory
     # fill field (50) that discovery offers.
     _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total, fill=7)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     # Observe the fixture's own receipts before the mint, through the same
     # fold the cycle runs.  The rate kind is the best delivery those movers
@@ -548,11 +544,11 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
     assert record["capacity_basis"] == "zfs available + landed"
     assert record["fill_records"] == len(observations)
     assert record["fill_source"] == expected_source, record
-    assert ledger.capacity().get(KIND) == 2
-    assert ledger.capacity().get(storage_tiers.FILL_KIND) == expected_rate
-    assert ledger.available().get(KIND, 0) == 0
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.mint_supply().get(KIND) == 2
+    assert ledger.mint_supply().get(storage_tiers.FILL_KIND) == expected_rate
+    assert ledger.free_supply().get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
 
 
 def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> None:
@@ -562,9 +558,9 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir(parents=True, exist_ok=True)
-    queue.mint_tier_capacity(TIER, {KIND: 3, storage_tiers.FILL_KIND: 50})
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire("d" * 64, {KIND: 1}) is True
+    queue.tier(TIER).mint({KIND: 3, storage_tiers.FILL_KIND: 50})
+    ledger = queue.tier(TIER)
+    assert ledger.take('d' * 64, {KIND: 1}) is True
     # A live (ready) consumer naming the holder, so the cycle's orphan
     # sweep cannot mistake the pinned key for an orphan.
     queue.publish(
@@ -612,9 +608,9 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
     (record,) = [r for r in announced if r["tier_id"] == TIER]
     assert record.get("stage_root_admits") is False
     assert len(applies) == 1, applies
-    assert ledger.holder_tokens("d" * 64).get(KIND) == 1
-    assert ledger.capacity().get(storage_tiers.FILL_KIND) == 7
-    assert ledger.capacity().get(KIND) == 1  # keep: held stays, free retired
+    assert ledger.holdings('d' * 64).get(KIND) == 1
+    assert ledger.mint_supply().get(storage_tiers.FILL_KIND) == 7
+    assert ledger.mint_supply().get(KIND) == 1  # keep: held stays, free retired
 
 
 def _big_bytes(pool_dir: Path, name: str, size: int) -> bytes:
@@ -663,8 +659,8 @@ def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> No
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, total)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B,
                0, len(shared_blob))
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
     _supply(queue, W_MODEL_TIGHT)
 
     first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
@@ -694,8 +690,8 @@ def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> No
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
     _supply(queue, W_MODEL_TIGHT)
-    ledger = queue.tier_ledger(TIER)
-    held_dir = str(ledger.held_dir / MOVER_A)
+    ledger = queue.tier(TIER)
+    held_dir = str(ledger.paths.held / MOVER_A)
 
     real_rename = os.rename
     calls = {"n": 0}
@@ -718,8 +714,8 @@ def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> No
     assert failed["complete"] is False
     assert any("decharge-incomplete" in e for e in failed["errors"]), failed
     assert failed.get("tokens_decharged", 0) == 0
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.free_supply().get(KIND, 0) == 0
     _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
     assert _claim(queue) is None, "failed decharge must not free anything"
 
@@ -744,7 +740,7 @@ def test_concurrent_egress_and_mint_never_shows_phantom(tmp_path: Path) -> None:
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
     _supply(queue, W_MODEL_TIGHT)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
 
     samples: list[int] = []
@@ -764,11 +760,11 @@ def test_concurrent_egress_and_mint_never_shows_phantom(tmp_path: Path) -> None:
     mint_thread.start()
     egress_thread.start()
     while mint_thread.is_alive() or egress_thread.is_alive():
-        samples.append(int(ledger.available().get(KIND, 0)))
+        samples.append(int(ledger.free_supply().get(KIND, 0)))
         time.sleep(0.001)
     mint_thread.join()
     egress_thread.join()
-    samples.append(int(ledger.available().get(KIND, 0)))
+    samples.append(int(ledger.free_supply().get(KIND, 0)))
     assert samples, "must have observed the race window"
     assert max(samples) == 0, samples
     assert _claim(queue) is None
@@ -791,7 +787,7 @@ def test_mixed_time_mint_does_not_create_free(tmp_path: Path) -> None:
     manifest, manifest_path = _manifest_bytes(tmp_path / "pool")
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     total = 2 * MIB
-    queue.mint_tier_capacity(TIER, {KIND: 1})
+    queue.tier(TIER).mint({KIND: 1})
     _publish_mover(queue, MOVER_A, 0, MIB, manifest_sha, total)
     _shield_consumer(queue)
     claimed = _claim(queue)

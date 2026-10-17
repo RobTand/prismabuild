@@ -195,7 +195,7 @@ def test_protection_holds_the_named_advance_before_it_permits(
                              "tier_id": STAGE_TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 4 * GIB,
                              "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 4})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 4})
 
     result = tier_loop._protect_tier_advances(
         queue,
@@ -211,6 +211,6 @@ def test_protection_holds_the_named_advance_before_it_permits(
     grant = result["grants"][(CONSUMER, STAGE_TIER)]
     assert grant == window_credit.grant_key(
         CONSUMER, STAGE_TIER, "mover_row", "phase-0001", None)
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(grant) == {"stage_gib": 2}
+    assert queue.tier(STAGE_TIER).holdings(grant) == {'stage_gib': 2}
     assert [key for key in result["grants"] if key[0] == CONSUMER] == [
         (CONSUMER, STAGE_TIER)]
