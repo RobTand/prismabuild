@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import ast
-from collections import Counter, defaultdict
+from collections import defaultdict
 import hashlib
 import json
 from pathlib import Path
 import re
 
-from wire_inventory import catalogue, module_name, sources
+from wire_inventory import catalogue, sources
 
 
 def reference_path(root, reference):

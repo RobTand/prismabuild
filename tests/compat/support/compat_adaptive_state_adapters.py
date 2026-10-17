@@ -40,7 +40,8 @@ def context(store, load):
     ledger = pool.ResourceLedger(store / "queue/reservations", "compat-host")
     ledger.ensure_capacity({"cpu": 2})
     ledger.configure_cpu_tiers(TIERS)
-    controller = cpu.Controller(ledger, TIERS, sampler=sample)
+    controller = cpu.Controller(ledger, TIERS)
+    controller.sample = sample
     body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
     action = core.seal_action(body)
     cas = core.PrismaBuildCAS(store / "cas")

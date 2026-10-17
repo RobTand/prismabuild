@@ -30,6 +30,7 @@ def operate(request, store, load):
                     queue._measurement_drain_notes = {C: ("compat-host", "publication-1", measurement)} if measurement else {}
                     queue.record_pass(C)
         else:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()
             count = queue.passes(C)
@@ -73,12 +74,14 @@ def operate(request, store, load):
                 path.write_bytes(base64.b64decode(request["raw"]))
                 if family == "host-cpu-metadata":
                     sample = {"sampled_unix": 100., "cpu_count": 2, "busy_cpus": 0., "psi_some": 0., "interval_s": 1.}
-                    controller = cpu.Controller(ledger, TIERS, sampler=lambda: sample)
+                    controller = cpu.Controller(ledger, TIERS)
+                    controller.sample = lambda: sample
                     request["_consumer_boundary"]()
                     result = controller.decision({"action_key": "d" * 64}, {"cpu": 1}, identity=("compat-shape", False), owner=None)
                     assert result is None and controller.last_decision["reason"] == "measurement_holder", controller.last_decision
                 else:
-                    controller = gpu.Controller(ledger, sampler=lambda: {})
+                    controller = gpu.Controller(ledger)
+                    controller.sample = lambda: {}
                     request["_consumer_boundary"]()
                     result = controller.decision({}, {"gpu": 1}, contract=("compat-shape", False, False, 8))
                     assert result is None and controller.last_decision["reason"] == "exclusive_holder", controller.last_decision
