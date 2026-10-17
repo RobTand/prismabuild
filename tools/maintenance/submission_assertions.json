@@ -118,5 +118,14 @@
       "a2a6f381fb0cf77e857b5c437052085bcf4b9f41d13b1cc298ea686fe841b387"
     ],
     "reason": "The identical complete progress policy literal now compares against the package parser rather than the removed campaign CLI import."
+  },
+  "tests/test_require_pool_interpreters_are_configured.py": {
+    "new": [
+      "dae27ed6f4d2c4ee0ae350bf3417ec6fa28260a3ad1e654a937ea9c466b787f5"
+    ],
+    "old": [
+      "24a8df53b762bd99502105416f2a3d1e183031e377789ee4bd787867590cebcf"
+    ],
+    "reason": "The accepted hook import-read fix computes its configured pattern at the command boundary; the same configured interpreter pattern comparison calls that owner."
   }
 }
