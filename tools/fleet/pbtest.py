@@ -1169,7 +1169,7 @@ def _client_environment():
             if key not in ("PRISMABUILD_PBTEST_RUN_ID", "PRISMABUILD_PBTEST_ENTRYPOINT")}
 
 
-def _write_json(path, data, *, durable=False):
+def _write_report_bytes(path, data, *, durable=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
@@ -1206,7 +1206,7 @@ class _Progress:
     def _write(self):
         if self.path is not None:
             self.value["sequence"] += 1
-            _write_json(self.path, json.dumps(self.value, separators=(",", ":")).encode(),
+            _write_report_bytes(self.path, json.dumps(self.value, separators=(",", ":")).encode(),
                         durable=self.value["state"] != "running")
 
     def configure(self, count):
@@ -2108,7 +2108,7 @@ def main() -> int:
     if args.json:
         try:
             report_bytes = json.dumps(results, indent=1).encode()
-            _write_json(Path(args.json), report_bytes, durable=True)
+            _write_report_bytes(Path(args.json), report_bytes, durable=True)
             progress.finish(report_bytes)
         except OSError as exc:
             sys.stderr.write(f"pbtest: cannot publish requested output: {exc}\n")
