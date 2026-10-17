@@ -12,7 +12,7 @@ import subprocess
 
 
 BASE = "b26d6bc94abb3c977bbf04650ac27d0d6535277a"
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 SEAMS = ("_expired_claim", "_recover_cancelled_claim", "_complete_cancellation",
          "_commit_claim", "_retire_recorded_terminal", "withdrawn_attempt",
          "qualify_claim_recovery", "claim_identity")
@@ -22,7 +22,7 @@ def git(*args):
     return subprocess.check_output(["git", "-C", str(ROOT), *args])
 
 
-def digest(value):
+def _c07_review_sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
@@ -57,8 +57,8 @@ def main():
                    zip(("assertions", "decorators", "definitions"), before, after) if a - b}
         if missing:
             mismatches.append({"path": path, "missing": missing})
-        retained.append({"path": path, "before_sha256": digest(raw),
-                         "after_sha256": digest(sources[path]), "byte_equal": raw == sources[path]})
+        retained.append({"path": path, "before_sha256": _c07_review_sha(raw),
+                         "after_sha256": _c07_review_sha(sources[path]), "byte_equal": raw == sources[path]})
     (args.out / "original-test-atoms.json").write_text(json.dumps(original, sort_keys=True) + "\n")
     callers, imports, fixtures = [], {}, {}
     modules = {p: p.removeprefix("src/").removesuffix(".py").replace("/", ".") for p in sources}
@@ -100,7 +100,7 @@ def main():
     tests = sorted(p for p in closure if p.startswith("tests/") and Path(p).name.startswith("test_"))
     result = {"base": BASE, "head": git("rev-parse", "HEAD").decode().strip(),
               "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
-              "hashes": {p: digest(raw) for p, raw in sources.items()},
+              "hashes": {p: _c07_review_sha(raw) for p, raw in sources.items()},
               "test_retention": retained, "missing_atoms": mismatches,
               "callers": callers, "imports": imports, "implicit_conftests": fixtures,
               "conservative_transitive_tests": tests,

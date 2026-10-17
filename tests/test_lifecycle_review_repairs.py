@@ -87,7 +87,10 @@ def test_withdrawn_reaper_retains_unverifiable_attempt(tmp_path, monkeypatch, fa
     if fault != "unknown":
         value = json.loads(path.read_bytes())
         value["published_unix"] = -1
+        mode = path.stat().st_mode
+        path.chmod(0o600)
         path.write_text("{" if fault == "malformed" else json.dumps(value))
+        path.chmod(mode)
     else:
         monkeypatch.setattr(queue.records, "attempt_presence", lambda *a: record_store.Unknown(
             "unavailable attempt", error=OSError("archive read fault")))
