@@ -58,7 +58,7 @@ WAITING = _hexkey("waiting-at-the-gate")
 EGRESS = textwrap.dedent('''
     import os, sys, time
     sys.path.insert(0, {tools!r})
-    import stage_release
+    from prismabuild import stage_release
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     stage = os.path.realpath({stage!r}) + os.sep
@@ -234,7 +234,7 @@ def _egress_source(tmp_path: Path, mover: str, *, after: int | None,
 
 
 def _setup(tmp_path: Path, monkeypatch):
-    import stage_release
+    from prismabuild import stage_release
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
@@ -549,7 +549,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 HOLDER = textwrap.dedent('''
     import sys, time
     sys.path.insert(0, {tools!r})
-    import stage_release
+    from prismabuild import stage_release
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
     with stage_release._stage_ownership(queue, {stage!r}, role="egress"):
@@ -620,7 +620,7 @@ MOVER_RESUME_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
     sys.path.insert(0, {tools!r})
-    import stage_move
+    from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
@@ -656,7 +656,7 @@ MOVER_RESUME_PARSE_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
     sys.path.insert(0, {tools!r})
-    import stage_move
+    from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
