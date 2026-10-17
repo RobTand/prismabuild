@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
-import hashlib
+import sys
 import io
 import json
 from pathlib import Path
 import subprocess
 import tarfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import raw_sha256
 
 BASE = "f0bcb21e195378e7fb6e85e1bbfde24c45672e6b"
 PROTECTED = ("action_client", "action_wait", "client_channel", "client_recovery",
@@ -27,8 +30,8 @@ ROOTS = {"SH": "root", "FLEET_ROSTER_PATH": "roster_path",
          "CONTAINER_WRAPPER_DIR": "wrapper_dir", "RUNTIME_VERSION": "runtime_version"}
 
 
-def sha(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
+def submission_source_digest(raw: bytes) -> str:
+    return raw_sha256(raw)
 
 
 def base_sources(root: Path) -> dict[str, str]:
@@ -109,9 +112,9 @@ def inspect(root: Path) -> dict:
                     removed = old - new
                     if removed:
                         changed[relative] = {
-                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(assertion_owner_form(node).encode())}
+                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": submission_source_digest(assertion_owner_form(node).encode())}
                                     for node in old_conditions if assertion_owner_form(node) in removed],
-                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(assertion_owner_form(node).encode())}
+                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": submission_source_digest(assertion_owner_form(node).encode())}
                                     for node in conditions if assertion_owner_form(node) in new - old]}
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "pbrun" and node.attr not in CLI:
@@ -140,7 +143,7 @@ def inspect(root: Path) -> dict:
         relative = f"src/prismabuild/{name}.py"
         actual = (root / relative).read_bytes()
         old = subprocess.check_output(["git", "show", f"{BASE}:{relative}"], cwd=root)
-        protected[relative] = {"sha256": sha(actual), "unchanged": actual == old}
+        protected[relative] = {"sha256": submission_source_digest(actual), "unchanged": actual == old}
     old_api = {node.name for node in ast.parse(baseline["tools/fleet/pbrun.py"]).body
                if isinstance(node, (ast.FunctionDef, ast.ClassDef))} - CLI
     current_api = {node.name for node in ast.parse((root / "tools/fleet/pbrun.py").read_text()).body

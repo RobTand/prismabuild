@@ -2,7 +2,6 @@
 from __future__ import annotations
 import argparse
 from collections import Counter
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -17,7 +16,7 @@ import pbtest_outcomes
 
 def proof_blob(path, fact):
     raw = Path(path).read_bytes()
-    if len(raw) != fact["bytes"] or hashlib.sha256(raw).hexdigest() != fact["sha256"]:
+    if len(raw) != fact["bytes"] or pb.raw_sha256(raw) != fact["sha256"]:
         raise ValueError(f"content differs: {path}")
     return raw
 
@@ -36,7 +35,7 @@ def snapshot_proof(blob, snapshot, parent, closure):
             raise ValueError(f"snapshot changes source outside its sealed closure: {changed}")
         for path, fact in allowed.items():
             raw = subprocess.check_output(["git", "--git-dir", str(repo), "show", snapshot["commit"] + ":" + path])
-            if len(raw) != fact["bytes"] or hashlib.sha256(raw).hexdigest() != fact["sha256"]:
+            if len(raw) != fact["bytes"] or pb.raw_sha256(raw) != fact["sha256"]:
                 raise ValueError(f"snapshot closure differs: {path}")
         return {"commit": snapshot["commit"], "parent": parent, "tree": actual,
                 "input": snapshot["input"], "source_tree": expected, "closure_paths": changed}
@@ -117,8 +116,8 @@ def action_proof(root, key, *, parent, snapshots):
             "reconciled": reconciled, "completion": completion}
     return {"key": key, "state": path.parent.name, "status": terminal["status"],
         "host": terminal["finished_host"], "generation": terminal["published_unix"],
-        "terminal_sha256": hashlib.sha256(raw_terminal).hexdigest(),
-        "request_sha256": hashlib.sha256(raw_action).hexdigest(), "inputs": inputs,
+        "terminal_sha256": pb.raw_sha256(raw_terminal),
+        "request_sha256": pb.raw_sha256(raw_action), "inputs": inputs,
         "resources": terminal["resources"], "cpu_allocation": terminal["cpu_allocation"],
         "interpreter": terminal["interpreter"], "worker_script": terminal["worker_script"],
         "logs": logs, "receipt": receipt, "runtime": runtime, "executable": executable,

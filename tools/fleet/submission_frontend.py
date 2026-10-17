@@ -15,18 +15,21 @@ def render_submission(event: Display) -> None:
           end=event.end, flush=event.flush)
 
 
-def request_arguments(request):
+def request_arguments(request, *, order=(), include_defaults=("cwd", "transport", "cpus"), omit=()):
     """Render a typed request at the pbrun process boundary."""
     from collections.abc import Sequence
     from dataclasses import fields
     import json
     defaults = SubmissionRequest()
     result = []
-    for item in fields(request):
+    declared = {item.name: item for item in fields(request)}
+    ordered = [*dict.fromkeys(order), *(name for name in declared if name not in order)]
+    for name in ordered:
+        item = declared[name]
         name, value = item.name, getattr(request, item.name)
-        if name == "command" or value is None:
+        if name in {"command", *omit} or value is None:
             continue
-        if value == getattr(defaults, name) and name not in {"cwd", "transport", "cpus"}:
+        if value == getattr(defaults, name) and name not in include_defaults:
             continue
         flag = "--" + name.replace("_", "-")
         if name == "progress_policy":

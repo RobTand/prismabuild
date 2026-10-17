@@ -101,7 +101,7 @@ MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "pr
 #: stays the only judge of each value; this table forwards, it never reinterprets.
 #: The gang flags, ``--tag``, ``--priority``, ``--detach`` and ``--cwd`` are
 #: deliberately not here: the driver owns them.
-from submission_frontend import request_arguments
+from submission_frontend import request_arguments, store_for
 from prismabuild.submission_types import request_options
 FLAG_FIELDS = {option.name: (option.flag, option.kind) for option in request_options()
                if option.name not in MEMBER_FIELDS and option.kind != "special"}
@@ -276,12 +276,20 @@ def member_request(args, manifest: dict, member: dict, *, group: str, index: int
     if evidence is not None and member.get("measurement") and member.get("host_class"):
         row["target_evidence"] = str(evidence)
     return submission.request_from_mapping(row, detach=True, gang_group=group,
-        gang_size=len(manifest["members"]), gang_index=index)
+        gang_size=len(manifest["members"]), gang_index=index,
+        transport=submission.transport_default(store=store_for(__file__, root=SH)))
 
 
 def member_command(args, manifest: dict, member: dict, *, group: str, index: int) -> list[str]:
     request = member_request(args, manifest, member, group=group, index=index)
-    return [sys.executable, str(HERE / "pbrun.py"), *request_arguments(request)]
+    from prismabuild.submission_types import ROW_NAMES
+    aliases = {name: field for field, name in ROW_NAMES.items()}
+    explicit = {aliases.get(name, name) for name in member}
+    order = ("cwd", "detach", "tag", "gang_group", "gang_size", "gang_index", "priority",
+             "timeout_s", "priority_reason", "demand", "cpus", "env",
+             *(aliases.get(name, name) for name in FLAG_FIELDS))
+    return [sys.executable, str(HERE / "pbrun.py"), *request_arguments(request, order=order,
+        include_defaults={"cwd", "priority", *explicit}, omit={"transport"})]
 
 
 def withdraw(keys: list[str], reason: str) -> None:
