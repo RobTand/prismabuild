@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 import subprocess
 
+from c13_contract_names import C13_LEAF_NAMES, C13_OWNER_NAMES
+
 
 def c13_capture_source(pin, path):
     if pin == "WORKTREE":
@@ -54,6 +56,32 @@ class C13CapturedBody(ast.NodeTransformer):
         return node
 
 
+class C13ContractIdentity(ast.NodeTransformer):
+    """Only the committed definition/caller renames, never predicate changes."""
+
+    def visit_Attribute(self, node):
+        node = self.generic_visit(node)
+        if isinstance(node.value, ast.Name) and node.value.id == "oc":
+            node.attr = {v: k for k, v in C13_LEAF_NAMES.items()}.get(node.attr, node.attr)
+        return node
+
+    def visit_Name(self, node):
+        if node.id == "record_store":
+            node.id = "pool_mod"
+        node.id = {v: k for k, v in C13_OWNER_NAMES.items()}.get(node.id, node.id)
+        return node
+
+    def visit_ImportFrom(self, node):
+        for alias in node.names:
+            if alias.name == "record_store" and alias.asname is None:
+                alias.asname = "pool_mod"
+        return node
+
+
+def c13_capture_identity(node):
+    return C13ContractIdentity().visit(copy.deepcopy(node))
+
+
 def c13_capture_body(fn, *, bound=False):
     body = copy.deepcopy(fn.body)
     if (body and isinstance(body[0], ast.Expr)
@@ -68,7 +96,7 @@ def c13_capture_body(fn, *, bound=False):
         }
         body = [node for node in body if ast.unparse(node) not in bindings]
         body = [C13CapturedBody().visit(node) for node in body]
-    return ast.dump(ast.Module(body=body, type_ignores=[]))
+    return ast.dump(c13_capture_identity(ast.Module(body=body, type_ignores=[])))
 
 
 def c13_capture_main():
@@ -76,6 +104,7 @@ def c13_capture_main():
     parser.add_argument("--before", default="24a063338446b71735d27162f08d43f5a9c0eac0")
     parser.add_argument("--after", default="WORKTREE")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--history-red", type=Path)
     args = parser.parse_args()
     paths = ["src/prismabuild/" + name + ".py" for name in
              ("batch_ledger", "produced_output", "pool")]
@@ -122,7 +151,7 @@ def c13_capture_main():
         for node in ast.walk(after):
             if isinstance(node, ast.Attribute) and node.attr == "_entry":
                 node.attr = "entry"
-        equal = ast.dump(before) == ast.dump(after)
+        equal = ast.dump(c13_capture_identity(before)) == ast.dump(c13_capture_identity(after))
         assert equal, name
         facets.append({"name": name, "ordered_body_equal": equal})
     stable = {}
@@ -131,9 +160,9 @@ def c13_capture_main():
              "_write_funding", "_delete_funding"]
     for name in names:
         a, b = old[owner][name], new[owner][name]
-        equal = ast.dump(a) == ast.dump(b)
+        equal = ast.dump(c13_capture_identity(a)) == ast.dump(c13_capture_identity(b))
         assert equal, name
-        stable[name] = {"signature": ast.unparse(b.args), "complete_ast_equal": True}
+        stable[name] = {"signature": ast.unparse(b.args), "complete_ast_equal_after_definition_and_caller_renames": True}
     a, b = old[paths[1]]["commit_batch"], new[paths[1]]["commit_batch"]
     assert ast.dump(a.args) == ast.dump(b.args)
     assert [ast.dump(x) for x in a.decorator_list] == [ast.dump(x) for x in b.decorator_list]
@@ -153,13 +182,36 @@ def c13_capture_main():
             if isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr == "root":
                 return ast.Name(id="queue_root", ctx=ast.Load())
             return node
-    before = ast.dump(PoolOwner().visit(ast.Module(body=body, type_ignores=[])))
-    after = c13_capture_body(new[owner]["BatchLedger.authorizes_mover"])
-    assert before == after, "Pool ordered authority block"
+    before_node = PoolOwner().visit(ast.Module(body=body, type_ignores=[]))
+    before = ast.dump(c13_capture_identity(before_node))
+    after_fn = new[owner]["BatchLedger.authorizes_mover"]
+    after = c13_capture_body(after_fn)
+    history = None
+    if before != after:
+        assert args.history_red is not None, "history repair requires retained old-source RED"
+        red = json.loads(args.history_red.read_text())
+        assert red["qualified_red"] and red["original_product"] == "d2f92f5ff533489182dddaf286feb54afde6f34a"
+        after_body = copy.deepcopy(after_fn.body[1:])
+        assert ast.dump(c13_capture_identity(ast.Module(body=before_node.body[:-2], type_ignores=[]))) == ast.dump(c13_capture_identity(ast.Module(body=after_body[:-3], type_ignores=[])))
+        expected_tail = ast.parse('''if str(filed.get("mover_key")) != str(entry.get("mover_key")):
+    return False
+try:
+    if mover_key not in BatchFacets(entry).movers:
+        return False
+except oc.ProducedOutputError:
+    return False
+return True
+''')
+        assert ast.dump(ast.Module(body=after_body[-3:], type_ignores=[])) == ast.dump(expected_tail)
+        history = {"old_source_red": str(args.history_red),
+                   "unchanged_prefix_ordered_ast": True,
+                   "only_behavior_change": "first mover also requires known complete history",
+                   "successor_malformed_control_already_refused": True}
     result = {"before": args.before, "after": args.after,
               "transitions": rows, "facets": facets, "canonical_codecs": codecs,
-              "stable_C12": stable, "pool_authority_ordered_block_equal": True,
-              "credit": "Source AST equivalence only; no runtime or test-pass credit"}
+              "stable_C12": stable, "pool_authority_ordered_block_equal": before == after,
+              "reproduced_history_repair": history,
+              "credit": "Source AST equivalence and one explicitly reproduced behavior change; no test-pass credit"}
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2)
         stream.write("\n")

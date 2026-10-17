@@ -110,7 +110,8 @@
     "reclaim_origin": "reclaim",
     "describe_output_precommit_for_funding": "precommit",
     "_committed_restage_authority": "restage_authority",
-    "due_mover_rows": "due_mover_rows"
+    "due_mover_rows": "due_mover_rows",
+    "_outstanding_prewrite_ids": "outstanding_prewrite_ids"
   },
   "owner": [
     "_PathOwners",
@@ -207,7 +208,11 @@
     "_delete_funding",
     "output_fragment_root",
     "due_mover_rows",
-    "_CONTENT_REFUSED"
+    "_CONTENT_REFUSED",
+    "_prewrite_inputs",
+    "_backfill_attempt",
+    "_INDEXED_ATTEMPTS",
+    "_INDEX_MARKED"
   ],
   "renames": {
     "instance_dir": "scope_dir",
@@ -252,7 +257,9 @@
     "_consumer_state": "consumer_state",
     "_portable_identity_of": "portable_origin_identity",
     "_held_by_unknown_event": "unknown_holder_report",
-    "_unknown_path_holders": "unknown_path_holders"
+    "_unknown_path_holders": "unknown_path_holders",
+    "_prewrite_inputs": "prewrite_inputs",
+    "_backfill_attempt": "backfill_attempt"
   },
   "changed_callers": [
     "src/prismabuild/action_edges.py",
@@ -387,5 +394,58 @@
       "old": "(Path(queue_root) / \"residency\" / oc.OUTPUT_SCOPES_SUBDIR\n             / producer_key / f\"{template_id}.{nonce}\")",
       "new": "bl.attempt_scope(queue_root, producer_key, template_id, nonce)"
     }
-  ]
+  ],
+  "method_owners": {
+    "_mark_materialization_retired_locked": "BatchCapture",
+    "_mark_batch_retired_locked": "BatchCapture",
+    "_record_staged_paths": "BatchCapture",
+    "_file_retirement_locked": "BatchCapture",
+    "_origin_gate_locked": "BatchCapture",
+    "_outstanding_prewrite_ids": "BatchCapture"
+  },
+  "retired_internal_wrappers": {
+    "reservation_holder": {
+      "replacement": "output_contract.instance_namespace",
+      "reason": "Exact one-return namespace alias; six current callers migrated, no public SDK exception."
+    },
+    "reserve_working_minimum": {
+      "replacement": "BatchLedger.admit",
+      "reason": "Deprecated one-return admission alias with no current callers."
+    }
+  },
+  "completion_seams": {
+    "_attempt_owned_paths": "Existing DAC conditional shared path extraction; legacy missing-path immutable fallback retained.",
+    "_TickReads.path_owners": "Existing DAC captured retirement policy; explicit live/unknown/succeeded/dead authority retained.",
+    "_unknown_attempt_detail": "Existing DAC lower-owner memo/context wiring; unknown fingerprints retained.",
+    "canonical_expected_id": "Existing DAC canonical identity leaf routes to the same digest owner.",
+    "reservation_holder": "Retired exact one-return internal namespace wrapper; six callers use the identity owner.",
+    "_live_path_owner": "Existing DAC conditional own-write path policy and common captured facts, distinct from foreign/retirement/spool policies.",
+    "_commitments_path": "Concrete ledger addressing replaces the old private path helper.",
+    "reserve_working_minimum": "Retired deprecated exact one-return admission wrapper; no current callers.",
+    "commit_batch": "Captured entry/charge/prewrite questions and bound publication; exact funding-after-admission and immutable publication blocks retained.",
+    "publish_prepaid_batch": "Named captured entry duplicate/origin facts; same replay and funding orchestration.",
+    "_ensure_batch_materialized": "Captured immutable open and named active/history answers; origin gate moved with ordered body equality.",
+    "_file_origin_repins": "Existing DAC per-scope repin extraction; the original ordered inner block remains exact.",
+    "_select_retirement_locked": "Captured entry and named active-copy answers; selection retains the same immutable proof and generation.",
+    "retire_batch": "Batch-id retirement transitions on one captured owner; same unlocked egress and write points.",
+    "retire_staged_batches": "Captured batched retirement updates and one canonical admission-preserving file after complete receipts.",
+    "_release_origin_consumer_locked": "Named entry guards; exact consumer prepare/index/publish blocks now owned concretely, same lock/error order.",
+    "declare_origin_consumer": "Named entry guards and exact declaration filing body in the owner.",
+    "dead_input_dependency": "Named entry/open answers and pure deterministic scope addressing; same bounded evidence and refusals.",
+    "_retire_consumed_batch": "Concrete origin-proof/cache answer replaces caller cache introspection with the same repin/refusal result.",
+    "_retire_consumed_batch_locked": "Selected private RetirementEntry; named delete intent/charge and exact report/quiet/repin/begin/end bodies; tick invalidation before file.",
+    "_ended_prewrite_dispositions": "Validated PrewriteFacts.paths instead of caller raw record fields; same conditional four-policy path observations.",
+    "_prewrite_inputs": "Owner file/directory version capture over validated reservation facts; canonical loader always installs paths.",
+    "_sweep_ended_prewrites": "Owner prewrite addresses/facts/version question; same lock, disposition, unlink and report order.",
+    "_orphaned_prewrites": "Same read-only disposition policy over owner addresses and reservation facts.",
+    "blocked_origin_batches": "Named captured kind/lifetime/delete/charge/path questions; public census answer and unknown retention preserved.",
+    "_dead_staged_batch_ready": "Named active-copy facts from the same captured generation; no raw retired-flag authority.",
+    "_dead_staged_batch_event": "Named captured path facts for the same event attribution.",
+    "origin_retirement_tick": "Captured due questions and owner attempt-index bookkeeping; existing budgets, visits and physical retirement remain orchestration.",
+    "_live_output_paths": "Named first/history copy path observations retain unknown staged-path attribution.",
+    "safe_release_instance": "Captured stage/history/open questions; legacy funding reconciliation and lease/containment strictness unchanged.",
+    "output_scope_tick": "Named captured stage-copy observations with the same mover receipt and unknown answers.",
+    "due_mover_rows": "Existing DAC explicit residency schema dependency and named batch history; SDK adapter signature unchanged.",
+    "recover_batches": "Named captured copy/history and pre-existing legacy funding recovery; same event/unknown decisions."
+  }
 }

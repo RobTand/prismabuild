@@ -18805,7 +18805,9 @@ facts are independent. No derived phase is filed in `commitments.json`.
 one generation at the existing conditional read point; `BatchCapture` answers
 entry, history and charge questions and owns batch-id transitions. `BatchFacets`
 and `StageCopy` are named observations, with unknown history retained until a
-question validates it. Callers keep their prefix locks. A `RetirementEntry`
+question validates it. A typed origin delete intent is distinct from the
+truthiness guard used by declarations, preserving legacy empty-object intent
+behavior. Callers keep their prefix locks. A `RetirementEntry`
 keeps the selected private entry copy and invalidates the tick before each
 canonical file attempt. There is no implicit refresh or eager history scan.
 
@@ -18821,7 +18823,7 @@ physical retirement. C12 owns the separately handed-off legacy funding seams.
 The documented module-level exceptions from #955 remain permanent object
 bindings: `produced_output.batch_record`, `batch_records`, their three batch
 state constants and `ProducedOutputError`. Their implementation lives in the
-ledger and contract owners. The client SDK remains version6 with its full
+ledger and contract owners. The client SDK remains version 6 with its full
 surface and signatures.
 
 Path capture and addressing live in `batch_ledger`, with four named policies.

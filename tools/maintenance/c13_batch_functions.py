@@ -70,6 +70,15 @@ def c13_body(fn):
           and isinstance(x.targets[0],ast.Name) and x.targets[0].id.removeprefix('local:') in ('path','entry')
           and isinstance(x.value,ast.Attribute) and isinstance(x.value.value,ast.Name)
           and x.value.value.id.removeprefix('local:')=='self' and x.value.attr in ('path','entry','_entry'))]
+    exact_bindings={
+        'local:batches = local:self._batches',
+        'local:commitments = local:self._record',
+        'local:commitments_path = local:self.ledger.path',
+        'local:entry = local:entry._entry',
+        'local:entry = local:self._batches[local:batch_id]',
+        'local:scope = local:self.ledger.path.parent',
+    }
+    body=[x for x in body if ast.unparse(x) not in exact_bindings]
     body=[x for x in body if not (isinstance(x,ast.Assign) and any(
           isinstance(t,ast.Attribute) and t.attr=='lease_timeout_s' for t in x.targets))]
     return ast.dump(ast.Module(body=body,type_ignores=[]),include_attributes=False)
@@ -90,7 +99,7 @@ def main():
         elif parent in m['facets']:
             target='batch_ledger';new='BatchFacets.'+m['facets'][parent]
         elif parent in m['methods']:
-            target='batch_ledger';new=('BatchCapture.' if m['methods'][parent] in ('retire_materialization','retire_first_copy','record_staged_paths','file_retirement','origin_gate') else 'BatchLedger.')+m['methods'][parent]
+            target='batch_ledger';new=m.get('method_owners',{}).get(parent,'BatchLedger')+'.'+m['methods'][parent]
         elif parent in ('_read_commitments','_write_commitments'):
             target='batch_ledger';new='BatchLedger.'+{'_read_commitments':'capture','_write_commitments':'file'}[parent]
         elif parent in m['owner']:
@@ -130,20 +139,28 @@ def main():
     current_prefix=copy.deepcopy(files['produced_output']['commit_batch'])
     original_prefix.body,old_boundary=before_assignment(original_prefix.body,'batch_record')
     current_prefix.body,new_boundary=before_assignment(current_prefix.body,'refused')
-    blocks['funding_and_commit_prefix']=(old_boundary and new_boundary
-                                       and c13_body(original_prefix)==c13_body(current_prefix))
+    original_prefix.body=tail_at(original_prefix.body,'funding_path')
+    current_prefix.body=tail_at(current_prefix.body,'funding_path')
+    blocks['funding_after_captured_admission']=(old_boundary and new_boundary
+        and original_prefix.body is not None and current_prefix.body is not None
+        and c13_body(original_prefix)==c13_body(current_prefix))
     repins=next(n for n in ast.walk(old['_file_origin_repins']) if isinstance(n,ast.For) and isinstance(n.target,ast.Tuple) and isinstance(n.target.elts[0],ast.Name) and n.target.elts[0].id=='local:key')
     current=files['batch_ledger']['BatchLedger.repin_scope']
     expected=ast.FunctionDef(name='repins',args=current.args,body=repins.body,decorator_list=[])
     blocks['one_scope_origin_repins']=c13_body(expected)==c13_body(current)
     result=dict(base=BASE,functions=rows,blocks=blocks,equal=sum(x['status']=='normalized-body-equal' for x in rows))
-    expected_seams={'_attempt_owned_paths','_live_path_owner','_TickReads.path_owners',
-                    '_unknown_attempt_detail',
-                    'canonical_expected_id','_commitments_path','commit_batch',
-                    '_file_origin_repins','_retire_consumed_batch_locked','due_mover_rows'}
+    expected_seams=set(m.get('completion_seams',{}))
     actual_seams={row['original'] for row in rows if row['status']!='normalized-body-equal'}
+    for row in rows:
+        if row['original'] in expected_seams:
+            row['seam_reason']=m['completion_seams'][row['original']]
+            row['disposition']=('retired-exact-internal-forwarder' if row['original'] in m.get('retired_internal_wrappers',{})
+                                else 'explicit-captured-owner-seam')
     result['expected_seams']=sorted(expected_seams)
+    result['unclassified_seams']=sorted(actual_seams-expected_seams)
+    result['stale_seam_records']=sorted(expected_seams-actual_seams)
     result['qualified']=len(rows)==234 and actual_seams==expected_seams and all(blocks.values())
+    result['qualification_scope']='Every original function and block located: normalized-body equality or an explicit named owner seam; this is not a claim that seam bodies are syntactically identical.'
     Path(sys.argv[1]).write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps({'original':len(rows),'equal':result['equal'],'blocks':blocks,'seams':[r['original'] for r in rows if r['status']!='normalized-body-equal']}))
     raise SystemExit(0 if result['qualified'] else 1)

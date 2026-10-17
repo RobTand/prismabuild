@@ -52,6 +52,11 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
                        oc='prismabuild.output_contract', bl='prismabuild.batch_ledger')
         loader_aliases.update(('po','oc','bl'))
     top_names={n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
+    for item in tree.body:
+        if isinstance(item, ast.Assign):
+            top_names.update(t.id for t in item.targets if isinstance(t, ast.Name))
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            top_names.add(item.target.id)
     if 'BatchLedger' in top_names:
         aliases['BatchLedger']='prismabuild.batch_ledger.BatchLedger'
         aliases['BatchFacets']='prismabuild.batch_ledger.BatchFacets'
@@ -73,7 +78,7 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
     for n in manifest['owner']:
         reverse['prismabuild.batch_ledger.'+manifest['renames'].get(n,n)]=OLD+n
     for old,new in dict(manifest['methods'], _read_commitments='capture', _write_commitments='file').items():
-        reverse['prismabuild.batch_ledger.BatchLedger.'+new]=OLD+old
+        reverse['prismabuild.batch_ledger.'+manifest.get('method_owners',{}).get(old,'BatchLedger')+'.'+new]=OLD+old
     facets={new:old for old,new in manifest['facets'].items()}
     owner_funcs=set(manifest['leaf'])|set(manifest['owner'])|set(manifest['facets'])
     def identity(name):
@@ -82,6 +87,22 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
         if name in reverse: return reverse[name]
         if name in owner_funcs:return OLD+name
         return name
+    class ScopeAddresses(ast.NodeTransformer):
+        def visit_Attribute(self, node):
+            if (isinstance(node.value,ast.Call) and resolve(node.value.func)=='prismabuild.batch_ledger.BatchLedger.at_scope'
+                    and node.attr in ('path','instance_path')):
+                suffix='commitments.json' if node.attr=='path' else 'instance.json'
+                return ast.BinOp(left=self.visit(node.value.args[0]),op=ast.Div(),right=ast.Constant(value=suffix))
+            return self.generic_visit(node)
+        def visit_Call(self, node):
+            if resolve(node.func)=='prismabuild.batch_ledger.BatchLedger.at_scope':
+                return ast.Call(func=ast.parse('prismabuild.batch_ledger.BatchLedger',mode='eval').body,
+                    args=[ast.BinOp(left=self.visit(node.args[0]),op=ast.Div(),right=ast.Constant(value='commitments.json'))],keywords=[])
+            if resolve(node.func)=='prismabuild.batch_ledger.scopes_root':
+                return ast.BinOp(left=ast.BinOp(left=ast.Call(func=ast.Name(id='Path'),args=[self.visit(node.args[0])],keywords=[]),op=ast.Div(),right=ast.Constant(value='residency')),
+                    op=ast.Div(),right=ast.parse('oc.OUTPUT_SCOPES_SUBDIR',mode='eval').body)
+            return self.generic_visit(node)
+    tree=ScopeAddresses().visit(tree)
     class Normalize(ast.NodeTransformer):
         def visit_FunctionDef(self,node):
             bound={a.arg for a in [*node.args.posonlyargs,*node.args.args,*node.args.kwonlyargs]}
@@ -130,6 +151,11 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
             # The retired reservation_holder had exactly this one return.
             if resolve(node.func)==OLD+'reservation_holder':
                 return ast.Call(func=ast.Name(id=OLD+'instance_namespace'),args=[self.visit(x) for x in node.args],keywords=[self.visit(k) for k in node.keywords])
+            if (isinstance(node.func,ast.Attribute) and isinstance(node.func.value,ast.Name)
+                    and node.func.value.id=='self' and node.func.attr in ('retire_materialization','retire_first_copy')):
+                name=node.func.attr
+                node.args.insert(0 if name=='retire_materialization' else 3, ast.Name(id='batches'))
+                node.func=ast.Name(id=OLD+('_mark_materialization_retired_locked' if name=='retire_materialization' else '_mark_batch_retired_locked'))
             # C31 current fixture setup now uses C10's already-owned tier API.
             if (isinstance(node.func,ast.Attribute) and node.func.attr=='take'
                     and isinstance(node.func.value,ast.Call)
