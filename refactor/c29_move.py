@@ -144,8 +144,8 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_a_stalled_mover_ends_no_progress.py',
                     'tests/test_a_wedged_egress_ends_no_progress.py'}:
             after = after.replace('sys.path.insert(0, {tools!r})', 'sys.path.insert(0, {source!r})')
-            after = after.replace('format(tools=str(ROOT / "tools" / "fleet"),',
-                                  'format(source=str(ROOT / "src"),')
+            after = after.replace('tools=str(ROOT / "tools" / "fleet"),',
+                                  'source=str(ROOT / "src"),')
         if path == 'tests/test_produced_output_tier_host_egress.py':
             start = after.index('def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(')
             end = after.index('\ndef test_', start + 1)

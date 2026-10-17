@@ -704,7 +704,7 @@ def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     source = MOVER_RESUME_HOLD.format(
-        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
     item = _claimed(queue, cas, tmp_path, "resume", source, {
@@ -771,7 +771,7 @@ def test_a_mover_wedged_in_its_own_resume_parse_needs_no_credit(
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     source = MOVER_RESUME_PARSE_HOLD.format(
-        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
     item = _claimed(queue, cas, tmp_path, "resume", source, {
