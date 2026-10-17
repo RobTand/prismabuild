@@ -487,7 +487,7 @@ def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
         timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
         **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
-    store=pbrun.configured_store(), display=submit_core.render_submission)
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if "has shown no progress" in line]
@@ -522,7 +522,7 @@ def test_a_withdrawal_carries_the_last_liveness_sample(
     rc = submit_core.withdraw_slurm_main(
         [job.action_key[:12]], reason="dead", by="tester",
         lane_root=root, queue_root=queue,
-    store=pbrun.configured_store(), display=submit_core.render_submission)
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     assert rc == 0
     record = json.loads((queue / "withdrawn" / f"{job.action_key}.json").read_text())

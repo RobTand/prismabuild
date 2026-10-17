@@ -255,7 +255,7 @@ def test_pbrun_reports_an_unknown_fate_as_no_verdict(
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
         sbatch=_hanging_sbatch(seen),
         squeue=_controller(seen, [], reply=down),
-    store=pbrun.configured_store(), display=submit_core.render_submission)
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     err = capsys.readouterr().err
     assert code == submit_core.action_client.GAVE_UP_EXIT
