@@ -7446,3 +7446,519 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
         # published nothing, so it superseded nothing.
         who = superseding.get("withdrawn_by") or "an operator"
         why = str(superseding.get("reason") or "").strip()
+        emit_display(display, f"pbrun: {key[:12]} had been withdrawn by {who}"
+              f"{' -- ' + why if why else ''}; this submission supersedes that "
+              f"decision", channel="stderr", flush=True)
+    masked = "" if demand.get("gpu") else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    verb = "queued" if queued_path is not None else "attached to"
+    # The one line that names the full key, so a caller can cite the action
+    # rather than a prefix of it; ``pbtest`` records it per shard (#1012).
+    # Every later line names it by prefix, which is what ``--withdraw`` takes.
+    emit_display(display, f"pbrun: {verb} {key} tags={tags} demand={demand}{masked} "
+          f"published_unix={generation}",
+          channel="stderr", flush=True)
+
+    if args.detach:
+        if queued_path is None:
+            # The same display path ``_attachment_value`` names, read once:
+            # this process started nothing, so it reports where the run it
+            # joined lives rather than a submission of its own.
+            ready = q.item_path(pool.READY, key)
+            display_path = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+            emit_display(display, sorted_json(action_client.detached_submission_record(
+                key,
+                transport="pool",
+                status="attached",
+                queue_root=q.root,
+                published_unix=generation,
+                submission=display_path,
+            )), flush=True)
+            return report.finish(action_client.ClientSubmitted(identity, display_path))
+        emit_display(display, sorted_json(action_client.detached_submission_record(
+            key,
+            transport="pool",
+            status="submitted",
+            queue_root=q.root,
+            published_unix=generation,
+            submission=queued_path,
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(identity))
+
+    return functools.partial(action_client.report_pool_outcome, q, key, wait_s=args.wait_s,
+                             generation=generation, report=report)
+
+
+
+
+def default_transport(*, store: FleetStore) -> str:
+    configured = os.environ.get(DEFAULT_TRANSPORT_ENV)
+    if configured:
+        if configured not in TRANSPORTS:
+            raise SubmissionRefused(
+                f"{DEFAULT_TRANSPORT_ENV}={configured} is not a "
+                f"transport this code has ({', '.join(TRANSPORTS)}). "
+                "Unset it or spell it the way the fleet does.")
+        return configured
+    try:
+        receipt = json.loads(store.runtime_version.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "pool"
+    declared = receipt.get("default_transport")
+    return declared if isinstance(declared, str) and declared in TRANSPORTS else "pool"
+
+
+def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRequest:
+    """Normalize an external row once into the shared submission vocabulary."""
+    from dataclasses import fields
+    aliases = {"argv": "command", "tags": "tag", "container_images": "container_image",
+               "snapshot_refs": "snapshot_ref"}
+    values = {aliases.get(name, name): value for name, value in row.items()}
+    phases = values.pop("progress_phases", None)
+    cycle = values.pop("progress_cycle", False)
+    if phases is not None or cycle:
+        values["progress_policy"] = parse_progress_phases(phases, cycle=cycle)
+    if isinstance(values.get("awaited_batch"), str):
+        values["awaited_batch"] = parse_awaited_batch(values["awaited_batch"])
+    if isinstance(values.get("demand"), Mapping):
+        values["demand"] = ",".join(f"{key}={value}" for key, value in values["demand"].items())
+    if isinstance(values.get("env"), Mapping):
+        values["env"] = tuple(f"{key}={value}" for key, value in values["env"].items())
+    if isinstance(values.get("requires_files"), list):
+        values["requires_files"] = json.dumps(values["requires_files"])
+    values.update(overrides)
+    known = {field.name for field in fields(SubmissionRequest)}
+    unknown = values.keys() - known
+    if unknown:
+        raise SubmissionRefused(f"unknown submission fields: {', '.join(sorted(unknown))}", returncode=2)
+    from typing import get_type_hints
+    types = get_type_hints(SubmissionRequest)
+    for name, value in values.items():
+        if not _request_value_matches(value, types[name]):
+            raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2)
+    return SubmissionRequest(**values)
+
+
+def _request_value_matches(value, expected) -> bool:
+    from types import UnionType
+    from typing import Literal, get_args, get_origin
+    origin = get_origin(expected)
+    args = get_args(expected)
+    if origin is UnionType:
+        return any(_request_value_matches(value, member) for member in args)
+    if origin is Literal:
+        return value in args
+    if origin is Sequence:
+        return isinstance(value, (list, tuple)) and all(_request_value_matches(item, args[0]) for item in value)
+    if origin is tuple:
+        return isinstance(value, (list, tuple)) and len(value) == len(args) and all(
+            _request_value_matches(item, member) for item, member in zip(value, args))
+    if origin is Mapping:
+        return isinstance(value, Mapping) and all(isinstance(key, str) for key in value)
+    if expected is float:
+        return type(value) in (int, float)
+    if expected is object:
+        return True
+    return type(value) is expected
+
+
+def submit(request: SubmissionRequest, *, store: FleetStore,
+           display: DisplaySink = discard_display, report=None,
+           publication_canary_intent=None, authorize_canary=None):
+    """Own one complete submission and its C06 report/reader lifetime."""
+    report = report if report is not None else action_client.ClientReport()
+    with action_wait.client_readers():
+        try:
+            validate_request(request)
+            if publication_canary_intent is not None and (
+                    not callable(authorize_canary) or request.transport != "pool"
+                    or not request.detach or request.after or request.withdraw
+                    or request.release_origin_consumer is not None):
+                raise SubmissionRefused("pbrun: publication canary requires a bounded publisher handoff")
+            if request.withdraw or request.release_origin_consumer is not None:
+                if [word for word in request.command if word != "--"]:
+                    verb = "--withdraw" if request.withdraw else "--release-origin-consumer"
+                    raise SubmissionRefused(f"pbrun: {verb} takes no command")
+                try:
+                    who = getpass.getuser()
+                except Exception:
+                    who = "unknown"
+                by = f"{who}@{socket.gethostname()}"
+                code = (withdraw_routed(request.withdraw, transport=request.transport,
+                            reason=request.reason, by=by, store=store, display=display)
+                        if request.withdraw else release_origin_consumer(
+                            *request.release_origin_consumer, reason=request.reason,
+                            by=by, store=store, display=display))
+                report.finish(action_client.ClientCommand(code))
+                return report
+            try:
+                with write_window(request, store=store):
+                    continuation = _prepare_and_publish(request, store=store,
+                        display=display, report=report,
+                        publication_canary_intent=publication_canary_intent,
+                        authorize_canary=authorize_canary)
+            except filesystem_floor.FloorRefused as exc:
+                raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
+                                        f"submitted: {exc}") from None
+            if callable(continuation):
+                continuation()
+            if report.ending is None:
+                raise RuntimeError("submission returned without a typed client ending")
+        except OfferDiscoveryTimedOut as exc:
+            if report.ending is None:
+                report.finish(action_client.ClientOfferTimeout())
+            return exc
+        except SubmissionRefused as exc:
+            if report.ending is None:
+                identity = report.identity
+                report.finish(action_client.ClientRefused(exc.returncode,
+                    identity.action_key if identity is not None else None,
+                    getattr(identity, "published_unix", None)))
+            return exc
+    return report
+
+
+
+def submit_action(action: Mapping[str, object], *, template: Mapping[str, object],
+                  request: SubmissionRequest, store: FleetStore, staged_plan=None,
+                  placement_announced: bool = False, display: DisplaySink = discard_display,
+                  report=None, producer: ProducerPublication | None = None, request_path=None):
+    """Publish an already sealed child through the same gates and ownership tail."""
+    report = report if report is not None else action_client.ClientReport()
+    prepared = {"template": template, "cwd": Path(request.cwd),
+        "portable_checkout": True, "staged_plan": staged_plan, "producer": producer,
+        "request_path": request_path,
+        "offer_queue": lambda: bounded_offer_snapshot(pool.PoolQueue(store.queue_root))}
+    with action_wait.client_readers():
+        try:
+            with write_window(request, store=store):
+                continuation = publish(action, prepared, args=request, store=store,
+                    display=display, report=report, placement_announced=placement_announced)
+            if callable(continuation):
+                continuation()
+        except filesystem_floor.FloorRefused as exc:
+            return SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
+                                     f"submitted: {exc}")
+        except SubmissionRefused as exc:
+            if report.ending is None:
+                identity = report.identity
+                report.finish(action_client.ClientRefused(exc.returncode,
+                    identity.action_key if identity is not None else None,
+                    getattr(identity, "published_unix", None)))
+            return exc
+    return report
+
+
+def validate_request(request: SubmissionRequest) -> None:
+    if request.release_origin_consumer is not None and (
+            request.withdraw or request.after or request.supersedes is not None
+            or request.as_sealed_by is not None):
+        request.refuse_argument("--release-origin-consumer is not a submission; it takes no "
+                                "--withdraw, --after, --supersedes or --as-sealed-by")
+    if request.as_sealed_by is not None:
+        try:
+            require_reseal_key(request.as_sealed_by)
+        except ValueError as exc:
+            request.refuse_argument(str(exc))
+        if request.withdraw:
+            request.refuse_argument("--as-sealed-by cannot be combined with --withdraw")
+    if request.after or request.supersedes is not None:
+        if request.withdraw:
+            request.refuse_argument("--after and --supersedes cannot be combined with --withdraw")
+        if request.transport != "pool":
+            request.refuse_argument("--after and --supersedes need the pull queue, where "
+                                    "producers, releases and supersessions are filed")
+    if request.after and request.as_sealed_by is not None:
+        request.refuse_argument("--after cannot be combined with --as-sealed-by: a deferred "
+                                "action has no key until it is released")
+    if request.timeout_s is not None and (
+            not math.isfinite(request.timeout_s) or request.timeout_s <= 0):
+        raise SubmissionRefused("pbrun: --timeout-s must be a positive finite number")
+
+
+
+def producer_publication_row(action, *, args: SubmissionRequest,
+                             producer: ProducerPublication, store: FleetStore):
+    params = action.get("params") or {}
+    images = list(container_images.normalize_refs(params.get("container_images") or []))
+    dependencies = {name: local_dependencies.normalize(params[name])
+                    for name in ("local_dependencies", "dependency_queries") if name in params}
+    return dict(action_key=str(action["action_key"]), cas_root=str(store.cas_root),
+        checkout_root=producer.checkout_root, worker_script=str(producer.worker_script),
+        tags=list(producer.tags), needs_gpu=producer.needs_gpu, priority=args.priority,
+        resources=dict(producer.resources), max_attempts=args.max_attempts,
+        retry_safe=producer.retry_safe, container_images=images or None, **dependencies)
+
+
+
+def release_deferred(q, pending_id, record, *, producers=(), store: FleetStore,
+                     display: DisplaySink = discard_display):
+    with action_wait.client_readers():
+        with write_window(SubmissionRequest(), store=store):
+            return _release_deferred(q, pending_id, record, producers=producers,
+                                     store=store, display=display)
+
+
+_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, object]] = {}
+
+def snapshot_for_producer(
+    checkout_root: str | Path,
+    *,
+    cas: pb.PrismaBuildCAS,
+    max_bytes: int | None = None,
+) -> dict[str, object]:
+    """Seal one checkout as the immutable snapshot the lane addresses.
+
+    ``pbrun`` owns this sequence -- roster, size and transform bounds, bundle
+    with ancestry, CAS ingest -- and it is imported rather than reproduced, so
+    a producer's snapshot and an interactive ``pbrun``'s are the same object
+    under the same rules.
+
+    Args:
+        checkout_root: The tree the action runs in. Must be a Git worktree.
+        cas: The store the bundle is ingested into.
+        max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
+
+    Returns:
+        The ``params.checkout_snapshot`` record, cached per store and
+        working-tree state.
+
+    Raises:
+        SubmissionRefused: The tree cannot be sealed, with pbrun's own reason.
+    """
+
+
+    root = Path(checkout_root)
+    bound = (
+        CHECKOUT_SNAPSHOT_MAX_BYTES if max_bytes is None else int(max_bytes)
+    )
+    try:
+        identity = pb.git_checkout_identity(root)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(
+            f"{root}: the SLURM lane addresses a checkout through a sealed "
+            f"snapshot, and this one cannot be identified: {exc}"
+        ) from None
+    cached = _SNAPSHOT_CACHE.get(
+        key := (
+            str(cas.root),
+            str(root),
+            str(identity["head"]),
+            str(identity["dirty_sha256"]),
+        )
+    )
+    if cached is not None:
+        return cached
+    try:
+        snapshot = snapshot_checkout(
+            root, cas=cas, max_bytes=bound, expected_identity=identity
+        )
+    except SubmissionRefused as exc:
+        # ``pbrun``'s sealer refuses by exiting, which is right for a terminal
+        # and wrong for a library: a dispatcher must get a refusal it can name
+        # the action against, not a process that stops mid-loop.
+        raise SubmissionRefused(f"{root}: {exc}") from None
+    _SNAPSHOT_CACHE[key] = snapshot
+    return snapshot
+
+
+def seal_producer_checkout(
+    action: Mapping[str, object],
+    *,
+    cas: pb.PrismaBuildCAS,
+    checkout_root: str | Path,
+    max_bytes: int | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Re-seal one action around a snapshot of the tree it runs in.
+
+    Args:
+        action: The sealed action the producer built, carrying no snapshot.
+        cas: The store the bundle is ingested into.
+        checkout_root: The tree the action runs in.
+        max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
+
+    Returns:
+        The re-sealed action and its snapshot record. The action key differs
+        from the caller's, because the snapshot is part of what will run.
+
+    Raises:
+        SubmissionRefused: The tree cannot be sealed, or the action addresses the
+            submitter's checkout by an absolute path the snapshot cannot
+            carry.
+    """
+
+
+    snapshot = snapshot_for_producer(
+        checkout_root, cas=cas, max_bytes=max_bytes
+    )
+    # Sealing a tree makes the action portable, and only sealing does not make
+    # it relocatable: an argv token or an environment variable holding an
+    # absolute path into the submitter's checkout still reads the submitter's
+    # bytes on whichever node the scheduler picked.  Two client producers
+    # shipped exactly that as ``PYTHONPATH``, so a worker verified the sealed
+    # encoder in its private checkout, imported the shared one, and published
+    # the result under the sealed key.  ``pbrun`` already refuses this for an
+    # interactive submission; the same guard, not a second one, decides it
+    # here, and it decides before anything is queued.
+    task = action.get("task")
+    environment = action.get("environment")
+    argv = list(task.get("argv") or ()) if isinstance(task, Mapping) else []
+    variables = (
+        environment.get("variables") if isinstance(environment, Mapping) else None
+    )
+    try:
+        require_relocatable_checkout(
+            [str(token) for token in argv],
+            {
+                str(name): str(value)
+                for name, value in (
+                    variables.items() if isinstance(variables, Mapping) else ()
+                )
+            },
+            Path(checkout_root),
+        )
+    except SubmissionRefused as exc:
+        raise SubmissionRefused(
+            f"{str(action['action_key'])[:12]}: {exc}"
+        ) from None
+    body = {name: value for name, value in action.items() if name != "action_key"}
+    params = dict(body.get("params") or {})
+    params["checkout_snapshot"] = snapshot
+    body["params"] = params
+    body["inputs"] = list(body.get("inputs") or []) + [snapshot["input"]]
+    return pb.seal_action(body), snapshot
+
+
+def _prepare_producer(action, *, cas, request_path, producer: ProducerPublication,
+                      request: SubmissionRequest, store: FleetStore,
+                      checkout_snapshot_max_bytes=None):
+    transport = request.transport
+    tags = producer.tags
+    checkout_root = producer.checkout_root
+    queue_root = store.queue_root
+    if transport not in TRANSPORTS:
+        raise SubmissionRefused(f"unknown transport {transport!r}")
+    key = str(action["action_key"])
+    # The sealed action is the authority for a declared image requirement; the
+    # queue row is its scheduling projection.  Derive it here so a producer
+    # that submits a compiled action without restating placement cannot drop
+    # the requirement -- and refuse it outright on a transport with no worker
+    # inventory to check it against (#714 review).
+    image_refs: list[str] = []
+    sealed_params = action.get("params")
+    if isinstance(sealed_params, Mapping) and sealed_params.get("container_images"):
+        try:
+            image_refs = list(container_images.normalize_refs(
+                sealed_params["container_images"]))
+        except ValueError as exc:
+            raise SubmissionRefused(f"{key[:12]}: container_images: {exc}") from None
+    dependency_fields = {}
+    if isinstance(sealed_params, Mapping):
+        for field in ("local_dependencies", "dependency_queries"):
+            if field in sealed_params:
+                try:
+                    dependency_fields[field] = local_dependencies.normalize(sealed_params[field])
+                except ValueError as exc:
+                    raise SubmissionRefused(f"{key[:12]}: {exc}") from None
+    if dependency_fields.get("local_dependencies") and transport != "pool":
+        raise SubmissionRefused(f"{key[:12]}: local_dependencies require the pool claim-time check")
+    if image_refs and transport != "pool":
+        raise SubmissionRefused(
+            f"{key[:12]}: this action declares container image "
+            f"{', '.join(image_refs)}; the SLURM lane cannot verify a node's "
+            "local Docker inventory, so it cannot honour the requirement")
+    if queue_root is None:
+        # Read when this runs, not when the module loaded.  A default built
+        # from ``SH`` at definition time was bound to the live queue for good,
+        # so repointing ``SH``, which every test does through
+        # ``tests/conftest.py``, never reached it: a test that called this on
+        # the pool transport without a ``queue_root`` published into the
+        # fleet's queue, and a worker on another box claimed the item.
+        queue_root = store.queue_root
+
+    params = action.get("params")
+    snapshot = params.get("checkout_snapshot") if isinstance(params, Mapping) else None
+    if transport == "pool":
+        pass
+    elif snapshot is not None:
+        if checkout_root is not None:
+            raise SubmissionRefused(
+                f"{key[:12]}: checkout_root and the lane's sealed snapshot are "
+                "two answers to where this action runs; the lane reads the "
+                "snapshot."
+            )
+    elif checkout_root is not None:
+        # The producer named a tree, so seal it rather than refuse it.  The
+        # key moves, once, because the snapshot is part of what runs -- and
+        # the request is republished under the new key so the node can read
+        # the action it was actually sent.
+        action, _snapshot = seal_producer_checkout(
+            action, cas=cas, checkout_root=checkout_root,
+            max_bytes=checkout_snapshot_max_bytes,
+        )
+        key = str(action["action_key"])
+        request_path = cas.publish_action_request(action)
+    else:
+        raise SubmissionRefused(
+            f"{key[:12]}: the SLURM lane runs only snapshot-addressed actions. "
+            "slurm_job materializes params.checkout_snapshot on the node that "
+            "won the allocation and refuses an action that carries none, so a "
+            "checkout_root would be a submitter's path handed to a scheduler "
+            "free to place the job elsewhere. Seal the checkout as a snapshot "
+            "(pass checkout_root, or build one as pbrun does) before "
+            "submitting this action to SLURM."
+        )
+
+    return action, request_path
+
+
+def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
+                    request: SubmissionRequest, store: FleetStore,
+                    checkout_snapshot_max_bytes=None, display: DisplaySink = discard_display,
+                    report=None):
+    report = report if report is not None else action_client.ClientReport()
+    with action_wait.client_readers():
+        try:
+            with write_window(request, store=store):
+                action, request_path = _prepare_producer(action, cas=cas,
+                    request_path=request_path, producer=producer, request=request, store=store,
+                    checkout_snapshot_max_bytes=checkout_snapshot_max_bytes)
+                continuation = publish(action, {"template": {"cas": cas},
+                    "cwd": Path(request.cwd), "portable_checkout": True,
+                    "producer": producer, "request_path": request_path},
+                    args=request, store=store, display=display, report=report,
+                    placement_announced=True)
+            if callable(continuation):
+                continuation()
+        except filesystem_floor.FloorRefused as exc:
+            refusal = SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
+                                        f"submitted: {exc}")
+            report.finish(action_client.ClientRefused(refusal.returncode))
+            return refusal
+        except SubmissionRefused as exc:
+            if report.ending is None:
+                report.finish(action_client.ClientRefused(exc.returncode))
+            return exc
+    return report
+
+
+@contextlib.contextmanager
+def preparation(request: SubmissionRequest, *, store: FleetStore,
+                display: DisplaySink = discard_display):
+    """Keep batch preparation reads and writes inside the package boundary."""
+    with action_wait.client_readers():
+        with write_window(request, store=store):
+            yield prepare(request, store=store, display=display)
+
+
+@contextlib.contextmanager
+def write_window(request: SubmissionRequest, *, store: FleetStore):
+    try:
+        with filesystem_floor.operation(store.queue_root, label="pbrun",
+                used_paths=[request.cwd or os.getcwd(), store.cas_root,
+                            store.queue_root, tempfile.gettempdir()],
+                growth_gib=({store.cas_root: request.filesystem_growth_gib}
+                            if request.transport == "pool" else {})):
+            yield
+    except filesystem_floor.FloorRefused as exc:
+        raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
+                                f"submitted: {exc}") from None
