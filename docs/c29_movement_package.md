@@ -112,6 +112,14 @@ The existing funding, staged-path, tier-holdings and submission owners stay
 below the relocated implementation. A narrower extraction would leave the
 remaining functions dependent on script globals or require a callback layer.
 
+The packaged `fleet_submit` defaults to `tools/fleet/slurm_job.py` under its
+generation. Its sole physical producer, `seal_and_publish`, explicitly passes
+the sibling of its own script: the short published caller retains
+`tools/slurm_job.py`, and the nested caller retains `tools/fleet/slurm_job.py`.
+Both entries carry identical bytes. The two-layout qualification drives real
+copied producers into the existing fake scheduler and checks the exact job
+script address and recorded script digest.
+
 The stdlib-only `runtime_paths` has an existing retained proxy transport.
 `publish_runtime.STANDALONE_PACKAGE_SOURCES` maps its two original published
 leaf paths to `src/prismabuild/runtime_paths.py`; all three carry identical
