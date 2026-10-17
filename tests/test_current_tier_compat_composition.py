@@ -83,7 +83,7 @@ def test_ambiguous_preimage_refuses_before_staging_any_driver(tmp_path):
     shutil.copytree(DATA / 'support', support)
     rule = REPLACEMENTS[0]
     selected = support / rule.file
-    selected.write_text(selected.read_text().replace(rule.before, 'unexpected_current_owner'))
+    selected.write_text(selected.read_text().replace(rule.after, 'unexpected_current_owner'))
     before = {p.name: p.read_bytes() for p in support.glob('*.py')}
     destination = tmp_path / 'driver'
     with pytest.raises(ValueError, match='ambiguous preimage'):
