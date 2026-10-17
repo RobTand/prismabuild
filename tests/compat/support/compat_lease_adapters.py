@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
+import socket
 
 C, M, G, N, S = "c" * 64, "a" * 64, "7" * 32, "9" * 32, "compat-scope"
 
@@ -15,6 +17,31 @@ def operate(request, store, load):
     if family == "lease-pin":
         path = store / "pin.json"
         if request["op"] == "write":
+            if variant == "acquired":
+                maps, release = load("prismabuild.residency_map"), load("stage_release")
+                root, stage = queue.root / pool.RESIDENCY, store / "stage"
+                stage.mkdir()
+                staged = stage / "weights"
+                staged.write_bytes(b"contents")
+                identity = {"ino": 2, "size": 8, "mtime_ns": 3, "ctime_ns": 4}
+                lease.stat_identity = lambda name: dict(identity)
+                uuid.uuid4 = lambda: uuid.UUID(G)
+                assert release.register_stage_root(queue, tier_id="stage:compat", stage_root=stage) == "registered"
+                entry = {"stage_path": str(staged), "bytes": 8, "sha256": "d" * 64, "offset": 0}
+                maps.write_fragment(root, {"schema": maps.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+                    "consumer_action_key": C, "mover_action_key": M, "tier_id": "stage:compat", "stage_root": str(stage),
+                    "manifest_sha256": "d" * 64, "entries": {"0:/compat/input": entry}})
+                lease.write_material(root, consumer_action_key=C, mover_action_key=M, tier_id="stage:compat", stage_root=str(stage),
+                    manifest_sha256="d" * 64, generation=G, entries={"0:/compat/input": {**entry, "file_id": identity}})
+                result = lease.acquire(queue, consumer_action_key=C, attempt={"nonce": N, "scope_id": S},
+                    tier_id="stage:compat", epoch="", span={"start_bytes": 0, "end_bytes": 8},
+                    holder={"host": socket.gethostname(), "pid": 2}, acquire_token="compat-token",
+                    covers=[{"mover_action_key": M, "manifest_sha256": "d" * 64}])
+                assert result["ok"], result
+                pins = list((root / lease.LEASES_SUBDIR).rglob("*.lease.json"))
+                assert len(pins) == 1
+                return {"raw": base64.b64encode(pins[0].read_bytes()).decode(),
+                        "fixture_facts": ["private eight-byte material; supplied inode timestamps, no physical custody proof"]}
             ref = {"acquire_token": "compat-token", "attempt": {"nonce": N, "scope_id": S},
                    "holder": {"host": "sparklina", "pid": 2}, "unix": 100.0}
             value = {"schema": lease.LEASE_SCHEMA_V1, "pin_id": G, "consumer_action_key": C,
