@@ -15,6 +15,7 @@ mutation may still finish later and needs ownership-safe reconciliation,
 which a disposable child cannot give (#266).
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import importlib.util
 import os
@@ -46,13 +47,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
 
 
-def _publish(q: pool.PoolQueue) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1},
-    )
-
-
 def reap(pid, timeout=5):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -71,7 +65,13 @@ def test_provided_snapshot_is_consumed_without_rescanning(
 ) -> None:
     """A prefetched snapshot feeds the claim; the scan is not repeated."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     snapshot = queue.ready_items()
     assert [r.get("action_key") for r in snapshot] == [KEY]
 
@@ -103,7 +103,13 @@ def test_serve_once_forwards_the_snapshot_to_claim(
 ) -> None:
     """The loop's discovery snapshot reaches the claim it prefetched for."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     snapshot = queue.ready_items()
     seen: dict = {}
     real_claim = pool.PoolQueue.claim
@@ -122,7 +128,13 @@ def test_healthy_discovery_returns_a_claimable_snapshot(
 ) -> None:
     """The child scan reads what the in-process scan reads."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     abandoned: list = []
     result = worker.discover_ready_snapshot(queue, budget_s=5.0,
                                             abandoned=abandoned)

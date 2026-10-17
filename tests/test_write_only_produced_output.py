@@ -32,6 +32,7 @@ member devices); the export runs through ``PoolQueue.execute`` as in
 ``test_produced_spool``.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 from submission_support import patch_store
@@ -103,10 +104,7 @@ def _read_back_body() -> dict:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.tier(TIER).mint({KIND: 4})
     return queue
 
