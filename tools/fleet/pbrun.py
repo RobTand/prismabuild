@@ -15,8 +15,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from submission_frontend import render_submission
 from prismabuild import action_edges, submission, action_client, client_channel, core as pb, pool, fleet_roster
-from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused, Display
-from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
+from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
+from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
 
 
 def configured_store() -> FleetStore:
@@ -189,7 +189,7 @@ def argument_parser() -> argparse.ArgumentParser:
              "arm.  A plan already frozen keeps the leg it was frozen with",
     )
     ap.add_argument(
-        "--residency-share", choices=("auto", "off"), default="auto",
+        "--residency-share", choices=RESIDENCY_SHARE_MODES, default="auto",
         help="stage each range once for every consumer that reads it (#1026): "
              "the first submission of a range seals and registers its mover "
              "under the range's identity, and every later submission of the "

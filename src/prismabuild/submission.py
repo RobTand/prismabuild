@@ -47,6 +47,9 @@ RESIDENCY_MODES = ("none", "stage")
 RESIDENCY_RAM_MODES = ("auto", "off")
 
 
+RESIDENCY_SHARE_MODES = ("auto", "off")
+
+
 DEFAULT_MAX_ATTEMPTS = 1
 
 
@@ -7324,7 +7327,7 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
                 return functools.partial(
                     action_client.report_pool_outcome, pool.PoolQueue(store.queue_root), key,
                     wait_s=args.wait_s, generation=live["generation"], report=report)
-        raise d38_gate.refusal_exit(verdict, action, display=display)
+        raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm" and producer is not None:
         resources = slurm_lane.LaneResources.from_demand(demand)
@@ -7594,15 +7597,11 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
                             by=by, store=store, display=display))
                 report.finish(action_client.ClientCommand(code))
                 return report
-            try:
-                with write_window(request, store=store):
-                    continuation = _prepare_and_publish(request, store=store,
-                        display=display, report=report,
-                        publication_canary_intent=publication_canary_intent,
-                        authorize_canary=authorize_canary)
-            except filesystem_floor.FloorRefused as exc:
-                raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                        f"submitted: {exc}") from None
+            with write_window(request, store=store):
+                continuation = _prepare_and_publish(request, store=store,
+                    display=display, report=report,
+                    publication_canary_intent=publication_canary_intent,
+                    authorize_canary=authorize_canary)
             if callable(continuation):
                 continuation()
             if report.ending is None:
@@ -7640,9 +7639,6 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
                     display=display, report=report, placement_announced=placement_announced)
             if callable(continuation):
                 continuation()
-        except filesystem_floor.FloorRefused as exc:
-            return SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                     f"submitted: {exc}")
         except SubmissionRefused as exc:
             if report.ending is None:
                 identity = report.identity
@@ -7661,7 +7657,7 @@ def validate_request(request: SubmissionRequest) -> None:
             request.refuse_argument(f"argument --profile: {exc}")
     for name, choices in (("residency", RESIDENCY_MODES),
                           ("residency_ram", RESIDENCY_RAM_MODES),
-                          ("residency_share", ("auto", "off")),
+                          ("residency_share", RESIDENCY_SHARE_MODES),
                           ("transport", TRANSPORTS)):
         value = getattr(request, name)
         if value not in choices:
@@ -7950,11 +7946,6 @@ def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
                     placement_announced=True)
             if callable(continuation):
                 continuation()
-        except filesystem_floor.FloorRefused as exc:
-            refusal = SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                        f"submitted: {exc}")
-            report.finish(action_client.ClientRefused(refusal.returncode))
-            return refusal
         except SubmissionRefused as exc:
             if report.ending is None:
                 report.finish(action_client.ClientRefused(exc.returncode))

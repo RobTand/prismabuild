@@ -511,7 +511,7 @@ def write_audit(queue_root: str | Path, event: Mapping[str, object]) -> Path:
 # --------------------------------------------------------------------- gate
 
 def _exit_refused(reason: str, *, job: str, images: Sequence[str],
-            namespace: str | None, display: DisplaySink = discard_display) -> SubmissionRefused:
+            namespace: str | None) -> SubmissionRefused:
     return SubmissionRefused(f"pbrun: D38 refuses GPU publication: {reason}.\n"
           f"job={job} images={json.dumps(list(images))} "
           f"namespace={namespace or 'none'}\n"
@@ -602,13 +602,12 @@ def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: st
     return None
 
 
-def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
-            , *, display: DisplaySink = discard_display) -> SubmissionRefused:
+def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]) -> SubmissionRefused:
     """The exit-2 refusal for a publication verdict."""
 
     reason, namespace = verdict
     return _exit_refused(reason, job=str(action["action_key"]),
-                   images=target_images(action), namespace=namespace, display=display)
+                   images=target_images(action), namespace=namespace)
 
 
 def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
@@ -618,7 +617,7 @@ def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
     verdict = judge_publication(args, action, cas=cas, queue_root=queue_root,
                      transport=transport, store=store, display=display)
     if verdict is not None:
-        raise refusal_exit(verdict, action, display=display)
+        raise refusal_exit(verdict, action)
 
 
 def refuse_deferred(args, params: Mapping[str, object], *, store: FleetStore, display: DisplaySink = discard_display) -> None:
@@ -640,7 +639,7 @@ def refuse_deferred(args, params: Mapping[str, object], *, store: FleetStore, di
         "a deferred --after submission has no job identity until its producer "
         "ends, so no receipt or grant can bind it; submit it after the "
         "producer succeeds", job="none (deferred)", images=images,
-        namespace=namespace if isinstance(namespace, str) else None, display=display)
+        namespace=namespace if isinstance(namespace, str) else None)
 
 
 def _user() -> str:

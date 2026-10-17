@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core, resident_sets, submission
-from submission_frontend import store_for, render_submission
-from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from submission_frontend import store_for
+from prismabuild.submission_types import SubmissionRefused
 
 
 from prismabuild import data_manifest as manifest_codec
