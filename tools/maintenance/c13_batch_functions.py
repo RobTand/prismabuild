@@ -78,7 +78,7 @@ def c13_body(fn):
         'local:entry = local:self._batches[local:batch_id]',
         'local:scope = local:self.ledger.path.parent',
     }
-    body=[x for x in body if ast.unparse(x) not in exact_bindings]
+    body=[x for x in body if ast.unparse(ast.fix_missing_locations(x)) not in exact_bindings]
     body=[x for x in body if not (isinstance(x,ast.Assign) and any(
           isinstance(t,ast.Attribute) and t.attr=='lease_timeout_s' for t in x.targets))]
     return ast.dump(ast.Module(body=body,type_ignores=[]),include_attributes=False)

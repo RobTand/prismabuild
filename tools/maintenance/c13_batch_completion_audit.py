@@ -67,7 +67,8 @@ def c13_completion_main():
     parser.add_argument("--after", default="WORKTREE")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    names = ("batch_ledger", "produced_output", "output_contract", "pool")
+    names = ("batch_ledger", "produced_output", "output_contract", "pool",
+             "action_edges", "stage_release", "produced_spool")
     paths = {n: "src/prismabuild/" + n + ".py" for n in names}
     sources = {n: c13_capture_source(args.after, p) for n, p in paths.items()}
     before_sources = {n: c13_capture_source(args.before, p) for n, p in paths.items()}
@@ -123,6 +124,12 @@ def c13_completion_main():
     raw = []
     for name, tree in trees.items():
         for node in ast.walk(tree):
+            if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Attribute)
+                    and node.value.func.attr == "entries"
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value == "batches"):
+                raise AssertionError((name, node.lineno, "captured entries are not the old wire document"))
             if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
                     and node.value.id in ("bl", "oc") and node.attr.startswith("_")):
                 private.append({"module": name, "line": node.lineno,
@@ -154,7 +161,7 @@ def c13_completion_main():
            "PoolContractError_is_existing_RecordStore_binding": True,
            "documented_public_bindings": C13_PUBLIC, "retired_wrappers_absent": True,
            "production_private_dependencies_only_C12": private,
-           "production_raw_commitment_io_absent": True, "lower_owners_import_no_Pool": True,
+           "production_raw_commitment_io_absent": True, "no_entries_old_document_subscripts": True, "lower_owners_import_no_Pool": True,
            "credit": "Read-only source/AST proof; no native, runtime, workload or compatibility pass credit"}
     with args.out.open("x") as stream:
         json.dump(out, stream, indent=2)

@@ -791,7 +791,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             server.server_close()
 
 
-def _recorded(queue: pool.PoolQueue, instance: dict, batch_id: str) -> dict:
-    path = bl.BatchLedger.for_instance(queue.root, instance).path
-    batches = json.loads(path.read_text())["batches"]
-    return {batch_id: batches[batch_id]}
+def _recorded(queue: pool.PoolQueue, instance: dict, batch_id: str) -> bl.BatchCapture:
+    captured = bl.BatchLedger.for_instance(queue.root, instance).entries()
+    assert list(captured) == [batch_id], "this lifecycle fixture commits one batch"
+    return captured
