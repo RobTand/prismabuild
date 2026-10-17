@@ -52,6 +52,7 @@ from test_claimed_consumers_drain_a_tier_in_admission_order import (  # noqa: E4
     EIGHT_HOLD, PHASES, _blocked, _key, _manifest, _mover)
 from test_r12_and_the_capture_replay_under_the_refill_horizon import (  # noqa: E402
     DATA, SAMPLE_UNIX)
+from prismabuild import tier_holdings
 
 # --------------------------------------------------------------- the reader
 
@@ -211,7 +212,7 @@ def _land_queued(queue: pool.PoolQueue, stage: Path, *, consumer: str,
     waits, as they do in a run.
     """
 
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     landed: dict[str, Path] = {}
     for phase in plan["phases"]:                               # type: ignore[union-attr]
         name = str(phase["name"])
@@ -223,8 +224,8 @@ def _land_queued(queue: pool.PoolQueue, stage: Path, *, consumer: str,
         ready.unlink()
         for holder in (mover, window_credit.grant_key(
                 consumer, TIER, "mover_row", name, None)):
-            if ledger.holder_tokens(holder):
-                ledger.release(holder)
+            if ledger.holdings(holder):
+                ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
         done = queue.records.item_path(pool.record_store.DONE, mover)
         done.parent.mkdir(parents=True, exist_ok=True)
         done.write_text(json.dumps({**item, "status": "done"}))

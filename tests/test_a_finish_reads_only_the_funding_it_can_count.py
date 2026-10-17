@@ -34,8 +34,8 @@ MOVER = "c" * 64
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.mint_tier_capacity(STAGE, {"stage_gib": 4})
-    queue.mint_tier_capacity(RAM, {"ram_gib": 4})
+    queue.tier(STAGE).mint({'stage_gib': 4})
+    queue.tier(RAM).mint({'ram_gib': 4})
     return queue
 
 
@@ -66,7 +66,7 @@ def _row(queue: pool.PoolQueue, state: str, key: str) -> None:
 
 
 def _held(queue: pool.PoolQueue, tier: str, key: str) -> list[str]:
-    directory = queue.tier_ledger(tier).held_dir / key
+    directory = queue.tier(tier).paths.held / key
     return sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
 
 
@@ -94,8 +94,8 @@ def test_a_finish_holding_no_tier_token_reads_no_funding_record(tmp_path, monkey
 
 def test_a_holder_reads_one_census_and_keeps_only_its_promised_names(tmp_path, monkeypatch):
     queue = _queue(tmp_path)
-    assert queue.tier_ledger(STAGE).acquire(OWNER, {"stage_gib": 2})
-    assert queue.tier_ledger(RAM).acquire(OWNER, {"ram_gib": 1})
+    assert queue.tier(STAGE).take(OWNER, {'stage_gib': 2})
+    assert queue.tier(RAM).take(OWNER, {'ram_gib': 1})
     promised = _held(queue, STAGE, OWNER)[0]
     _file(queue, _record(state="reserved", tokens=[promised]))
     for index in range(10):
@@ -115,7 +115,7 @@ def test_a_holder_reads_one_census_and_keeps_only_its_promised_names(tmp_path, m
 
 def test_an_unknown_census_still_retains_a_holders_tokens(tmp_path):
     queue = _queue(tmp_path)
-    assert queue.tier_ledger(STAGE).acquire(OWNER, {"stage_gib": 1})
+    assert queue.tier(STAGE).take(OWNER, {'stage_gib': 1})
     held = _held(queue, STAGE, OWNER)
     corrupt = queue.records.funding_output_path(MOVER, STAGE)
     corrupt.parent.mkdir(parents=True, exist_ok=True)
@@ -168,7 +168,7 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
         queue.records.lease_path(MOVER).parent.mkdir(parents=True, exist_ok=True)
         queue.records.lease_path(MOVER).write_text("{}")
     elif fact == "holds-a-token":
-        assert queue.tier_ledger(STAGE).acquire(MOVER, {"stage_gib": 1})
+        assert queue.tier(STAGE).take(MOVER, {'stage_gib': 1})
     elif fact == "corrupt":
         path.write_text("{not json")
     counts = queue.retire_terminal_output_funding()

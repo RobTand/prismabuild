@@ -341,7 +341,7 @@ def test_a_window_stalled_verdict_is_readable_from_the_consumers_event_file(
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(stall_fx.TIER, {"stage_gib": stall_fx.STAGE_CAPACITY_GIB})
+    queue.tier(stall_fx.TIER).mint({'stage_gib': stall_fx.STAGE_CAPACITY_GIB})
     plan = stall_fx._plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(

@@ -97,7 +97,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
         "range_end_bytes": residency["range_end_bytes"],
         "bytes_staged": span, "complete": True})
     queue.finish(mover, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(mover), "the staged range is pinned"
+    assert queue.tier(TIER).holdings(mover), "the staged range is pinned"
     return stage
 
 
@@ -113,7 +113,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     mover, egress = str(mover_row["action_key"]), str(egress_row["action_key"])
     stage = _stage_the_movers_range(queue, tmp_path, mover_row,
                                     staged["cas"].actions[mover])
-    held = queue.tier_ledger(TIER).holder_tokens(mover)
+    held = queue.tier(TIER).holdings(mover)
 
     queue.publish(**egress_row)
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
@@ -137,7 +137,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
         "one transient failure must not end the egress: it is retry-safe "
         "with its own attempt bound")
     assert not queue.records.item_path(pool.record_store.FAILED, egress).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == held
+    assert queue.tier(TIER).holdings(mover) == held
 
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == egress
@@ -146,7 +146,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     queue.finish(egress, status="executed")
 
     assert second["complete"] is True and second["entries_deleted"] == 2
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
     assert not list(stage.rglob("*.bin"))
     assert queue.records.item_path(pool.record_store.DONE, egress).exists()
 
