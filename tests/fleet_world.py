@@ -11,7 +11,7 @@ import time
 from prismabuild import pool
 
 from admitted_queue_fixture import AdmittedQueueFixture
-from residency_publication import vouch_landed
+from residency_publication import publish_landed_files
 
 
 @dataclass
@@ -80,7 +80,7 @@ class FleetWorld:
         self.queue.tier(str(record["tier_id"])).mint(supply)
 
     def landed(self, **evidence: object) -> None:
-        vouch_landed(self.queue, **evidence)
+        publish_landed_files(self.queue, **evidence)
 
     @contextmanager
     def broker_directory(self):
