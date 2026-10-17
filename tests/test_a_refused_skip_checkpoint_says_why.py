@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_a_same_tick_rename_is_not_cached as tick  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from prismabuild import kept_reads
 from kept_read_clock import after_paths

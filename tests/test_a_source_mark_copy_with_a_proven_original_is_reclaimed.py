@@ -24,9 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb, pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
-from stage_move import stage_relative  # noqa: E402
+from prismabuild.stage_move import stage_relative  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"

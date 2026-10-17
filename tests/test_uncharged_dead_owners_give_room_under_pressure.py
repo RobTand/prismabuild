@@ -42,7 +42,7 @@ from prismabuild import stage_marks  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = base.TIER
 GIB = storage_tiers.GIB

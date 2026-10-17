@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_a_restarted_promotion_adopts_its_own_copies as ram  # noqa: E402
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 
 def _foreign_owner(tmp_path: Path, state: str):

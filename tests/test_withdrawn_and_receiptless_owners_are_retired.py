@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool, produced_output, residency_map, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 import test_dead_owner_fragment_blocks_then_retires as dead  # noqa: E402
 

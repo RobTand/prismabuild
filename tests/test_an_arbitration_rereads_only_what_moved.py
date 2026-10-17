@@ -54,7 +54,7 @@ import test_stale_material_done_owner_retires as stale  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 NAMES = 16
 SIZE = 64

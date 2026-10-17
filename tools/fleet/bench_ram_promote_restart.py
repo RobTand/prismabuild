@@ -59,7 +59,7 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 STAGE_TIER = "prismabuild-stage:bench"
 RAM_TIER = "ram:bench"

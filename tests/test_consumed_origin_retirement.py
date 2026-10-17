@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import pool, produced_output as po, storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402

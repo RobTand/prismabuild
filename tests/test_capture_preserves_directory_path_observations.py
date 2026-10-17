@@ -8,7 +8,7 @@ import pytest
 
 from kept_read_clock import after_paths
 from prismabuild import pool
-import stage_move
+from prismabuild import stage_move
 from test_a_remounted_device_is_not_trusted import table  # noqa: F401
 
 

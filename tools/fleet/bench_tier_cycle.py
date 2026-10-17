@@ -88,7 +88,7 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = bench_stage_adopt.TIER
 HOST = "dl380g10"

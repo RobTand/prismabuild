@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import kept_reads
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import test_btrfs_subvolume_records_are_retained as observations  # noqa: E402
 import test_stale_material_done_owner_retires as owner  # noqa: E402
 

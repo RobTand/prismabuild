@@ -51,7 +51,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402

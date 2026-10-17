@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,16 +19,9 @@ class CycleBoundary(Exception):
     pass
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "tools/fleet" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def role(tmp_path, monkeypatch):
-    loop = load("prewarm_loop")
+    from prismabuild import prewarm_loop as loop
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
     parked = tmp_path / "rollout/parked"
@@ -105,7 +97,7 @@ def test_open_gate_runs_one_cycle(role):
 
 def test_storage_boundary_marker_satisfies_the_updaters_drain_census(role):
     loop, gate, parked, current, calls, argv, stop = role
-    upgrade = load('upgrade_client')
+    import upgrade_client as upgrade
     gate.write_text(json.dumps({'draining': True, 'changed_unix': 458.0}))
     # Read the process identity independently of the marker writer.
     start = Path('/proc/self/stat').read_text().rpartition(')')[2].split()[19]

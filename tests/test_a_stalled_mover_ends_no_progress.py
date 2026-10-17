@@ -254,8 +254,8 @@ def test_a_contention_spec_is_refused_without_a_policy_or_out_of_form() -> None:
 #: as a real hold's does.
 MOVER = textwrap.dedent('''
     import os, sys, threading, time
-    sys.path.insert(0, {tools!r})
-    import prewarm_loop, stage_move
+    sys.path.insert(0, {source!r})
+    from prismabuild import prewarm_loop, stage_move
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     real = os.readv
@@ -308,7 +308,7 @@ def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
                   hold_on: int = 0, hold: float = 0.0,
                   heartbeat: float = HEARTBEAT) -> str:
     receipt = (argv[argv.index("--receipt") + 1] if "--receipt" in argv else "")
-    return MOVER.format(tools=str(ROOT / "tools" / "fleet"), heartbeat=heartbeat,
+    return MOVER.format(source=str(ROOT / "src"), heartbeat=heartbeat,
                         argv=argv, read=read, rate=float(rate),
                         hold_on=int(hold_on), hold=float(hold), receipt=receipt)
 
@@ -416,7 +416,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
     and the range they belong to.
     """
 
-    import stage_release
+    from prismabuild import stage_release
 
     grace, ceiling = 4, 20.0
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
@@ -551,7 +551,7 @@ def _run_mover(base: Path, source: str, policy, *, ceiling: float,
     outcome and the receipt the mover filed as its result.  ``before`` runs
     with the queue once the action is claimed, before it executes."""
 
-    import stage_release
+    from prismabuild import stage_release
 
     base.mkdir(parents=True, exist_ok=True)
     (base / "stage").mkdir(exist_ok=True)
@@ -977,8 +977,8 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
     """A whole copy under a progress channel: the last report is every byte
     it landed, and the receipt counts the reports."""
 
-    import stage_move
-    import stage_release
+    from prismabuild import stage_move
+    from prismabuild import stage_release
 
     window = _real_window(tmp_path, entries=4)
     total = int(window["total_bytes"])                   # type: ignore[arg-type]
@@ -1021,7 +1021,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
 def test_a_mover_with_no_channel_reports_nothing(tmp_path: Path, monkeypatch) -> None:
     """A mover sealed with no policy, or a direct run: nothing starts."""
 
-    import stage_move
+    from prismabuild import stage_move
 
     for name in progress.ACTION_PROGRESS_ENV:
         monkeypatch.delenv(name, raising=False)
@@ -1038,7 +1038,7 @@ def test_the_read_back_is_reported_in_the_warm_phase(tmp_path: Path,
                                                      monkeypatch) -> None:
     """Entering ``warm`` is itself a report, and the count goes on growing."""
 
-    import stage_move
+    from prismabuild import stage_move
 
     report = tmp_path / "mover.progress"
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(report))
@@ -1062,7 +1062,7 @@ def test_the_read_back_is_reported_in_the_warm_phase(tmp_path: Path,
 
 def test_a_phase_the_launch_did_not_declare_is_recorded_not_raised(
         tmp_path: Path, monkeypatch) -> None:
-    import stage_move
+    from prismabuild import stage_move
 
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(tmp_path / "p"))
     monkeypatch.setenv(progress.ACTION_PROGRESS_TOKEN_ENV, "t" * 32)

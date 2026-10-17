@@ -29,8 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from prismabuild import pool, residency_plan  # noqa: E402
 from prewarm_fixture import Fleet  # noqa: E402
 import manifest_promotion  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"

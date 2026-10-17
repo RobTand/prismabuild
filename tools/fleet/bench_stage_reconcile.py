@@ -50,7 +50,7 @@ from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64

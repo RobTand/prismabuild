@@ -37,8 +37,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 #: Bounds a broken run; a passing run never waits it out.
 BOUND_S = 10.0

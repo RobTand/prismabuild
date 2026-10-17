@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from prismabuild import kept_reads, pool, produced_output as po, record_store
 from record_store_trust import ObservedTrust
-import stage_release
+from prismabuild import stage_release
 import tier_loop
 import test_stale_material_done_owner_retires as owner
 

@@ -50,7 +50,7 @@ from prismabuild import core, pool, produced_output as po  # noqa: E402
 from prismabuild import produced_spool as ps, reader_lease  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     TIER, _announce_tier, _detach_key, _tier_cycle,

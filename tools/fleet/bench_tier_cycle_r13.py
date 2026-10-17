@@ -84,7 +84,7 @@ from prismabuild import pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import bench_tier_cycle  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 #: The calls counted, by the name each is reported under.
 _COUNTED = {

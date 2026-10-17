@@ -5,8 +5,8 @@ import os
 import uuid
 
 from prismabuild import pool, stage_marks
-import stage_move
-import stage_release
+from prismabuild import stage_move
+from prismabuild import stage_release
 
 
 class Clock:

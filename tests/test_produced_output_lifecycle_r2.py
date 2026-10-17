@@ -230,7 +230,7 @@ def _payload_desc(origin: Path, template: dict, instance: dict, name: str,
 
 def _move(queue: pool.PoolQueue, batch: dict, origin: Path,
           stage: Path, out_base: Path, tmp_path: Path, tag: str) -> dict:
-    import stage_move
+    from prismabuild import stage_move
 
     manifest = po.build_stage_manifest(batch, str(origin))
     total = int(manifest["total_bytes"])
@@ -337,7 +337,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     assert po.admit_instance(queue, instance, template)["ok"] is True
     stage = tmp_path / "stage"
     stage.mkdir()
-    import stage_release
+    from prismabuild import stage_release
 
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
@@ -416,7 +416,7 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
                    instance: dict, owner: str, tag: str, size: int = 1 << 16):
     """One committed+staged batch with registered stage; returns batch/stage/base."""
 
-    import stage_release
+    from prismabuild import stage_release
 
     stage = tmp_path / f"stage-{tag}"
     stage.mkdir()
@@ -503,7 +503,7 @@ def test_declaration_less_request_taints_egress(tmp_path: Path) -> None:
 
 def test_strict_loader_mutations_refuse_without_side_effects(
         tmp_path: Path, monkeypatch) -> None:
-    import stage_release
+    from prismabuild import stage_release
 
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
@@ -705,7 +705,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
 
         stage = tmp_path / "stage"
         stage.mkdir()
-        import stage_release
+        from prismabuild import stage_release
 
         assert stage_release.register_stage_root(
             queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"

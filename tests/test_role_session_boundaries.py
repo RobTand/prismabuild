@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import local_tier_loop
 import pbmetrics
-import prewarm_loop
+from prismabuild import prewarm_loop
 from prismabuild import role_session
 from prewarm_fixture import Fleet
 

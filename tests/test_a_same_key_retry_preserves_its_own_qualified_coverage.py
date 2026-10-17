@@ -44,7 +44,7 @@ import prismabuild.pool as pool  # noqa: E402
 import prismabuild.reader_lease as reader_lease  # noqa: E402
 import prismabuild.residency_map as residency_map  # noqa: E402
 from prismabuild import kept_reads
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64

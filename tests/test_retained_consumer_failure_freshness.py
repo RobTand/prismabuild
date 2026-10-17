@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from prismabuild import kept_reads, pool, produced_output
-import stage_move
+from prismabuild import stage_move
 from test_btrfs_subvolume_records_are_retained import (
     OBSERVED_DEVICE, _KernelFacts,
 )

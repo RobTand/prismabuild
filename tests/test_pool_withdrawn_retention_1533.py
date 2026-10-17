@@ -23,7 +23,7 @@ import pbmcp
 import pbstatus
 import pbwait
 import pool_reset
-import stage_release
+from prismabuild import stage_release
 
 
 @pytest.fixture

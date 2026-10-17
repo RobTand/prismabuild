@@ -43,8 +43,8 @@ from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 from test_deferred_action_edges import (  # noqa: E402
     TAGS, _commit, _env, _producer_key, _publish_producer, _released,
     _request, _start, _submit,

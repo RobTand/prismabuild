@@ -33,7 +33,7 @@ import test_a_divergent_staged_copy_never_loops_its_mover as loop  # noqa: E402
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_map, residency_plan  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 BOUND = stage_move.UNPROVEN_ENDING_RUNS
 

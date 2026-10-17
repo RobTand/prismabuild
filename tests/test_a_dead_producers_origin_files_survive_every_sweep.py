@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 import test_prepaid_writer_integration as fx  # noqa: E402
 from test_a_dead_producers_batches_and_paths_are_released import (  # noqa: E402

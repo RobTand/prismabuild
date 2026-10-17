@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 from prismabuild import kept_reads
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 NAMES = red.NAMES

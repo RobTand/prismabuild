@@ -36,7 +36,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 SIZE = 4096
 TIER = base.TIER

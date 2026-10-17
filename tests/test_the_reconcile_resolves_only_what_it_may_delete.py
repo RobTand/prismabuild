@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"
 from prismabuild import kept_reads
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64

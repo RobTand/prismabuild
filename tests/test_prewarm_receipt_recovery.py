@@ -42,9 +42,9 @@ repository = Path({str(REPOSITORY)!r})
 root = Path({str(root)!r})
 sys.path.insert(0, str(repository / "src"))
 sys.path.insert(0, str(repository / "tools" / "fleet"))
-import prewarm_loop as role
+from prismabuild import prewarm_loop as role
 from prismabuild import generation_receipt, pool, role_session, storage_tiers
-assert Path(role.__file__).resolve() == repository / "tools" / "fleet" / "prewarm_loop.py"
+assert Path(role.__file__).resolve() == repository / "src" / "prismabuild" / "prewarm_loop.py"
 for name, module in (("pool", pool), ("role_session", role_session),
                      ("generation_receipt", generation_receipt), ("storage_tiers", storage_tiers)):
     assert Path(module.__file__).resolve() == repository / "src" / "prismabuild" / (name + ".py")

@@ -352,17 +352,14 @@ def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
 
 def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
         tmp_path: Path) -> None:
-    """The in-process egress needs the tool; an owner without it never raises.
+    """The remote tier announcement selects an action without fleet imports.
 
-    `stage_release` is a fleet tool, and the package a production owner imports
-    does not carry it. On the tier host itself such an owner takes the same
-    tier-host route a GPU host takes -- placed on this box, because this box is
-    the one the tier record names -- instead of failing its first retirement on
-    an import.
+    The original native ID and assertions remain. Its former import-failure
+    setup now uses the explicit remote-host ownership boundary.
     """
 
-    here = socket.gethostname()
-    world = restage._World(tmp_path, window_gib=1, gib=4)
+    here = ELSEWHERE
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
     assert restage._tier_host(world.q) == here
     payload = b"T" * 700
     _descs, first = _staged_batch(world, "b1", "p1", payload)

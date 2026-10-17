@@ -18547,3 +18547,19 @@ as a third variable producer. Its current reconciliation questions use fixed
 immutable/stable profiles in RecordStore, with the same custody and strict
 decoding boundaries. Three native reader profiles remain after retirement
 of the single-link reader.
+
+### Packaged movement library, C29
+
+Movement retention, registration, eviction, copying, prewarm helpers and RAM
+promotion are owned by `prismabuild.stage_release`, `stage_move`,
+`prewarm_loop` and `ram_promote`; `prismabuild.stage_rounding` owns the existing
+byte/token report arithmetic. Their executable fleet scripts keep their names,
+flags and generation bootstrap and call the packaged `main`. The accounting
+library ships with package sources and has no fleet script row.
+
+Produced-output retirement lazily imports the package owner on the tier host.
+Remote retirement still uses the tier-host action. Import availability no
+longer selects a different route. Storage formats, stage marker refusal,
+claim identity, retention rules, lock order and C05 record/trust ownership are
+unchanged. [The movement ownership note](c29_movement_package.md) records the
+boundary comparison and the remaining broader C29 integration work.

@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 OBSERVED_DEVICE = os.makedev(0, 31)
 TABLE_DEVICE = os.makedev(0, 30)

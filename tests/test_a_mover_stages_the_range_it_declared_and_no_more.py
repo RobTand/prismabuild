@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.residency_map as rm  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64

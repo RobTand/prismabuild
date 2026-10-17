@@ -61,8 +61,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = bench_stage_adopt.TIER
 STAGE_KIND = f"stage_gib@{TIER}"

@@ -52,7 +52,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import kept_reads
 from prismabuild import pool  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from kept_read_clock import after_paths
 

@@ -58,8 +58,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import adaptive_cpu, pool, reader_lease  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import residency_map, residency_plan  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"

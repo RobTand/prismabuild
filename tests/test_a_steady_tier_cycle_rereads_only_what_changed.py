@@ -53,7 +53,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 #: CPU seconds one steady cycle may take at this shape.  Derived from the

@@ -782,9 +782,9 @@ class ShapeGate:
     # -- the worker -------------------------------------------------------
 
     def _movement_module(self, tool: str):
-        import ram_promote
-        import stage_move
-        import stage_release
+        from prismabuild import ram_promote
+        from prismabuild import stage_move
+        from prismabuild import stage_release
 
         return {"stage_move.py": stage_move, "ram_promote.py": ram_promote,
                 "stage_release.py": stage_release}[tool]

@@ -42,7 +42,7 @@ import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 import test_a_same_tick_rename_is_not_cached as tick  # noqa: E402
 from prismabuild import reader_lease, residency_map  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 NAMES = red.NAMES
 TICK_NS = tick.TICK_NS

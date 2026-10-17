@@ -176,7 +176,7 @@ def test_a_promotion_the_bound_covers_is_still_ram_pressure(
 def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
         tmp_path: Path, monkeypatch) -> None:
     """#829: a published tail is not admission of an absent RAM lead."""
-    import stage_release
+    from prismabuild import stage_release
 
     queue = _fixture(tmp_path, landed=(0, 1, 2))
     monkeypatch.setattr(tier_loop, "load_ram_policy",
