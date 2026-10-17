@@ -461,7 +461,11 @@ def terminal_of(
         if isinstance(record, dict) and _terminal_matches(record, snapshot):
             return ("done" if state == pool_module.record_store.DONE else "failed", record)
     try:
-        claimed_gone = not bool(pool_module.record_store.value_or_raise(queue.records.item_presence(pool_module.record_store.CLAIMED, key)))
+        claimed_gone = not bool(
+            pool_module.record_store.value_or_raise(
+                queue.records.item_presence(pool_module.record_store.CLAIMED, key),
+            ),
+        )
     except OSError:
         return None
     if not claimed_gone:
@@ -741,7 +745,11 @@ def _resign_withdraw(queue_root: str, action_key: str, reason: str, by: str,
 def _resign_claimed_exists(queue_root: str, action_key: str) -> bool:
     """Whether a claim still occupies CLAIMED (holder-concluded check)."""
     queue = pool_module.PoolQueue(Path(queue_root))
-    return bool(pool_module.record_store.value_or_raise(queue.records.item_presence(pool_module.record_store.CLAIMED, action_key)))
+    return bool(
+        pool_module.record_store.value_or_raise(
+            queue.records.item_presence(pool_module.record_store.CLAIMED, action_key),
+        ),
+    )
 
 
 def _resign_terminal_of(queue_root: str,

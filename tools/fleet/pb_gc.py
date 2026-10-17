@@ -178,8 +178,6 @@ class SweepError(Exception):
 # --------------------------------------------------------------------------
 
 
-
-
 def _is_digest(name: str) -> bool:
     return len(name) == 64 and set(name) <= _HEX
 
@@ -1004,8 +1002,6 @@ def transition_lock_name(action_key: str) -> str:
     """
 
     return hashlib.sha256(str(action_key).encode()).hexdigest() + ".lock"
-
-
 
 
 def _key_live_now(queue_root: Path, key: str) -> bool:

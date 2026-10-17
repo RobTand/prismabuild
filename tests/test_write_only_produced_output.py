@@ -411,7 +411,8 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     plan = residency_plan.read(queue, consumer)
     assert plan is not None and len(plan["phases"]) == 1
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
-    assert queue.records.item_path(pool.record_store.READY, lead).exists(), "the cycle published the lead"
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(
+    ), "the cycle published the lead"
     request = json.loads((tmp_path / "cas" / "requests" / lead[:2]
                           / f"{lead}.json").read_text())
     command = request["params"]["command"]

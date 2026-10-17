@@ -346,10 +346,6 @@ def _absent(error: OSError) -> bool:
     return isinstance(error, (FileNotFoundError, NotADirectoryError))
 
 
-
-
-
-
 def _valid_prefix(key_prefix: object) -> str:
     """The prefix, checked before any mount read so a bad one says so.
 
@@ -370,8 +366,6 @@ def _valid_prefix(key_prefix: object) -> str:
 def _resolve_prefix(queue_root: Path, key_prefix: str) -> list[str]:
     prefix = _valid_prefix(key_prefix)
     return pool.record_store.RecordStore(queue_root).inspection_prefix(prefix)
-
-
 
 
 def _ending_view(answer: Mapping[str, object]) -> dict:
@@ -2216,7 +2210,10 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     if keys:
         for prefix in keys:
             for key in _resolve_prefix(root, prefix):
-                for state, record in pool.record_store.RecordStore(root).inspection_records(key).items():
+                for state, record in pool.record_store.RecordStore(root).inspection_records(
+                    key,
+                ).items(
+                ):
                     if state in states:
                         scanned += 1
                         rows.append(_row(state, record, now))
