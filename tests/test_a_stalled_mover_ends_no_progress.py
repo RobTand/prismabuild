@@ -254,7 +254,7 @@ def test_a_contention_spec_is_refused_without_a_policy_or_out_of_form() -> None:
 MOVER = textwrap.dedent('''
     import os, sys, threading, time
     sys.path.insert(0, {tools!r})
-    import prewarm_loop, stage_move
+    from prismabuild import prewarm_loop, stage_move
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     real = os.readv

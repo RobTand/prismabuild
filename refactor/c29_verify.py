@@ -149,7 +149,7 @@ def main() -> None:
     args = parser.parse_args()
     evidence = run(args.root)
     args.out.write_text(json.dumps(evidence, indent=2) + '\n')
-    print(json.dumps({k: v for k, v in evidence.items() if k.startswith('total_')}))
+    print('c29-source-proof: ' + json.dumps(evidence))
 
 
 if __name__ == '__main__':

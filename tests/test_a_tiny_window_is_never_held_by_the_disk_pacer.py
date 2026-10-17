@@ -19,7 +19,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
-import prewarm_loop, stage_move  # noqa: E402
+from prismabuild import prewarm_loop, stage_move  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
 MIB = 1 << 20

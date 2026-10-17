@@ -37,6 +37,7 @@ if __name__ == "__main__":
 
 
 def migrate_imports(text: str) -> str:
+    text = text.replace('import prewarm_loop, stage_move', 'from prismabuild import prewarm_loop, stage_move')
     for name in MODULES:
         text = re.sub(rf"(?m)^(\s*)import {name}(?=\s*(?:as\b|#|$))",
                       rf"\1from prismabuild import {name}", text)
