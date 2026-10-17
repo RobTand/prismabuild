@@ -2120,7 +2120,7 @@ def _file_origin_repins(queue_root: str | Path,
     Per instance: the output-prefix lock `BatchLedger.commit_origin` and the
     retirement take, the commitments document read again, each origin
     stat'ed again and required to still be the identity its content check
-    hashed (`_apply_origin_repins`), and one write. The lock holds no read of
+    hashed (`bl.apply_origin_repins`), and one write. The lock holds no read of
     an origin's bytes. A batch that was reclaimed or re-committed meanwhile
     is left alone: whatever reads it next reads its state then. Raises
     `ProducedOutputError` when an origin changed after its content was read.
@@ -2903,7 +2903,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     # parks a blocking transition wait underneath an ownership lock -- the
     # shape the egress cross-root cycle came from. Nothing this lane needs is
     # protected by holding it here: the materialization is still unretired
-    # for the whole window, so `_live_path_owner` keeps refusing a second
+    # for the whole window, so `bl.own_write_owner` keeps refusing a second
     # writer over these origins and `ensure_batch_materialized` keeps
     # refusing a successor, and a failed or partial egress files nothing and
     # leaves the old materialization holding its own credit.
@@ -3147,7 +3147,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
 #: true, and ``superseded`` names the paths another attempt now claims.
 
 #: Attempt states after which an attempt can never commit again: its owner
-#: gate (`_require_live_owner`) refuses a claim it no longer holds.
+#: gate (`bl.require_live_owner`) refuses a claim it no longer holds.
 
 #: Consumer states that hold a consumed batch and are reported as a stall:
 #: the consumer ended without succeeding, or was declared and never
@@ -3205,7 +3205,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
     loop asks before it stages one. An action key seals its data manifest, so
     every row of a key reads the batches its declarations name; one release
     among them is enough. The index entries name the refs; each is confirmed
-    by its release record, read through the same `_consumer_release` the
+    by its release record, read through the same `bl.read_consumer_release` the
     retirement tick reads. An entry without a record is a release that
     stopped before its record, and does not count.
 
@@ -3432,7 +3432,7 @@ def _resolved_consumers(queue, instance: Mapping[str, object], batch_id: str,
                         declared: Sequence[str]) -> list[dict[str, object]]:
     """Each declared consumer's state for retirement (#914, #926).
 
-    A consumer's own state (`_consumer_state`) answers first while it is
+    A consumer's own state (`bl.consumer_state`) answers first while it is
     queued, running or has succeeded. A consumer that ended without
     succeeding is ``released`` when an operator released its declaration,
     and ``superseded`` when its supersessions (`pbrun --supersedes`, #913)
@@ -3571,10 +3571,10 @@ def dead_input_dependency(
     the reference names (read from its immutable filed record, with every
     identity field cross-checked against the reference so a foreign or
     forged reference never authorizes reading another owner's state), the
-    producer attempt provably dead (:func:`_producer_attempt_state` -- the
+    producer attempt provably dead (:func:`bl.producer_attempt_state` -- the
     only authority that makes a missing origin permanent), the batch's
     committed entry bound back to the reference by manifest digest with its
-    sealed descriptors (``_load_batch_record`` -- every entry re-validated
+    sealed descriptors (``bl.BatchLedger.open`` -- every entry re-validated
     against the bound template and instance, never the commitments' path
     list read unvalidated), and one of those descriptors' origin paths
     under the producer's output prefix that is missing: ``lstat`` answered
@@ -3710,7 +3710,7 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     lock, the lock `declare_origin_consumer` takes, so no consumer can be
     declared between the decision and the delete, and under the lock of
     every filed template whose prefix overlaps this one's
-    (`_output_prefix_locks`, #1063).  The one thing done outside them is
+    (`bl.path_locks`, #1063).  The one thing done outside them is
     reading an origin whose timestamps alone moved (below).
 
     The decision is taken from the tick's own read of this scope, under the
@@ -3728,7 +3728,7 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       one holds it and is reported as a stall, once per change of the
       consumers' states, because a retry of that consumer needs the batch.
     * With none: the batch is an orphan once its producer attempt is dead
-      (`_attempt_state` over the tick's one read of the owner key,
+      (`bl.attempt_state` over the tick's one read of the owner key,
       `bl.LedgerReads.generation`, #977). Otherwise it waits, quietly, for a
       consumer. A read-back template's batch (#1034) can have no consumer,
       so it is an orphan once its owner attempt has ended, dead or
@@ -4340,7 +4340,7 @@ def _ended_prewrite_dispositions(
     """What each outstanding prewrite of an ended attempt is now (#949, #1053).
 
     ``records`` maps batch ids to their prewrite records. The caller has read
-    that the attempt ended (`_attempt_state` is ``dead`` or ``succeeded``):
+    that the attempt ended (`bl.attempt_state` is ``dead`` or ``succeeded``):
     its owner gate refuses a claim it no longer holds, so nothing can commit
     these prewrites. Their planned paths decide:
 
@@ -4513,7 +4513,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
         for key in keys.values():
             _UNFILED_REPORTS.pop(key, None)
         return []
-    directory = bl.prewrites_dir(queue.root, instance)
+    ledger = bl.BatchLedger.for_instance(queue.root, instance)
     # First what is unchanged since the decision the tick last left in
     # place: no lock, and no path read (`_KEPT_PREWRITES`).
     owners_now: list[object] = []
@@ -4524,7 +4524,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
         if kept is None:
             return False
         (version, dirs, dir_versions, owners_then), _action = kept
-        inputs = bl.prewrite_inputs(bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id),
+        inputs = bl.prewrite_inputs(ledger.prewrite_path(batch_id),
                                   None, kept_dirs=dirs, seen=seen)
         if inputs is None or inputs != (version, dirs, dir_versions):
             return False
@@ -4549,10 +4549,10 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
         locked_seen: dict[str, object] = {}
         for batch_id in batch_ids:
             base = {"prewrite": _batch_report_key(instance, batch_id)}
-            record_path = bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id)
+            record_path = ledger.prewrite_path(batch_id)
             version = bl.prewrite_inputs(record_path, None)
             try:
-                record = bl.BatchLedger.at_scope(directory.parent).prewrite(batch_id)
+                record = ledger.prewrite(batch_id)
             except oc.ProducedOutputError as exc:
                 _KEPT_PREWRITES.pop(keys[batch_id], None)
                 reports.append((batch_id, {
@@ -4602,7 +4602,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             elif action == "hold":
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
             elif action == "reclaim":
-                path = bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id)
+                path = ledger.prewrite_path(batch_id)
                 try:
                     path.unlink()
                 except FileNotFoundError:
@@ -4656,11 +4656,11 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
     generation = reads.generation(str(instance["owner_action_key"]))
     if bl.attempt_state(generation, str(attempt["nonce"])) not in oc.ENDED_ATTEMPT_STATES:
         return []
-    directory = bl.prewrites_dir(queue.root, instance)
+    ledger = bl.BatchLedger.for_instance(queue.root, instance)
     records: dict[str, bl.PrewriteFacts] = {}
     for batch_id in batch_ids:
         try:
-            record = bl.BatchLedger.at_scope(directory.parent).prewrite(batch_id)
+            record = ledger.prewrite(batch_id)
         except oc.ProducedOutputError as exc:
             unreadable.append(f"{where}/{batch_id}.prewrite: {exc}")
             continue
@@ -5165,7 +5165,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
 
     It also files the attempt index pointer of any scope that has none, and
     marks the index complete once one full pass has indexed every scope it
-    listed (`_backfill_attempt`).
+    listed (`bl.backfill_attempt`).
 
     ``budget``, when the tier loop passes one (#1072), is asked before each
     unit of work -- an instance's ended prewrites, a staged batch's egress, a
@@ -5855,7 +5855,7 @@ def recover_batches(queue, instance: Mapping[str, object],
     and re-plan the work as a new batch. A `failed-retry` event pointing at
     a row no claim can cover is the same wait-forever defect as a
     `live-wait` one, and the two branches are decided by one shared
-    question (`_output_funding_verdict`) so they cannot drift apart again.
+    question (`bl.funding_verdict`) so they cannot drift apart again.
 
     The verdict rests on ATTRIBUTABLE evidence and nothing weaker: the
     filed funding record, read through `output_funding_file_state` because

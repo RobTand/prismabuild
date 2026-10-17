@@ -1175,9 +1175,9 @@ class _OtherClaims:
     where the files are met.  Who else names a path is answered from the
     #1053 records, read once per export and only once a present file needs
     it: the attempts of every template whose output prefix overlaps this
-    one's (`_template_attempts`), less this export's own; each one's
-    committed and prewritten paths (`_attempt_owned_paths`); and its state
-    (`_attempt_state`).  A path's claims decide:
+    one's (`bl.template_attempts`), less this export's own; each one's
+    committed and prewritten paths (`bl._capture_attempt_paths`); and its state
+    (`bl.attempt_state`).  A path's claims decide:
 
     * none: nobody's file, refused as before;
     * any attempt that is live, or whose state is unknown: refused;
@@ -1740,7 +1740,7 @@ def declared_roots(queue, cas_root):
     per process.  Returns ``(roots, errors)``.
     """
 
-    scopes = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes = bl.scopes_root(queue.root)
     errors = []
     try:
         owners = bl.scope_owners(scopes)
@@ -1783,7 +1783,7 @@ def _namespace_instance(queue, directory, groups):
             owner = reservation.get("owner")
     if not isinstance(owner, str) or len(owner) != 64:
         return None
-    scopes = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes = bl.scopes_root(queue.root)
     try:
         paths = bl.owner_instance_paths(scopes / owner)
     except OSError:

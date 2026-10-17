@@ -13396,7 +13396,7 @@ class PoolQueue:
 
         Cover (claim) requires a PREVIOUSLY COMMITTED exact-attempt batch;
         it must NOT promote an unfinished prewrite. Uses the merged R4
-        candidate's single strict loader (`_load_batch_record`: bounded 4MB
+        candidate's single strict loader (`bl.BatchLedger.open`: bounded 4MB
         intake, exact schema/id/instance binding, strict ints, non-empty
         entries re-validated as descriptors with recomputed manifest),
         never a hand-written batch validator. Deterministic paths only
@@ -13413,7 +13413,6 @@ class PoolQueue:
         """
 
         try:
-            from . import produced_output as produced_mod
             import json as _json
         except ImportError:
             return False
@@ -13509,7 +13508,6 @@ class PoolQueue:
         """
 
         try:
-            from . import produced_output as produced_mod
             import json as _json
         except ImportError:
             return False
@@ -13609,7 +13607,6 @@ class PoolQueue:
         if not isinstance(descriptors, list) or not descriptors:
             return {"ok": False, "refusal": "bad-descriptors"}
         try:
-            from . import produced_output as produced_mod
             binding = bl.BatchLedger.precommit(
                 self, instance, template, batch_id, descriptors,
                 tier, str(mover_key))
@@ -13815,7 +13812,6 @@ class PoolQueue:
         if not isinstance(descriptors, list) or not descriptors:
             return {"ok": False, "refusal": "bad-descriptors"}
         try:
-            from . import produced_output as produced_mod
             binding = bl.BatchLedger.precommit(
                 self, instance, template, batch_id, descriptors,
                 tier, str(mover_key))
@@ -15047,7 +15043,6 @@ class PoolQueue:
         becomes a statement that nothing was published there.
         """
 
-        from . import produced_output as produced_mod
 
         root = bl.output_fragment_root(self.root / RESIDENCY)
         name = f"{action_key}.json"
@@ -15993,12 +15988,6 @@ class PoolQueue:
         """
 
         try:
-            from . import produced_output as produced_mod
-        except ImportError as exc:
-            raise PoolContractError(
-                f"produced-output template needs produced_output: {exc}"
-            ) from None
-        try:
             validated = oc.validate_template(template)
         except oc.ProducedOutputError as exc:
             raise PoolContractError(f"produced-output template: {exc}") from exc
@@ -16062,12 +16051,6 @@ class PoolQueue:
         generation rotation). Raises PoolContractError on any mismatch.
         """
 
-        try:
-            from . import produced_output as produced_mod
-        except ImportError as exc:
-            raise PoolContractError(
-                f"produced-output batch needs produced_output: {exc}"
-            ) from None
         try:
             checked_template = oc.validate_template(template)
             checked_instance = oc.validate_instance(instance)
@@ -16191,12 +16174,6 @@ class PoolQueue:
             raise PoolContractError(
                 "batch reference range must be 0..positive total")
         total = int(end)
-        try:
-            from . import produced_output as produced_mod
-        except ImportError as exc:
-            raise PoolContractError(
-                f"produced-output batch needs produced_output: {exc}"
-            ) from None
         try:
             with open(self.root / "residency"
                       / oc.OUTPUT_TEMPLATES_SUBDIR

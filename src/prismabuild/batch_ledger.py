@@ -74,7 +74,7 @@ def scope_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
     checked = oc.validate_instance(instance)
     attempt = checked["owner_attempt"]
     assert isinstance(attempt, dict)
-    return (Path(queue_root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    return (scopes_root(queue_root)
             / str(checked["owner_action_key"])
             / f"{checked['template_id']}.{attempt['nonce']}")
 
@@ -465,16 +465,16 @@ def foreign_write_owner(queue, checked_instance: Mapping[str, object],
                              ) -> dict[str, object] | None:
     """Another action's live attempt that owns one of these paths (#1053).
 
-    The cross-action half of `_live_path_owner`. The attempts it reads are
+    The cross-action half of `own_write_owner`. The attempts it reads are
     those of every template whose output prefix overlaps this one's
-    (`_template_attempts`), less this owner key's: only one attempt of a key
+    (`template_attempts`), less this owner key's: only one attempt of a key
     holds its claim, and this one does. Each other key's claim is read once.
     An attempt that does not hold its key's claim cannot prewrite or commit
-    (`_require_live_owner`), so it owns nothing a new write could disturb,
+    (`require_live_owner`), so it owns nothing a new write could disturb,
     and its records are not read at all: a dead attempt's commitments cost
     the gate nothing. A live attempt, or one whose claim cannot be read,
     owns every path its committed batches name (unless reclaimed) and every
-    path a prewrite record of it names (`_attempt_owned_paths`).
+    path a prewrite record of it names (`_capture_attempt_paths`).
 
     Returns the refusal's details for the first owned path in sorted order,
     or ``None``. Raises `ProducedOutputError` when an attempt that may be
@@ -535,13 +535,13 @@ class LedgerReads:
     Commitments are kept by the file's trusted version (`file_version`
     over a fence read before the stat, #1045) and handed back while a fresh
     ``stat`` returns the same version: every writer replaces the file by
-    rename (`_write_commitments`), so a changed file has another version,
+    rename (`BatchLedger.file`), so a changed file has another version,
     and a version no fence vouches for is never kept.  The ``stat`` comes
     before the read, so a file replaced between the two is read again next
     time, never remembered under the new version with the old bytes.  The
     mapping handed back is a copy: a retirement's read-modify-write mutates
     its own container, never what the next batch reads (#992).  What an
-    attempt owns (`_attempt_owned_paths`) is kept the same way, under the
+    attempt owns (`_capture_attempt_paths`) is kept the same way, under the
     versions of its commitments and of each prewrite record it has.  An
     owner key's standing (`RecordStore.standing`) and its funding census are
     read at most once per tick.
@@ -647,7 +647,7 @@ class LedgerReads:
               ) -> tuple[object, dict[str, str], dict[str, str]]:
         """``(fingerprint, committed, prewritten)`` for one attempt.
 
-        `_attempt_owned_paths`, re-derived only when the fingerprint -- the
+        `_capture_attempt_paths`, re-derived only when the fingerprint -- the
         versions of the commitments and of each prewrite record, taken
         before either is read -- has changed.
         """
@@ -696,7 +696,7 @@ class LedgerReads:
         """Every other attempt's claim on paths under this template's prefix.
 
         The attempts are those of every template whose output prefix
-        overlaps this one's (`_template_attempts`), less this instance's
+        overlaps this one's (`template_attempts`), less this instance's
         own. Read now -- the index, and each attempt's commitments and
         prewrite records through this tick's versions -- so a caller under
         the output-prefix locks sees every commit and prewrite filed under
@@ -837,7 +837,7 @@ class RetirementOwners:
 def _unknown_attempt_detail(generation: KeyStanding,
                             nonce: str, *, last_write_ns: int | None,
                             now: float, lease_timeout_s: float) -> dict[str, object]:
-    """Why `_attempt_state` reads ``unknown`` for this attempt (#1065).
+    """Why `attempt_state` reads ``unknown`` for this attempt (#1065).
 
     ``why`` is one of ``no-queue-row`` (no record of the key in any queue
     directory), ``queued`` (a ``ready`` row: the key waits for a claim),
@@ -1288,7 +1288,7 @@ def read_landed_origins(sealed: list[dict[str, object]],
     ``verified`` already read, costs one lstat. One with the landed inode and
     size and other timestamps (an NFS delegation recall, #1111) is read and
     hashed (`_verify_origin_content`), and its re-pin is kept in ``verified``
-    by path for `_landed_identity` to check under the lock. Everything else
+    by path for `landed_identity` to check under the lock. Everything else
     is left to that check, which takes the identity the batch records: an
     origin that cannot be stat'ed here may be at a retirement's private name
     for a moment, and is back by the time the lock is granted (#1064).
@@ -1327,10 +1327,10 @@ def landed_identity(sealed: list[dict[str, object]],
                                 dict[str, object] | None]:
     """Is each origin, stat'ed under the lock, the copy that landed?
 
-    ``origin_identity`` is the identity `_origin_identity_at_commit` took
+    ``origin_identity`` is the identity `origin_identity_at_commit` took
     under the output-prefix lock. Each origin must be the landed file, or the
     file a read outside the lock hashed (``verified``, from
-    `_read_landed_origins`); that re-pin is returned for the entry, and the
+    `read_landed_origins`); that re-pin is returned for the entry, and the
     identity committed is the hashed one. An origin whose inode or size is
     not the landed one refuses. One whose timestamps alone moved and that no
     read has hashed at that identity is returned in ``moved``: the caller lets
@@ -1497,7 +1497,7 @@ def check_origin_identity(filed: Mapping[str, object],
     length passes an lstat size check and is a different artifact.
 
     The identity compared is the commit's with the entry's re-pins applied
-    (`_effective_origin_identity`). A mismatch in the timestamps alone, on an
+    (`effective_origin_identity`). A mismatch in the timestamps alone, on an
     origin whose descriptor carries its sha256, is what an NFS delegation
     recall leaves (#1111). With ``verify`` the origin is read and hashed
     here, with no lock held (`_verify_origin_content`), and the answer
@@ -1560,7 +1560,7 @@ def recheck_origin_identity(filed: Mapping[str, object],
                              sealed: list[dict[str, object]],
                              entry: Mapping[str, object] | None = None
                              ) -> tuple[bool, str | None]:
-    """`_check_origin_identity` without a read: ``(True, None)`` or ``(False, refusal)``."""
+    """`check_origin_identity` without a read: ``(True, None)`` or ``(False, refusal)``."""
 
     verdict = check_origin_identity(filed, sealed, entry)
     return (bool(verdict["ok"]), verdict.get("refusal"))
@@ -1748,7 +1748,7 @@ def _public_batch_record(queue_root: str | Path,
 def verify_origins_unlocked(queue_root, instance: Mapping[str, object],
                              template: Mapping[str, object], batch_id: str, *,
                              where: str) -> dict[str, object]:
-    """`_check_origin_identity` with reads, on a lockless read of the batch (#1111)."""
+    """`check_origin_identity` with reads, on a lockless read of the batch (#1111)."""
 
     try:
         checked_template, checked_instance = oc.bound_output_contract(
@@ -1986,7 +1986,7 @@ def producer_attempt_state(queue, instance: Mapping[str, object]) -> str:
 
 def attempt_state(generation: KeyStanding,
                    nonce: str) -> str:
-    """`_producer_attempt_state` for one attempt, over a generation already read.
+    """`producer_attempt_state` for one attempt, over a generation already read.
 
     Every attempt of one owner key answers from the same read of the key
     (`RecordStore.standing`), so a caller that asks about several attempts of it
@@ -2328,7 +2328,7 @@ class BatchFacets:
         if entry.get("origin_only") is True:
             # An origin-only batch (#912) never had a stage copy, so every reader
             # that asks "is a copy live?" hears no.  Path ownership is the one
-            # question that must not follow this answer; `_live_path_owner` asks
+            # question that must not follow this answer; `own_write_owner` asks
             # it of the origin instead.
             return {"mover_key": "", "tier": str(entry.get("tier") or ""),
                     "generation": 0, "retired": True, "state": "origin-only",
@@ -2614,7 +2614,7 @@ class BatchLedger:
 
         * bound template/instance contract (exact template_sha binding);
         * live owner CLAIMED row still names the instance's exact nonce/scope
-          (via _require_live_owner; stale/superseded/absent raises);
+          (via require_live_owner; stale/superseded/absent raises);
         * durable prewrite exists for batch_id and matches descriptors exactly
           (same tier/class_bytes/paths/owner/attempt checks as commit_batch);
         * every descriptor validates via validate_descriptor against the bound
@@ -3084,11 +3084,11 @@ class BatchLedger:
         one origin path has at most one live writer, so a path a committed
         unretired batch or another outstanding prewrite already owns refuses
         `prewrite-path-owned-by-live-batch` here rather than at the mover,
-        after the bytes are written (`_live_path_owner`). Ownership ends at
+        after the bytes are written (`own_write_owner`). Ownership ends at
         retirement, which evicts the staged copy. Across actions (#1053), a
         path another action's LIVE attempt has committed (unless reclaimed) or
         prewritten refuses `prewrite-path-owned-by-live-action`, naming that
-        owner (`_foreign_live_path_owner`); a dead or finished action's paths
+        owner (`foreign_write_owner`); a dead or finished action's paths
         are free to regenerate, which is how a relaunch resumes. Then files an immutable
         prewrite record the later commit must present. Physical funding happens
         only at `commit_batch` (exact ledger acquire) and in the liveness
@@ -3313,7 +3313,7 @@ class BatchLedger:
 
         Checks are `commit_batch`'s, minus the window and the funding: the live
         owner under the output-prefix locks (this prefix's and every overlapping
-        template's, `_output_prefix_locks`, #1063), the prewrite present and
+        template's, `path_locks`, #1063), the prewrite present and
         matched (its tier, owner and attempt, the paths a subset of the planned
         ones, each class within its ceiling), every planned path the batch omits
         absent, the durable maxima, and one lstat per origin for size and
@@ -3934,7 +3934,7 @@ class BatchLedger:
             "mover_key": mover,
             "class_bytes": class_bytes,
             # The origin paths this batch owns while it is live. Indexed
-            # here so `_live_path_owner` can answer ownership from the
+            # here so `own_write_owner` can answer ownership from the
             # commitments record alone: re-deriving it from the immutable
             # batch record would make one damaged record freeze every
             # later prewrite for the instance, including paths that batch
@@ -3998,7 +3998,7 @@ class BatchLedger:
         namespace need no row; a FAILED mover whose fence is still fundable
         needs a retry row; an absent mover with no staged fragments needs its
         first row. A batch whose filed funding record reads `consumed` gets no
-        row at all -- see `_output_funding_verdict`.
+        row at all -- see `funding_verdict`.
 
         Composing is deliberately the test HERE, unlike in the censuses, and it
         does not mean the batch is complete: a partially staged batch composes
@@ -4153,7 +4153,7 @@ class BatchCapture:
         return (self[key] for key in self._batches)
 
     def outstanding_prewrite_ids(self) -> list[str]:
-        """Batch ids with a prewrite record in ``scope`` and no committed batch.
+        """Batch ids with a prewrite in this ledger's scope and no committed batch.
 
         A commit consumes its prewrite, so a record whose batch id is not in the
         commitments is outstanding. Raises ``OSError`` when the directory cannot
@@ -4207,12 +4207,11 @@ class BatchCapture:
             batch_id: str, *, mover_key: str,
             receipt: Mapping[str, object], canonical_ns: str,
             staged_paths: list[str]) -> bool:
-        """Mark one materialization's stage retirement in ``batches``.
+        """Mark one materialization's stage retirement in this capture.
 
-        ``batches`` is the commitments document the caller read under its
-        ownership lock, and the caller writes it back under the same lock: this
-        marks, it does not read or write (#1072).  Returns whether it changed
-        anything.
+        The caller captured the commitments under its ownership lock and files
+        this capture under the same lock. This operation marks without reading
+        or filing (#1072). Returns whether it changed anything.
 
         Proof-checked exactly like the primary retirement: the egress receipt must
         be complete, error-free, and name THIS materialization's mover with the
@@ -4257,12 +4256,11 @@ class BatchCapture:
                                    batch_id: str,
                                    receipt: Mapping[str, object],
                                    staged_paths: list[str]) -> bool:
-        """Mark stage retirement in ``batches``, under the caller's ownership lock.
+        """Mark stage retirement in this capture under the ownership lock.
 
-        ``batches`` is the commitments document the caller read under that lock,
-        and the caller writes it back under the same lock: this marks, it does
-        not read or write the document (#1072).  Returns whether it changed
-        anything.
+        The caller captured the commitments under that lock and files this
+        capture under the same lock. This operation marks without reading or
+        filing (#1072). Returns whether it changed anything.
 
         Proof-checked, never a bare flag: the receipt must be a complete
         egress for this exact batch (mover + namespace match, no errors),
@@ -4345,14 +4343,14 @@ class BatchCapture:
                                 ) -> dict[str, object]:
         """Phase three of a retirement: revalidate and mark, under the ownership lock.
 
-        ``batches`` is the commitments document the caller read again, under the
-        lock it took back after the egress; the caller writes it once for every
+        This capture holds the commitments the caller read again under the
+        lock it took back after egress. The caller files it once for every
         batch it marks.  The EXACT selection is revalidated before anything is
         marked: the record still loads, the batch still resolves to the same
         manifest, and the active materialization is still the generation whose
         copy this receipt just deleted.  A selection that moved underneath the
         egress is unknown state and retains.  The answer carries ``marked``:
-        whether ``batches`` changed.
+        whether this capture changed.
         """
         batches = self._batches
 
@@ -4407,7 +4405,7 @@ class BatchCapture:
         Without a read. When only re-pins are missing and ``verified`` carries
         them (hashed by the caller before it took the lock), they are checked
         against a fresh stat, appended to the entry and written, and the check
-        is made again. Returns `_check_origin_identity`'s answer.
+        is made again. Returns `check_origin_identity`'s answer.
         """
         batches = self._batches
         commitments = self._record

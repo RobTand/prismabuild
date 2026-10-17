@@ -7817,7 +7817,7 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
 
     Returns ``(state, owner)``: ``dead``, ``succeeded``, ``live`` or
     ``unknown`` over the instance the funding record names, through
-    ``_producer_attempt_state``. Any unreadable or disagreeing step
+    ``bl.producer_attempt_state``. Any unreadable or disagreeing step
     answers ``unknown`` and retains; a live or unreadable verdict
     changes nothing.
     """
@@ -7932,7 +7932,7 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     before this lock (and the fresh census refuses) or after it
     (and the new claim takes tokens this already returned). Acts
     only when all hold under that lock: the producer attempt ended
-    in failure (``dead`` by ``_producer_attempt_state``; ``live``,
+    in failure (``dead`` by ``bl.producer_attempt_state``; ``live``,
     ``succeeded`` and ``unknown`` refuse), the mover is neither
     ready nor claimed, the record is ``transferring`` or ``released``,
     and every prewrite path of the bound batch is proven absent.

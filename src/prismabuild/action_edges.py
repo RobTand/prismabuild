@@ -801,7 +801,7 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
     is not reclaimed.  ``None`` when there is none or more than one.
     """
 
-    scopes = (Path(queue_root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes = (bl.scopes_root(queue_root)
               / _hex64(producer_key, where="producer key"))
     try:
         names = sorted(os.listdir(scopes))
