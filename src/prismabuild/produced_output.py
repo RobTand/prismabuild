@@ -130,6 +130,10 @@ import time
 import uuid
 from prismabuild import tier_holdings
 from prismabuild import output_vocabulary, staged_path
+from .output_vocabulary import (
+    PRODUCED_OUTPUT_REF_SCHEMA_V1, OUTPUT_TEMPLATES_SUBDIR,
+    OUTPUT_SCOPES_SUBDIR, OUTPUT_BATCHES_SUBDIR, OUTPUT_FRAGMENTS_SUBDIR,
+)
 
 TEMPLATE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_template.v1"
 INSTANCE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_instance.v1"

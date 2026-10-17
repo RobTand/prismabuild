@@ -346,21 +346,21 @@ def staged_lower_progress(root):
     source = path.read_text()
     node = next((n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
                  and n.name == "progress_phase"), None)
-    if node is None:
-        return
-    lines = source.splitlines(keepends=True)
-    method = "".join(lines[node.lineno - 1:node.end_lineno])
-    method = method.replace("def progress_phase(queue: pool.PoolQueue,", "def accepted_progress_phase(self,")
-    method = method.replace("queue.records.lease_path", "self.lease_path")
-    method = method.replace("    path = self.lease_path", "    from . import core as pb, progress as progress_v1\n\n    path = self.lease_path")
-    store = root / "src/prismabuild/record_store.py"
-    store_source = store.read_text()
-    at = next(n for n in ast.walk(ast.parse(store_source)) if isinstance(n, ast.FunctionDef) and n.name == "scratch_owner").lineno - 1
-    store_lines = store_source.splitlines(keepends=True)
-    store_lines.insert(at, "".join("    " + line if line.strip() else line for line in method.splitlines(keepends=True)) + "\n\n")
-    store.write_text("".join(store_lines))
-    path.write_text("".join(lines[:node.lineno - 1] + lines[node.end_lineno:]))
+    if node is not None:
+        lines = source.splitlines(keepends=True)
+        method = "".join(lines[node.lineno - 1:node.end_lineno])
+        method = method.replace("def progress_phase(queue: pool.PoolQueue,", "def accepted_progress_phase(self,")
+        method = method.replace("queue.records.lease_path", "self.lease_path")
+        method = method.replace("    path = self.lease_path", "    from . import core as pb, progress as progress_v1\n\n    path = self.lease_path")
+        store = root / "src/prismabuild/record_store.py"
+        store_source = store.read_text()
+        at = next(n for n in ast.walk(ast.parse(store_source)) if isinstance(n, ast.FunctionDef) and n.name == "scratch_owner").lineno - 1
+        store_lines = store_source.splitlines(keepends=True)
+        store_lines.insert(at, "".join("    " + line if line.strip() else line for line in method.splitlines(keepends=True)) + "\n\n")
+        store.write_text("".join(store_lines))
+        path.write_text("".join(lines[:node.lineno - 1] + lines[node.end_lineno:]))
     files = list((root / "src/prismabuild").glob("*.py")) + list((root / "tools/fleet").glob("*.py")) + list((root / "tests").glob("*.py"))
+    exports = staged_exports({str(p.relative_to(root)): p.read_text() for p in files})
     for path in files:
         source = path.read_text()
         if "progress_phase" not in source:
@@ -370,12 +370,15 @@ def staged_lower_progress(root):
         for line in lines:
             offsets.append(offsets[-1] + len(line))
         edits = []
-        for call in ast.walk(ast.parse(source)):
+        tree = ast.parse(source)
+        aliases = staged_alias_bindings(tree, {"prewarm_loop": {"progress_phase"}}, exports)
+        for call in ast.walk(tree):
             if not isinstance(call, ast.Call):
                 continue
             func = call.func
-            phase_call = (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
-                          and func.value.id == "prewarm_loop" and func.attr == "progress_phase")
+            phase_call = (isinstance(func, ast.Attribute)
+                          and staged_reference_module(func.value, aliases, exports) == "prewarm_loop"
+                          and func.attr == "progress_phase")
             local_call = (path.name == "prewarm_loop.py" and isinstance(func, ast.Name)
                           and func.id == "progress_phase")
             new = None
@@ -383,9 +386,9 @@ def staged_lower_progress(root):
                 receiver = ast.unparse(call.args[0])
                 new = f"{receiver}.records.accepted_progress_phase({', '.join(ast.unparse(a) for a in call.args[1:])})"
             elif (isinstance(func, ast.Attribute) and func.attr == "setattr" and len(call.args) >= 2
-                  and isinstance(call.args[0], ast.Name) and call.args[0].id == "prewarm_loop"
+                  and staged_reference_module(call.args[0], aliases, exports) == "prewarm_loop"
                   and isinstance(call.args[1], ast.Constant) and call.args[1].value == "progress_phase"):
-                call.args[0] = ast.parse("pool.record_store.RecordStore", mode="eval").body
+                call.args[0] = ast.parse("type(queue.records)", mode="eval").body
                 call.args[1] = ast.Constant("accepted_progress_phase")
                 new = ast.unparse(call)
             if new is not None:

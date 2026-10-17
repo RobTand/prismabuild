@@ -417,10 +417,7 @@ def test_overflow_refuses_and_the_refused_owner_is_still_censused(
     _consumer_a, mover_a = red.stale_owner(fleet, coherent_names=set(NAMES),
                                            replace=False)
     _consumer_b, mover_b = _co_owner(fleet, NAMES)
-    # Room for one checkpoint: the fixed literal on main, the discovered
-    # count (#1056) here.
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_ENTRIES", 1,
-                        raising=False)
+    # Room for one checkpoint through the actual discovered-count policy.
     monkeypatch.setattr(staged_path, '_skip_checkpoint_capacity',
                         lambda discovered: 1, raising=False)
 

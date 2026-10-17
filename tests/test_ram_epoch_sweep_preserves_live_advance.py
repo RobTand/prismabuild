@@ -179,7 +179,7 @@ def test_funding_rotation_during_discovery_is_not_permission_to_release(tmp_path
 def test_unreadable_claimed_progress_cannot_rewind_credit_frontier(tmp_path, monkeypatch):
     queue, plan, grant = blind_window(tmp_path)
     base._claim_with_progress(queue, base.CONSUMER, phase='phase-0')
-    monkeypatch.setattr(base.tier_loop.prewarm_loop, 'progress_phase', lambda *args: None)
+    monkeypatch.setattr(type(queue.records), 'accepted_progress_phase', lambda *args: None)
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert queue.tier(base.RAM_TIER).holdings(grant) == {'ram_gib': 1}
     assert any(e.get('reason') == 'claimed progress is not positively available' for e in events)
