@@ -1,6 +1,8 @@
 """Funding generations, named handoff repair and credit for window/output bindings."""
 from __future__ import annotations
 
+from prismabuild.legacy_funding import LegacyFunding
+
 import json
 import math
 import os
@@ -9,7 +11,8 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from enum import Enum
+from typing import Literal, NamedTuple, NotRequired, TypedDict
 
 from . import batch_ledger as bl, output_contract as oc, record_store, storage_tiers, tier_holdings
 from .record_store import PoolContractError, READY, CLAIMED, DONE, FAILED, WITHDRAWN, TIER_FUNDING, TIER_FUNDING_RETIRED
@@ -49,11 +52,117 @@ _FUNDING_KIND_ROLES = {
 }
 
 
+
+@dataclass(frozen=True)
+class WindowBinding:
+    schema: str
+    tier_id: str
+    consumer_action_key: str
+    plan_sha256: str
+    mover_action_key: str
+    range_start_bytes: int
+    range_end_bytes: int
+    kind: str
+    tokens: tuple[str, ...]
+    generation: str
+    published_unix: float
+
+
+@dataclass(frozen=True)
+class OutputBinding:
+    schema: str
+    tier_id: str
+    kind: str
+    mover_action_key: str
+    tokens: tuple[str, ...]
+    generation: str
+    published_unix: float
+    owner_action_key: str
+    owner_nonce: str
+    owner_scope_id: str
+    owner_published_unix: float
+    template_id: str
+    template_sha256: str
+    batch_id: str
+    manifest_digest: str
+    range_start_bytes: int
+    range_end_bytes: int
+
+
+class WindowEvidence(NamedTuple):
+    state: Literal["record", "absent", "unknown"]
+    record: dict[str, object] | None
+    reason: str | None
+
+
+class OutputEvidence(NamedTuple):
+    record: dict[str, object] | None
+    state: Literal["ok", "absent", "corrupt"]
+
+
+@dataclass(frozen=True)
+class Cover:
+    state: Literal["covered", "uncovered", "absent", "unknown"]
+    count: int = 0
+    generation: str | None = None
+
+    @property
+    def credit(self) -> tuple[int, str | None]:
+        return self.count, self.generation
+
+
+class BindVerdict(Enum):
+    BOUND = "bound"
+    DEFERRED = "deferred"
+
+    @property
+    def bound(self) -> bool:
+        return self is BindVerdict.BOUND
+
+
+class ReleaseVerdict(Enum):
+    RELEASED = "released"
+    REFUSED = "refused"
+    UNKNOWN = "unknown"
+
+    @property
+    def released(self) -> bool:
+        return self is ReleaseVerdict.RELEASED
+
+    @property
+    def result(self) -> bool | None:
+        return None if self is ReleaseVerdict.UNKNOWN else self.released
+
+
+class FundingAccepted(TypedDict):
+    ok: Literal[True]
+    generation: str
+    tokens: list[str]
+    moved: int
+    duplicate: NotRequired[bool]
+    staged: NotRequired[bool]
+
+
+class FundingRefused(TypedDict):
+    ok: Literal[False]
+    refusal: str
+    generation: NotRequired[str]
+    moved: NotRequired[int]
+    expected: NotRequired[int]
+    state: NotRequired[str]
+    available: NotRequired[dict[str, int]]
+    batch_gib: NotRequired[int]
+    window_gib: NotRequired[int]
+
+
+FundingVerdict = FundingAccepted | FundingRefused
+
+
 @dataclass
 class Handoff:
     """One chunk handoff: status, events, generation and moved count."""
 
-    status: str = "deferred"
+    status: Literal["deferred", "refused", "short", "already", "published"] = "deferred"
     events: list[str] = field(default_factory=list)
     generation: str | None = None
     moved: int = 0
@@ -199,24 +308,24 @@ class FundingLedger:
         try:
             raw = record_store.read_document(path)
         except OSError as exc:
-            return ("unknown", None, f"funding record unreadable: {exc!r}")
+            return WindowEvidence("unknown", None, f"funding record unreadable: {exc!r}")
         except PoolContractError as exc:
-            return ("unknown", None, f"funding record unparsable: {exc}")
+            return WindowEvidence("unknown", None, f"funding record unparsable: {exc}")
         if raw is None:
             try:
                 present = bool(record_store.value_or_raise(
                     self.queue.records.funding_presence(mover_action_key, tier_id)))
             except OSError as exc:
-                return ("unknown", None,
+                return WindowEvidence("unknown", None,
                         f"funding record census unreadable: {exc!r}")
             if present:
-                return ("unknown", None,
+                return WindowEvidence("unknown", None,
                         "funding record present but empty")
-            return ("absent", None, None)
+            return WindowEvidence("absent", None, None)
         try:
-            return ("record", self.validate_window(raw), None)
+            return WindowEvidence("record", self.validate_window(raw), None)
         except (PoolContractError, ValueError) as exc:
-            return ("unknown", None, f"funding record invalid: {exc}")
+            return WindowEvidence("unknown", None, f"funding record invalid: {exc}")
 
     def write_window(self, record: Mapping[str, object], *,
                       expect_generation: str | None = None) -> Path:
@@ -264,6 +373,10 @@ class FundingLedger:
             binding_fields = _FUNDING_BINDING_FIELDS
             label = "funding"
         checked = validate(record)
+        binding_type = OutputBinding if binding == "output" else WindowBinding
+        bound = binding_type(**{field: (tuple(checked[field]) if field == "tokens"
+                                      else checked[field])
+                                for field in binding_type.__dataclass_fields__})
         if rotate and checked.get("state") != "reserved":
             raise PoolContractError(f"rotated {label} generations are born reserved")
         mover, tier = str(checked["mover_action_key"]), str(checked["tier_id"])
@@ -295,8 +408,11 @@ class FundingLedger:
                 if str(checked.get("generation")) == str(current.get("generation")):
                     raise PoolContractError("rotation must mint a fresh generation")
             else:
+                current_bound = binding_type(**{
+                    field: (tuple(current[field]) if field == "tokens" else current[field])
+                    for field in binding_type.__dataclass_fields__})
                 for field in binding_fields:
-                    if current.get(field) != checked.get(field):
+                    if getattr(current_bound, field) != getattr(bound, field):
                         raise PoolContractError(
                             f"{label} {field} is immutable within one generation")
                 if (str(checked.get("state")) != str(current.get("state"))
@@ -377,7 +493,7 @@ class FundingLedger:
         return True
 
     def cover_window(self, tier_id: str, item: Mapping[str, object],
-                     kind: str, need: int) -> tuple[int, str | None]:
+                     kind: str, need: int) -> Cover:
         """What this claim's funding record covers, with its generation.
 
         Strict or nothing, against the sealed row itself: the record must
@@ -399,30 +515,33 @@ class FundingLedger:
         """
 
         if need <= 0 or not isinstance(item, Mapping):
-            return (0, None)
+            return Cover("uncovered")
         key = item.get("action_key")
         if not isinstance(key, str):
-            return (0, None)
-        record = self.read_window(key, tier_id)
+            return Cover("uncovered")
+        evidence = self.window_evidence(key, tier_id)
+        record = evidence.record
+        if evidence.state != "record":
+            return Cover(evidence.state)
         if record is None or record.get("state") != "transferring":
-            return (0, None)
+            return Cover("uncovered")
         if (str(record.get("tier_id")) != str(tier_id)
                 or str(record.get("mover_action_key")) != key
                 or str(record.get("kind")) != str(kind)):
-            return (0, None)
+            return Cover("uncovered")
         try:
             row_published = float(item.get("published_unix"))  # type: ignore[arg-type]
             bound_published = float(record.get("published_unix"))  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if row_published != bound_published:
-            return (0, None)
+            return Cover("uncovered")
         residency = item.get("residency")
         if not isinstance(residency, Mapping):
-            return (0, None)
+            return Cover("uncovered")
         for field in ("tier_id", "range_start_bytes", "range_end_bytes"):
             if str(residency.get(field)) != str(record.get(field)):
-                return (0, None)
+                return Cover("uncovered")
         # Sealed consumer/plan: the credit belongs to one frozen window.
         # The mover row carries no consumer field, so the record's binding
         # is checked against the live frozen plan itself.  Anything else --
@@ -438,12 +557,12 @@ class FundingLedger:
             live_digest = (_residency_plan.plan_sha256(live_plan)
                            if live_plan is not None else None)
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         except Exception:
-            return (0, None)
+            return Cover("unknown")
         if (not isinstance(live_digest, str)
                 or str(record.get("plan_sha256")) != live_digest):
-            return (0, None)
+            return Cover("uncovered")
         # Sealed-plan membership: the live plan must actually cut this mover
         # as a leg in the role this kind funds, over exactly the bound
         # range.  A matching digest plus a caller-supplied row range is not
@@ -455,37 +574,37 @@ class FundingLedger:
             leg = (None if role is None else
                    _residency_plan.find_mover_leg(live_plan, key))
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         except Exception:
-            return (0, None)
+            return Cover("unknown")
         if leg is None or str(leg.get("mover_role")) != str(role):
-            return (0, None)
+            return Cover("uncovered")
         try:
             plan_range = (int(leg["start_bytes"]), int(leg["end_bytes"]))
             bound_range = (int(record.get("range_start_bytes")),  # type: ignore[arg-type]
                            int(record.get("range_end_bytes")))  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if plan_range != bound_range:
-            return (0, None)
+            return Cover("uncovered")
         tokens = record.get("tokens")
         if not isinstance(tokens, list) or not tokens:
-            return (0, None)
+            return Cover("uncovered")
         try:
             held_names = self.queue.tier(tier_id).token_names(key)
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if any(not isinstance(name, str)
                or not name.startswith(str(kind) + "-")
                or name not in held_names for name in tokens):
-            return (0, None)
+            return Cover("uncovered")
         generation = record.get("generation")
         if not isinstance(generation, str):
-            return (0, None)
-        return (min(int(len(tokens)), int(need)), generation)
+            return Cover("uncovered")
+        return Cover("covered", min(int(len(tokens)), int(need)), generation)
 
     def reserve_window(self, tier_id: str, grant: str, fields: Mapping[str, object],
-                      demand_gib: int) -> bool:
+                      demand_gib: int) -> BindVerdict:
         """Hold one next-need under the grant key and bind it, idempotently.
 
         Serialized on the mover's transition lock (non-blocking: a claim
@@ -496,8 +615,9 @@ class FundingLedger:
         mover = str(fields["mover_action_key"])
         with self.queue.mover_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
-                return False
-            return self._reserve_window_locked(tier_id, grant, fields, demand_gib)
+                return BindVerdict.DEFERRED
+            return (BindVerdict.BOUND if self._reserve_window_locked(
+                tier_id, grant, fields, demand_gib) else BindVerdict.DEFERRED)
 
     def _reserve_window_locked(self, tier_id: str, grant: str,
                               fields: Mapping[str, object],
@@ -958,8 +1078,11 @@ class FundingLedger:
                     "output funding token names must not contain '/'")
         return dict(value)
 
-    def read_output(self, mover_action_key: str,
-                            tier_id: str) -> dict[str, object] | None:
+    def read_output(self, mover_action_key: str, tier_id: str) -> dict[str, object] | None:
+        return self._capture_output(mover_action_key, tier_id).record
+
+    def _capture_output(self, mover_action_key: str,
+                        tier_id: str) -> OutputEvidence:
         """One output mover's funding record, or None when absent/unparsable.
 
         Note: None conflates absent with malformed/unreadable. Claim and
@@ -974,18 +1097,18 @@ class FundingLedger:
             raw_bytes = self.queue.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=None)
             if raw_bytes is None:
-                return None
+                return OutputEvidence(None, "absent")
             raw = json.loads(raw_bytes)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            return None
+            return OutputEvidence(None, "corrupt")
         try:
-            return self.validate_output(raw)
+            return OutputEvidence(self.validate_output(raw), "ok")
         except (PoolContractError, ValueError):
-            return None
+            return OutputEvidence(None, "corrupt")
 
     def output_evidence(
             self, mover_action_key: str, tier_id: str
-    ) -> tuple[dict[str, object] | None, str]:
+    ) -> OutputEvidence:
         """(record|None, file_state) with absent vs unknown split (R3).
 
         file_state: "absent" (proven ENOENT: no file, never had one or
@@ -1000,23 +1123,23 @@ class FundingLedger:
             raw_bytes = self.queue.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=1024 * 1024)
         except OSError:
-            return (None, "corrupt")
+            return OutputEvidence(None, "corrupt")
         if raw_bytes is None:
             # Proven ENOENT only is absent. Any other failure (including
             # NotADirectoryError: a path component is a file, i.e. corrupt
             # namespace, never proof an intent never existed) is UNKNOWN.
-            return (None, "absent")
+            return OutputEvidence(None, "absent")
         if len(raw_bytes) > 1024 * 1024:
-            return (None, "corrupt")
+            return OutputEvidence(None, "corrupt")
         try:
             import json as _json
             raw = _json.loads(raw_bytes.decode())
         except (ValueError, UnicodeDecodeError):
-            return (None, "corrupt")
+            return OutputEvidence(None, "corrupt")
         try:
-            return (self.validate_output(raw), "ok")
+            return OutputEvidence(self.validate_output(raw), "ok")
         except (PoolContractError, ValueError):
-            return (None, "corrupt")
+            return OutputEvidence(None, "corrupt")
 
     def write_output(self, record: Mapping[str, object], *,
                              expect_generation: str | None = None) -> Path:
@@ -1535,7 +1658,7 @@ class FundingLedger:
                               batch_id: str,
                               descriptors: list[Mapping[str, object]],
                               token_names: Sequence[str] | None = None,
-                              mover_published: float | None = None) -> dict:
+                              mover_published: float | None = None) -> FundingVerdict:
         """Stage an output funding intent (reserved, no transfer) (R2).
 
         Claim-safe writer order: prewrite -> stage intent (this call, no mover
@@ -1733,7 +1856,7 @@ class FundingLedger:
                           mover_key: str, instance, template,
                           batch_id: str,
                           descriptors: list[Mapping[str, object]],
-                          token_names: Sequence[str] | None = None) -> dict:
+                          token_names: Sequence[str] | None = None) -> FundingVerdict:
         """Fund one precommitted batch from the owner's existing window (R1).
 
         Future writer order (744 wires; this lane does not edit commit):
@@ -1935,7 +2058,7 @@ class FundingLedger:
                                   binding: Mapping[str, object],
                                   batch_gib: int, selected: list[str],
                                   owner_published: float,
-                                  mover_published: float) -> dict:
+                                  mover_published: float) -> FundingVerdict:
         """Fund body; caller holds owner outer + mover inner (R1 order)."""
 
         # Re-read live rows under the lock: a republish between selection
@@ -2084,7 +2207,7 @@ class FundingLedger:
                 "tokens": names, "moved": moved}
 
     def output_funded_cover(self, tier_id: str, item: Mapping[str, object],
-                            kind: str, need: int) -> tuple[int, str | None]:
+                            kind: str, need: int) -> Cover:
         """What this output mover's funding record covers, with generation (R1).
 
         Additive to V1 (claim tries V1 first; this only runs when V1
@@ -2103,10 +2226,10 @@ class FundingLedger:
         """
 
         if need <= 0 or not isinstance(item, Mapping):
-            return (0, None)
+            return Cover("uncovered")
         key = item.get("action_key")
         if not isinstance(key, str):
-            return (0, None)
+            return Cover("uncovered")
         # Sealed requirement (R4): output cover applies ONLY to movers whose
         # sealed item carries the immutable `produced_output_batch` projection.
         # Legacy movers without it retain existing admission and never scan
@@ -2114,12 +2237,15 @@ class FundingLedger:
         # proof defers via the claim gate below, never fresh acquisition.
         sealed_ref = item.get("produced_output_batch")
         if not isinstance(sealed_ref, Mapping):
-            return (0, None)
+            return Cover("uncovered")
         if sealed_ref.get("schema") != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1:
-            return (0, None)
-        record = self.read_output(key, str(tier_id))
+            return Cover("uncovered")
+        evidence = self._capture_output(key, str(tier_id))
+        record = evidence.record
+        if evidence.state != "ok":
+            return Cover("absent" if evidence.state == "absent" else "unknown")
         if record is None or record.get("state") != "transferring":
-            return (0, None)
+            return Cover("uncovered")
         # The committed generation/record must bind back to the sealed
         # reference (stable batch identity; generation/publication stay
         # mutable beside it and are checked separately).
@@ -2127,81 +2253,81 @@ class FundingLedger:
                       "owner_action_key", "owner_nonce", "owner_scope_id",
                       "template_id", "template_sha256"):
             if str(record.get(field)) != str(sealed_ref.get(field)):
-                return (0, None)
+                return Cover("uncovered")
         try:
             if (int(sealed_ref.get("range_start_bytes")) != int(  # type: ignore[arg-type]
                     record.get("range_start_bytes"))  # type: ignore[arg-type]
                     or int(sealed_ref.get("range_end_bytes")) != int(  # type: ignore[arg-type]
                         record.get("range_end_bytes"))):  # type: ignore[arg-type]
-                return (0, None)
+                return Cover("uncovered")
         except (TypeError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if (str(record.get("tier_id")) != str(tier_id)
                 or str(record.get("mover_action_key")) != key
                 or str(record.get("kind")) != str(kind)):
-            return (0, None)
+            return Cover("uncovered")
         try:
             row_published = float(item.get("published_unix"))  # type: ignore[arg-type]
             bound_published = float(record.get("published_unix"))  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if row_published != bound_published:
-            return (0, None)
+            return Cover("uncovered")
         residency = item.get("residency")
         if not isinstance(residency, Mapping):
-            return (0, None)
+            return Cover("uncovered")
         if (str(residency.get("tier_id")) != str(record.get("tier_id"))
                 or str(residency.get("manifest_sha256")) != str(
                     record.get("manifest_digest"))):
-            return (0, None)
+            return Cover("uncovered")
         try:
             row_range = (int(residency.get("range_start_bytes")),  # type: ignore[arg-type]
                          int(residency.get("range_end_bytes")))  # type: ignore[arg-type]
             bound_range = (int(record.get("range_start_bytes")),  # type: ignore[arg-type]
                            int(record.get("range_end_bytes")))  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if row_range != bound_range:
-            return (0, None)
+            return Cover("uncovered")
         # Owner authority: live same attempt OR terminal same attempt (R1).
         # Finish-before-mover-claim recovers via the terminal; a live row
         # for another attempt never falls through to an old terminal.
         try:
             if not self._output_owner_authority(record):
-                return (0, None)
+                return Cover("uncovered")
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         except Exception:
-            return (0, None)
+            return Cover("unknown")
         # Batch authority: filed commit only (R2). An unfinished prewrite is
         # never promoted to a claimable output; drive (transfer remainder)
         # accepts precommit, cover/claim requires the immutable filed batch
         # via the R4 loader.
         try:
             if not self._output_batch_authority(record):
-                return (0, None)
+                return Cover("uncovered")
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         except Exception:
-            return (0, None)
+            return Cover("unknown")
         tokens = record.get("tokens")
         if not isinstance(tokens, list) or not tokens:
-            return (0, None)
+            return Cover("uncovered")
         try:
             held_names = self.queue.tier(str(tier_id)).token_names(key)
         except (OSError, PoolContractError, ValueError):
-            return (0, None)
+            return Cover("unknown")
         if any(not isinstance(name, str)
                or not name.startswith(str(kind) + "-")
                or name not in held_names for name in tokens):
-            return (0, None)
+            return Cover("uncovered")
         generation = record.get("generation")
         if not isinstance(generation, str):
-            return (0, None)
-        return (min(int(len(tokens)), int(need)), generation)
+            return Cover("uncovered")
+        return Cover("covered", min(int(len(tokens)), int(need)), generation)
 
     def drive_output(self, mover_action_key: str,
-                             tier_id: str) -> dict:
+                             tier_id: str) -> FundingVerdict:
         """Re-drive an output intent to completion (R1, idempotent).
 
         Reads the filed intent (never infers one), re-validates recovery
@@ -2363,7 +2489,7 @@ class FundingLedger:
                         "tokens": names, "moved": moved}
 
     def release_output(self, mover_action_key: str, tier_id: str, *,
-                               generation: str | None = None) -> bool:
+                               generation: str | None = None) -> ReleaseVerdict:
         """Retire an output intent only when mover nonexecution is proven (R2).
 
         Holds the mover lock throughout. Refuses (retain, never free) unless
@@ -2381,18 +2507,16 @@ class FundingLedger:
         mover = str(mover_action_key)
         with self.queue.mover_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
-                return False
-            # The public API answers a bool: an undecided read fault is a
-            # non-release for it, never a strand (#1202 review N3 makes the
-            # distinction only for the dead-input ending, which retries).
+                return ReleaseVerdict.REFUSED
+            # Unknown remains distinct so dead-input endings retry before filing a terminal.
             released = self._release_never_started_funding_locked(
                 mover, str(tier_id), generation=generation)
-            return released is True
+            return released
 
     def _release_never_started_funding_locked(
             self, mover_action_key: str, tier_id: str, *,
             generation: str | None = None,
-            dead_input: Mapping[str, object] | None = None) -> bool | None:
+            dead_input: Mapping[str, object] | None = None) -> ReleaseVerdict:
         """Retire an output intent only when mover nonexecution is proven (R2).
 
         The lock-free body of :meth:`release_output_funding`; the caller
@@ -2423,31 +2547,31 @@ class FundingLedger:
             current, file_state = self.output_evidence(
                 mover, str(tier_id))
         except (OSError, ValueError, PoolContractError):
-            return None                    # a read fault is undecided
+            return ReleaseVerdict.UNKNOWN                    # a read fault is undecided
         if file_state == "absent":
-            return False                   # nothing to release is a settled answer
+            return ReleaseVerdict.REFUSED                   # nothing to release is a settled answer
         if file_state != "ok" or not isinstance(current, Mapping):
-            return None                    # an unreadable record is undecided
+            return ReleaseVerdict.UNKNOWN                    # an unreadable record is undecided
         if (generation is not None
                 and str(current.get("generation")) != str(generation)):
-            return False
+            return ReleaseVerdict.REFUSED
         state = str(current.get("state"))
         if state == "released":
-            return True
+            return ReleaseVerdict.RELEASED
         if state not in ("reserved", "transferring"):
-            return False
+            return ReleaseVerdict.REFUSED
         proven = self._output_funding_nonexecution_locked(
             current, dead_input=dead_input)
         if proven is not True:
-            return proven
+            return ReleaseVerdict.UNKNOWN if proven is None else ReleaseVerdict.REFUSED
         if self.advance_locked(
                 mover, str(tier_id), expect=state, advance_to="released",
                 generation=str(current.get("generation")), binding="output"):
-            return True
+            return ReleaseVerdict.RELEASED
         # Every proven refusal answered above; a False here is a read or
         # write fault under the advance's own idempotence, which the next
         # pass retries (#1202 review N3).
-        return None
+        return ReleaseVerdict.UNKNOWN
 
     def _output_funding_nonexecution_locked(
             self, current: Mapping[str, object], *,
@@ -3735,7 +3859,7 @@ class FundingLedger:
             try:
                 outcome = self._release_never_started_funding_locked(
                     mover_name, scan_tier,
-                    generation=str(record.get("generation")))
+                    generation=str(record.get("generation"))).result
             except (OSError, PoolContractError, ValueError) as exc:
                 return defer(repr(exc))
             if outcome is None:
@@ -3952,7 +4076,7 @@ class FundingLedger:
                      batch_total, batch_gib) -> CommitFunding:
         """Complete funding under the caller's unchanged output-prefix locks."""
         prepaid = None
-        funding_path = (bl._funding_dir(self.queue.root, checked_instance)
+        funding_path = (LegacyFunding.directory(bl.scope_dir(self.queue.root, checked_instance))
                         / f"{batch_id}.funding.json")
         ledger = self.queue.tier(tier)
         try:
@@ -4001,7 +4125,7 @@ class FundingLedger:
             # Legacy in-flight recovery only: the per-batch intent names
             # tokens acquired from free under the batch namespace.
             try:
-                funding = bl._read_funding(funding_path)
+                funding = LegacyFunding(funding_path).read()
             except oc.ProducedOutputError as exc:
                 return CommitFunding(funding_path, prepaid, {"ok": False, "refusal": f"unknown-retain: {exc}"})
             if funding is not None and (
@@ -4026,7 +4150,7 @@ class FundingLedger:
                 # Intent names allocated tokens only: nothing is recorded
                 # before the ledger holds it, so a crash before this line
                 # retries clean and a crash after it resumes from the record.
-                bl._write_funding(funding_path, {
+                LegacyFunding(funding_path).file({
                     "batch_id": batch_id, "tier": tier,
                     "mover_key": mover, "batch_gib": batch_gib,
                     "manifest_digest": manifest_digest})

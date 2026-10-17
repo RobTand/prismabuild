@@ -107,6 +107,8 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
+from prismabuild.legacy_funding import LegacyFunding
+
 from prismabuild import funding
 
 from . import output_contract as oc
@@ -5669,7 +5671,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         # names files by suffix without stat-gating: a stat failure must
         # surface at the intent read, never silently drop an intent.
         try:
-            with os.scandir(bl._funding_dir(queue.root, checked)) as iterator:
+            with os.scandir(LegacyFunding.directory(bl.scope_dir(queue.root, checked))) as iterator:
                 intent_names = sorted(entry.name for entry in iterator
                                       if entry.name.endswith(".funding.json"))
         except FileNotFoundError:
@@ -5681,8 +5683,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             if batch_id in batches:
                 continue
             try:
-                funding = bl._read_funding(
-                    bl._funding_dir(queue.root, checked) / name)
+                funding = LegacyFunding(LegacyFunding.directory(bl.scope_dir(queue.root, checked)) / name).read()
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             if funding is None:
@@ -5968,7 +5969,7 @@ def recover_batches(queue, instance: Mapping[str, object],
     events: list[dict[str, object]] = []
     try:
         funding_names = sorted(
-            p.name for p in bl._funding_dir(queue.root, checked_instance).iterdir()
+            p.name for p in LegacyFunding.directory(bl.scope_dir(queue.root, checked_instance)).iterdir()
             if p.is_file() and p.name.endswith(".funding.json"))
     except OSError:
         funding_names = []

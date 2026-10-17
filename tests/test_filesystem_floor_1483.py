@@ -431,10 +431,10 @@ def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
         "binding"]
     monkeypatch.setenv(ff.MODE_ENV, "enforce")
     _leave(queue, binding["key"], 1)
-    assert queue.funding.reserve_window(tf.TIER, grant, fields, 2) is False
+    assert queue.funding.reserve_window(tf.TIER, grant, fields, 2).bound is False
     assert queue.tier(tf.TIER).holdings(grant) == {}
     ff.refresh_binding(queue.root, binding)
-    assert queue.funding.reserve_window(tf.TIER, grant, fields, 2) is True
+    assert queue.funding.reserve_window(tf.TIER, grant, fields, 2).bound is True
 
 
 def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, monkeypatch, ample_space):

@@ -134,5 +134,5 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     assert ram.free_supply()['ram_gib'] == 4
     assert queue.ledger().holder_tokens(mover) == {}
     assert queue.funding.read_window(mover, TIER)["state"] == "transferring"
-    assert queue.funding.cover_window(TIER, restored, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, restored, "stage_gib", 2).credit == (0, None)
     assert queue.records.attempt_path(persisted, 1).exists() is lease_written

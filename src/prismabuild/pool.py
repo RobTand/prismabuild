@@ -12791,7 +12791,7 @@ class PoolQueue:
                 for kind, need in needs.items():
                     try:
                         count, covered_generation = self.funding.cover_window(
-                            tier_id, sealed, kind, int(need))
+                            tier_id, sealed, kind, int(need)).credit
                     except (OSError, PoolContractError, ValueError):
                         continue
                     if count:
@@ -12805,7 +12805,7 @@ class PoolQueue:
                     for kind, need in needs.items():
                         try:
                             count, covered_generation = self.funding.output_funded_cover(
-                                tier_id, sealed, kind, int(need))
+                                tier_id, sealed, kind, int(need)).credit
                         except (OSError, PoolContractError, ValueError):
                             continue
                         if count:
@@ -17950,11 +17950,11 @@ class PoolQueue:
                         if variant == "output":
                             covered, live_generation = self.funding.output_funded_cover(
                                 funded_tier, moved, str(kind_name),
-                                int(needs.get(kind_name, 0)))
+                                int(needs.get(kind_name, 0))).credit
                         else:
                             covered, live_generation = self.funding.cover_window(
                                 funded_tier, moved, str(kind_name),
-                                int(needs.get(kind_name, 0)))
+                                int(needs.get(kind_name, 0))).credit
                     except (OSError, PoolContractError, ValueError):
                         ok = False
                         break
@@ -19457,22 +19457,22 @@ class PoolQueue:
                 or evidence.get("schema") != "prismabuild.output_retry_stop.v1"
                 or evidence.get("reason") != "output_funding_consumed"):
             raise PoolContractError("invalid output retry-stop evidence")
-        funding = cls.funding.validate_output(evidence.get("funding"))
+        checked_funding = funding.FundingLedger.validate_output(evidence.get("funding"))
         claimed = evidence.get("claim_funding")
         ref = evidence.get("produced_output_batch")
-        if (funding["state"] != "consumed"
-                or funding["mover_action_key"] != attempt.get("action_key")
-                or funding["published_unix"] != attempt.get("published_unix")
+        if (checked_funding["state"] != "consumed"
+                or checked_funding["mover_action_key"] != attempt.get("action_key")
+                or checked_funding["published_unix"] != attempt.get("published_unix")
                 or not isinstance(claimed, Mapping)
                 or claimed.get("variant") != "output"
-                or claimed.get("generation") != funding["generation"]
-                or claimed.get("kinds") != {funding["kind"]: len(funding["tokens"])}
+                or claimed.get("generation") != checked_funding["generation"]
+                or claimed.get("kinds") != {checked_funding["kind"]: len(checked_funding["tokens"])}
                 or not isinstance(claimed.get("tokens"), list)
                 or any(not isinstance(name, str) for name in claimed["tokens"])
-                or sorted(claimed["tokens"]) != sorted(funding["tokens"])
+                or sorted(claimed["tokens"]) != sorted(checked_funding["tokens"])
                 or not isinstance(ref, Mapping)
                 or ref.get("schema") != PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
-                or not cls._output_record_matches_request(funding, ref)):
+                or not cls._output_record_matches_request(checked_funding, ref)):
             raise PoolContractError("output retry-stop binding differs from attempt")
 
     def _spent_output_retry_stop(self, record: Mapping[str, object]
@@ -20590,7 +20590,7 @@ class PoolQueue:
                 # a FAILED row makes the public release refuse forever and
                 # strands the token.  The next pass retries.
                 funding_released = self.funding._release_never_started_funding_locked(
-                    key, str(proof["tier_id"]), dead_input=proof)
+                    key, str(proof["tier_id"]), dead_input=proof).result
                 if funding_released is None:
                     self._restore_ready_transition(captured, key)
                     self.record_denial(item, "dead_input_funding_unreadable", {
