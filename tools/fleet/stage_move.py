@@ -1089,8 +1089,9 @@ class _StagedPublisher:
     def __init__(self, *, queue, stage_root, residency_root,
                  mover_action_key: str,
                  manifest_sha256: str, tier_id: str, cas_root,
-                 consumer_action_key: str = "") -> None:
+                 consumer_action_key: str = "", trust=None) -> None:
         self.queue = queue
+        self.trust = kept_reads.filesystem_trust if trust is None else trust
         self.stage_root = Path(stage_root)
         self.residency_root = Path(residency_root)
         self.mover = mover_action_key
@@ -1159,8 +1160,8 @@ class _StagedPublisher:
         #: census compares each directory with its stamp and lists again only
         #: the ones that moved (:meth:`_forest_census`); records are looked
         #: up afresh every census.  Touched only by the one running census.
-        self._forest_roots = kept_reads.DirectoryCaptures()
-        self._forest_children = kept_reads.DirectoryCaptures()
+        self._forest_roots = kept_reads.DirectoryCaptures(self.trust)
+        self._forest_children = kept_reads.DirectoryCaptures(self.trust)
         #: Whether a divergent name is settled by its owners' states (#966).
         #: A stage mover and a ram promotion (#1004 item 1) name their
         #: consumer and do; a publisher built with none keeps the retryable
@@ -1205,7 +1206,7 @@ class _StagedPublisher:
         # lock held across the census's directory scans and record reads
         # would serialize every worker's check behind them.
 
-        self._claim_memo = kept_reads.CensusMemo()
+        self._claim_memo = kept_reads.CensusMemo(trust=self.trust)
         #: The range decision's partial-temporaries hint (#1028): each
         #: range directory is listed once under
         #: :func:`kept_reads.filesystem_trust.directory_before` and a name revalidates the
@@ -1217,7 +1218,7 @@ class _StagedPublisher:
         #: Each range directory's ``(stamp, partial names)``, listed once
         #: per :func:`kept_reads.filesystem_trust.directory_before`; only a fenced listing is
         #: remembered.
-        self._partial_names = kept_reads.DirectoryCaptures()
+        self._partial_names = kept_reads.DirectoryCaptures(self.trust)
 
     @contextmanager
     def _ownership(self):
@@ -4155,12 +4156,11 @@ def announced_pool_identity(pool_root: str | Path,
     return None
 
 
-def _parse_own_document(path: Path, validate: Callable[[object], object],
-                        ) -> tuple[kept_reads.FileVersion, object] | None:
+def _parse_own_document(path: Path, validate: Callable[[object], object], trust) -> tuple[kept_reads.FileVersion, object] | None:
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
-    (:func:`kept_reads.filesystem_trust.file_version`), as :class:`kept_reads.CensusMemo` reads
+    (:func:`trust.file_version`), as :class:`kept_reads.CensusMemo` reads
     its hint pass, so a qualified version can be compared once the lock is held
     (:func:`_reread_own_document`).  A same-key retry's own fragment can be
     large, and this is the mover's *first* wait for the stage lock
@@ -4174,11 +4174,11 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
     document this one returns ``None`` for.
     """
 
-    fence = kept_reads.filesystem_trust.file_fence()
+    fence = trust.file_fence()
     try:
         with open(path, "rb") as stream:
             descriptor = stream.fileno()
-            version = kept_reads.filesystem_trust.file_version(
+            version = trust.file_version(
                 os.fstat(descriptor), fence, descriptor=descriptor)
             document = validate(json.load(stream))
     except (OSError, ValueError):
@@ -4189,7 +4189,7 @@ def _parse_own_document(path: Path, validate: Callable[[object], object],
 def _reread_own_document(path: Path,
                          prior: tuple[kept_reads.FileVersion, object]
                          | None,
-                         validate: Callable[[object], object]) -> object:
+                         validate: Callable[[object], object], trust) -> object:
     """This mover's own document, reusing ``prior`` only at its own version.
 
     Called under the stage ownership lock.  ``prior`` is
@@ -4206,10 +4206,10 @@ def _reread_own_document(path: Path,
     ``ValueError`` for one that exists but cannot be read or validated.
     """
 
-    fence = kept_reads.filesystem_trust.file_fence()
+    fence = trust.file_fence()
     with open(path, "rb") as stream:
         descriptor = stream.fileno()
-        version = kept_reads.filesystem_trust.file_version(
+        version = trust.file_version(
             os.fstat(descriptor), fence, descriptor=descriptor)
         if prior is not None and prior[0] == version:
             return prior[1]
@@ -4224,8 +4224,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
                          mount_prefix: str,
                          namespace: str | None = None,
                          named_once: frozenset[str] = frozenset(),
-                         timings: dict[str, float] | None = None,
-                         ) -> tuple[dict[str, dict[str, object]],
+                         timings: dict[str, float] | None = None, trust=None) -> tuple[dict[str, dict[str, object]],
                                     dict[str, dict[str, object]], str | None]:
     """This mover's own prior coverage, qualified for a same-key retry.
 
@@ -4290,6 +4289,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     changed in the gap, or whose version cannot be trusted, is parsed fresh
     under the lock. Unchanged qualified documents need no second parse.
     """
+    trust = kept_reads.filesystem_trust if trust is None else trust
 
     staged: dict[str, dict[str, object]] = {}
     sidecar: dict[str, dict[str, object]] = {}
@@ -4319,9 +4319,9 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
     # at; the pass under the lock below re-checks that version and re-parses
     # only when it changed, never trusting this one for the decision.
     pre_fragment = _parse_own_document(
-        fragment_path, residency_map.validate_fragment)
+        fragment_path, residency_map.validate_fragment, trust=trust)
     pre_sidecar = _parse_own_document(
-        sidecar_path, reader_lease.validate_material)
+        sidecar_path, reader_lease.validate_material, trust=trust)
     asked = time.perf_counter()
     # Named as this mover's own hold (#1110): the census runs in the mover's
     # first phase, where its worker looks at the start gate, and an
@@ -4336,7 +4336,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
             timings["resume_lock_wait_s"] = granted - asked
         try:
             fragment = _reread_own_document(
-                fragment_path, pre_fragment, residency_map.validate_fragment)
+                fragment_path, pre_fragment, residency_map.validate_fragment, trust=trust)
         except FileNotFoundError:
             # Confirmed absence: a first publication, or everything this
             # key ever staged was retired.  Not conflict -- there is no
@@ -4374,7 +4374,7 @@ def _resume_own_coverage(queue, *, consumer_action_key: str,
 
         try:
             material = _reread_own_document(
-                sidecar_path, pre_sidecar, reader_lease.validate_material)
+                sidecar_path, pre_sidecar, reader_lease.validate_material, trust=trust)
         except FileNotFoundError:
             material = None
         except (OSError, ValueError) as exc:

@@ -451,83 +451,6 @@ def _namespace_shaped(name: str) -> bool:
             and all(character in "0123456789abcdef" for character in name))
 
 
-#: The tier loop's :class:`kept_reads.DirectoryRecords` while one of its cycles runs,
-#: so every step that reads ``ready/`` and ``claimed/`` shares one read of
-#: them (#992).  ``None`` everywhere else, where the plain read runs.
-_QUEUE_RECORDS: contextvars.ContextVar["kept_reads.DirectoryRecords | None"] = (
-    contextvars.ContextVar("stage_release_queue_records", default=None))
-
-
-@contextmanager
-def queue_records_from(reader: "kept_reads.DirectoryRecords"):
-    """Serve :func:`queue_records` from ``reader`` inside the block."""
-
-    token = _QUEUE_RECORDS.set(reader)
-    try:
-        yield reader
-    finally:
-        _QUEUE_RECORDS.reset(token)
-
-
-def queue_records_reader() -> "kept_reads.DirectoryRecords | None":
-    """The cycle's :class:`kept_reads.DirectoryRecords`, or ``None`` outside a cycle.
-
-    A step that needs a listing rather than a record -- the names in
-    ``withdrawn/``, or the names in the supersession marker directory --
-    reads it from the same reader the cycle already keeps, so a directory
-    nothing was filed in since its last listing is not listed again (#992).
-    Outside :func:`queue_records_from` there is no reader and the caller
-    takes a plain listing.
-    """
-
-    return _QUEUE_RECORDS.get()
-
-
-def _queue_record_bytes(path: Path) -> bytes | None:
-    """One queue record's bytes, ``None`` when it is not there to read."""
-
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return None
-
-
-def _queue_record_from_bytes(path: Path, raw: bytes | None,
-                             ) -> dict[str, object] | None:
-    """``pool.record_store.read_document``'s answer for bytes already read: same checks."""
-
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise pool.PoolContractError(
-            f"queue record is not valid JSON: {path}") from exc
-    if not isinstance(value, dict):
-        raise pool.PoolContractError(f"queue record is not an object: {path}")
-    return value
-
-
-def queue_records(queue: pool.PoolQueue, state: str,
-                  ) -> list[tuple[Path, dict[str, object] | None]]:
-    """Every entry of one queue state directory with its record, name order.
-
-    ``pb.immutable_files.scan_optional`` then ``pool.record_store.read_document`` per entry, with the same answers
-    and the same raises.  Inside a tier-loop cycle
-    (:func:`queue_records_from`) the directory is listed only when it changed
-    and a record read only when its file did; each caller still gets its own
-    freshly parsed record.
-    """
-
-    reader = _QUEUE_RECORDS.get()
-    if reader is None:
-        return [(path, pool.record_store.read_document(path))
-                for path in pb.immutable_files.scan_optional(queue.records.dir(state))]
-    return reader.read(queue.records.dir(state), select=lambda _entry: True,
-                       parse=_queue_record_bytes,
-                       thaw=_queue_record_from_bytes)  # type: ignore[return-value]
-
-
 def _locked_parse_record(memo: "kept_reads.CensusMemo | None",
                          before: tuple[int, int] | None) -> dict[str, object]:
     """How many census documents a hold parsed and reused (#988).
@@ -1280,8 +1203,7 @@ def _drop_vouch(queue: pool.PoolQueue, root: Path, namespace: str,
 
 
 def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
-                    exclude: frozenset[str] | set[str] = frozenset(),
-                    ) -> dict[str, list[str]]:
+                    exclude: frozenset[str] | set[str] = frozenset(), store=None) -> dict[str, list[str]]:
     """The live consumers that will still read a shared range (#1026).
 
     A consumer is interested while it is ready or claimed, its frozen plan
@@ -1296,11 +1218,12 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
     The caller counts them as interested: deleting a range on a question
     nobody could answer is the direction that cannot be taken back.
     """
+    store = queue.records if store is None else store
 
     interested: list[str] = []
     unknown: list[str] = []
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        for path, item in queue_records(queue, state):
+        for path, item in store.state_records(state):
             if not isinstance(item, dict):
                 continue
             # The row's block, or its filed plan's (#1332): a planner-filed
@@ -1514,7 +1437,7 @@ def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
                          namespace: str, consumer_action_key: str,
                          stage_root: str, residency_root: str | Path | None,
                          reason: str, whole: bool,
-                         range_wide: bool) -> dict[str, object]:
+                         range_wide: bool, store=None) -> dict[str, object]:
     """:func:`evict` of a shared range, with the mover's transition lock held.
 
     An egress drops one consumer's interest (#1026).  While another live
@@ -1541,6 +1464,7 @@ def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
     sharer's plan names the range, which is exactly as long as the recopy
     needs the room.
     """
+    store = queue.records if store is None else store
 
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.record_store.RESIDENCY)
@@ -1548,7 +1472,7 @@ def _evict_shared_locked(queue: pool.PoolQueue, mover_action_key: str, *,
             and _range_live_or_landed(queue, mover_action_key)):
         try:
             others = shared_interest(queue, mover_action_key,
-                                     exclude={consumer_action_key})
+                                     exclude={consumer_action_key}, store=store)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             others = {"interested": [],
                       "unknown": [f"interest census unreadable: {exc!r}"]}
@@ -1596,7 +1520,7 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
           consumer_action_key: str, stage_root: str,
           residency_root: str | Path | None = None,
           reason: str = "egress", whole: bool = False,
-          range_wide: bool = False) -> dict[str, object]:
+          range_wide: bool = False, store=None) -> dict[str, object]:
     """Delete one mover's staged files and settle its tier tokens.
 
     A shared range's mover (#1026, :func:`residency_plan.read_shared_mover`)
@@ -1645,6 +1569,7 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
     this key's, or the fragment is gone and so are the tokens, which is the
     no-op above.
     """
+    store = queue.records if store is None else store
 
     with queue.mover_transition_lock(str(mover_action_key)):
         try:
@@ -1663,7 +1588,7 @@ def evict(queue: pool.PoolQueue, mover_action_key: str, *,
                 queue, mover_action_key, namespace=namespace,
                 consumer_action_key=consumer_action_key,
                 stage_root=stage_root, residency_root=residency_root,
-                reason=reason, whole=whole, range_wide=range_wide)
+                reason=reason, whole=whole, range_wide=range_wide, store=store)
         return _evict_locked(queue, mover_action_key,
                              consumer_action_key=consumer_action_key,
                              stage_root=stage_root,
@@ -2599,7 +2524,7 @@ def _retain_skip_checkpoints(discovered) -> None:
         _skip_checkpoint_scope["capacity"] = _skip_checkpoint_capacity(keys)
 
 
-def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
+def _path_version(path: Path | str) -> kept_reads.FileVersion | None:
     """Change evidence for one regular metadata file, or ``None``."""
 
     try:
@@ -2611,18 +2536,17 @@ def _path_version(path: Path | str) -> tuple[int, int, int, int, int] | None:
     return kept_reads.metadata_version(info)
 
 
-def _fenced_path_version(path: Path | str, fence: int | None,
-                         ) -> tuple[tuple[int, int, int, int, int] | None,
-                                    tuple[int, int, int, int, int] | None]:
+def _fenced_path_version(path: Path | str, fence: int | None, *, trust) -> tuple[kept_reads.FileVersion | None,
+                                    kept_reads.FileVersion | None]:
     """``(version, trusted)`` for one regular metadata file, from one ``lstat``.
 
     ``version`` is :func:`_path_version`'s change evidence, which the prune
     compares before and after its scan.  ``trusted`` is the same version
     when a skip checkpoint may stand on it, else ``None``: the #1045 rule
-    (:func:`kept_reads.filesystem_trust.file_version`) with ``fence`` read before this
+    (:func:`trust.file_version`) with ``fence`` read before this
     ``lstat``.  A file whose ctime is not strictly before the fence changed
     in the fence's clock tick, and a rename cycle later in that tick can be
-    given the freed inode number and reproduce all five fields (#1070).
+    given the freed inode number and reproduce its file-version fields (#1070).
     """
 
     try:
@@ -2631,7 +2555,7 @@ def _fenced_path_version(path: Path | str, fence: int | None,
         return None, None
     if not statmod.S_ISREG(info.st_mode):
         return None, None
-    return kept_reads.metadata_version(info), kept_reads.filesystem_trust.file_version(
+    return kept_reads.metadata_version(info), trust.file_version(
         info, fence, path=path, follow_symlinks=False)
 
 
@@ -2771,7 +2695,7 @@ def _install_skip_checkpoint(key: tuple, fragment_version, material_version,
 
 
 def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
-                         material_path: Path) -> bool:
+                         material_path: Path, *, trust) -> bool:
     """Whether an unchanged owner with nothing to act on may skip its scan.
 
     Every recorded stamp is re-read -- this owner's fragment and material,
@@ -2790,17 +2714,17 @@ def _skip_checkpoint_hit(key: tuple, fragment_path: Path,
         record = _skip_checkpoints.get(key)
     if record is None:
         return False
-    fence = kept_reads.filesystem_trust.file_fence()  # before any current file observation (#1045)
-    fresh = (_fenced_path_version(fragment_path, fence)[1] == record["fragment"]
-             and _fenced_path_version(material_path, fence)[1] == record["material"])
+    fence = trust.file_fence()  # before any current file observation (#1045)
+    fresh = (_fenced_path_version(fragment_path, fence, trust=trust)[1] == record["fragment"]
+             and _fenced_path_version(material_path, fence, trust=trust)[1] == record["material"])
     if fresh:
         for name, version in dict(record["documents"]).items():
-            if _fenced_path_version(name, fence)[1] != version:
+            if _fenced_path_version(name, fence, trust=trust)[1] != version:
                 fresh = False
                 break
     if fresh:
         for evidence in dict(record["dirs"]).values():
-            if not kept_reads.filesystem_trust.holds(evidence):
+            if not trust.holds(evidence):
                 fresh = False
                 break
     if not fresh:
@@ -2885,8 +2809,7 @@ def _containment_state(stage: Path, target: Path) -> str:
 
 def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                          consumer_action_key: str, stage: Path, tier_id: str,
-                         root: Path, observed: Mapping[str, object],
-                         ) -> dict[str, object]:
+                         root: Path, observed: Mapping[str, object], trust=None) -> dict[str, object]:
     """Prune positively stale paths from one terminal owner's documents (#853).
 
     A FAILED consumer's executed DONE mover can leave a material sidecar
@@ -2964,6 +2887,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     before anything it protected can prune or evict.  An owner with a stale
     or absent path is never cached, whatever retains it.
     """
+    trust = kept_reads.filesystem_trust if trust is None else trust
 
     fragment_path = residency_map.fragment_path(
         root, consumer_action_key, mover_action_key)
@@ -3011,17 +2935,17 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
     # in the tick of the clock read before its ``lstat`` is one a same-tick
     # rename given the freed inode could reproduce, so it is scanned again
     # next pass, as a refused directory stamp is (#1062).
-    document_fence = kept_reads.filesystem_trust.file_fence()
+    document_fence = trust.file_fence()
     fragment_version_before, fragment_trusted = _fenced_path_version(
-        fragment_path, document_fence)
+        fragment_path, document_fence, trust=trust)
     material_version_before, material_trusted = _fenced_path_version(
-        material_path, document_fence)
+        material_path, document_fence, trust=trust)
 
     # The censuses and the containment fences go first, as hints, without
     # the lock (#988): the pass under it re-reads only what changed, and the
     # observed entries are the ones it acts on, because it retains unless
     # the fragment under the lock equals ``observed``.
-    memo = kept_reads.CensusMemo()
+    memo = kept_reads.CensusMemo(trust=trust)
     census_started = time.perf_counter()
     observed_entries = observed.get("entries")
     hint_fences: dict[str, tuple] | None = None
@@ -3205,14 +3129,14 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
         # one coarse clock tick share a stamp, so a stamp sampled between
         # them would be one the second change never moves, and a checkpoint
         # standing on it would skip a rename made in that tick.
-        # ``kept_reads.filesystem_trust.directory_before`` refuses a directory changed
+        # ``trust.directory_before`` refuses a directory changed
         # in the current tick (and one on a filesystem whose times are not
         # this kernel's clock); a refused stamp still takes part in the
         # before/after comparison, at its bare version, but the checkpoint
         # refuses to install on it, so the owner is scanned again next pass.
         parents = {Path(str(entry["stage_path"])).parent
                    for entry in entries.values()}
-        directory_observations = kept_reads.filesystem_trust.directory_observations(parents)
+        directory_observations = trust.directory_observations(parents)
         dirs_trusted = directory_observations.trusted
         prune: list[str] = []
         absent: list[str] = []
@@ -3328,7 +3252,7 @@ def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
                 # The trim's own write is in the current tick, so this is
                 # trusted only once a tick has passed since it (#1070).
                 material_final_version = _fenced_path_version(
-                    material_path, kept_reads.filesystem_trust.file_fence())[1]
+                    material_path, trust.file_fence(), trust=trust)[1]
             cacheable = _install_skip_checkpoint(
                 checkpoint_key, fragment_trusted,
                 material_final_version, dirs_trusted, co_owner_fences)
@@ -3480,7 +3404,7 @@ def _relative_under(stage: Path, resolved: str) -> str | None:
         return None
 
 
-def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
+def live_claims(queue: pool.PoolQueue, *, store=None) -> tuple[set[str], dict[str, str]]:
     """Every mover key a ready or claimed item still wants, and those items.
 
     Two answers because they mean different things.  ``wanted`` is the movers:
@@ -3495,11 +3419,12 @@ def live_claims(queue: pool.PoolQueue) -> tuple[set[str], dict[str, str]]:
     a range only a *finished* consumer still names is one a successor may take
     over (#598).  One walk of ``ready/`` and ``claimed/`` answers both.
     """
+    store = queue.records if store is None else store
 
     wanted: set[str] = set()
     owners: dict[str, str] = {}
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        for path, item in queue_records(queue, state):
+        for path, item in store.state_records(state):
             if not isinstance(item, dict):
                 continue
             key = path.name[:-len(".json")] if path.name.endswith(".json") else path.name
@@ -3718,8 +3643,7 @@ def _fragment_bytes(fragment: Mapping[str, object]) -> int:
 
 def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
                            tier_id: str, stage_root: str,
-                           residency_root: str | Path | None,
-                           ) -> dict[str, object] | None:
+                           residency_root: str | Path | None, store=None) -> dict[str, object] | None:
     """Give back one uncharged dead owner's bytes, or ``None`` if it revived.
 
     The death proof is taken again here, under the consumer's transition
@@ -3731,6 +3655,7 @@ def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
     a co-owner's fragment or a claimed copy keeps its file through the
     shared verdict, and the last owner to leave deletes.
     """
+    store = queue.records if store is None else store
 
     try:
         with queue._transition_locked(consumer):
@@ -3747,7 +3672,7 @@ def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
                 return evict(queue, mover, consumer_action_key=consumer,
                              stage_root=stage_root,
                              residency_root=residency_root,
-                             reason="uncharged-owner-sweep", whole=True)
+                             reason="uncharged-owner-sweep", whole=True, store=store)
     except (OSError, ValueError, pb.PrismaBuildError) as exc:
         return {
             "schema": pool.POOL_EGRESS_SCHEMA_V1, "event": DEAD_OWNER_EVENT,
@@ -3801,8 +3726,7 @@ def sweep_dead_owner_fragments(
         residency_root: str | Path | None = None,
         index: kept_reads.CensusIndex | None = None,
         budget=None,
-        uncharged: "_UnchargedOwners | None" = None,
-) -> list[dict[str, object]]:
+        uncharged: "_UnchargedOwners | None" = None, store=None) -> list[dict[str, object]]:
     """Retire proven dead unmaterialized owners with no charge (#839, #866).
 
     A consumer is dead when it has exactly one terminal record and that
@@ -3870,6 +3794,7 @@ def sweep_dead_owner_fragments(
     not examined, and keeps its skip checkpoints: they are chosen from the
     whole discovery above, before any unit runs.
     """
+    store = queue.records if store is None else store
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.record_store.RESIDENCY)
     if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
@@ -3970,7 +3895,7 @@ def sweep_dead_owner_fragments(
                              stage_roots=stage_roots, index=index,
                              refuse=refuse, receipts=receipts,
                              uncertainty=uncertainty,
-                             held_by_tier=held_by_tier, uncharged=uncharged)
+                             held_by_tier=held_by_tier, uncharged=uncharged, store=store)
         finally:
             if budget is not None:
                 budget.done(DEAD_OWNER_UNIT)
@@ -3983,12 +3908,13 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                      refuse, receipts: list[dict[str, object]],
                      uncertainty: tuple[type[BaseException], ...],
                      held_by_tier: Mapping[str, set[str]] | None = None,
-                     uncharged: _UnchargedOwners | None = None) -> None:
+                     uncharged: _UnchargedOwners | None = None, store=None) -> None:
     """One candidate consumer of `sweep_dead_owner_fragments`, under its locks.
 
     ``held_by_tier`` is the discovery's ledger listing and ``uncharged`` the
     collection it fills (#1061); either absent collects nothing.
     """
+    store = queue.records if store is None else store
 
     try:
         with queue._transition_locked(consumer):
@@ -4065,7 +3991,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     residency_map.fragment_path(
                                         root, consumer, mover),
                                     reader_lease.material_path(
-                                        root, consumer, mover)):
+                                        root, consumer, mover), trust=index.trust if index is not None else kept_reads.filesystem_trust):
                                 # No receipt for a skip; the cycle line
                                 # counts it (#1056).
                                 if index is not None:
@@ -4077,7 +4003,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                 pruned = prune_stale_mentions(
                                     queue, mover, consumer_action_key=consumer,
                                     stage=Path(stage_roots[tier]), tier_id=tier,
-                                    root=root, observed=observed)
+                                    root=root, observed=observed, trust=index.trust if index is not None else kept_reads.filesystem_trust)
                                 receipts.append(pruned)
                                 refused = pruned.get("cache_refused")
                                 if index is not None and refused:
@@ -4112,7 +4038,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                         receipts.append(evict(
                             queue, mover, consumer_action_key=consumer,
                             stage_root=stage_roots[tier], residency_root=root,
-                            reason="dead-owner-sweep"))
+                            reason="dead-owner-sweep", store=store))
                 except uncertainty as exc:
                     refuse(f"ownership uncertain: {exc}", consumer, mover)
     except uncertainty as exc:
@@ -4123,7 +4049,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
           residency_root: str | Path | None = None,
           pressure: Mapping[str, int] | None = None,
           index: kept_reads.CensusIndex | None = None,
-          budget=None) -> list[dict[str, object]]:
+          budget=None, store=None) -> list[dict[str, object]]:
     """Evict every pinned mover no live item still names as a lead.
 
     A consumer withdrawn between its movers finishing and its own claim would
@@ -4237,13 +4163,14 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
     budget, the pass evicts in age order until the pressure is met, as
     before.
     """
+    store = queue.records if store is None else store
 
-    wanted, owners = live_claims(queue)
+    wanted, owners = live_claims(queue, store=store)
     swept: list[dict[str, object]] = []
     uncharged = _UnchargedOwners()
     swept.extend(sweep_dead_owner_fragments(
         queue, stage_roots=stage_roots, residency_root=residency_root,
-        index=index, budget=budget, uncharged=uncharged))
+        index=index, budget=budget, uncharged=uncharged, store=store))
     # Taken once, and only when a held key has no receipt to name its
     # consumer (#892).
     fragment_owners: dict[str, list[tuple[str, bool]]] | str | None = None
@@ -4375,11 +4302,11 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                         swept.append(evict(queue, key, consumer_action_key=consumer,
                                            stage_root=stage_root,
                                            residency_root=residency_root,
-                                           reason="orphan-sweep"))
+                                           reason="orphan-sweep", store=store))
                         continue
                     outcome = _evict_uncharged_owner(
                         queue, key, consumer, tier_id=tier_id,
-                        stage_root=stage_root, residency_root=residency_root)
+                        stage_root=stage_root, residency_root=residency_root, store=store)
                 except pool.TransitionLockBusy:
                     # Inside the tier loop no transition lock is waited on
                     # (#1115): the refusal already named the key and its
@@ -4441,7 +4368,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         reconciled = reconcile(
             queue, tier_id=tier_id, stage_root=stage_root,
             wanted=wanted | set(owners) | still_held,
-            residency_root=residency_root, index=index)
+            residency_root=residency_root, index=index, store=store)
         # Reported only when it has something to report.  A window in flight
         # skips the reconciliation every cycle, and a line per cycle saying so
         # would bury the eviction it exists to announce.
@@ -4950,8 +4877,7 @@ def attributed_stage_paths(queue: pool.PoolQueue, *, wanted: set[str] | None,
 
 def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
               wanted: set[str], residency_root: str | Path | None = None,
-              index: kept_reads.CensusIndex | None = None,
-              ) -> dict[str, object]:
+              index: kept_reads.CensusIndex | None = None, store=None) -> dict[str, object]:
     """Evict what is on the stage that nothing on the fleet accounts for.
 
     The half of #608 the held-key sweep structurally cannot do: it walks the
@@ -5015,6 +4941,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     Ownership is checked the way ``evict`` checks it: the resolved path must be
     under the resolved stage root.
     """
+    store = queue.records if store is None else store
 
     stage = Path(stage_root)
     receipt: dict[str, object] = {
@@ -5058,7 +4985,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
     # next pass.  A file that appears after the walk is not a candidate on
     # this pass at all.  So the rules below are decided under the lock, as
     # before; only the listing and the per-file classification left it.
-    early = movers_in_flight(queue, tier_id=tier_id)
+    early = movers_in_flight(queue, tier_id=tier_id, store=store)
     if early:
         # A pre-check only: the answer that counts is taken under the lock.
         # Skipping on it costs nothing, since the pass would skip anyway.
@@ -5108,7 +5035,7 @@ def reconcile(queue: pool.PoolQueue, *, tier_id: str, stage_root: str,
 
         validate_started = time.perf_counter()
         parse_counts = memo.counts()
-        in_flight = movers_in_flight(queue, tier_id=tier_id)
+        in_flight = movers_in_flight(queue, tier_id=tier_id, store=store)
         if in_flight:
             receipt["skipped"] = "movers_in_flight"
             receipt["movers_in_flight"] = sorted(in_flight)
@@ -5698,7 +5625,7 @@ def recover_orphaned_range(
         head_action_key: str, egress_action_key: str,
         cas_root: str | Path | None = None,
         residency_root: str | Path | None = None,
-        apply: bool = False) -> dict[str, object]:
+        apply: bool = False, store=None) -> dict[str, object]:
     """Retire the cache copies of one retired head that nothing can prove.
 
     Routine ``reconcile`` structurally cannot reach these when they were
@@ -5749,6 +5676,7 @@ def recover_orphaned_range(
     ``apply`` is false by default: the pass reports what it *would* retire and
     changes nothing.
     """
+    store = queue.records if store is None else store
 
     stage = Path(stage_root)
     receipt: dict[str, object] = {
@@ -6059,7 +5987,7 @@ def recover_orphaned_range(
                             f"acts only on a finished request")
                 except OSError as exc:
                     return refuse(f"{label} {key[:12]} unreadable: {exc}")
-        in_flight = movers_in_flight(queue, tier_id=tier_id)
+        in_flight = movers_in_flight(queue, tier_id=tier_id, store=store)
         if in_flight:
             receipt["movers_in_flight"] = sorted(in_flight)
             return refuse("movers_in_flight")
@@ -6198,17 +6126,18 @@ def recover_orphaned_range(
     return result
 
 
-def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str) -> set[str]:
+def movers_in_flight(queue: pool.PoolQueue, *, tier_id: str, store=None) -> set[str]:
     """Mover keys ready or claimed on this tier, i.e. copies that may be writing.
 
     A mover row is the one whose residency block names a *range*; a consumer's
     names leads.  Ready as well as claimed, because a ready mover can be
     claimed between a directory walk and an unlink.
     """
+    store = queue.records if store is None else store
 
     out: set[str] = set()
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        for path, item in queue_records(queue, state):
+        for path, item in store.state_records(state):
             residency = item.get("residency") if isinstance(item, dict) else None
             if not isinstance(residency, dict):
                 continue
