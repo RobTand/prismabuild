@@ -12,7 +12,7 @@ def claim(store, load, *, versioned=False, persistent=False):
                                ("local_scratch", "pool", "core", "produced_output"))
     pairs = {scratch.PAIRS_ENV: "COMPAT_ROOT:COMPAT_MAX", "COMPAT_ROOT": str(store / "scratch"), "COMPAT_MAX": "16"}
     entries = [{"root_env": "COMPAT_ROOT", "name": "data"}]
-    selection = scratch.build_scratch_lifetime_selection(
+    selection = load("prismabuild.scratch_lifetime").build_scratch_lifetime_selection(
         [{**entry, "lifetime": "persistent" if persistent else "ephemeral"} for entry in entries]) if versioned else entries
     pairs[scratch.DECLARATIONS_ENV] = json.dumps(selection, sort_keys=True, separators=(",", ":"))
     body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
@@ -57,30 +57,31 @@ def operate(request, store, load):
             variables = {scratch.PAIRS_ENV: "COMPAT_ROOT:COMPAT_MAX", "COMPAT_ROOT": str(store / "scratch"), "COMPAT_MAX": "16",
                          scratch.DECLARATIONS_ENV: base64.b64decode(request["raw"]).decode()}
             request["_consumer_boundary"]()
-            result = scratch._scratch_lifetime_selections(variables)
+            result = load("prismabuild.scratch_lifetime").selections(variables)
             assert len(result) == 1 and result[0]["name"] == "data"
             return {"entries": result}
     elif family == "scratch-lifetime":
+        lifetime = load("prismabuild.scratch_lifetime")
         if writing:
-            prepare = scratch._prepare_scratch_directory
+            prepare = lifetime._prepare_scratch_directory
             if variant == "interrupted":
                 def unavailable(declaration):
                     raise OSError("fixture storage unavailable before directory creation")
-                scratch._prepare_scratch_directory = unavailable
+                lifetime._prepare_scratch_directory = unavailable
             try:
                 try:
-                    queue._record_scratch_lifetimes(record["action_key"], claim_snapshot=record, env=env)
+                    lifetime.register_attempt(queue, record["action_key"], claim_snapshot=record, env=env)
                 except OSError:
                     assert variant == "interrupted"
                 if variant == "persistent-replay":
-                    queue._record_scratch_lifetimes(record["action_key"], claim_snapshot=record, env=env)
+                    lifetime.register_attempt(queue, record["action_key"], claim_snapshot=record, env=env)
             finally:
-                scratch._prepare_scratch_directory = prepare
+                lifetime._prepare_scratch_directory = prepare
             enclosing = queue.item_path(pool.CLAIMED, record["action_key"]).read_bytes()
-            raw = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["extract"](enclosing, scratch.SCRATCH_LIFETIME_FIELD)
+            raw = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["extract"](enclosing, lifetime.SCRATCH_LIFETIME_FIELD)
         else:
             request["_consumer_boundary"]()
-            return scratch._scratch_lifetime_record(json.loads(base64.b64decode(request["raw"])))
+            return lifetime.validate_record(json.loads(base64.b64decode(request["raw"])))
     elif writing:
         scratch.record_ephemeral_scratch_declarations(queue, claim_snapshot=record, env=env)
         if variant == "repeated":

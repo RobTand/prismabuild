@@ -19,7 +19,7 @@ def operate(request, store, load):
     variant = request["case"].split("/", 1)[1]
     pool, core = load("prismabuild.pool"), load("prismabuild.core")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if request["op"] == "read":
         value = json.loads(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
@@ -43,8 +43,8 @@ def operate(request, store, load):
             path = queue.publish(action_key=M, cas_root=store / "cas", worker_script="/compat/worker.py",
                 checkout_root="/compat/checkout", resources=row["resources"], residency=row["residency"])
     else:
-        run = load("pbrun")
-        run.SH = store
+        run = load("prismabuild.submission")
+        rp = load("prismabuild.residency_plan")
         cas = core.PrismaBuildCAS(store / "cas")
         body = fixture("compat_core_adapters.py", "action_body")(core, store)
         codec = fixture("compat_core_adapters.py", "manifest_owner")(core, load)
@@ -59,7 +59,7 @@ def operate(request, store, load):
         body["environment"]["variables"]["PATH"] = "/usr/bin"
         template = {**body, "cas": cas, "marker_root": store / "markers", "checkout_identity": {"commit": "a" * 40},
                     "log_name": "result.log", "stamp_name": "task_code.py"}
-        args = SimpleNamespace(priority=-10, max_attempts=1, retry_safe=False, transport="pool",
+        args = load("prismabuild.submission_types").SubmissionRequest(cwd="/compat/checkout", detach=True, priority=-10, max_attempts=1, retry_safe=False, transport="pool",
             residency="stage", residency_tier=None, residency_mover_mem_gb=1, residency_mover_readers=1,
             residency_mover_max_attempts=2, residency_ram="auto" if variant == "pbrun-ram-writer" else "off")
         tier = {"schema": load("prismabuild.storage_tiers").TIER_RECORD_SCHEMA_V1, "tier_id": TIER, "host": "compat-host",
@@ -68,11 +68,15 @@ def operate(request, store, load):
         if variant == "pbrun-ram-writer":
             queue.announce_tier({**tier, "tier_id": RAM, "tier": "ram", "mountpoint": str(store / "ram"),
                                  "window_gib": 1, "promotion_chunk_gib": 1})
-        staged = run.residency_stage_rows(template, consumer_action_key=C, tier=tier, args=args, queue=queue, cas=cas)
-        rp = load("prismabuild.residency_plan")
+        publication = load("prismabuild.queue_publication").RowPublication(
+            queue.root, cas.root, store / "tools/prismabuild_worker.py", -10, 1, False)
+        options = run.filing_options(args)
+        staged = rp.prepare_window(template, consumer_action_key=C, tier=tier, options=options,
+            publication=publication, queue=queue, cas=cas)
         rp.freeze(queue, staged["plan"])
         if variant == "pbrun-reuse-writer":
-            staged = run.residency_stage_rows(template, consumer_action_key=C, tier=tier, args=args, queue=queue, cas=cas)
+            staged = rp.prepare_window(template, consumer_action_key=C, tier=tier, options=options,
+                publication=publication, queue=queue, cas=cas)
             assert staged["reused_frozen_plan"]
         if variant in ("pbrun-mover-writer", "pbrun-ram-writer"):
             leg = rp.legs_over(staged["plan"], 0, 8, mover_role="ram_mover_row" if variant == "pbrun-ram-writer" else "mover_row")[0]
@@ -81,9 +85,18 @@ def operate(request, store, load):
             path = queue.publish(**row)
             assert path == queue.item_path(pool.READY, key)
         elif variant == "campaign-writer":
-            child = run.seal_action_from_template(template)
+            child = run.seal(template)
             plan = {**staged["plan"], "consumer_action_key": child["action_key"]}
-            report = load("pbcampaign").child_record(child, args=args, queue=queue, cas=cas, staged_plan=plan)
+            campaign = load("pbcampaign")
+            prior_store = campaign.store_for
+            private_store = load("prismabuild.submission_types").FleetStore(
+                store, store, store / "boxes.json", queue_root=queue.root, cas_root=cas.root)
+            campaign.store_for = lambda _: private_store
+            try:
+                report = campaign.child_record(child, args=args, queue=queue, cas=cas,
+                    staged_plan=plan, template=template)
+            finally:
+                campaign.store_for = prior_store
             assert report["status"] == "submitted", report
             path = queue.item_path(pool.READY, child["action_key"])
         else:

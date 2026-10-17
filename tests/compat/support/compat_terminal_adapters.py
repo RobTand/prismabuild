@@ -10,9 +10,6 @@ import time
 
 
 def terminal_reader(load):
-    frontend = load("pbrun")
-    if hasattr(frontend, "terminal_record"):
-        return frontend.terminal_record
     return load("prismabuild.action_wait").terminal_record
 
 
@@ -21,7 +18,7 @@ def operate(request, store, load):
     variant = request["case"].split("/", 1)[1]
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "d" * 64 if variant == "origin-release-writer" else "a" * 64 if variant == "dead-input-writer" else "c" * 64
     status = {"unreadable-writer": "unreadable_record", "orphan-writer": "orphaned_stub",
               "lost-claim-writer": "finish_lost_race", "slurm-withdrawal-writer": "withdrawn",
@@ -67,7 +64,7 @@ def operate(request, store, load):
     elif variant == "unreadable-writer":
         ready = queue.item_path(pool.READY, key)
         ready.write_bytes(b"{unparseable fixture")
-        assert queue._file_unreadable(ready, reason="private syntax fixture") == key
+        assert load("prismabuild.lifecycle")._file_unreadable(queue, ready, reason="private syntax fixture") == key
     elif variant == "orphan-writer":
         queue.item_path(pool.READY, key).write_text(json.dumps({"action_key": key}))
         assert queue.quarantine_orphans() == [key]
