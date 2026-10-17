@@ -34,7 +34,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, slurm_lane  # noqa: E402
 
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 import pbwait  # noqa: E402

@@ -31,7 +31,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pool_reset  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402

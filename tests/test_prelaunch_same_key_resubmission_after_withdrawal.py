@@ -23,13 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _declared_plan, MANIFEST, TIER)
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402
     _declared_movers, _live, _stage)
-import prelaunch_tier  # noqa: E402
+from prismabuild import prelaunch_tier  # noqa: E402
 from test_prelaunch_tier_gate_1594 import (  # noqa: E402
     _held, _units, _two_consumer_queue)
 from prismabuild import tier_holdings
