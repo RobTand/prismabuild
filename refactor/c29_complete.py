@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 ''' + BOOTSTRAP + '''from prismabuild.tier_cycle import main
 
 if __name__ == "__main__":
-    raise SystemExit(main(entrypoint=__file__))
+    raise SystemExit(main(entrypoint=_PB_ENTRYPOINT))
 '''
 
 
@@ -96,7 +96,7 @@ def owner_source(source: str, old: str) -> str:
             source = source.replace('    args = _parser().parse_args(argv)\n',
                                     '    global ENTRYPOINT, MOVER_TOOLS_ROOT\n'
                                     '    if entrypoint is not None:\n'
-                                    '        ENTRYPOINT = Path(entrypoint).resolve(strict=True)\n'
+                                    '        ENTRYPOINT = Path(entrypoint)\n'
                                     '        MOVER_TOOLS_ROOT = str(ENTRYPOINT.parent)\n'
                                     '    args = _parser().parse_args(argv)\n', 1)
             source = source.replace('\n\nif __name__ == "__main__":\n    raise SystemExit(main())\n', '\n')
@@ -177,7 +177,7 @@ def current_source(source: str, path: str) -> str:
         end = source.index('    return completed.stdout.strip()', start)
         source = source[:start] + ('    from prismabuild import core\n'
                                   "    completed = core._git_run(os.getcwd(), 'rev-parse', 'HEAD')\n") + source[end:]
-    if path == 'tools/fleet/fleet_membership.py':
+    if path == 'tools/fleet/fleet_membership.py' and '#: Reader-lease containment identifiers' in source:
         source = source.replace('    try:\n        from prismabuild import reader_lease as module  # noqa: E402\n'
                                 '    except ImportError:\n        return None\n',
                                 '    from prismabuild import reader_lease as module\n')
@@ -185,6 +185,25 @@ def current_source(source: str, path: str) -> str:
                                 '    No vendoring, no parallel reimplementation: enumeration, validation,\n'
                                 '    and release run through the owning module whenever it is importable.\n'
                                 '    """', '"""Load the required reader-lease owner at the original call boundary."""')
+        source = source.replace('from prismabuild import fleet_roster, pool as pool_module',
+                                'from prismabuild import fleet_roster, reader_lease, pool as pool_module')
+        start = source.index('#: Reader-lease containment identifiers')
+        end = source.index('def reader_refs_census(', start)
+        source = source[:start] + '\n' + source[end:]
+        start = source.index('    """This host\'s reader refs and how the answer was established.')
+        end = source.index('\n\ndef reader_refs_gate(', start)
+        source = source[:start] + '''    """Enumerate reader refs through the required owner; unreadable stays unknown."""
+    try:
+        refs = reader_lease.refs_for_holder(queue, host)
+    except (OSError, ValueError) as exc:
+        return [], f"unknown-refs-unreadable: {exc}"
+    return ([dict(r) for r in refs], "enumerated")
+''' + source[end:]
+        source = source.replace('    if state == "drained-absent":\n        return True, state, {"refs": []}\n', '')
+        source = source.replace('the proof. Drained when the leases namespace is provably absent, or\n'
+                                '    when an enumerated census names no refs for this host. Anything else —\n',
+                                'the proof. The required owner must enumerate no refs for this host,\n'
+                                '    including an absent namespace. Anything else retains the fence:\n')
     if path == 'tools/fleet/pbtest.py':
         source = source.replace('here.with_name("pbtest_collection.py").read_text()',
                                 '(RUNTIME_ROOT / "src/prismabuild/pbtest_collection.py").read_text()')
@@ -239,6 +258,16 @@ def current_source(source: str, path: str) -> str:
                                 '(checkout / "src/prismabuild/manifest_promotion.py").write_text("")')
         source = source.replace('match="tier_loop.py imports manifest_promotion"',
                                 'match="tier_loop.py imports prismabuild.manifest_promotion"')
+        start = source.index('def test_publish_refuses_a_script_whose_import_it_does_not_carry(')
+        end = source.index('\n\ndef test_', start + 1)
+        case = source[start:end]
+        case = case.replace('from prismabuild import manifest_promotion\\n', 'import pbtest_outcomes\\n')
+        case = case.replace('checkout / "src/prismabuild/manifest_promotion.py"', 'fleet / "pbtest_outcomes.py"')
+        case = case.replace('"manifest_promotion.py"', '"pbtest_outcomes.py"')
+        case = case.replace('imports prismabuild.manifest_promotion', 'imports pbtest_outcomes')
+        source = source[:start] + case + source[end:]
+    if path == 'tests/test_reader_refs_holder_unknown.py':
+        source = source.replace('module._reader_lease() is reader_lease', 'module.reader_lease is reader_lease')
     if path == 'tests/test_role_log_migration_generation_integrity.py':
         source = source.replace('        assert name in publish_runtime.FLEET_SCRIPTS\n',
                                 '        assert (f"src/prismabuild/{name}" in published\n'

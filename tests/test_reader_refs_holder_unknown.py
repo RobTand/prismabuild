@@ -90,7 +90,7 @@ def _membership_gate():
                 / "tools" / "fleet" / "fleet_membership.py")
     assert Path(module.__file__).resolve() == expected.resolve()
     assert module.pool_module is pool, "gate bound a foreign pool module"
-    assert module._reader_lease() is reader_lease, "gate bound a foreign SDK"
+    assert module.reader_lease is reader_lease, "gate bound a foreign SDK"
     return module
 
 

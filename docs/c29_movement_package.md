@@ -1,9 +1,10 @@
 # Packaged movement ownership
 
-C29's movement slice moves code from fleet scripts into `src/prismabuild`.
-The source base is exact C05 `82f28e4ce36c3de222cc7818a5fb1c8837bb4f7d`.
-It discharges the movement part of c29.r02-r04, subject to recorded execution
-qualification. It does not claim completion of the entire C29 card.
+C29's initial movement slice moved code from fleet scripts into
+`src/prismabuild`, from C05 `82f28e4ce36c3de222cc7818a5fb1c8837bb4f7d`.
+The remaining completion below moves the tier owner and ten libraries from
+`fe416690b87aba99ad30c7df4f95ac8da47055d5`. Execution qualification is recorded
+separately from this source ownership contract.
 
 ## Callers and boundaries
 
@@ -99,6 +100,9 @@ Their former tool sources and `FLEET_SCRIPTS` rows are removed. Current test
 imports, patch targets, embedded programs, and collection-source reads name
 the package graph. The two optional package-import fallbacks in
 `admission_shared_io` and `fleet_membership` are removed.
+Membership also removes the missing-reader module census, its unused fallback
+constants and its two private helpers. The required reader owner's enumeration
+and existing unreadable-census refusal remain the production path.
 
 `tools/fleet/tier_loop.py` remains the physical tier-role entry. It passes its
 resolved entry path to `tier_cycle.main`. That binding retains the original

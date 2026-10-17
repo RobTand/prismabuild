@@ -49,7 +49,7 @@ def audit(root):
     paths = sorted(sources)
     result = {'base': BASE, 'moves': MOVES, 'definitions': [], 'files': [],
               'native_definitions': [], 'assertions': [], 'imports': [],
-              'c31_current_bindings': [], 'protected': [], 'unresolved': []}
+              'c31_current_bindings': [], 'protected': [], 'unresolved': [], 'retired_definitions': []}
     for path in paths:
         if path.startswith(PROTECTED) or path == 'docs/refactor_requirements_93424_2026-10-15.tsv':
             old, new = sources[path], (root / path).read_bytes()
@@ -73,6 +73,13 @@ def audit(root):
         assert expected == actual, ('replay source mismatch', path, new_path)
         before, normalized, after = ast.parse(source), ast.parse(expected), ast.parse(actual)
         old_defs, normalized_defs, new_defs = definitions(before), definitions(normalized), definitions(after)
+        if path == 'tools/fleet/fleet_membership.py':
+            retired = {'_reader_lease', '_leases_roots'}
+            result['retired_definitions'].extend({'old': path + '::' + name, 'current': None,
+                'occurrence': occurrence, 'original_ast_sha256': digest(form(node).encode()),
+                'reason': 'required reader owner makes the missing-module branch unreachable'}
+                for name, occurrence, node in old_defs if name in retired)
+            old_defs = [(name, occurrence, node) for name, occurrence, node in old_defs if name not in retired]
         assert [(n, i) for n, i, _ in old_defs] == [(n, i) for n, i, _ in new_defs], path
         assert [form(n) for _, _, n in normalized_defs] == [form(n) for _, _, n in new_defs], path
         old_asserts = [n for n in ast.walk(before) if isinstance(n, ast.Assert)]
@@ -107,7 +114,7 @@ def audit(root):
     result['architecture_allowlist'] = 'exact existing owner substitutions only'
     result['entrypoint'] = {'old': 'tools/fleet/tier_loop.py', 'current': 'tools/fleet/tier_loop.py',
                             'owner': 'prismabuild.tier_cycle', 'body': 'main',
-                            'binding': 'main(entrypoint=__file__)', 'lock_stem': 'tier_loop'}
+                            'binding': 'main(entrypoint=_PB_ENTRYPOINT)', 'lock_stem': 'tier_loop'}
     result['shipping'] = {'removed_fleet_rows': [name + '.py' for name in OWNERS if name != 'tier_loop'],
         'package_owners': list(MOVES.values()), 'standalone_source_map': {
             'tools/runtime_paths.py': 'src/prismabuild/runtime_paths.py',

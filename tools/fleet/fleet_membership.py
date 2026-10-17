@@ -64,7 +64,7 @@ RUNTIME_ROOT = REPO_ROOT
 SRC_ROOT = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
-from prismabuild import fleet_roster, pool as pool_module  # noqa: E402
+from prismabuild import fleet_roster, reader_lease, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
 from prismabuild import park_proof, role_session  # noqa: E402
 from prismabuild.park_proof import (  # noqa: E402
@@ -236,68 +236,15 @@ def broker_call_func(
 
     return broker_call(dict(payload))
 
-#: Reader-lease containment identifiers (documented in the reader-lifetime
-#: API brief; imported from ``prismabuild.reader_lease`` when that lane has
-#: merged, else these documented fallback values with the source recorded).
-_READER_ATTESTATION_SCHEMA_FALLBACK = (
-    "prismaquant.prismabuild.reader_scope_attestation.v1")
-_READER_ATTESTATIONS_SUBDIR_FALLBACK = "broker-attestations"
-_READER_LEASES_SUBDIR_FALLBACK = "leases"
-_READER_RESIDENCY_SUBDIR_FALLBACK = "residency"
-
-
-def _reader_lease():
-    """Load the required reader-lease owner at the original call boundary."""
-    from prismabuild import reader_lease as module
-    return module
-
-
-def _leases_roots(queue: pool_module.PoolQueue,
-                  residency_roots=None) -> list[Path]:
-    module = _reader_lease()
-    roots = [Path(queue.root) / _READER_RESIDENCY_SUBDIR_FALLBACK
-             / _READER_LEASES_SUBDIR_FALLBACK]
-    for extra in residency_roots or []:
-        sub = _READER_LEASES_SUBDIR_FALLBACK
-        if module is not None:
-            try:
-                return_roots = [Path(module.leases_root(queue, extra))]
-            except (OSError, ValueError, AttributeError):
-                return_roots = [Path(extra) / sub]
-            roots.extend(return_roots)
-        else:
-            roots.append(Path(extra) / sub)
-    return roots
-
 
 def reader_refs_census(queue: pool_module.PoolQueue, host: str,
                        residency_roots=None) -> tuple[list[dict[str, Any]], str]:
-    """This host's reader refs and how the answer was established.
-
-    Returns (refs, state) where state is ``drained-absent`` (no leases
-    namespace at all — provable without the module), ``enumerated`` (real
-    census through the owning module), or ``unknown-needs-reader-lease``
-    (pins may exist but cannot be enumerated here). Directory presence is
-    never read as drained: consumer pins may sit under it.
-    """
-    module = _reader_lease()
-    if module is not None:
-        try:
-            refs = module.refs_for_holder(queue, host)
-        except (OSError, ValueError) as exc:
-            return [], f"unknown-refs-unreadable: {exc}"
-        return ([dict(r) for r in refs], "enumerated")
-    for root in _leases_roots(queue, residency_roots):
-        try:
-            if not root.exists():
-                continue
-            consumers = [e for e in os.scandir(root) if e.is_dir()]
-        except OSError as exc:
-            return [], f"unknown-leases-unreadable: {root}: {exc}"
-        if consumers:
-            return [], ("unknown-needs-reader-lease: pins may exist under "
-                        f"{root}")
-    return [], "drained-absent"
+    """Enumerate reader refs through the required owner; unreadable stays unknown."""
+    try:
+        refs = reader_lease.refs_for_holder(queue, host)
+    except (OSError, ValueError) as exc:
+        return [], f"unknown-refs-unreadable: {exc}"
+    return ([dict(r) for r in refs], "enumerated")
 
 
 def reader_refs_gate(queue: pool_module.PoolQueue, host: str,
@@ -306,16 +253,14 @@ def reader_refs_gate(queue: pool_module.PoolQueue, host: str,
 
     Consumer side only: attestation writing and ref reclaim are the lease
     worker's automatic production path (PR #730); this lane only consumes
-    the proof. Drained when the leases namespace is provably absent, or
-    when an enumerated census names no refs for this host. Anything else —
+    the proof. The required owner must enumerate no refs for this host,
+    including an absent namespace. Anything else retains the fence:
     refs remaining (their automatic path drains them; resign waits) or an
     unprovable namespace — retains the fence with the reason. Never
     reported drained on heartbeat loss, missing reads, or another host's
     refs.
     """
     refs, state = reader_refs_census(queue, host, residency_roots)
-    if state == "drained-absent":
-        return True, state, {"refs": []}
     if state == "enumerated":
         if not refs:
             return True, "refs-drained", {"refs": []}
