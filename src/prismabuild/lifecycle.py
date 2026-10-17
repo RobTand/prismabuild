@@ -813,10 +813,12 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
     elif transition is Transition.EXPIRE:
         keep_tier = (plan.adopted.get("output_retry_stopped") is True
                      and queue.pin_holds_tier_tokens(record, key))
+    holder = (plan.holder if isinstance(plan.holder, str) else socket.gethostname()
+              ) if transition in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED} else plan.holder
     if transition in {Transition.FINISH, Transition.EXPIRE}:
-        queue._release_reservation(key, host=plan.holder, keep_tier=keep_tier)
+        queue._release_reservation(key, host=holder, keep_tier=keep_tier)
     else:
-        queue._release_reservation(key, host=plan.holder)
+        queue._release_reservation(key, host=holder)
     if cancelled:
         if isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
             from . import _gang
@@ -1000,35 +1002,10 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         record["unstarted_releases"] = int(
             record.get("unstarted_releases", 0) or 0) + 1
         destination = queue._shape_as_ready_item(record, action_key=key)
-        tombstone, mine = queue._entomb_claim(key, expect=read_claim)
-        if not mine or tombstone is None:
-            # A retry is live under this key and owns everything the
-            # branch below would have taken.  Nothing has been written
-            # outside the superseded filing, which is evidence rather
-            # than state.
-            return None
-        queue.records.lease_path(key).unlink(missing_ok=True)
-        queue._release_reservation(
-            key, host=holder if isinstance(holder, str) else socket.gethostname())
-        try:
-            published = queue._publish_requeued_claim(
-                record, action_key=key, tombstone=tombstone,
-                superseded_kind="unstarted-requeue",
-                superseded_reason="a newer publication already owns ready "
-                                  "after unstarted claim release",
-            )
-        except (OSError, pb.PrismaBuildError):
-            try:
-                os.link(tombstone, path)
-            except OSError:
-                pass
-            else:
-                tombstone.unlink(missing_ok=True)
-            return None
-        tombstone.unlink(missing_ok=True)
-        if published == destination:
-            return destination
-        return None
+        published = _commit_claim(queue, ClaimCommit(
+            Transition.RELEASE_UNSTARTED, key, record, read_claim, holder,
+            destination, "requeued"))
+        return destination if published == destination else None
     attempts = prior_attempts + 1
     limit = int(record.get("max_attempts", pool.DEFAULT_MAX_ATTEMPTS))
     if (
@@ -1090,61 +1067,10 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         destination = queue.records.item_path(str(disposition), key)
     else:
         destination = queue._shape_as_ready_item(record, action_key=key)
-    # Same ordering as ``finish``, and for the same reason: this loop
-    # published the requeue and only then unlinked the claim and lease,
-    # so a worker that claimed the requeue inside that window had its
-    # claim and lease deleted by this reaper.
-    tombstone, mine = queue._entomb_claim(key, expect=read_claim)
-    if not mine or tombstone is None:
-        # A retry is live under this key: its claim, lease and
-        # reservation are its own.  This loop has written nothing
-        # outside the attempt archive, which is immutable and
-        # first-writer-wins, so leaving now costs the key nothing.
-        return None
-    queue.records.lease_path(key).unlink(missing_ok=True)
-    if disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
-        # The reaper files the terminal record the claimant never
-        # could (#999), so it owns the same pre-release question
-        # ``finish`` asks: which lenders left while the borrow
-        # still wrote.  Requeue branches skip this -- a live retry
-        # re-borrows, and its own ``finish`` will answer.  Best
-        # effort, as in ``finish``.
-        with suppress(Exception):
-            queue.note_fill_borrow_end(record)
-    # Whatever the outcome, the dead claimant's capacity goes back.  A
-    # reservation outliving its holder is the starvation bug's shape.
-    queue._release_reservation(
-        key, host=holder if isinstance(holder, str) else socket.gethostname(),
-        # A terminal spent-output attempt may have copied only a
-        # prefix. Its existing material pin still owns occupancy;
-        # stopping retries does not retire that material.
-        keep_tier=(adopted.get("output_retry_stopped") is True
-                   and queue.pin_holds_tier_tokens(record, key)))
-    try:
-        if disposition in {DONE, FAILED}:
-            queue.records.replace_record_at(destination, record)
-        else:
-            destination = queue._publish_requeued_claim(
-                record, action_key=key, tombstone=tombstone,
-                superseded_kind="retry-superseded",
-                superseded_reason="a newer publication already owns ready "
-                                  "after an earlier claim ended",
-            )
-    except (OSError, pb.PrismaBuildError):
-        # Put the claim back rather than leave the key with no record
-        # anywhere.  Link first: the tombstone must not replace a claim
-        # that appeared while this was in flight.
-        try:
-            os.link(tombstone, path)
-        except OSError:
-            pass
-        else:
-            tombstone.unlink(missing_ok=True)
-        return None
-    tombstone.unlink(missing_ok=True)
-    if disposition in {DONE, FAILED} or destination == queue.records.item_path(
-        READY,
-        key,
-    ):
-        return destination
-
+    published = _commit_claim(queue, ClaimCommit(
+        Transition.EXPIRE, key, record, read_claim, holder, destination,
+        str(disposition), attempts, adopted))
+    if published is not None and (disposition in {DONE, FAILED}
+                                 or published == queue.records.item_path(READY, key)):
+        return published
+    return None
