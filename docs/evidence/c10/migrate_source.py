@@ -124,6 +124,8 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                     and -len(container) <= node.slice.value < len(container)):
                 return container[node.slice.value]
         if isinstance(node, ast.Attribute):
+            if node.attr in {"tier_ledger", "tier"}:
+                return {"@factory": True}
             container = shape(node.value, enclosing)
             if isinstance(container, dict) and "@class" in container:
                 return fields.get(container["@class"], {}).get(node.attr, False)
@@ -134,6 +136,9 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 return {"@class": owning_class(enclosing)}
             return values.get((enclosing, node.id), returns.get(node.id, False))
         if isinstance(node, ast.Call):
+            callee = shape(node.func, enclosing)
+            if isinstance(callee, dict) and callee.get("@factory"):
+                return True
             if isinstance(node.func, ast.Attribute) and node.func.attr in {"values", "items"}:
                 container = shape(node.func.value, enclosing)
                 if isinstance(container, dict) and not any(k.startswith("@") for k in container

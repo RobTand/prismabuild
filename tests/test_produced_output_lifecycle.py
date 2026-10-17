@@ -445,7 +445,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         def boom(tier_id):
             ledger = real_ledger(tier_id)
             if tier_id == STAGE_TIER:
-                def failing(holder):
+                def failing(holder, **kwargs):
                     raise OSError("simulated ledger failure")
 
                 ledger.release = failing  # type: ignore[method-assign]
