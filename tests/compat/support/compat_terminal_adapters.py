@@ -4,6 +4,9 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from pathlib import Path
+import runpy
+import time
 
 
 def operate(request, store, load):
@@ -11,18 +14,45 @@ def operate(request, store, load):
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
     queue.ensure_layout()
-    key = "c" * 64
+    key = "d" * 64 if variant == "origin-release-writer" else "a" * 64 if variant == "dead-input-writer" else "c" * 64
     status = {"unreadable-writer": "unreadable_record", "orphan-writer": "orphaned_stub",
-              "lost-claim-writer": "finish_lost_race", "slurm-withdrawal-writer": "withdrawn"}[variant]
+              "lost-claim-writer": "finish_lost_race", "slurm-withdrawal-writer": "withdrawn",
+              "origin-release-writer": "origin_consumer_released", "dead-input-writer": "failed"}[variant]
     path = queue.item_path(pool.WITHDRAWN if variant == "slurm-withdrawal-writer" else pool.FAILED, key)
     if request["op"] == "read":
         path.write_bytes(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
-        result = load("pbrun").terminal_record(path, 100.0, report_unreadable=True)
+        result = load("pbrun").terminal_record(path, 101.0 if variant == "origin-release-writer" else 100.0, report_unreadable=True)
         assert result and result["status"] == status and result["action_key"] == key
         return result
     uuid.uuid4 = lambda: uuid.UUID("7" * 32)
-    if variant == "unreadable-writer":
+    if variant == "origin-release-writer":
+        fixture = runpy.run_path(str(Path(__file__).with_name("compat_consumer_adapters.py")))["operate"]
+        fixture({"case": "out-release-index/withdrawn", "op": "write"}, store, load)
+        time.time = lambda: 101.0
+        published = queue.publish(action_key=key, cas_root=store / "cas", checkout_root="/compat/checkout",
+            worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1})
+        assert queue._refuse_released_origin_consumer(json.loads(published.read_bytes()), key)
+    elif variant == "dead-input-writer":
+        fixture = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["committed"]
+        po, _, _, queue, template, instance, descriptor, _ = fixture(store, load, "staged")
+        owner = str(instance["owner_action_key"])
+        claim_path = queue.item_path(pool.CLAIMED, owner)
+        claim = json.loads(claim_path.read_bytes())
+        # The setup's scope was a supplied identity, never a broker scope.
+        # Exercise the supported legacy unscoped terminal API for this fixture.
+        claim.pop("resource_scope")
+        pool._write_json_atomic(claim_path, claim)
+        queue.finish(owner, status="failed", detail={"returncode": 1})
+        ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
+            batch_id="batch", descriptors=[descriptor], tier_id="prismabuild-stage:compat")
+        published = queue.publish(action_key=key, cas_root=store / "cas", checkout_root="/compat/checkout",
+            worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1})
+        item = {**json.loads(published.read_bytes()), "produced_output_batch": ref}
+        Path(descriptor["path"]).unlink()
+        assert po.dead_input_dependency(queue, item) is not None
+        assert queue.fail_dead_input_dependency(item, key)
+    elif variant == "unreadable-writer":
         ready = queue.item_path(pool.READY, key)
         ready.write_bytes(b"{unparseable fixture")
         assert queue._file_unreadable(ready, reason="private syntax fixture") == key
@@ -35,4 +65,5 @@ def operate(request, store, load):
         actual, _ = load("prismabuild.slurm_lane").publish_withdrawal(
             queue_root=queue.root, action_key=key, reason="private operator fixture", by="compat")
         assert actual == path
-    return {"raw": base64.b64encode(path.read_bytes()).decode()}
+    return {"raw": base64.b64encode(path.read_bytes()).decode(),
+            "fixture_facts": ["private supplied legacy owner states and actual records/files; no physical producer death, broker drain or five-role proof"]}
