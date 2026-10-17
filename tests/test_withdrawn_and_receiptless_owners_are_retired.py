@@ -133,7 +133,9 @@ def test_a_consumer_both_withdrawn_and_failed_retains(fleet) -> None:
     queue, stage, _cas = fleet
     consumer, mover = _withdrawn_owner(fleet)
     failed_consumer, _generation = dead._fail_consumer(queue)
-    record = json.loads(queue.records.item_path(pool.record_store.FAILED, failed_consumer).read_bytes())
+    record = json.loads(
+        queue.records.item_path(pool.record_store.FAILED, failed_consumer).read_bytes(),
+    )
     record["action_key"] = consumer
     queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})

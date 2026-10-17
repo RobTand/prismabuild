@@ -297,7 +297,9 @@ def test_the_loop_publishes_chunk_movers_with_their_index(
                          ("phase-0001", 0)]
     for event in events:
         if event["event"] == "mover-published":
-            assert pool.record_store.value_or_raise(live_queue.records.item(pool.record_store.READY, event["action_key"]))[
+            assert pool.record_store.value_or_raise(
+                live_queue.records.item(pool.record_store.READY, event["action_key"]),
+            )[
                     "recompute"] is True
 
 

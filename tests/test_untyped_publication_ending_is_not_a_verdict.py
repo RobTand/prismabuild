@@ -35,7 +35,9 @@ def _legacy_slot(queue, clock, damage):
     slot.write_text(json.dumps(legacy))
     clock[0] += 1
     _publish(queue)
-    watched = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())["published_unix"]
+    watched = json.loads(
+        queue.records.item_path(pool.record_store.READY, KEY).read_bytes(),
+    )["published_unix"]
     return executed, watched, attempt, attempt_bytes
 
 

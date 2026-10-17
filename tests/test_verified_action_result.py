@@ -123,7 +123,9 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
                          "stdout": stdout, "stderr": "",
                          **(native["detail"] if native is not None else {})})
     fx.settle_publishers()
-    record = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
+    record = json.loads(
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"),
+    )
     return queue, record
 
 
@@ -273,7 +275,9 @@ def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
         "returncode": 0, "status": "executed", "stdout": announcement,
         "stderr": ""})
     fx.settle_publishers()
-    record = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
+    record = json.loads(
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"),
+    )
     assert record["attempts"] == 2
     first = json.loads(queue.records.attempt_path(record, 1).read_text(encoding="utf-8"))
     first_log = queue.root / str(first["logs"]["stdout"]["path"])
@@ -831,7 +835,9 @@ def test_selected_native_context_is_owned_and_truthfully_bound(tmp_path, monkeyp
 def test_selected_native_claim_metadata_refuses(tmp_path, monkeypatch, field, value):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
     row = {**record, field: value}
-    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(
+        pb._canonical_file_bytes(row),
+    )
     with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)
 
@@ -969,9 +975,13 @@ def test_selected_native_ending_extra_fields_are_rechecked(tmp_path, monkeypatch
         raw = original(path, **kwargs)
         if kwargs["where"] == "native producer scope attestation" and not changed:
             changed = True
-            row = json.loads(queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text())
+            row = json.loads(
+                queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text(),
+            )
             row["resources"]["cpu"] = 2
-            queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+            queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(
+                pb._canonical_file_bytes(row),
+            )
         return raw
     monkeypatch.setattr(action_result, "_read_bounded", read_and_replace)
     with pytest.raises(client.ActionResultError, match="selected native ending changed"):
@@ -1000,11 +1010,16 @@ def test_native_last_proof_read_cannot_return_before_terminal_recheck(
                         "published_unix": record["published_unix"],
                         "withdrawn_unix": record["published_unix"] + 5,
                         "finished_host": "box", "detail": {}}
-                    immutable_files.publish_immutable(queue.records.item_path(pool.record_store.WITHDRAWN, key),
+                    immutable_files.publish_immutable(queue.records.item_path(
+                        pool.record_store.WITHDRAWN,
+                        key,
+                    ),
                                        pb._canonical_file_bytes(withdrawn))
                 else:
                     replacement = {**record, "published_unix": record["published_unix"] + 5}
-                    queue.records.item_path(pool.record_store.DONE, key).write_bytes(pb._canonical_file_bytes(replacement))
+                    queue.records.item_path(pool.record_store.DONE, key).write_bytes(
+                        pb._canonical_file_bytes(replacement),
+                    )
         return raw
     monkeypatch.setattr(action_result, "_read_bounded", read_and_change_terminal)
     with pytest.raises(client.ActionResultError):
@@ -1021,12 +1036,16 @@ def test_native_full_broker_control_must_join_immutable_launch(
     tmp_path, monkeypatch, field, value
 ):
     action, queue, record, _receipt, _proof = _native_fixture(tmp_path, monkeypatch)
-    row = json.loads(queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text())
+    row = json.loads(
+        queue.records.item_path(pool.record_store.DONE, action["action_key"]).read_text(),
+    )
     if value is None:
         row["resource_scope"].pop(field)
     else:
         row["resource_scope"][field] = value
-    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(pb._canonical_file_bytes(row))
+    queue.records.item_path(pool.record_store.DONE, action["action_key"]).write_bytes(
+        pb._canonical_file_bytes(row),
+    )
     with pytest.raises(client.ActionResultError):
         _native_read(action, queue, record)
 

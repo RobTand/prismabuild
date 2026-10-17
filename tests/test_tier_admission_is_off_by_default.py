@@ -166,7 +166,9 @@ def _uncontain(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutate the driver: put back the unguarded scan the fix contains."""
 
     monkeypatch.setattr(pool.PoolQueue, "tier_ids", lambda self: sorted(
-        directory.name for directory in pool.immutable_files.scan_optional(self.root / pool.record_store.TIER_RESERVATIONS)
+        directory.name for directory in pool.immutable_files.scan_optional(
+            self.root / pool.record_store.TIER_RESERVATIONS,
+        )
         if directory.is_dir() and not directory.name.startswith(".")))
 
 
@@ -212,7 +214,9 @@ def test_without_the_containment_that_finish_loses_the_outcome(
         queue.finish(KEY, status="executed", claim_snapshot=claimed)
     # Claim entombed, lease gone, and no outcome filed anywhere.
     assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY)) is None
-    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, KEY)) is None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.FAILED, KEY),
+    ) is None
     assert not queue.records.lease_path(KEY).exists()
 
 
