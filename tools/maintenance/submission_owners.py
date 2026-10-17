@@ -21,8 +21,7 @@ def baseline_at_submission_owners(value):
         for module in modules:
             path, new_name = relocated_locator(module + "::" + name).split("::", 1)
             groups.setdefault(new_name, []).append(path)
-    result["same_name_helpers"] = {name: sorted(set(paths)) for name, paths in groups.items()
-                                   if len(set(paths)) >= 2}
+    result["same_name_helpers"] = {name: sorted(set(paths)) for name, paths in groups.items()}
     result["same_name_distinct"] = []
     for row in value["same_name_distinct"]:
         by_name = {}
@@ -31,6 +30,11 @@ def baseline_at_submission_owners(value):
             by_name.setdefault(name, []).append(path)
         result["same_name_distinct"].extend({**row, "name": name, "modules": sorted(paths)}
             for name, paths in by_name.items())
+    registered = {}
+    for row in result["same_name_distinct"]:
+        registered.setdefault(row["name"], set()).update(row["modules"])
+    result["same_name_helpers"] = {name: paths for name, paths in result["same_name_helpers"].items()
+        if len(set(paths) | registered.get(name, set())) >= 2}
     result["primitive_digest_sites"] = sorted(relocated_locator(item) for item in value["primitive_digest_sites"])
     result["near_duplicates"] = sorted(sorted(relocated_locator(item) for item in pair)
                                        for pair in value["near_duplicates"])

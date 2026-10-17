@@ -160,7 +160,7 @@ class RequestOption:
     kind: Literal["value", "switch", "repeat", "json", "special"]
 
 
-def request_options() -> tuple[RequestOption, ...]:
+def request_options(*, gang: bool = False) -> tuple[RequestOption, ...]:
     from dataclasses import fields
     from typing import get_origin, get_type_hints
     hints = get_type_hints(SubmissionRequest)
@@ -182,6 +182,16 @@ def request_options() -> tuple[RequestOption, ...]:
         result.append(RequestOption(item.name, name, "--" + item.name.replace("_", "-"), kind))
     result.extend((RequestOption("progress_policy", "progress_phases", "--progress-phase", "repeat"),
                    RequestOption("progress_policy", "progress_cycle", "--progress-cycle", "switch")))
+    if gang:
+        # The gang's public manifest supports this subset; dispatch fields stay
+        # driver-owned. Flag spelling and value kinds still come from the type.
+        names = ("gpu_memory_gb", "exclusive", "measurement", "host_class", "container_images",
+                 "priority_reason", "max_attempts", "data_manifest", "resident_set", "residency",
+                 "residency_tier", "residency_ram", "residency_share", "residency_mover_mem_gb",
+                 "residency_mover_readers", "residency_prefetch_depth_gib", "residency_read_mb_s",
+                 "residency_mover_max_attempts")
+        by_name = {option.name: option for option in result}
+        return tuple(by_name[name] for name in names)
     return tuple(result)
 
 

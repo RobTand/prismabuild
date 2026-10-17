@@ -49,5 +49,6 @@ def request_arguments(request, *, order=(), include_defaults=("cwd", "transport"
             for entry in value:
                 result.extend([flag, str(entry)])
         else:
-            result.extend([flag, str(value)])
+            rendered = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+            result.extend([flag, rendered])
     return [*result, "--", *request.command]

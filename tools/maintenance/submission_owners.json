@@ -34,6 +34,7 @@
     "tools/fleet/pbevidence.py::collect_packet": "src/prismabuild/target_evidence.py::collect_packet",
     "tools/fleet/pbevidence.py::recorder_contract": "src/prismabuild/target_evidence.py::recorder_contract",
     "tools/fleet/pbevidence.py::vet": "src/prismabuild/target_evidence.py::vet",
+    "tools/fleet/pbrun.py::": "src/prismabuild/submission.py::",
     "tools/fleet/pbrun.py::TargetEvidence": "src/prismabuild/submission.py::TargetEvidence",
     "tools/fleet/pbrun.py::_NoCensus": "src/prismabuild/submission.py::_NoCensus",
     "tools/fleet/pbrun.py::_OfferSnapshot": "src/prismabuild/submission.py::_OfferSnapshot",

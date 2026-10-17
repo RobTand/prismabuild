@@ -183,14 +183,15 @@ def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
     import pbcampaign
     import pbrun
 
-    seen: dict[str, list[str]] = {}
+    from prismabuild import submission
+    seen = {}
 
-    def fake_main(*, report) -> int:
-        seen["argv"] = list(sys.argv)
-        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return finish_submission(report)
+    def fake_submit(request, *, report, **context):
+        seen["request"] = request
+        finish_submission(report, transport=request.transport)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submission, "submit_request", fake_submit)
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
     patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     manifest = tmp_path / "manifest.json"
@@ -200,8 +201,8 @@ def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
     )
 
     assert pbcampaign.main(["--detach", str(manifest)]) == 0
-    argv = seen["argv"]
-    assert argv[argv.index("--transport") + 1] == "slurm"
+    request = seen["request"]
+    assert request.transport == "slurm"
 
 
 # -- writing it --------------------------------------------------------------

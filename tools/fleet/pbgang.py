@@ -103,7 +103,7 @@ MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "pr
 #: deliberately not here: the driver owns them.
 from submission_frontend import request_arguments, store_for
 from prismabuild.submission_types import request_options
-FLAG_FIELDS = {option.name: (option.flag, option.kind) for option in request_options()
+FLAG_FIELDS = {option.name: (option.flag, option.kind) for option in request_options(gang=True)
                if option.name not in MEMBER_FIELDS and option.kind != "special"}
 MEMBER_FIELDS = MEMBER_FIELDS | set(FLAG_FIELDS)
 
