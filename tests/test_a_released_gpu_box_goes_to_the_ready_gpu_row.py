@@ -31,6 +31,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import socket
 from pathlib import Path
 import sys
 
@@ -39,6 +40,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
 from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
+from gpu_capacity_fixture import idle_gpu_sample
 
 T0 = 4_000_000.0
 #: sparky's offer, 2026-09-25.
@@ -125,7 +127,8 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
               checkout_root=kw.pop("checkout_root", "/co"),
               worker_script="/w.py", resources=resources,
-              priority=kw.pop("priority", BAND), **kw)
+              priority=kw.pop("priority", BAND),
+              tags=kw.pop("tags", [socket.gethostname()]), **kw)
     return key
 
 
@@ -137,10 +140,11 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 def _claimer(q: pool.PoolQueue, *, adaptive: bool, cpu_sampler):
     def claim() -> str | None:
-        item = (q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                        tags=PROGRESS_CAPABILITIES, cpu_sampler=cpu_sampler)
-                if adaptive else q.claim(capacity=CAPACITY, tags=PROGRESS_CAPABILITIES,
-                    cpu_sampler=cpu_sampler))
+        item = (q.claim(has_gpu=True, capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+                        tags=[socket.gethostname(), *PROGRESS_CAPABILITIES],
+                        cpu_sampler=cpu_sampler, gpu_sampler=idle_gpu_sample)
+                if adaptive else q.claim(has_gpu=True, capacity=CAPACITY,
+                    tags=[socket.gethostname(), *PROGRESS_CAPABILITIES], cpu_sampler=cpu_sampler))
         return None if item is None else str(item["action_key"])
     return claim
 
@@ -390,7 +394,8 @@ def test_cpu_work_is_not_held_for_a_gpu_row_that_cannot_take_the_box(
 
     capacity = dict(CAPACITY, mem_gb=120)
     claim = lambda: (lambda item: None if item is None else item["action_key"])(  # noqa: E731
-        queue.claim(capacity=capacity, tags=["gb10", *PROGRESS_CAPABILITIES]))
+        queue.claim(has_gpu=True, capacity=capacity,
+                    tags=["gb10", socket.gethostname(), *PROGRESS_CAPABILITIES]))
     if case == "gpu-held":
         holder_key, cas_root, checkout = _sealed(tmp_path, "gpu-holder", progress=True)
         _publish(queue, clock, holder_key, {"cpu": 2, "gpu": 1, "mem_gb": 10},

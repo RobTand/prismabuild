@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
 from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
 from prismabuild import drain_policy
+from gpu_capacity_fixture import idle_gpu_sample
 
 T0 = 3_000_000.0
 CPUS = 20
@@ -85,7 +86,8 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     clock[0] += 0.001
     q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
               checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources, **kw)
+              worker_script="/w.py", resources=resources,
+              tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
     return key
 
 
@@ -118,7 +120,9 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 
 def _claim(q: pool.PoolQueue, cpu_sampler) -> str | None:
-    item = q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = q.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=CAPACITY,
+                   cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                   gpu_sampler=idle_gpu_sample)
     return None if item is None else item["action_key"]
 
 

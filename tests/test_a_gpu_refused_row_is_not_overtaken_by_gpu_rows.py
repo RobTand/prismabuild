@@ -301,7 +301,7 @@ def _withholding_gpu_action(tmp_path: Path, clock):
         return key
 
     def claim():
-        return _key_of(queue.claim(capacity=capacity))
+        return _key_of(queue.claim(has_gpu=True, capacity=capacity))
 
     shard = publish("shard", {"cpu": 2})
     assert claim() == shard

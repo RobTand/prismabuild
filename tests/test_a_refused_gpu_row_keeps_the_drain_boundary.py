@@ -36,6 +36,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import adaptive_cpu, adaptive_gpu, pool  # noqa: E402
+from gpu_capacity_fixture import idle_gpu_sample
 from claim_transition_fixture import held_transition
 
 T0 = 2_000_000.0
@@ -232,7 +233,7 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
                   worker_script="/w.py", priority=-10, resources=dict(G2))
     with held_transition(queue, busy_row):
         _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
-        claimed = queue.claim(capacity=capacity)
+        claimed = queue.claim(has_gpu=True, capacity=capacity)
         assert claimed is None, (
             f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
             "whose holder released after its room was read")
@@ -244,7 +245,7 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
         assert deferred["reason"] == "deferred_for_ready_gpu_row"
         assert deferred["evidence"]["gpu_row"] == busy_row[:12]
         assert deferred["evidence"]["kept_for"] == "transition_busy"
-    assert queue.claim(capacity=capacity)["action_key"] == busy_row
+    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == busy_row
 
 
 def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
@@ -274,7 +275,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
         queue.record_pass(row)
     now[0] += pool.WITHHOLD_CEILING_S + 1.0
     _release_when(monkeypatch, queue, row, "reservation_unavailable", holder)
-    claimed = queue.claim(capacity=capacity)
+    claimed = queue.claim(has_gpu=True, capacity=capacity)
     assert claimed is None, (
         f"claimed {claimed and claimed['action_key'][:4]} into the boundary "
         "the +1 row was refused for")
@@ -284,7 +285,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
     deferred = _denial(queue, lower)
     assert deferred["reason"] == "deferred_for_ready_gpu_row"
     assert deferred["evidence"]["kept_for"] == "reservation_unavailable_past_ceiling"
-    assert queue.claim(capacity=capacity)["action_key"] == row
+    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == row
 
 
 def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
@@ -373,11 +374,14 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
         now[0] += 0.001
         queue.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
                       checkout_root=kw.pop("checkout_root", "/co"),
-                      worker_script="/w.py", resources=resources, **kw)
+                      worker_script="/w.py", resources=resources,
+                      tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
         return key
 
     def claim():
-        item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+        item = queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity,
+                           cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                           gpu_sampler=idle_gpu_sample)
         return None if item is None else item["action_key"]
 
     # A CPU holder past the transient line with its declared end a day off.

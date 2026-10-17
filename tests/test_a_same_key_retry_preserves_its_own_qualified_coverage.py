@@ -295,8 +295,22 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
     fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
+    if filesystem is None:
+        info = fragment.stat()
+        expected = (info.st_dev, info.st_ino, info.st_size,
+                    info.st_mtime_ns, info.st_ctime_ns)
+        assert kept_reads.filesystem_trust.file_version(
+            info, fence, path=fragment) == expected
+        table = dict(kept_reads._filesystem_types)
+        table.pop(info.st_dev, None)
+        monkeypatch.setattr(kept_reads, '_filesystem_types', table)
+        assert kept_reads._MOUNT_TABLE_KEY in table
+        assert info.st_dev not in table
     monkeypatch.setattr(kept_reads, '_filesystem_type', lambda _device: filesystem)
     monkeypatch.setattr(kept_reads.filesystem_trust, 'file_fence', lambda: fence)
+    if filesystem is None:
+        assert kept_reads.filesystem_trust.file_version(
+            info, fence, path=fragment) == expected
 
     parsing = threading.Event()
     release = threading.Event()

@@ -31,6 +31,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
 import pbstatus  # noqa: E402
 from prismabuild import drain_policy
+from gpu_capacity_fixture import idle_gpu_sample
 
 #: Loaded the same way the ``pbtest`` test files load it: a fresh module
 #: object per test file, not ``sys.modules``'s cached one, so a monkeypatch
@@ -85,7 +86,8 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     clock[0] += 0.001
     q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
               checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources, **kw)
+              worker_script="/w.py", resources=resources,
+              tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
     return key
 
 
@@ -126,10 +128,13 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q, capacity, *, adaptive, tiers=None, cpu_sampler=None):
+def _claim(q, capacity, *, adaptive, tiers=None, cpu_sampler=None, has_gpu=False):
     if not adaptive:
-        return q.claim(capacity=capacity, cpu_sampler=cpu_sampler)
-    return q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+        return q.claim(has_gpu=has_gpu, tags=[pool.socket.gethostname()],
+                       capacity=capacity, cpu_sampler=cpu_sampler)
+    return q.claim(has_gpu=has_gpu, tags=[pool.socket.gethostname()], capacity=capacity,
+                   cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                   gpu_sampler=idle_gpu_sample if has_gpu else None)
 
 
 def _key_of(item):
@@ -147,7 +152,7 @@ def _twenty_cpu_gpu_box(queue, clock, monkeypatch, *, adaptive):
         "psi_some": 0., "busy_cpus": 0.}
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers, cpu_sampler=cpu_sampler))
+        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers, cpu_sampler=cpu_sampler, has_gpu=True))
 
     # A multi-hour GPU holder, and a GPU action that has waited behind it
     # long enough that its own first-denial clock is past the ceiling.
@@ -177,7 +182,8 @@ def test_a_multi_hour_gpu_holder_does_not_hold_the_box_shut_for_cpu_work(
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2, "mem_gb": 4})
     assert claim() == shard
     denial = _denial(queue, waiting)
-    assert denial["reason"] == "reservation_unavailable_starved"
+    assert denial["reason"] == ("adaptive_gpu_refused_starved" if adaptive
+                                else "reservation_unavailable_starved")
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == holder[:12] and named["bound"] == "long"
@@ -250,12 +256,12 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     """
 
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
-    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG]
+    tags = [pool.socket.gethostname(), contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG]
     r12, cas_root, checkout = _sealed(tmp_path, "r12", progress=True)
     clock[0] = T0 - 36_000
     _publish(queue, clock, r12, {"cpu": 9, "gpu": 1, "mem_gb": 100},
              cas_root=cas_root, checkout_root=checkout)
-    assert _key_of(queue.claim(tags=tags, capacity=capacity)) == r12
+    assert _key_of(queue.claim(has_gpu=True, tags=tags, capacity=capacity)) == r12
 
     clock[0] = T0
     shard = _publish(queue, clock, _key("12gb-shard"), {"cpu": 1, "mem_gb": 12})
@@ -264,7 +270,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
         queue.record_pass(shard)
     assert queue.withhold_age(shard) <= pool.WITHHOLD_CEILING_S
 
-    assert _key_of(queue.claim(tags=tags, capacity=capacity)) == small, (
+    assert _key_of(queue.claim(has_gpu=True, tags=tags, capacity=capacity)) == small, (
         "a day-long holder held the box shut for a shard that cannot fit beside it")
     assert queue.holder_bound(r12)["bound"] == "unbounded"
     denial = _denial(queue, shard)
@@ -357,14 +363,14 @@ def _gpu_action_behind_a_shard(queue, clock, tmp_path: Path, *, timeout_s, age_s
     clock[0] = T0 - age_s
     _publish(queue, clock, shard, {"cpu": 2, "mem_gb": 4},
              cas_root=cas_root, checkout_root=checkout)
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     clock[0] = T0 - 1
     gpu_action = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1, "mem_gb": 4})
     behind = _publish(queue, clock, _key("behind"), {"cpu": 1, "mem_gb": 1})
     # ``_publish`` steps the clock; the shard was claimed ``age_s`` before T0
     # to within that step, and the claim pass below runs at T0 exactly.
     clock[0] = T0
-    return (lambda: _key_of(queue.claim(capacity=capacity))), shard, gpu_action, behind
+    return (lambda: _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity))), shard, gpu_action, behind
 
 
 def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longer(
@@ -645,7 +651,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     first = _publish(queue, clock, _key("first"), {"cpu": 1})
-    assert _key_of(queue.claim(capacity=capacity)) == first
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == first
     waiting = _publish(queue, clock, _key("waiting"), {"cpu": 4})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(waiting)
@@ -666,7 +672,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     # Higher-priority work ahead of it refills the box, young every time.
     clock[0] += pool.WITHHOLD_CEILING_S - 10
     refill = _publish(queue, clock, _key("refill-0"), {"cpu": 1}, priority=5)
-    assert _key_of(queue.claim(capacity=capacity)) == refill
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == refill
     queue.finish(first, status="executed")
     assert verdict()["withhold"] is True, "inside the episode the veto stands"
     clock[0] += 20
@@ -681,7 +687,7 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     queue.finish(refill, status="executed")
     clock[0] += 1
     later = _publish(queue, clock, _key("later"), {"cpu": 1}, priority=5)
-    assert _key_of(queue.claim(capacity=capacity)) == later
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == later
     answer = verdict()
     assert answer["withhold"] is True and answer["why"] == "drains_soon"
     record = json.loads(queue.passes_path(waiting).read_text())
@@ -698,10 +704,10 @@ def test_a_gpu_action_withholds_on_its_first_denial_when_the_gpu_is_free(
 
     capacity = {"cpu": 4, "gpu": 1}
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2})
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     gpu_action = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1})
     cpu_only = _publish(queue, clock, _key("cpu-only"), {"cpu": 1})
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity) is None
     assert queue.passes(gpu_action) == 1
     assert _denial(queue, gpu_action)["evidence"]["withhold"]["gpu_first"] is True
     assert queue.item_path(pool.READY, cpu_only).exists()
@@ -710,10 +716,10 @@ def test_a_gpu_action_withholds_on_its_first_denial_when_the_gpu_is_free(
 def test_a_cpu_only_action_still_waits_for_the_floor(queue: pool.PoolQueue, clock) -> None:
     capacity = {"cpu": 4, "gpu": 1}
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2})
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     _publish(queue, clock, _key("big"), {"cpu": 4})
     small = _publish(queue, clock, _key("small"), {"cpu": 1})
-    assert _key_of(queue.claim(capacity=capacity)) == small
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == small
 
 
 @pytest.mark.parametrize("sample,gpu_first,foreign", [
