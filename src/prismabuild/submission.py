@@ -7654,6 +7654,21 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
 
 
 def validate_request(request: SubmissionRequest) -> None:
+    if request.profile is not None:
+        try:
+            pb.parse_profile_mode(request.profile)
+        except pb.ProfileBackendUnavailable as exc:
+            request.refuse_argument(f"argument --profile: {exc}")
+    for name, choices in (("residency", RESIDENCY_MODES),
+                          ("residency_ram", RESIDENCY_RAM_MODES),
+                          ("residency_share", ("auto", "off")),
+                          ("transport", TRANSPORTS)):
+        value = getattr(request, name)
+        if value not in choices:
+            flag = "--" + name.replace("_", "-")
+            request.refuse_argument(
+                f"argument {flag}: invalid choice: {value!r} "
+                f"(choose from {', '.join(repr(choice) for choice in choices)})")
     if request.release_origin_consumer is not None and (
             request.withdraw or request.after or request.supersedes is not None
             or request.as_sealed_by is not None):

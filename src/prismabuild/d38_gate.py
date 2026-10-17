@@ -512,15 +512,13 @@ def write_audit(queue_root: str | Path, event: Mapping[str, object]) -> Path:
 
 def _exit_refused(reason: str, *, job: str, images: Sequence[str],
             namespace: str | None, display: DisplaySink = discard_display) -> SubmissionRefused:
-    emit_display(display, f"pbrun: D38 refuses GPU publication: {reason}.\n"
+    return SubmissionRefused(f"pbrun: D38 refuses GPU publication: {reason}.\n"
           f"job={job} images={json.dumps(list(images))} "
           f"namespace={namespace or 'none'}\n"
           "Run the same entry point on CPU through PrismaBuild. "
           "Supply --d38-receipt <action key>.\n"
           "Use --d38-exception <decision id> only for an explicit CEO "
-          "exception. No runnable submission was published.",
-          channel="stderr", flush=True)
-    return SubmissionRefused(2)
+          "exception. No runnable submission was published.", returncode=2)
 
 
 def authorize(args, action: Mapping[str, object], *, cas,

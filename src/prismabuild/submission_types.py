@@ -40,6 +40,13 @@ class OfferDiscoveryTimedOut(SubmissionRefused):
     """An unpublished offer timeout whose reader was reaped."""
 
 
+class ArgumentRefused(SubmissionRefused):
+    """Invalid external submission options, rendered with usage by a CLI."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason, returncode=2)
+
+
 @dataclass(frozen=True)
 class FleetStore:
     root: Path
@@ -123,7 +130,7 @@ class SubmissionRequest:
     progress_policy: Mapping[str, object] | None = None
 
     def refuse_argument(self, reason: str) -> NoReturn:
-        raise SubmissionRefused(reason, returncode=2)
+        raise ArgumentRefused(reason)
 
 
 @dataclass(frozen=True, kw_only=True)
