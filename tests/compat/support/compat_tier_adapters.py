@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import runpy
 from types import SimpleNamespace
+import time
 
 C = "c" * 64
 
@@ -15,6 +16,22 @@ def operate(request, store, load):
     writing = request["op"] == "write"
     if family == "storage-tier":
         tiers = load("prismabuild.storage_tiers")
+        if writing and variant == "retired-writer":
+            pool, loop = load("prismabuild.pool"), load("tier_loop")
+            queue = pool.PoolQueue(store / "queue")
+            name = "prismabuild-stage:compat"
+            queue.mint_tier_capacity(name, {"stage_gib": 1})
+            queue.announce_tier({"schema": tiers.TIER_RECORD_SCHEMA_V1, "tier_id": name, "tier": "stage", "host": "compat",
+                                "mountpoint": str(store / "stage"), "capacity_bytes": tiers.GIB})
+            original = time.monotonic
+            time.monotonic = lambda: 100.0
+            try:
+                loop.cycle(queue, host="compat", source_pool="compat", receipts=loop.ReceiptCache(), now=100.0,
+                           discover=lambda **kwargs: {}, supply_reader_for=lambda *args: None)
+            finally:
+                time.monotonic = original
+            return {"raw": base64.b64encode(queue.tier_record_path(name).read_bytes()).decode(),
+                    "fixture_facts": ["private tier retirement with supplied absent discovery/supply; no real hardware or root registration"]}
         if writing and variant.startswith("ram"):
             root = store / "ram"
             root.mkdir()
@@ -54,7 +71,9 @@ def operate(request, store, load):
             request["_consumer_boundary"]()
             value = json.loads(base64.b64decode(request["raw"]))
             tokens = tiers.tier_tokens(value)
-            if variant == "ram-refused":
+            if variant == "retired-writer":
+                assert not any(tokens.values()), tokens
+            elif variant == "ram-refused":
                 assert not tokens
             else:
                 assert tokens.get("ram_gib" if variant == "ram" else "stage_gib" if variant == "stage" else "arc_gib") == 4
