@@ -1,6 +1,7 @@
 """Real kept consumers must not retain a caller's nested record mutation."""
 import json
 from prismabuild import kept_reads, pool
+from prismabuild import census as fleet_census
 import pbmetrics
 import tier_loop
 from record_store_trust import ObservedTrust
@@ -35,7 +36,7 @@ def test_metrics_consumers_receive_independent_nested_records(tmp_path):
     path = directory / (KEY + '.json')
     path.write_text(json.dumps(PAYLOAD))
     trust = ObservedTrust()
-    reader = pbmetrics.KeptReads(trust=trust)
+    reader = fleet_census.KeptReads(trust=trust)
     reader.begin()
     try:
         first = reader.queue_records(directory)[0][1].record

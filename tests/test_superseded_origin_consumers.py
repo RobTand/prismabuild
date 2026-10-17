@@ -41,6 +41,7 @@ import deferred_release as dr  # noqa: E402
 import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _charged, _commit, _entry, _publish_consumer, _queue, _run_consumer,
@@ -226,7 +227,7 @@ def test_a_deferred_resubmission_takes_over_once_it_is_released(
     # Unreleased: #913 holds the producer's batches quietly, and the batch
     # is waiting, not blocked.
     assert po.origin_retirement_tick(queue) == []
-    assert pbstatus.read_blocked_origins(queue.root)["blocked"] == []
+    assert fleet_census.blocked_origins(queue.root).value["blocked"] == []
 
     [second] = edges._released(dr.release_tick(queue))
     assert second["pending_id"] == retry["pending_id"]
@@ -372,7 +373,7 @@ def test_the_blocked_listing_names_each_dead_holder_and_its_exact_remedy(
 
     code, before = listing()
     assert code == 0 and before["complete"] is True and before["unreadable"] == []
-    assert before["schema"] == pbstatus.BLOCKED_ORIGINS_SCHEMA_V1
+    assert before["schema"] == fleet_census.BLOCKED_ORIGINS_SCHEMA_V1
     [row] = before["blocked"]
     _instance, path, ref = batches["blocked"]
     assert (row["ref"], row["bytes"], row["holding"]) == (ref, path.stat().st_size, [gone])

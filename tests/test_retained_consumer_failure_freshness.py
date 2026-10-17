@@ -362,6 +362,7 @@ def test_incomplete_records_keep_only_currently_qualified_candidates(
 
 def test_history_requalifies_detached_entries_without_persisting_candidates(
         tmp_path, filesystem, monkeypatch):
+    from prismabuild import census as fleet_census
     import pbmetrics
     from test_btrfs_subvolume_records_are_retained import _ObservedStat
 
@@ -370,7 +371,7 @@ def test_history_requalifies_detached_entries_without_persisting_candidates(
     record = directory / "one.json"
     record.write_text('{"value":"history-row"}')
     facts = filesystem(directory, record)
-    reader = pbmetrics.KeptReads()
+    reader = fleet_census.KeptReads()
 
     def entries():
         reader.begin()

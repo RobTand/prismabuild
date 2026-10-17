@@ -1,3 +1,4 @@
+from prismabuild import census as fleet_census
 import pbstatus
 import pbrun
 from prismabuild import submission as submit_core
@@ -10,6 +11,7 @@ from test_resident_sets_records import publish
 
 
 def test_status_shows_sets_copies_leases_and_dynamic_capacity(tmp_path, capsys):
+    from prismabuild import census as fleet_census
     import pbstatus
     from prismabuild import resident_sets
     store, record = publish(tmp_path)
@@ -26,6 +28,7 @@ def test_status_shows_sets_copies_leases_and_dynamic_capacity(tmp_path, capsys):
 
 
 def test_unreadable_resident_record_is_partial_not_empty(tmp_path):
+    from prismabuild import census as fleet_census
     import pbstatus
     store, record = publish(tmp_path)
     store.copy_path(record["set_id"], "test-host").write_text("broken")
@@ -35,6 +38,7 @@ def test_unreadable_resident_record_is_partial_not_empty(tmp_path):
 
 
 def test_new_claim_and_immutable_attempt_record_canonical_serving(tmp_path):
+    from prismabuild import census as fleet_census
     import pbstatus
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 1, "mem_gb": 2},
                                  default_demand={"cpu": 1, "mem_gb": 1})
@@ -47,7 +51,7 @@ def test_new_claim_and_immutable_attempt_record_canonical_serving(tmp_path):
     path = queue.finish(key, status="executed")
     terminal = json.loads(path.read_text())
     assert queue.attempt_outcomes(terminal)[0]["served_from"] == "canonical"
-    assert pbstatus.read_endings(queue.root)[0]["served_from"] == "canonical"
+    assert fleet_census.endings(queue.root)[0]["served_from"] == "canonical"
 
 
 def test_explicit_resident_declaration_is_sealed_and_projected_not_a_gate(tmp_path):
