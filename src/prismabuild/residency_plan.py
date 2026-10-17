@@ -2422,7 +2422,7 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
         epoch = ""
         root_wanted = str(plan.get("stage_root") or "")
     spans = _sealed_spans(plan, ram=ram)
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     out: set[str] = set()
     for fragment in fragments:
         mover = fragment.get("mover_action_key")
@@ -2444,7 +2444,7 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
         span = spans.get(mover)
         if span is None:
             continue            # no leg of this plan seals that key
-        if not ledger.holder_tokens(mover):
+        if not ledger.holdings(mover):
             continue            # the tier no longer accounts for the range
         if bool(
             _pool.record_store.value_or_raise(

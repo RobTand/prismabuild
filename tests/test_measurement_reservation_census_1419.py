@@ -75,7 +75,7 @@ def test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_electi
         names = original_scan(self, directory, **kwargs)
         if election_body[0] and not arrived[0] and directory == self.held_dir:
             arrived[0] = True
-            assert queue.hold_tier_host_memory(self.host, 'election-gap', 1) == ('taken', '')
+            assert queue.tier('ram:' + str(self.host))._hold_host('election-gap', 1) == ('taken', '')
         return names
 
     monkeypatch.setattr(reservation, 'locked_census', census_with_arrival_window)
@@ -89,7 +89,7 @@ def test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_electi
     assert queue.ledger().holder_tokens('ram-host:election-gap') == {'mem_gb': 1}
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert queue.ledger().holds_gpu(holder)
-    assert queue.release_tier_host_memory(queue.ledger().host, 'election-gap') == 1
+    assert queue.tier('ram:' + str(queue.ledger().host))._release_host('election-gap') == 1
 
 
 def test_new_unlocked_measurement_at_refresh_restarts_without_tokens(fleet, monkeypatch):

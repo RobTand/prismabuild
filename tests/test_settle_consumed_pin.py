@@ -72,8 +72,8 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5})
-    ledger = queue.tier_ledger(TIER)
+    queue.tier(TIER).mint({'stage_gib': 5})
+    ledger = queue.tier(TIER)
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -127,7 +127,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         "stage_root": str(stage), "complete": True, "bytes_staged": SPAN})
     queue.finish(mover, status="executed")
     # Landed and pinned: DONE filed, 1 GiB still charged to the mover.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     assert queue.read_funding(mover, TIER)["state"] == "consumed"
 
     protection = {"protected": {(consumer, TIER): {
@@ -138,8 +138,8 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     # tokens still held, record still consumed.
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] == []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 4
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 4
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
@@ -150,8 +150,8 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         queue, mover, consumer_action_key=consumer, stage_root=str(stage))
     assert not staged.exists()
     assert int(receipt.get("tokens_released", 0)) == 1
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 5
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 5
 
 
 def _funded_pair(queue, plan, mover, row, *, kind, gib, grant):
@@ -192,8 +192,8 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5})
-    ledger = queue.tier_ledger(TIER)
+    queue.tier(TIER).mint({'stage_gib': 5})
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("proof-mover"), _hexkey("proof-consumer")
     plan = _plan(queue, mover=mover, consumer=consumer)
     phases = plan["phases"]
@@ -227,8 +227,8 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
         queue, _protection(consumer, mover, grant, gib=1))
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] == []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 4
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 4
 
     # Control: the same terminal state with no proof releases exactly.
     pool.immutable_files.write_json_atomic(done_path, {
@@ -239,5 +239,5 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
         queue, _protection(consumer, mover, grant, gib=1))
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] != []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 5
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 5

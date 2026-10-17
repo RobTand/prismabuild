@@ -153,7 +153,7 @@ def _queue(tmp_path: Path, *, fill: int) -> pool.PoolQueue:
     tokens = {"stage_gib": 16}
     if fill:
         tokens[storage_tiers.FILL_KIND] = fill
-    queue.mint_tier_capacity(TIER, tokens)
+    queue.tier(TIER).mint(tokens)
     return queue
 
 
@@ -207,7 +207,7 @@ def test_the_waited_copy_is_admitted_without_fill_and_holds_its_stage(
     assert _claim(queue) is None
     claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, waited).read_text())
     assert claimed["tier_fill_waived"]["waived"] == 50
-    assert queue.tier_ledger(TIER).holder_tokens(waited) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(waited) == {'stage_gib': 2}
 
 
 def test_the_cap_admits_that_many_movers_and_no_more(tmp_path: Path) -> None:

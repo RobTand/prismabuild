@@ -249,7 +249,7 @@ def _plan_fixture(tmp_path: Path):
             "egress_row": _row(queue, _hexkey("generationegress"),
                                {"mem_gb": 1})}])
     residency_plan.freeze(queue, plan)
-    queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
+    queue.tier(TIER).mint({STAGE_KIND: 21})
     progress_path = tmp_path / "consumer.progress"
     Path(progress.staged_wait_path(str(progress_path))).write_text(json.dumps({
         "schema": progress.STAGED_WAIT_SCHEMA_V1, "token": TOKEN,

@@ -345,7 +345,7 @@ def run_bench(args) -> int:
 
     queue = pool.PoolQueue(work / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = work / "stage"
     stage.mkdir()
     stage = stage.resolve()

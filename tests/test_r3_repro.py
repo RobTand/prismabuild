@@ -21,7 +21,7 @@ def _queue(tmp_path: Path, gib: int) -> pool.PoolQueue:
     (root / "cas").mkdir(parents=True, exist_ok=True)
     (root / "co").mkdir(parents=True, exist_ok=True)
     (root / "worker.py").write_text("x")
-    q.mint_tier_capacity(TIER, {f"stage_gib": gib})
+    q.tier(TIER).mint({f'stage_gib': gib})
     return q
 
 def test_repro_unknown_ready_preserved(tmp_path: Path) -> None:
@@ -42,10 +42,10 @@ def test_repro_unknown_ready_preserved(tmp_path: Path) -> None:
 
 def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
     q = _queue(tmp_path, 3)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     mover = _hexkey("r3-torn-mover")
-    assert ledger.acquire(mover, {"stage_gib": 1}) is True
-    names = sorted(p.name for p in (ledger.held_dir / mover).glob("*-*"))
+    assert ledger.take(mover, {'stage_gib': 1}) is True
+    names = sorted((p.name for p in (ledger.paths.held / mover).glob('*-*')))
     rec = {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
            "consumer_action_key": _hexkey("r3-consumer"),
            "plan_sha256": "8" * 64, "mover_action_key": mover,
@@ -63,13 +63,13 @@ def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
     tier_loop._settle_terminal_fence(
         q, ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     assert q.read_funding(mover, TIER) is not None
     assert q.read_funding(mover, TIER)["state"] == "transferring"
     # Same through the real window caller (funding scan): defers loudly,
     # frees nothing, closes nothing.
     events = tier_loop.residency_window(q, tiers={TIER: {"tier_id": TIER}})
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     assert q.read_funding(mover, TIER)["state"] == "transferring"
     assert [e for e in events
             if e.get("event") == "advance-deferred-unknown-evidence"], \

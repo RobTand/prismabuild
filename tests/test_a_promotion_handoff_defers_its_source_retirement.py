@@ -81,8 +81,8 @@ def _manifest(tmp_path: Path) -> tuple[dict, Path]:
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 8})
-    queue.mint_tier_capacity(RAM_TIER, {RAM_KIND: 4})
+    queue.tier(TIER).mint({KIND: 8})
+    queue.tier(RAM_TIER).mint({RAM_KIND: 4})
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -245,10 +245,10 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     assert staged.exists() and paths["fragment"].exists()
     assert paths["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
 
     # Egress while the promotion's claim is live: a pending copy handoff, so
     # the whole document and its charge stay.  Not shared, not freed.
@@ -268,7 +268,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert paths["material"].exists(), "its material date must survive"
     assert not paths["retiring"].exists(), (
         "no retiring mark while the handoff still has to prove its source")
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1, (
+    assert ledger.holdings(MOVER_A).get(KIND) == 1, (
         "no early free credit while the handoff still holds the source")
 
     # No mark closes the generation, so the proof-only acquire the promotion
@@ -307,7 +307,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert not paths["fragment"].exists()
     assert not paths["material"].exists()
     assert not paths["retiring"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
 
     # Idempotent: the concluded egress cannot free or decharge a second time.
     third = stage_release.evict(queue, MOVER_A,
@@ -317,7 +317,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert third["entries_deleted"] == 0, third
     assert third["tokens_released"] == 0, third
     assert third["tokens_decharged"] == 0, third
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
 
 
 def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
@@ -344,7 +344,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     paths_a = _paths(queue, CONSUMER_A, MOVER_A)
     paths_b = _paths(queue, CONSUMER_B, MOVER_B)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     # The claim is live and the promotion has not acquired yet: the handoff
     # outranks B's shared skip, so A keeps its own proof and full charge.
@@ -360,8 +360,8 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert staged.exists()
     assert paths_a["fragment"].exists() and paths_a["material"].exists()
     assert paths_b["fragment"].exists() and paths_b["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
 
     # The real promotion proves its own consumer's source cover before it
     # copies: with A's retained fragment it completes, and the cover names A
@@ -386,8 +386,8 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert staged.exists()
     assert paths_b["fragment"].exists()
     assert not paths_a["fragment"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
 
     last = stage_release.evict(queue, MOVER_B,
                                consumer_action_key=CONSUMER_B,
@@ -396,7 +396,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert last["entries_deleted"] == 1, last
     assert last["tokens_released"] == 1, last
     assert not staged.exists()
-    assert ledger.holder_tokens(MOVER_B).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_B).get(KIND, 0) == 0
 
 
 def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
@@ -411,7 +411,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
 
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     first = stage_release.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
@@ -420,7 +420,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     assert first["retiring"] is False, first
     assert first["tokens_released"] == 0, first
     assert staged.exists() and paths["fragment"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
 
     (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").unlink()
     second = stage_release.evict(queue, MOVER_A,
@@ -445,7 +445,7 @@ def test_a_malformed_promotion_claim_taints_and_retains(
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     receipt = stage_release.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
@@ -455,4 +455,4 @@ def test_a_malformed_promotion_claim_taints_and_retains(
                for error in receipt["errors"]), receipt
     assert staged.exists() and paths["fragment"].exists()
     assert paths["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1

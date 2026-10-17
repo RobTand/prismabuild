@@ -82,7 +82,7 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 5})
+    q.tier(TIER).mint({'stage_gib': 5})
     return q
 
 

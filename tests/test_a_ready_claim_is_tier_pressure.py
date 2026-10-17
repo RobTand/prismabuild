@@ -48,7 +48,7 @@ ORPHANS = 3
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": CAPACITY_GIB})
+    q.tier(TIER).mint({'stage_gib': CAPACITY_GIB})
     return q
 
 
@@ -92,8 +92,7 @@ def _setup(queue: pool.PoolQueue, stage: Path, *,
                              "tier_id": TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 1 << 30,
                              "leads": residency_plan.leads_for(plan)})
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == (
-        CAPACITY_GIB - PHASE_GIB * (ORPHANS + 1))
+    assert queue.tier(TIER).free_supply()['stage_gib'] == CAPACITY_GIB - PHASE_GIB * (ORPHANS + 1)
     return orphans
 
 
@@ -110,7 +109,7 @@ def _claim_tier_shortage(queue: pool.PoolQueue,
 
 
 def _held(queue: pool.PoolQueue, ordinal: int) -> bool:
-    return bool(queue.tier_ledger(TIER).holder_tokens(_orphan(ordinal)))
+    return bool(queue.tier(TIER).holdings(_orphan(ordinal)))
 
 
 def test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough(
@@ -138,8 +137,7 @@ def test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough(
         assert _held(queue, ordinal)
         assert all(path.exists() for path in orphans[ordinal])
     # The successor's own lead is never relief.
-    assert queue.tier_ledger(TIER).holder_tokens(
-        _hexkey("successormover0")) == {"stage_gib": PHASE_GIB}
+    assert queue.tier(TIER).holdings(_hexkey('successormover0')) == {'stage_gib': PHASE_GIB}
     assert _claim_tier_shortage(queue, 4) is None
     assert_ledger_matches_the_stage(queue)
 

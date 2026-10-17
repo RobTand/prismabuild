@@ -148,7 +148,7 @@ class _Row:
                        "manifest_sha256": self.digest,
                        "manifest_bytes": TOTAL,
                        "leads": residency_plan.leads_for(self.plan)})
-        self.queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+        self.queue.tier(TIER).mint({'stage_gib': 8})
         self.tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(self.stage)}}
         self.refuse: set[str] = set()
@@ -271,7 +271,7 @@ def _fail_phase_zero(row: _Row) -> dict[str, object]:
     row.refuse = set()
     assert receipt["complete"] is False, receipt
     assert receipt["entries_staged"] == 1, receipt
-    assert not row.queue.tier_ledger(TIER).holder_tokens(MOVERS[0]), (
+    assert not row.queue.tier(TIER).holdings(MOVERS[0]), (
         "control: an incomplete mover returns its tokens at finish")
     return receipt
 

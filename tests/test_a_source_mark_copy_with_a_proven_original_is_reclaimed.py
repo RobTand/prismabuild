@@ -102,7 +102,7 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
     if tier is not None:
         kind = storage_tiers.capacity_kind_of(tier)
         demand[f"{kind}@{tier}"] = 1
-        queue.mint_tier_capacity(tier, {kind: 2})
+        queue.tier(tier).mint({kind: 2})
         residency = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
                      "manifest_sha256": digest, "manifest_bytes": SIZE,
                      "range_start_bytes": 0, "range_end_bytes": SIZE}
@@ -485,8 +485,8 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     retained.write_bytes(b"held")
     os.setxattr(retained, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
     os.setxattr(retained, stage_marks.STAGE_MOVER_XATTR, retained_key.encode())
-    queue.mint_tier_capacity(TIER, {KIND: 3})
-    assert queue.tier_ledger(TIER).acquire(retained_key, {KIND: 1})
+    queue.tier(TIER).mint({KIND: 3})
+    assert queue.tier(TIER).take(retained_key, {KIND: 1})
     queue.record_move(retained_key, {
         "tier_id": TIER, "stage_root": str(stage), "complete": True,
         "entries": [{"stage_path": str(retained), "bytes": 4}],
@@ -520,7 +520,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
 
     publish()
     assert queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2}) is None
-    assert queue.tier_ledger(TIER).holder_tokens(waiting_key) == {}
+    assert queue.tier(TIER).holdings(waiting_key) == {}
     queue.withdraw(waiting_key, reason="fixture pauses the mover", by="test")
     got = _reclaim(fleet, apply=True, run_id="run-mint")
     assert got["complete"] is True
@@ -529,13 +529,13 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     after = mint()
     assert after["landed"] == 1 and after["supply"] == 3
     assert after["writable"] == before["writable"] + 1
-    assert queue.tier_ledger(TIER).holder_tokens(retained_key) == {KIND: 1}
+    assert queue.tier(TIER).holdings(retained_key) == {KIND: 1}
     publish()
     admitted = queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2})
     assert admitted is not None and admitted["action_key"] == waiting_key
-    assert queue.tier_ledger(TIER).held() == {KIND: 3}
-    assert queue.tier_ledger(TIER).holder_tokens(waiting_key) == {KIND: 2}
-    assert 4 <= queue.tier_ledger(TIER).held()[KIND] * storage_tiers.GIB
+    assert queue.tier(TIER).holdings() == {KIND: 3}
+    assert queue.tier(TIER).holdings(waiting_key) == {KIND: 2}
+    assert 4 <= queue.tier(TIER).holdings()[KIND] * storage_tiers.GIB
 
 
 def test_quarantine_on_the_stage_device_is_refused(fleet) -> None:
@@ -635,7 +635,7 @@ def test_an_unreadable_ledger_refuses_the_pass(fleet, monkeypatch) -> None:
     def _refuse(_tier_id):
         raise pool.PoolContractError("ledger gone")
 
-    monkeypatch.setattr(queue, "tier_ledger", _refuse)
+    monkeypatch.setattr(queue, 'tier', _refuse)
 
     got = _reclaim(fleet)
 

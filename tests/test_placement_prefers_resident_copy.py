@@ -61,7 +61,7 @@ def _resident_world(tmp_path, *, resident_host="zhost", lease_now=100, hosts=HOS
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
     for host in hosts:
-        queue.mint_tier_capacity("local:" + host, {"local_gib": 1})
+        queue.tier('local:' + host).mint({'local_gib': 1})
     root, manifest = resident_source(tmp_path)
     store = rs.ResidentSets(tmp_path / "queue")
     record = store.publish(manifest=manifest, canonical_root=str(root),
@@ -340,7 +340,7 @@ def resident_gang(fleet, tmp_path, monkeypatch):
     """An idle two-host gang fleet with a set resident only on sparky."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     for host in GHOSTS:
-        queue.mint_tier_capacity("local:" + host, {"local_gib": 1})
+        queue.tier('local:' + host).mint({'local_gib': 1})
         queue.announce(host=host, tags=["gb10", host, _gang.TAG], has_gpu=True,
                        capacity=dict(CAPACITY))
     root, manifest = resident_source(tmp_path)

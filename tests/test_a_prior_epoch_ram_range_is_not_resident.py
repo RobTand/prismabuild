@@ -51,9 +51,9 @@ NEW_EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 def _queue(tmp_path: Path, *, announce_ram: bool = True) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
-    ledger = queue.tier_ledger(STAGE_TIER)
-    assert ledger.acquire(STAGE_LEAD, {"stage_gib": 2})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 8})
+    ledger = queue.tier(STAGE_TIER)
+    assert ledger.take(STAGE_LEAD, {'stage_gib': 2})
     queue.record_move(STAGE_LEAD, {
         "consumer_action_key": CONSUMER, "tier_id": STAGE_TIER,
         "stage_root": STAGE_ROOT, "manifest_sha256": MANIFEST,

@@ -98,7 +98,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
 def _queue(tmp_path: Path, *, capacity_gib: int = 5) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": capacity_gib})
+    q.tier(TIER).mint({'stage_gib': capacity_gib})
     return q
 
 
@@ -184,12 +184,10 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
         residency_plan.plan_sha256(plans[winner]), record
     assert int(record.get("range_start_bytes")) == 2 * GIB, record
     assert int(record.get("range_end_bytes")) == 4 * GIB, record
-    ledger = queue.tier_ledger(TIER)
-    kinds = ledger.available()
+    ledger = queue.tier(TIER)
+    kinds = ledger.free_supply()
     assert kinds.get("stage_gib", 0) == 3
-    held = sum(int(tokens.get("stage_gib", 0))
-               for tokens in (ledger.holder_tokens(holder)
-                              for holder in ledger.held_keys()))
+    held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(holder) for holder in ledger.holders())))
     assert held + kinds.get("stage_gib", 0) == 5
 
 

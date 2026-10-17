@@ -116,8 +116,8 @@ def _write_sidecar(queue, stage, consumer, mover, entries, *,
 
 
 def _charge(queue, mover: str, tokens: int = 1) -> None:
-    queue.mint_tier_capacity(TIER, {"stage_gib": tokens})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": tokens}) is True
+    queue.tier(TIER).mint({'stage_gib': tokens})
+    assert queue.tier(TIER).take(mover, {'stage_gib': tokens}) is True
 
 
 def _stage(stage: Path, name: str, payload: bytes) -> Path:
@@ -209,7 +209,7 @@ def _kept(queue, stage, consumer, mover) -> None:
         queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
         queue.records.residency_fragment_root(), consumer, mover).exists()
-    assert mover in queue.tier_ledger(TIER).held_keys()
+    assert mover in queue.tier(TIER).holders()
 
 
 def _successor_manifest(tmp_path: Path, payloads: dict[str, bytes]):
@@ -287,7 +287,7 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
                              computed=None, source_id=None,
                              heal=True)[0] == "refuse", (
         "the stale owner must block the shared publisher")
-    assert mover in queue.tier_ledger(TIER).held_keys()
+    assert mover in queue.tier(TIER).holders()
 
     receipts = _sweep(queue, stage)
     assert _retired(receipts, mover), (
@@ -297,7 +297,7 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
         queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not reader_lease.material_path(
         queue.records.residency_fragment_root(), consumer, mover).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
 
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
     monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
@@ -499,5 +499,4 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
     assert reader_lease.material_path(
         queue.records.residency_fragment_root(), handoff.CONSUMER_A,
         handoff.MOVER_A).exists()
-    assert handoff.MOVER_A in queue.tier_ledger(
-        handoff.STAGE_TIER).held_keys()
+    assert handoff.MOVER_A in queue.tier(handoff.STAGE_TIER).holders()

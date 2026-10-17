@@ -316,7 +316,7 @@ def test_asymmetric_prelaunch_gang_defers_election(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "deferral",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     first, second = keys
@@ -340,7 +340,7 @@ def test_all_resident_prelaunch_gang_elects(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "elected",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):
@@ -364,7 +364,7 @@ def test_unreadable_sibling_evidence_defers(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "sibling-unreadable",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):
@@ -392,7 +392,7 @@ def test_undeclared_gang_reads_no_manifest_and_no_sibling_verdict(
     """R3: an undeclared gang elects with no manifest or sibling reads."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, keys = members("undeclared-1594", declares_manifest=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     record = _gang.read_group(queue, group)
     assert record is not None
 
@@ -429,7 +429,7 @@ def test_election_boundary_rereads_sibling_verdict(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "boundary",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):

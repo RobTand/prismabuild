@@ -209,8 +209,9 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The claim files its tokens; the pin keeps them past finish, read off
     # the receipt exactly the way a stage mover's is.
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(MOVER, {"ram_gib": 1})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(MOVER, {'ram_gib': 1})
     record = {"action_key": MOVER, "status": "executed", "residency": {
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
         "manifest_sha256": MANIFEST_SHA, "manifest_bytes": CHUNK,
@@ -226,6 +227,6 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     assert egress["complete"] is True
     assert not (ram / SHARD).exists()
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

@@ -258,7 +258,7 @@ class Outputs:
     def fund_ready(self, *, tier, owner_seed, mover_seed):
         q = self.queue
         kind = "stage_gib"
-        q.mint_tier_capacity(tier, {kind: 4})
+        q.tier(tier).mint({kind: 4})
         template = self.template(tier)
         inst = self.bind(template, owner_seed)
         owner = inst["owner_action_key"]

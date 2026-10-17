@@ -1214,7 +1214,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
         tier_id = record.get("tier_id")
         if isinstance(tier_id, str) and tier_id:
             try:
-                held = pool.held_names_visible(queue.tier_ledger(tier_id), key)
+                held = queue.tier(tier_id).holder_state(key)
             except (OSError, pool.PoolContractError) as exc:
                 section["keep"].append(_retain(
                     KIND_MOVEMENT_RECEIPT, path,

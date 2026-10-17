@@ -201,7 +201,7 @@ def _claim_shortage(queue: pool.PoolQueue, key: str,
 
 
 def _held(queue: pool.PoolQueue, key: str) -> bool:
-    return bool(queue.tier_ledger(TIER).holder_tokens(key))
+    return bool(queue.tier(TIER).holdings(key))
 
 
 def _cycle(queue: pool.PoolQueue, stage: Path, *, gib: int) -> None:
@@ -213,7 +213,7 @@ def _cycle(queue: pool.PoolQueue, stage: Path, *, gib: int) -> None:
 def _fixture_queue(tmp_path: Path, gib: int) -> tuple[pool.PoolQueue, Path]:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": gib})
+    queue.tier(TIER).mint({'stage_gib': gib})
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -341,8 +341,7 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str,
         f"/pool/{manifest[:8]}/{name}/part-0.bin", 0): {
             "stage_path": str(path), "bytes": size, "offset": 0,
             "sha256": DIGEST}}
-    assert queue.tier_ledger(TIER).acquire(
-        mover, {"stage_gib": storage_tiers.stage_tokens_for_bytes(size)})
+    assert queue.tier(TIER).take(mover, {'stage_gib': storage_tiers.stage_tokens_for_bytes(size)})
     residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,

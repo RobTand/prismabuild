@@ -84,7 +84,7 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
 @pytest.mark.parametrize("reap", [False, True])
 def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
     w, mover, claimed, funding, result = _failed_copy(tmp_path, partial=True)
-    held = w.ledger.holder_tokens(mover)
+    held = w.ledger.holdings(mover)
     assert held[KIND] == 1
     material = {p: p.read_bytes() for p in w.stage_root.rglob("*") if p.is_file()}
     assert material
@@ -99,7 +99,7 @@ def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
         ended = w.q.finish(mover, status="failed", detail=result, claim_snapshot=claimed)
     assert ended.parent.name == pool.record_store.FAILED and ended.exists()
     assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
-    assert w.ledger.holder_tokens(mover) == held
+    assert w.ledger.holdings(mover) == held
     assert {p: p.read_bytes() for p in material} == material
     assert w.q.read_output_funding(mover, TIER) == funding
     archived = w.q.attempt_outcomes(pool.record_store.read_document(ended))[0]
@@ -170,11 +170,11 @@ def test_late_failure_never_concludes_a_live_successor(tmp_path, state):
     pool.immutable_files.write_json_atomic(path, successor)
     before = path.read_bytes()
     lease = w.q.records.lease_path(mover).read_bytes()
-    held = w.ledger.holder_tokens(mover)
+    held = w.ledger.holdings(mover)
     w.q.finish(mover, status="failed", claim_snapshot=claimed)
     assert path.read_bytes() == before
     assert w.q.records.lease_path(mover).read_bytes() == lease
-    assert w.ledger.holder_tokens(mover) == held
+    assert w.ledger.holdings(mover) == held
     assert not w.q.records.item_path(pool.record_store.FAILED, mover).exists()
     assert w.q.read_output_funding(mover, TIER) == funding
 
@@ -212,7 +212,7 @@ def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, m
     w.q.records.lease_path(mover).unlink()
     now = pool._now()
     monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 1)
-    held = w.ledger.holder_tokens(mover)
+    held = w.ledger.holdings(mover)
     w.q.reap_stale(timeout_s=3600)
     ended = w.q.records.item_path(pool.record_store.FAILED, mover)
     assert ended.exists()
@@ -222,5 +222,5 @@ def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, m
     assert "unstarted_releases" not in record
     assert w.q.attempt_ending(record)["disposition"] == pool.record_store.FAILED
     # No copy evidence is unknown occupancy, never proof that storage is free.
-    assert w.ledger.holder_tokens(mover) == held
+    assert w.ledger.holdings(mover) == held
     assert w.q.read_output_funding(mover, TIER) == funding

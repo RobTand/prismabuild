@@ -57,9 +57,9 @@ def held_mover(tmp_path: Path):
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "bytes_staged": 8192, "range_start_bytes": 0, "range_end_bytes": 8192,
         "stage_root": str(stage), "unix": 10.0})
-    ledger = queue.tier_ledger(TIER)
-    ledger.ensure_capacity({"stage_gib": 4})
-    assert ledger.acquire(MOVER, {"stage_gib": 1})
+    ledger = queue.tier(TIER)
+    ledger.grow_supply({'stage_gib': 4})
+    assert ledger.take(MOVER, {'stage_gib': 1})
     return queue, stage, shard
 
 
@@ -119,7 +119,7 @@ def test_the_reconciliation_is_skipped_when_the_held_set_cannot_be_read(
     assert record["complete"] is False
 
     state["armed"] = False
-    assert MOVER in queue.tier_ledger(TIER).held_keys()
+    assert MOVER in queue.tier(TIER).holders()
 
 
 def test_a_tier_whose_ledger_cannot_be_read_at_all_is_skipped_on_the_record(
@@ -141,4 +141,4 @@ def test_a_tier_whose_ledger_cannot_be_read_at_all_is_skipped_on_the_record(
     assert record["complete"] is False
 
     state["armed"] = False
-    assert MOVER in queue.tier_ledger(TIER).held_keys()
+    assert MOVER in queue.tier(TIER).holders()

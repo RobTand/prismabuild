@@ -45,6 +45,7 @@ from prismabuild import residency_map as map_mod  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import tier_holdings
 
 try:
     from prismabuild import reader_lease as rlc
@@ -101,7 +102,7 @@ def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {KIND: gib})
+    q.tier(TIER).mint({KIND: gib})
     return q
 
 
@@ -281,7 +282,7 @@ class _World:
         self.inst = _bind(self.q, self.template, self.owner, self.cas_root)
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         self.out_base = po.output_fragment_root(self.q.root / pool.record_store.RESIDENCY)
         self.publish_kwargs = dict(producer_action_key=self.owner,
                                    command_extra=["--unpaced"])
@@ -439,8 +440,8 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     charge_before = po._class_sums(world.commitments()["batches"])
 
     # The producer's window paid for it; nothing came from free.
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 1
     world.run_mover(mover0, "w-fwd")
     assert world.stage_path("p1.bin").read_bytes() == payload
 
@@ -459,14 +460,14 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     assert retired.get("ok") is True, retired
     assert str(retired["mover_key"]) == mover0
     assert int(retired["generation"]) == 0
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
     assert not world.stage_path("p1.bin").exists()
 
     # The window credit came back to free; the producer re-takes its own
     # admitted window through the existing lifecycle primitive.
     refill = po.refill_window(world.q, world.inst, world.template, tier=TIER)
     assert refill.get("ok") is True, refill
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 1
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 1
 
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
@@ -478,15 +479,15 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     assert str(ensured["manifest_digest"]) == manifest
     # Exactly the same window price as the first materialization, taken from
     # the producer's window by transfer, never from free.
-    assert world.ledger.holder_tokens(mover1).get(KIND, 0) == 1
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover1).get(KIND, 0) == 1
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
 
     # The successor's own row is claimable through the prepaid cover even with
     # free exhausted, which is what proves the committed batch authorizes it.
     squatter = "5" * 64
-    free = world.ledger.available().get(KIND, 0)
+    free = world.ledger.free_supply().get(KIND, 0)
     if free:
-        assert world.ledger.acquire(squatter, {KIND: free}) is True
+        assert world.ledger.take(squatter, {KIND: free}) is True
     world.run_mover(mover1, "w-rev")
     assert world.stage_path("p1.bin").read_bytes() == payload
 
@@ -565,8 +566,8 @@ def test_every_prewrite_completes_before_the_first_read_on_one_credit(
     """
 
     world = _World(tmp_path, window_gib=1, gib=4, maxima=1 << 16)
-    free_before = world.ledger.available().get(KIND, 0)
-    owner_before = world.ledger.holder_tokens(world.owner).get(KIND, 0)
+    free_before = world.ledger.free_supply().get(KIND, 0)
+    owner_before = world.ledger.holdings(world.owner).get(KIND, 0)
     assert owner_before == 1, "the producer holds exactly its declared window"
 
     plans = []
@@ -576,18 +577,17 @@ def test_every_prewrite_completes_before_the_first_read_on_one_credit(
         _prewrite(world.q, world.inst, world.template, f"b{index}", descs)
         plans.append((f"b{index}", descs, payload))
         # Not one token has moved: K prewrites, zero physical credit.
-        assert world.ledger.available().get(KIND, 0) == free_before
-        assert world.ledger.holder_tokens(
-            world.owner).get(KIND, 0) == owner_before
+        assert world.ledger.free_supply().get(KIND, 0) == free_before
+        assert world.ledger.holdings(world.owner).get(KIND, 0) == owner_before
 
     # The first actual read publishes exactly one batch, and it costs exactly
     # one window credit -- the bound the whole path is sized against.
     batch_id, descs, payload = plans[0]
     first = world.first_publish(batch_id, descs)
     mover = str(first["mover_key"])
-    assert world.ledger.holder_tokens(mover).get(KIND, 0) == 1
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
-    assert world.ledger.available().get(KIND, 0) == free_before
+    assert world.ledger.holdings(mover).get(KIND, 0) == 1
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
+    assert world.ledger.free_supply().get(KIND, 0) == free_before
     world.run_mover(mover, "w-window")
     assert world.stage_path("p0.bin", "b0").read_bytes() == payload
     # The other three are still uncommitted, still budgeted, still unstaged.
@@ -631,7 +631,7 @@ def test_a_live_pin_blocks_both_the_retirement_and_the_successor(
     assert str(live["mover_key"]) == mover0
     assert int(live["generation"]) == 0
     assert "materializations" not in world.entry("b1")
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 1
 
     assert rlc.release(world.q, held["pin_id"], held["ref_id"],
                        consumer_action_key=DOWNSTREAM,
@@ -666,16 +666,16 @@ def test_a_same_size_origin_change_is_refused_before_any_funding(
     origin.write_bytes(b"B" * 640)
     assert os.lstat(origin).st_size == len(payload)
 
-    owner_before = world.ledger.holder_tokens(world.owner).get(KIND, 0)
-    free_before = world.ledger.available().get(KIND, 0)
+    owner_before = world.ledger.holdings(world.owner).get(KIND, 0)
+    free_before = world.ledger.free_supply().get(KIND, 0)
     refused = world.ensure("b1")
     assert refused.get("ok") is False, refused
     assert refused.get("refusal") == "restage-origin-changed", refused
     assert refused.get("step") == "origin"
     # Nothing was filed and nothing was funded.
     assert "materializations" not in world.entry("b1")
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == owner_before
-    assert world.ledger.available().get(KIND, 0) == free_before
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == owner_before
+    assert world.ledger.free_supply().get(KIND, 0) == free_before
 
 
 def test_a_batch_with_no_identity_proof_fails_restage_explicitly(
@@ -820,8 +820,8 @@ def _assert_funded_once(world: _World, mover: str) -> None:
     record = world.q.read_output_funding(mover, TIER)
     assert record is not None and str(record["state"]) == "transferring"
     assert len(record["tokens"]) == 1
-    assert world.ledger.holder_tokens(mover).get(KIND, 0) == 1
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover).get(KIND, 0) == 1
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
 
 
 def test_a_replayed_ensure_answers_the_same_generation(tmp_path: Path) -> None:
@@ -990,10 +990,10 @@ def test_an_unfunded_successor_keeps_its_intent_and_finishes_later(
     world.run_mover(str(first["mover_key"]), "w-unfunded")
     assert world.retire("b1").get("ok") is True
     # Deliberately NOT refilled, and free is taken away so refill cannot help.
-    assert world.ledger.holder_tokens(world.owner).get(KIND, 0) == 0
+    assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
     squatter = "7" * 64
-    free = world.ledger.available().get(KIND, 0)
-    assert world.ledger.acquire(squatter, {KIND: free}) is True
+    free = world.ledger.free_supply().get(KIND, 0)
+    assert world.ledger.take(squatter, {KIND: free}) is True
 
     refused = world.ensure("b1")
     assert refused.get("ok") is False, refused
@@ -1007,7 +1007,7 @@ def test_an_unfunded_successor_keeps_its_intent_and_finishes_later(
     assert [e["event"] for e in events] == [
         "output-materialization-intent-pending"], events
 
-    assert world.ledger.release(squatter) >= 1
+    assert world.ledger.release_unspent(squatter, authority=tier_holdings.Unspent.NEVER_STARTED) >= 1
     assert po.refill_window(world.q, world.inst, world.template,
                             tier=TIER).get("ok") is True
     finished = world.ensure("b1")
@@ -1078,7 +1078,7 @@ def test_every_census_follows_the_active_materialization(
     assert retired.get("ok") is True, retired
     assert str(retired["mover_key"]) == mover1
     assert int(retired["generation"]) == 1
-    assert world.ledger.holder_tokens(mover1).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover1).get(KIND, 0) == 0
     entry = world.entry("b1")
     assert entry["materializations"][0]["retired"] is True
     assert isinstance(entry["materializations"][0]["staged_paths"], list)

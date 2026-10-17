@@ -330,12 +330,11 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     fleet.consumer_reported_unix = now - 800  # type: ignore[attr-defined]
     # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
     # as a ready mover and staged nowhere.
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(
-        _hexkey("mover0"), {"stage_gib": 2})
-    assert queue.tier_ledger(RAM_TIER).acquire(
-        _hexkey("rampromote0"), {"ram_gib": 2})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.ledger(RAM_TIER.split(":", 1)[1]).ensure_capacity({"mem_gb": 8})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(STAGE_TIER).take(_hexkey('mover0'), {'stage_gib': 2})
+    assert queue.tier(RAM_TIER).take(_hexkey('rampromote0'), {'ram_gib': 2})
     # Landed means landed (#759): the booking above is the room, and these
     # are the records a finished copy leaves.  The promotion's fragment
     # names the ram root it landed on, under the announced epoch, which is

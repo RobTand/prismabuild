@@ -48,8 +48,8 @@ def _orphans(queue, stage, count: int) -> list[str]:
 
 
 def _held_orphans(queue, movers: list[str]) -> int:
-    ledger = queue.tier_ledger(TIER)
-    return sum(1 for mover in movers if ledger.holder_tokens(mover))
+    ledger = queue.tier(TIER)
+    return sum((1 for mover in movers if ledger.holdings(mover)))
 
 
 def _prefix_tokens(queue, consumer, plan) -> int:
@@ -59,12 +59,10 @@ def _prefix_tokens(queue, consumer, plan) -> int:
     once the group splits, the leg movers hold them (the tokens move, none is
     freed in between).  Another unit's group is not this prefix.
     """
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     holder = prelaunch_group.holder_name(
         consumer, TIER, residency_plan.prelaunch_phase_names(plan))
-    return (int(ledger.holder_tokens(holder).get("stage_gib", 0))
-            + sum(int(ledger.holder_tokens(lead).get("stage_gib", 0))
-                  for lead in residency_plan.leads_for(plan)))
+    return (int(ledger.holdings(holder).get('stage_gib', 0)) + sum((int(ledger.holdings(lead).get('stage_gib', 0)) for lead in residency_plan.leads_for(plan))))
 
 
 def test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans(
@@ -78,8 +76,7 @@ def test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans(
     plan = _declared_plan(queue, consumer,
                           [("p0", 10, True, 1), ("p1", 1, False, 1)], tag="w")
     _live(queue, plan, consumer)             # peak 11: above free, within 20
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == (
-        CAPACITY - 7 * PHASE_GIB)
+    assert queue.tier(TIER).free_supply()['stage_gib'] == CAPACITY - 7 * PHASE_GIB
     assert _prefix_tokens(queue, consumer, plan) == 0
     for _ in range(6):
         _cycle(queue, stage, gib=CAPACITY)

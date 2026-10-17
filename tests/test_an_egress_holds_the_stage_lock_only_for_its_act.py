@@ -154,7 +154,7 @@ def _land_range(queue: pool.PoolQueue, stage: Path, root: Path) -> None:
         "range_start_bytes": 0, "range_end_bytes": storage_tiers.GIB,
         "bytes_staged": storage_tiers.GIB, "complete": True})
     queue.finish(LANDED_MOVER, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(LANDED_MOVER) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(LANDED_MOVER) == {'stage_gib': 1}
 
 
 def _publisher(pool_root: str, stage: str, root: str, index: int,
@@ -189,7 +189,7 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     stage = stage.resolve()

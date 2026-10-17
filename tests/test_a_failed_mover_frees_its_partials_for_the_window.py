@@ -129,7 +129,7 @@ def _fail_mover(queue: pool.PoolQueue, stage: Path, *,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
         "entries": entries})
-    assert not queue.tier_ledger(TIER).holder_tokens(mover)
+    assert not queue.tier(TIER).holdings(mover)
     return written
 
 
@@ -243,7 +243,7 @@ def test_the_window_holds_the_recopy_while_its_egress_is_queued(
     mover0 = _hexkey("mover0")
     partials = _fail_mover(queue, stage, mover=mover0)
     queue.publish(**plan["phases"][0]["egress_row"], recompute=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 10})
+    queue.tier(TIER).mint({'stage_gib': 10})
 
     events = tier_loop.residency_window(queue, tiers={TIER: _tier_record()})
 

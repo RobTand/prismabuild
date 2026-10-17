@@ -148,7 +148,7 @@ class _Loop:
         self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
-        self.queue.mint_tier_capacity(TIER, {"stage_gib": 10})
+        self.queue.tier(TIER).mint({'stage_gib': 10})
         self.receipts = tier_loop.ReceiptCache(trust=trust)
 
     def cycle(self, identity: dict[str, object] = IDENTITY_A,
@@ -449,7 +449,7 @@ def test_a_live_mover_or_held_token_keeps_the_receipt(tmp_path: Path) -> None:
     charged = _move(queue, "charged", consumer=terminal, unix=T0 + 2.0,
                     delivered=250.0, sealed=500, file_side=205.0)
     _ready(queue, queued)
-    assert queue.tier_ledger(TIER).acquire(charged, {"stage_gib": 1})
+    assert queue.tier(TIER).take(charged, {'stage_gib': 1})
 
     assert _candidates(_survey(queue)) == {plain}
 
@@ -720,7 +720,7 @@ def test_a_holder_after_the_survey_stops_the_prepare(tmp_path: Path) -> None:
                 delivered=300.0, sealed=500, file_side=200.0)
     assert _candidates(_survey(queue)) == {key}
 
-    assert queue.tier_ledger(TIER).acquire(key, {"stage_gib": 1})
+    assert queue.tier(TIER).take(key, {'stage_gib': 1})
     version = _version(queue.records.move_path(key))
     outcome = queue.prepare_move_retirement(key, expected_version=version)
     assert isinstance(outcome, str), (
@@ -747,7 +747,7 @@ def test_a_holder_after_the_commit_stops_the_unlink(tmp_path: Path) -> None:
         [entry], expected_baseline=baseline)
     assert reason == "" and identity is not None
 
-    assert queue.tier_ledger(TIER).acquire(key, {"stage_gib": 1})
+    assert queue.tier(TIER).take(key, {'stage_gib': 1})
     why = queue.unlink_retired_move(key, expected_version=version, entry=entry,
                                     commit_identity=identity)
     assert why, "a holder restored after the commit was unlinked anyway"

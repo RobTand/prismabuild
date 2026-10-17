@@ -17,7 +17,7 @@ def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monke
     import pbresident
     root, manifest = source(tmp_path)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.mint_tier_capacity("local:test-host", {"local_gib": 1})
+    queue.tier('local:test-host').mint({'local_gib': 1})
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))
     observed = []

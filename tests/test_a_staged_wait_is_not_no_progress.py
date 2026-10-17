@@ -508,8 +508,8 @@ def test_a_landed_mover_is_not_waited_on(tmp_path: Path) -> None:
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     key = _finish(queue, row, pool.record_store.DONE)
-    queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
-    assert queue.tier_ledger(TIER).acquire(key, {STAGE_KIND: 21})
+    queue.tier(TIER).mint({STAGE_KIND: 21})
+    assert queue.tier(TIER).take(key, {STAGE_KIND: 21})
 
     verdict = _verdict(queue, item, progress_path)
 

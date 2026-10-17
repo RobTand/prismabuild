@@ -104,22 +104,22 @@ def test_unstaged_entry_lookup_is_visible_not_silent(tmp_path: Path) -> None:
 def test_double_egress_reclaims_exactly_once(tmp_path: Path) -> None:
     """Charged tier tokens return once across two egresses; balances prove it."""
     queue, manifest, files_len = _staged_once(tmp_path)
-    ledger = queue.tier_ledger(STAGE_TIER)
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 4})
-    assert ledger.acquire(WHOLE_MOVER, {"stage_gib": 1}) is True
-    assert ledger.holder_tokens(WHOLE_MOVER) == {"stage_gib": 1}
+    ledger = queue.tier(STAGE_TIER)
+    queue.tier(STAGE_TIER).mint({'stage_gib': 4})
+    assert ledger.take(WHOLE_MOVER, {'stage_gib': 1}) is True
+    assert ledger.holdings(WHOLE_MOVER) == {'stage_gib': 1}
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=tmp_path / "stage") == "registered"
     first = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                 stage_root=tmp_path / "stage")
     assert first["complete"] is True
-    assert ledger.holder_tokens(WHOLE_MOVER) == {}
-    assert ledger.available() == {"stage_gib": 4}
+    assert ledger.holdings(WHOLE_MOVER) == {}
+    assert ledger.free_supply() == {'stage_gib': 4}
     second = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                  stage_root=tmp_path / "stage")
     assert second["complete"] is True
-    assert ledger.holder_tokens(WHOLE_MOVER) == {}
-    assert ledger.available() == {"stage_gib": 4}
+    assert ledger.holdings(WHOLE_MOVER) == {}
+    assert ledger.free_supply() == {'stage_gib': 4}
     assert not (tmp_path / "stage" / "model" / WHOLE).exists()
 
 

@@ -41,7 +41,7 @@ ENV = "PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL"
 def _offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     """Mint ``mb_s`` fill tokens and announce them, as the tier loop does."""
 
-    queue.mint_tier_capacity(TIER, {KIND: 4, FILL: mb_s})
+    queue.tier(TIER).mint({KIND: 4, FILL: mb_s})
     path = Path(queue.root) / "tiers" / f"{TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {KIND: 4, FILL: mb_s}
@@ -112,11 +112,11 @@ def test_an_opted_in_restage_reserves_the_offer_and_runs(tmp_path: Path) -> None
     # The stage window still comes from the producer by transfer; the fill
     # comes from free at the claim, and goes back when the mover stops.
     restage._claim_mover(world.q, "w-fill")
-    assert world.ledger.holder_tokens(mover) == {KIND: 1, FILL: 100}
+    assert world.ledger.holdings(mover) == {KIND: 1, FILL: 100}
     receipt = restage._execute_mover(world.q, mover)
     assert receipt["complete"] is True, receipt
     world.q.finish(mover, status="executed")
-    assert world.ledger.available().get(FILL) == 100
+    assert world.ledger.free_supply().get(FILL) == 100
 
 
 def test_the_sealed_environment_opts_the_producer_in(

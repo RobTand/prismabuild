@@ -184,7 +184,7 @@ def state(role, *, cycles, layout, parked=0, failed=False):
     assert len(tiers) == int(bool(cycles))
     if tiers:
         assert tiers[0]["tokens"] == {"arc_gib": 1}
-        assert role.queue.tier_ledger(tiers[0]["tier_id"]).available() == {"arc_gib": 1}
+        assert role.queue.tier(tiers[0]['tier_id']).free_supply() == {'arc_gib': 1}
     markers = list((role.root / "parked").iterdir()) if (role.root / "parked").is_dir() else []
     assert len(markers) == parked
     for name in ("claimed", "done", "failed", "generation-drift"):

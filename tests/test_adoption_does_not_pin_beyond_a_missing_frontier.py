@@ -13,8 +13,8 @@ def test_missing_frontier_keeps_future_donors_available_to_pressure(queue, stage
     # synthetic ledger prices, not a 69 GiB physical-storage benchmark.
     monkeypatch.setattr(base, 'PHASE_GIB', 14)
     monkeypatch.setattr(base, 'DIGEST', hashlib.sha256(b'x' * 32).hexdigest())
-    queue.mint_tier_capacity(base.TIER, {'stage_gib': 69})
-    ledger = queue.tier_ledger(base.TIER)
+    queue.tier(base.TIER).mint({'stage_gib': 69})
+    ledger = queue.tier(base.TIER)
     for ordinal in (0, 3, 4):
         base._stage_range(queue, mover=base._hexkey(f'oldmover{ordinal}'),
                           consumer=base.FIRST, stage=stage, ordinal=ordinal)
@@ -22,8 +22,8 @@ def test_missing_frontier_keeps_future_donors_available_to_pressure(queue, stage
     base._publish_consumer(queue, base.SECOND, plan)
     base._claim_with_progress(queue, base.SECOND, phase='phase-0')
     # Represents prepaid producer output credit, protected by the live owner.
-    assert ledger.acquire(base.SECOND, {'stage_gib': 14})
-    assert ledger.available()['stage_gib'] == 13
+    assert ledger.take(base.SECOND, {'stage_gib': 14})
+    assert ledger.free_supply()['stage_gib'] == 13
     tiers = {base.TIER: base._tier_record(stage, gib=69)}
     events = base.tier_loop.adopt_resident_ranges(queue, tiers=tiers)
     assert [event['phase'] for event in events if event.get('adopted')] == ['phase-0']
@@ -32,18 +32,18 @@ def test_missing_frontier_keeps_future_donors_available_to_pressure(queue, stage
     for ordinal in (3, 4):
         old = base._hexkey(f'oldmover{ordinal}')
         assert old not in wanted and old not in owners
-        assert ledger.holder_tokens(old) == {'stage_gib': 14}
-        assert not ledger.holder_tokens(base._hexkey(f'newmover{ordinal}'))
+        assert ledger.holdings(old) == {'stage_gib': 14}
+        assert not ledger.holdings(base._hexkey(f'newmover{ordinal}'))
     # No pressure preserves the useful distant bytes under their old owners.
     base.stage_release.sweep(queue, stage_roots={base.TIER: str(stage)}, pressure={})
-    assert ledger.available()['stage_gib'] == 13
+    assert ledger.free_supply()['stage_gib'] == 13
     # Real tier cycles own reclamation and mover publication, including the
     # frontier/advance grant. The test must reach a real READY frontier.
     for _ in range(3):
         base._cycle(queue, stage, gib=69)
     assert queue.records.item_path(base.pool.record_store.READY, base._hexkey('newmover1')).exists()
-    assert ledger.holder_tokens(base.SECOND) == {'stage_gib': 14}
-    assert ledger.holder_tokens(base._hexkey('newmover0')) == {'stage_gib': 14}
+    assert ledger.holdings(base.SECOND) == {'stage_gib': 14}
+    assert ledger.holdings(base._hexkey('newmover0')) == {'stage_gib': 14}
 
 
 def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, monkeypatch, tmp_path):
@@ -54,8 +54,8 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
     from prismabuild import data_manifest as manifest_codec
 
     monkeypatch.setattr(base, 'PHASE_GIB', 14)
-    queue.mint_tier_capacity(base.TIER, {'stage_gib': 69})
-    ledger = queue.tier_ledger(base.TIER)
+    queue.tier(base.TIER).mint({'stage_gib': 69})
+    ledger = queue.tier(base.TIER)
     mount = tmp_path / 'sources'
     mount.mkdir()
     payload = b'qualified-frontier-bytes' * 4
@@ -100,12 +100,12 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
 
     for ordinal in (0, 3, 4):
         mover = base._hexkey(f'previous{ordinal}')
-        assert ledger.acquire(mover, {'stage_gib': 14})
+        assert ledger.take(mover, {'stage_gib': 14})
         copy(base.FIRST, mover, ordinal)
     base._publish_consumer(queue, base.SECOND, plan)
     base._claim_with_progress(queue, base.SECOND, phase='phase-0')
-    assert ledger.acquire(base.SECOND, {'stage_gib': 14})
-    assert ledger.available()['stage_gib'] == 13
+    assert ledger.take(base.SECOND, {'stage_gib': 14})
+    assert ledger.free_supply()['stage_gib'] == 13
     # Actual production tier loop: adoption -> pressure -> sweep -> fence ->
     # publication. Repeated cycles model asynchronous completed ownership.
     for _ in range(3):
@@ -134,4 +134,4 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
         os.close(fd)
         assert base.reader_lease.release(queue, acquired['pin']['pin_id'],
                                          acquired['ref_id'], consumer_action_key=base.SECOND)
-    assert ledger.holder_tokens(base.SECOND) == {'stage_gib': 14}
+    assert ledger.holdings(base.SECOND) == {'stage_gib': 14}

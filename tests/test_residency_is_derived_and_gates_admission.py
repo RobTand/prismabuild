@@ -362,7 +362,7 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
     """Two blocks naming two digests are two manifests, whatever the bytes say."""
 
     other = "b" * 64
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     _publish(queue, MOVER, {"cpu": 1, STAGE: 1}, residency=dict(
         _residency(range_start=0, range_end=GIB), manifest_sha256=other))
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})

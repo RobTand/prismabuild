@@ -498,7 +498,7 @@ def test_an_unreachable_output_prefix_is_never_read_as_gone(
 def _cycle_lines(queue: pool.PoolQueue, stage: Path) -> list[dict]:
     """One whole `tier_loop.cycle`, returning the JSON lines it printed."""
 
-    queue.mint_tier_capacity(TIER, {KIND: 8})
+    queue.tier(TIER).mint({KIND: 8})
     stage.mkdir(parents=True, exist_ok=True)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     out = io.StringIO()

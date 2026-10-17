@@ -58,7 +58,7 @@ EGRESS = _hexkey("r11egress0")
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 
@@ -168,7 +168,7 @@ def test_mover_retry_preserves_range_tier_recompute_and_claim(
                          capacity={"cpu": 4, "mem_gb": 16})
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     assert "tier_reservations" in snap_b
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
 
 
 def test_consumer_retry_preserves_leads_and_lead_gate(
@@ -206,7 +206,7 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
             "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
     queue.finish(MOVER, status="executed", detail={}, claim_snapshot=snap_m)
     # The pin holds: tokens stand for bytes still on the stage.
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
     assert tier_loop.compose_map(queue, CONSUMER) == queue.records.residency_map_path(
         CONSUMER)
 

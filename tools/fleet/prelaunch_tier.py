@@ -25,6 +25,7 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
+from prismabuild import tier_holdings
 
 __all__ = [
     "Unit",
@@ -643,7 +644,7 @@ def _shared_fences(queue, movers: Sequence[str]) -> set[str]:
     return shared
 
 
-def dangling(queue, tier_id: str, ledger, live_units: Sequence[Unit], *,
+def dangling(queue, tier_id: str, ledger: tier_holdings.TierLedger, live_units: Sequence[Unit], *,
              complete_census: bool) -> list[dict]:
     """Release group holders no live unit owns on one tier.
 
@@ -659,7 +660,7 @@ def dangling(queue, tier_id: str, ledger, live_units: Sequence[Unit], *,
                     if unit.tier_id == tier_id}
     live_ids = {unit.unit for unit in live}
     try:
-        names = ledger.held_keys()
+        names = ledger.holders()
     except (OSError, ValueError, pool.PoolContractError) as exc:
         return [{"event": "prelaunch-dangling-retained", "unit": None,
                  "consumer": None, "holder": None, "tier_id": tier_id,

@@ -133,7 +133,7 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
 
     queue = pool.PoolQueue(tmp_path / "views-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 2})
     first, second = "d" * 64, "e" * 64
     _publish(queue, first, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=10)
     _publish(queue, second, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=0)
@@ -182,6 +182,6 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
     assert len(scans) == 4
     assert queue.ledger().held_keys() == []
     assert queue.ledger().available() == {"cpu": 8, "mem_gb": 8}
-    assert queue.tier_ledger(TIER).available() == {"stage_gib": 2}
+    assert queue.tier(TIER).free_supply() == {'stage_gib': 2}
     assert list(queue.records.dir(pool.CLAIMED).iterdir()) == []
     assert not queue.records.passes_path(first).exists() and not queue.records.passes_path(second).exists()

@@ -1585,7 +1585,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
     manifest = "ab" * 32
     gib = 1 << 30
     consumer, mover = "d4" * 32, "d5" * 32
-    queue.mint_tier_capacity(tier, {"stage_gib": 8})
+    queue.tier(tier).mint({'stage_gib': 8})
     plan = residency_plan.build_plan(
         consumer_action_key=consumer, tier_id=tier,
         stage_root="/stage/prewarm", manifest_sha256=manifest,

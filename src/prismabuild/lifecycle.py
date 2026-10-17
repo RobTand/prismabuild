@@ -18,7 +18,7 @@ import stat
 import sys
 import uuid
 
-from . import claim_identity, core as pb, endings, immutable_files, local_scratch, record_store, scratch_lifetime
+from . import claim_identity, core as pb, endings, immutable_files, local_scratch, record_store, scratch_lifetime, tier_holdings
 from .record_store import (
     Absent, AmbiguousClaimHolder, CLAIMED, DONE, FAILED, LATE_FINISH_SUFFIX,
     PoolContractError, Present, READY, TOMBSTONE_SUFFIX, Unknown, WITHDRAWN,
@@ -1781,7 +1781,7 @@ def _reclaim_terminal(queue, action_key: str, *,
         # No box holds it; a tier still may (a mover's stage tokens), and
         # an operator asking for a terminal key's reservation back means
         # those too.
-        return {"action_key": key, "released": queue.release_tier_reservations(key),
+        return {"action_key": key, "released": tier_holdings.egress_all(queue, key),
                 "hosts": []}
 
     released = queue._release_reservation(key, host=hosts[0])

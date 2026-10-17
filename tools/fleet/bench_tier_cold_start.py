@@ -127,7 +127,7 @@ def run(args) -> dict[str, object]:
         queue.records.ensure_layout()
         stage = scratch / "stage"
         stage.mkdir()
-        queue.mint_tier_capacity(TIER, {"stage_gib": 700})
+        queue.tier(TIER).mint({'stage_gib': 700})
         stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
         discover = _discover(stage)
 

@@ -133,7 +133,7 @@ def prune_dry_run(live: pool.PoolQueue, funding: Path) -> dict:
             why = "mover-not-terminal"
         elif live.records.lease_path(mover).exists():
             why = "mover-lease"
-        elif live.tier_ledger(tier).holder_tokens(mover):
+        elif live.tier(tier).holdings(mover):
             why = "mover-holds-tier-tokens"
         if why is None:
             counts["terminal"] += 1
@@ -170,7 +170,7 @@ def main(argv=None) -> int:
         view.root.mkdir()
         (view.root / pool.record_store.TIER_FUNDING).symlink_to(funding, target_is_directory=True)
         for tier in tiers:
-            view.mint_tier_capacity(tier, {"probe": 4})
+            view.tier(tier).mint({'probe': 4})
         nobody = "0" * 63 + "1"
         holder = "0" * 63 + "2"
         report["scenarios"].append(profiled(
@@ -180,9 +180,9 @@ def main(argv=None) -> int:
             lambda: view._release_reservation(nobody, host=None)))
 
         def holder_cycle():
-            assert view.tier_ledger(tiers[0]).acquire(holder, {"probe": 1})
+            assert view.tier(tiers[0]).take(holder, {'probe': 1})
             view._release_reservation(holder, host=None)
-            assert not view.tier_ledger(tiers[0]).holder_tokens(holder)
+            assert not view.tier(tiers[0]).holdings(holder)
         report["scenarios"].append(profiled("release-holder", args.repeat, holder_cycle))
         if args.prune_dry_run:
             live = pool.PoolQueue(live_root)

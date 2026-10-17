@@ -87,14 +87,14 @@ def test_evicting_is_filed_under_lock_before_rename_delete_then_release(tmp_path
         return original_rename(source, target)
     def delete(path):
         assert not held(spec["root"])
-        assert queue.tier_ledger("local:test-host").held()["local_gib"] == 1
+        assert queue.tier('local:test-host').holdings()['local_gib'] == 1
         events.append("delete")
         return original_delete(path)
     monkeypatch.setattr(local_resident.os, "rename", rename)
     monkeypatch.setattr(local_resident.shutil, "rmtree", delete)
     assert local_resident.evict_resident_copy(store, record["set_id"], "test-host", spec, now=201)["state"] == "absent"
     assert events == ["rename", "delete"]
-    assert queue.tier_ledger("local:test-host").held() == {}
+    assert queue.tier('local:test-host').holdings() == {}
 
 
 def test_restart_finishes_evicting_tree_before_mint(tmp_path, monkeypatch):
@@ -106,12 +106,12 @@ def test_restart_finishes_evicting_tree_before_mint(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="interrupted"):
         local_resident.evict_resident_copy(store, record["set_id"], "test-host", spec, now=201)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
-    assert pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").held()["local_gib"] == 1
+    assert pool.PoolQueue(store.queue_root).tier('local:test-host').holdings()['local_gib'] == 1
     monkeypatch.setattr(local_resident.shutil, "rmtree", original)
     mint = local_tier.mint_local_tier_capacity
     def checked(queue, host, policy):
         assert not Path(spec["root"]).joinpath(record["set_id"] + ".evicting").exists()
-        assert queue.tier_ledger("local:test-host").held() == {}
+        assert queue.tier('local:test-host').holdings() == {}
         return mint(queue, host, policy)
     monkeypatch.setattr(local_tier, "mint_local_tier_capacity", checked)
     local_tier_loop.local_tier_cycle(pool.PoolQueue(store.queue_root), "test-host", {"hosts": {"test-host": spec}})

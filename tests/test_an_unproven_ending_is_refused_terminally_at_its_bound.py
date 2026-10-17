@@ -117,7 +117,7 @@ def test_an_unprovable_ending_is_terminal_at_the_bound(
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
                                                  before.st_mtime_ns)
     assert path.read_bytes() == loop.OLD
-    assert queue.tier_ledger(loop.TIER).holder_tokens(world.copier) == {}
+    assert queue.tier(loop.TIER).holdings(world.copier) == {}
 
 
 def test_the_bound_waits_out_the_mounts_visibility_span(

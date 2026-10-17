@@ -61,7 +61,7 @@ OWN_DEFERRED = "own-copy-in-flight"
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
+    queue.tier(TIER).mint({'stage_gib': 1})
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -194,7 +194,7 @@ def _mutate_receipt(queue: pool.PoolQueue, key: str, **overrides: object) -> Non
 
 
 def _free(queue: pool.PoolQueue) -> int:
-    return int(queue.tier_ledger(TIER).available().get("stage_gib", 0))
+    return int(queue.tier(TIER).free_supply().get('stage_gib', 0))
 
 
 def _evict(queue: pool.PoolQueue, key: str, consumer: str, stage: Path):
@@ -216,7 +216,7 @@ def _assert_deferred(queue: pool.PoolQueue, key: str, consumer: str,
     assert staged.exists(), label
     assert residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, consumer, key).exists(), label
-    assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(key) == {'stage_gib': 1}
     assert _free(queue) == 0, label
 
 
@@ -230,7 +230,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     queue, stage = fleet
     key, _digest, staged = _completed_gap(queue, tmp_path, stage)
     assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(key) == {'stage_gib': 1}
     assert _free(queue) == 0
 
     during = _evict(queue, key, CONSUMER, stage)
@@ -240,7 +240,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     # receipt keeps the tier tokens pinned (residency_pin_holds).
     queue.finish(key, status="executed")
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(key) == {'stage_gib': 1}
 
     after = _evict(queue, key, CONSUMER, stage)
 
@@ -252,7 +252,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     assert not staged.exists()
     assert residency_map.read_fragments(
         queue.root / pool.record_store.RESIDENCY, CONSUMER) == []
-    assert queue.tier_ledger(TIER).holder_tokens(key) == {}
+    assert queue.tier(TIER).holdings(key) == {}
     assert _free(queue) == 1, "the one token comes back exactly once"
     # The mover's own content-addressed receipt survives the retirement: the
     # egress retires bytes and charge, never another node's evidence.
@@ -296,7 +296,7 @@ def test_distinct_groups_run_through_one_token_without_loss(fleet,
         assert receipt["tokens_released"] == 1, (index, receipt)
         assert receipt["tokens_decharged"] == 0, (index, receipt)
         assert not staged.exists(), index
-        assert queue.tier_ledger(TIER).holder_tokens(key) == {}, index
+        assert queue.tier(TIER).holdings(key) == {}, index
         assert _free(queue) == 1, index
 
 
@@ -394,7 +394,7 @@ def test_a_foreign_claimant_still_protects_the_bytes(fleet, tmp_path) -> None:
     queue.finish(key, status="executed")
     manifest_path = tmp_path / "layer.bin.manifest.json"
     foreign, digest = _sealed_mover(queue, manifest_path, FOREIGN_CONSUMER)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 2})
     _claim(queue, foreign, digest)
 
     receipt = _evict(queue, key, CONSUMER, stage)
@@ -421,7 +421,7 @@ def test_an_own_live_claim_outranks_a_foreign_one(fleet, tmp_path) -> None:
     key, _digest, staged = _completed_gap(queue, tmp_path, stage)
     manifest_path = tmp_path / "layer.bin.manifest.json"
     foreign, digest = _sealed_mover(queue, manifest_path, FOREIGN_CONSUMER)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 2})
     _claim(queue, foreign, digest)
 
     receipt = _evict(queue, key, CONSUMER, stage)
@@ -453,4 +453,4 @@ def test_a_live_pin_still_defers_a_settled_own_copy(fleet, tmp_path) -> None:
     assert receipt["tokens_released"] == 0
     assert receipt["tokens_decharged"] == 0
     assert staged.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(key) == {'stage_gib': 1}

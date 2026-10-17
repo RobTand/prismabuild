@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import tier_holdings
 
 POISON = "a" * 64
 GOOD = "b" * 64
@@ -126,7 +127,7 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
     # operator to look at, and this box spent no pass and no token on it.
     assert queue.records.item_path(pool.record_store.READY, POISON).exists()
     assert queue.passes(POISON) == 0
-    assert queue.tier_holdings(POISON) == {}
+    assert tier_holdings.for_action(queue, POISON) == {}
     assert queue.ledger().held() == {"cpu": 1}
 
 

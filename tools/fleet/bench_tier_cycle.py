@@ -154,7 +154,7 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str, mover: str,
             f"/pool/{consumer[:8]}/phase-{ordinal}/part-{index}.bin", 0)] = {
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
+    assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
     root = queue.records.residency_fragment_root()
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
@@ -293,7 +293,7 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
     if pairs <= 0:
         return {}
     root = queue.records.residency_fragment_root()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2 * pairs})
+    queue.tier(TIER).mint({'stage_gib': 2 * pairs})
     for pair in range(pairs):
         mentions: dict[str, dict[str, object]] = {}
         for index in range(entries):
@@ -338,7 +338,7 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
                 "complete": True, "seconds": 20.0,
                 "unix": time.time() - 3600.0})
             if charged:
-                assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1})
+                assert queue.tier(TIER).take(mover, {'stage_gib': 1})
             else:
                 counts["dead_owners_uncharged"] += 1
             counts["dead_owners"] += 1
@@ -432,7 +432,7 @@ def _land_shared(queue: pool.PoolQueue, stage: Path, *, vouch_as: str,
             f"/pool/{SHARED_MANIFEST[:8]}/phase-{ordinal}/part-{index}.bin",
             0)] = {"stage_path": str(path), "bytes": size, "offset": 0,
                    "sha256": DIGEST}
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": phase_gib})
+    assert queue.tier(TIER).take(mover, {'stage_gib': phase_gib})
     root = queue.records.residency_fragment_root()
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
@@ -546,7 +546,7 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         (passes / f"{_key(f'passes{index}')}.json").write_text(
             json.dumps({"passes": 1 + index % 5}) + "\n")
     counts["passes"] = args.passes
-    queue.mint_tier_capacity(TIER, {"stage_gib": 700})
+    queue.tier(TIER).mint({'stage_gib': 700})
     for index in range(args.live_consumers):
         consumer = _key(f"live{index}")
         plan = _plan(queue, consumer, stage, phases=args.phases)

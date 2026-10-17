@@ -39,7 +39,6 @@
   "hashlib:src/prismabuild/pool.py::PoolQueue.archive_attempt",
   "hashlib:src/prismabuild/pool.py::PoolQueue.attempt_outcomes",
   "hashlib:src/prismabuild/pool.py::PoolQueue.recover_archived_move",
-  "hashlib:src/prismabuild/pool.py::PoolQueue.tier_mint_lock",
   "hashlib:src/prismabuild/pool.py::PoolQueue.unlink_retired_move.unlink_locked",
   "hashlib:src/prismabuild/pool.py::_projection_sha256",
   "hashlib:src/prismabuild/pool.py::_retirement_checkpoint_digest",
@@ -502,10 +501,6 @@
   "build_plan": [
    "src/prismabuild/decomposition.py",
    "src/prismabuild/residency_plan.py"
-  ],
-  "cancel": [
-   "src/prismabuild/slurm_lane.py",
-   "src/prismabuild/window_credit.py"
   ],
   "canonical_json": [
    "tools/fleet/pbcanary_legs/common.py",

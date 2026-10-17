@@ -26,7 +26,7 @@ def blind_window(tmp_path):
 
 def land_source(queue, plan, ordinal):
     mover = base._movers(plan)[ordinal]
-    assert queue.tier_ledger(base.TIER).acquire(mover, {'stage_gib': 1})
+    assert queue.tier(base.TIER).take(mover, {'stage_gib': 1})
     base.residency_publication.vouch_landed(
         queue, consumer_action_key=base.CONSUMER, mover_action_key=mover,
         tier_id=base.TIER, stage_root='/stage/prewarm',
@@ -37,24 +37,24 @@ def land_source(queue, plan, ordinal):
 
 def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     queue, plan, grant = blind_window(tmp_path)
-    ledger = queue.tier_ledger(base.RAM_TIER)
+    ledger = queue.tier(base.RAM_TIER)
     target = base._movers(plan, 'ram_mover_row')[1]
-    assert ledger.holder_tokens(grant) == {'ram_gib': 1}
+    assert ledger.holdings(grant) == {'ram_gib': 1}
     assert not queue.records.item_path(base.pool.record_store.READY, target).exists()
     assert queue.read_funding(target, base.RAM_TIER) is None
 
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert ledger.holder_tokens(grant) == {'ram_gib': 1}, 'epoch sweep erased live blind advance'
-    assert ledger.available()['ram_gib'] == 2
+    assert ledger.holdings(grant) == {'ram_gib': 1}, 'epoch sweep erased live blind advance'
+    assert ledger.free_supply()['ram_gib'] == 2
 
     land_source(queue, plan, 1)
     base.tier_loop.ram_residency_window(queue, tiers=base._ram_tiers(tmp_path))
     assert queue.records.item_path(base.pool.record_store.READY, target).exists()
-    assert ledger.holder_tokens(grant) == {}
-    assert ledger.holder_tokens(target) == {'ram_gib': 1}
+    assert ledger.holdings(grant) == {}
+    assert ledger.holdings(target) == {'ram_gib': 1}
     assert queue.read_funding(target, base.RAM_TIER)['state'] == 'transferring'
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert ledger.holder_tokens(target) == {'ram_gib': 1}, 'epoch sweep erased bound advance'
+    assert ledger.holdings(target) == {'ram_gib': 1}, 'epoch sweep erased bound advance'
     row = base.pool.record_store.value_or_raise(
         queue.records.item(base.pool.record_store.READY, target),
     )
@@ -62,9 +62,9 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
                         capacity={'cpu': 4, 'mem_gb': 8})
     assert claim and claim['action_key'] == target
     assert queue.read_funding(target, base.RAM_TIER)['state'] == 'consumed'
-    assert ledger.holder_tokens(target) == {'ram_gib': 1}
+    assert ledger.holdings(target) == {'ram_gib': 1}
     queue.finish(target, status='failed', detail={'returncode': 1})
-    assert ledger.holder_tokens(target) == {}
+    assert ledger.holdings(target) == {}
 
 
 @pytest.mark.parametrize('ending', ['terminal', 'vanished', 'plan-vanished'])
@@ -77,7 +77,7 @@ def test_known_dead_or_missing_plan_reclaims_blind_grant(tmp_path, ending):
     else:
         queue.records.residency_plan_path(base.CONSUMER).unlink()
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {}
+    assert queue.tier(base.RAM_TIER).holdings(grant) == {}
 
 
 @pytest.mark.parametrize('corruption', ['plan', 'funding'])
@@ -93,33 +93,33 @@ def test_unknown_credit_evidence_retains_and_reports(tmp_path, corruption):
         path.parent.mkdir(exist_ok=True)
         path.write_text('{bad')
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {'ram_gib': 1}
+    assert queue.tier(base.RAM_TIER).holdings(grant) == {'ram_gib': 1}
     assert any(e['event'] == 'ram-credit-cleanup-deferred' for e in events)
 
 
 def test_forged_phase_and_malformed_grants_are_not_exempt(tmp_path):
     queue, plan, grant = blind_window(tmp_path)
-    ledger = queue.tier_ledger(base.RAM_TIER)
+    ledger = queue.tier(base.RAM_TIER)
     forged = base.window_credit.grant_key(base.CONSUMER, base.RAM_TIER,
                                           'ram_mover_row', 'phase-2')
     for holder in (forged, 'advance-malformed'):
-        assert ledger.acquire(holder, {'ram_gib': 1})
+        assert ledger.take(holder, {'ram_gib': 1})
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert ledger.holder_tokens(grant) == {'ram_gib': 1}
-    assert ledger.holder_tokens(forged) == {}
-    assert ledger.holder_tokens('advance-malformed') == {}
+    assert ledger.holdings(grant) == {'ram_gib': 1}
+    assert ledger.holdings(forged) == {}
+    assert ledger.holdings('advance-malformed') == {}
 
 
 def test_new_epoch_keeps_future_credit_but_shrink_cannot_overadmit(tmp_path):
     queue, plan, grant = blind_window(tmp_path)
     tiers = base._ram_tiers(tmp_path)
     tiers[base.RAM_TIER]['epoch'] = '1790000000-0123456789abcdef'
-    queue.mint_tier_capacity(base.RAM_TIER, {'ram_gib': 1})
-    ledger = queue.tier_ledger(base.RAM_TIER)
+    queue.tier(base.RAM_TIER).mint({'ram_gib': 1})
+    ledger = queue.tier(base.RAM_TIER)
     base.tier_loop.drop_prior_ram_epochs(queue, tiers)
-    assert ledger.holder_tokens(grant) == {'ram_gib': 1}
-    assert ledger.available().get('ram_gib', 0) == 0
-    assert not ledger.acquire('d' * 64, {'ram_gib': 1})
+    assert ledger.holdings(grant) == {'ram_gib': 1}
+    assert ledger.free_supply().get('ram_gib', 0) == 0
+    assert not ledger.take('d' * 64, {'ram_gib': 1})
     # Credit never asserts RAM residency in the new epoch.
     assert queue.move_record(base._movers(plan, 'ram_mover_row')[1]) is None
 
@@ -127,7 +127,7 @@ def test_new_epoch_keeps_future_credit_but_shrink_cannot_overadmit(tmp_path):
 def test_disappeared_ram_tier_releases_future_credit(tmp_path):
     queue, plan, grant = blind_window(tmp_path)
     base.tier_loop.drop_prior_ram_epochs(queue, {})
-    assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {}
+    assert queue.tier(base.RAM_TIER).holdings(grant) == {}
 
 
 @pytest.mark.parametrize("held_lock", ["consumer", "mover", "mint"])
@@ -136,9 +136,7 @@ def test_transition_contention_retains_credit(tmp_path, held_lock):
     queue, plan, grant = blind_window(tmp_path)
     entered, release = threading.Event(), threading.Event()
     def holds():
-        lock = (queue.tier_mint_lock(base.RAM_TIER) if held_lock == 'mint' else
-                queue.mover_transition_lock(base.CONSUMER if held_lock == 'consumer'
-                    else base._movers(plan, 'ram_mover_row')[1]))
+        lock = (queue.tier(base.RAM_TIER).mutation_lock() if held_lock == 'mint' else queue.mover_transition_lock(base.CONSUMER if held_lock == 'consumer' else base._movers(plan, 'ram_mover_row')[1]))
         with lock:
             entered.set()
             release.wait(5)
@@ -147,7 +145,7 @@ def test_transition_contention_retains_credit(tmp_path, held_lock):
     try:
         assert entered.wait(5)
         events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-        assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {'ram_gib': 1}
+        assert queue.tier(base.RAM_TIER).holdings(grant) == {'ram_gib': 1}
         expected = {'consumer': 'consumer transition busy',
                     'mover': 'mover transition busy', 'mint': 'tier mint busy'}[held_lock]
         assert any(e.get('reason') == expected for e in events)
@@ -174,7 +172,7 @@ def test_funding_rotation_during_discovery_is_not_permission_to_release(tmp_path
         return status, record, reason
     monkeypatch.setattr(queue, 'read_funding_evidence', rotates)
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert queue.tier_ledger(base.RAM_TIER).holder_tokens(target) == {'ram_gib': 1}
+    assert queue.tier(base.RAM_TIER).holdings(target) == {'ram_gib': 1}
     assert any(e.get('reason') == 'funding rotated during qualification' for e in events)
 
 
@@ -183,7 +181,7 @@ def test_unreadable_claimed_progress_cannot_rewind_credit_frontier(tmp_path, mon
     base._claim_with_progress(queue, base.CONSUMER, phase='phase-0')
     monkeypatch.setattr(base.tier_loop.prewarm_loop, 'progress_phase', lambda *args: None)
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
-    assert queue.tier_ledger(base.RAM_TIER).holder_tokens(grant) == {'ram_gib': 1}
+    assert queue.tier(base.RAM_TIER).holdings(grant) == {'ram_gib': 1}
     assert any(e.get('reason') == 'claimed progress is not positively available' for e in events)
 
 
@@ -202,14 +200,14 @@ def test_reclaim_completes_while_another_tier_mint_is_held(tmp_path):
 
     queue, plan, grant = blind_window(tmp_path)
     queue.withdraw(base.CONSUMER, reason='finished private fixture')
-    ledger = queue.tier_ledger(base.RAM_TIER)
-    assert ledger.holder_tokens(grant) == {'ram_gib': 1}
+    ledger = queue.tier(base.RAM_TIER)
+    assert ledger.holdings(grant) == {'ram_gib': 1}
 
     holding, let_go = threading.Event(), threading.Event()
     failures: list[BaseException] = []
 
     def hold_other_tier_mint():
-        with queue.tier_mint_lock(base.TIER):
+        with queue.tier(base.TIER).mutation_lock():
             holding.set()
             let_go.wait(20)
 
@@ -227,11 +225,11 @@ def test_reclaim_completes_while_another_tier_mint_is_held(tmp_path):
         sweep.start()
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if ledger.holder_tokens(grant) == {} or failures:
+            if ledger.holdings(grant) == {} or failures:
                 break
             time.sleep(0.05)
         assert not failures, failures[0]
-        assert ledger.holder_tokens(grant) == {}, (
+        assert ledger.holdings(grant) == {}, (
             'RAM reclaim did not complete while another tier mint was held: '
             'the sweep is waiting on that tier while holding this one')
         # The guarded section ends after the holder's host half returns too
@@ -243,7 +241,7 @@ def test_reclaim_completes_while_another_tier_mint_is_held(tmp_path):
         acquired = False
         deadline = time.monotonic() + 10
         while not acquired and time.monotonic() < deadline:
-            with queue.tier_mint_lock(base.RAM_TIER, blocking=False) as acquired:
+            with queue.tier(base.RAM_TIER).mutation_lock(blocking=False) as acquired:
                 pass
             if not acquired:
                 time.sleep(0.05)

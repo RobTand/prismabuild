@@ -181,7 +181,7 @@ def _stage_the_lead(fleet) -> dict[str, object]:
         "stage_root": str(fleet.stage),
         "disk_pacing": {"mean_self_read_mb_s": 0.0}})
     queue.finish(mover, status="executed", claim_snapshot=claim)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
     return claim
 
 
@@ -213,7 +213,7 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     assert lead_ready
     claim = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
@@ -224,8 +224,8 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
     queue.finish(mover, status="executed", claim_snapshot=claim)
 
     # The invariant: the bytes are on the stage, so the tokens are still held.
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
     assert queue.residency_pin_holds(
         pool.record_store.value_or_raise(
             queue.records.item(pool.record_store.DONE, mover),
@@ -373,8 +373,8 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     assert mover not in reaped, "a filed ending is cleanup, not work to retry"
     # ...and the pin survived it.
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
     assert queue.residency_pin_holds(
         pool.record_store.value_or_raise(
             queue.records.item(pool.record_store.DONE, mover),
@@ -400,7 +400,7 @@ def test_a_widowed_lease_does_not_hand_back_a_completed_pin(fleet) -> None:
     queue.sweep_widowed_leases(timeout_s=1.0)
 
     assert not queue.records.lease_path(mover).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
 
 def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
@@ -423,7 +423,7 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
         "stage_root": str(fleet.stage),
         "disk_pacing": {"mean_self_read_mb_s": 0.0}})
     queue.finish(mover, status="executed", claim_snapshot=claim)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
 
     pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, mover),
@@ -436,7 +436,7 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
     queue.reap_stale(timeout_s=1.0)
 
     assert queue._filed_pin_holds(mover) is False
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 2
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 2
 
 
 def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
@@ -462,7 +462,7 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
         "stage_root": str(fleet.stage),
         "disk_pacing": {"mean_self_read_mb_s": 0.0}})
     queue.finish(mover, status="executed", claim_snapshot=claim)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
 
     _cycle(fleet)                                   # republished: unpinned, terminal
@@ -470,7 +470,7 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
     assert lead_ready
     again = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"], ready=lead_ready)
     assert again is not None and again["action_key"] == mover
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
     assert queue._lead_is_pinned(fleet.staged["residency"], mover) is False
     verdict = queue.residency_verdict({"residency": fleet.staged["residency"]})
@@ -501,7 +501,7 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
         "stage_root_belongs_to_another_queue")
     assert record["stage_root_admits"] is False
     assert record["tokens"]["stage_gib"] == 4
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == 4
+    assert queue.tier(TIER).free_supply()['stage_gib'] == 4
     assert not queue.records.item_path(pool.record_store.READY, mover).exists()
 
     (stage / stage_release.STAGE_ROOT_MARKER).unlink()

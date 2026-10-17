@@ -194,7 +194,7 @@ class _Reclaim:
                        "manifest_sha256": self.digest,
                        "manifest_bytes": total,
                        "leads": residency_plan.leads_for(self.plan)})
-        self.queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+        self.queue.tier(TIER).mint({'stage_gib': 8})
         self.tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(self.stage)}}
         self.refuse: set[str] = set()

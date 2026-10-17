@@ -1029,7 +1029,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     if memory_mirror:
-        assert queue.hold_tier_host_memory(ledger.host, 'mirror', 1) == ('taken', '')
+        assert queue.tier('ram:' + str(ledger.host))._hold_host('mirror', 1) == ('taken', '')
     else:
         assert ledger.acquire('a' * 64, {'cpu': 1})
     item = {'action_key': 'b' * 64}
@@ -1043,7 +1043,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
 
     if memory_mirror:
         assert ledger.held() == {'mem_gb': 1}
-        assert queue.release_tier_host_memory(ledger.host, 'mirror') == 1
+        assert queue.tier('ram:' + str(ledger.host))._release_host('mirror') == 1
     else:
         assert ledger.release('a' * 64) == 1
     tick()

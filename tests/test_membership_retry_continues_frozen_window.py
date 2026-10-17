@@ -130,7 +130,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, mover: str,
             "stage_path": str(tmp_path / "stage" / "a.bin"),
             "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
     queue.finish(mover, status="executed", detail={}, claim_snapshot=snap)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
 
 def test_consumer_handoff_keeps_later_phases_publishable(
@@ -142,7 +142,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -190,7 +190,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
 
     # Fund and tick: the later mover must publish (never on a retired
     # plan), then run to completion and hand the consumer back.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     # MOVER1 already published at tick0 under joint-fit; the handoff must
     # keep it ready, not retire the plan.
@@ -226,7 +226,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -279,7 +279,7 @@ def test_operator_cancellation_still_stops_publication(
     """The control: an actual operator cancellation retires the window
     and later phases never publish."""
     _sealed_shape(monkeypatch)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -302,6 +302,6 @@ def test_operator_cancellation_still_stops_publication(
     assert [e for e in tick1
             if e["event"] == "residency-plan-superseded"]
     assert residency_plan.superseded(queue, plan) is not None
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     tick2 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert not [e for e in tick2 if e["event"] == "mover-published"]

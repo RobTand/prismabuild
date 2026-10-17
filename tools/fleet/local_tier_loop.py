@@ -17,7 +17,7 @@ from prismabuild import generation_receipt, local_tier, pool, resident_sets
 def local_tier_cycle(queue, host, policy):
     spec = policy["hosts"].get(host)
     if spec is None:
-        return queue.mint_tier_capacity(local_tier.local_resident_tier_id(host), {local_tier.KIND: 0})
+        return queue.tier(local_tier.local_resident_tier_id(host)).mint({local_tier.KIND: 0})
     from prismabuild import local_resident
     lease_results = local_resident.lease_pass(resident_sets.ResidentSets(queue.root), host, spec)
     # Remaining trees and retained holders are still counted by the minter.

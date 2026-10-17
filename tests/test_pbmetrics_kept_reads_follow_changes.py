@@ -40,6 +40,7 @@ from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import pbmetrics  # noqa: E402
 import supervise  # noqa: E402
 from prismabuild import role_session
+from prismabuild import tier_holdings
 
 MANIFEST = "9" * 64
 CONSUMER = _key("consumer", 0)
@@ -144,11 +145,10 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
     text = scrapes.after("fragment and receipt filed", lambda: _land(queue))
     assert _sample(text, STAGED) == "1"
 
-    ledger = queue.tier_ledger(STAGE_TIER)
-    text = scrapes.after("tokens released", lambda: ledger.release(MOVER))
+    ledger = queue.tier(STAGE_TIER)
+    text = scrapes.after('tokens released', lambda: ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED))
     assert _sample(text, STAGED) == "0"
-    text = scrapes.after("tokens taken again",
-                         lambda: ledger.acquire(MOVER, {"stage_gib": 1}))
+    text = scrapes.after('tokens taken again', lambda: ledger.take(MOVER, {'stage_gib': 1}))
     assert _sample(text, STAGED) == "1"
 
     text = scrapes.after("receipt replaced by an incomplete one",

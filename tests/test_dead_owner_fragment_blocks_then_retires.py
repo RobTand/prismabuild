@@ -126,7 +126,7 @@ def _dead_owner(fleet) -> tuple[str, str]:
         _stage_marked(stage, name)
     _write_fragment(queue, stage, consumer, mover, NAMES)
     assert queue.move_record(mover) is None, "dead mover must file no receipt"
-    assert mover not in queue.tier_ledger(TIER).held_keys()
+    assert mover not in queue.tier(TIER).holders()
     assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     return consumer, mover
 
@@ -393,7 +393,7 @@ def test_consumer_and_mover_excluded_through_egress(fleet, monkeypatch):
 def test_unreadable_ledger_retains_without_crashing(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
-    held = queue.tier_ledger(TIER).held_dir
+    held = queue.tier(TIER).paths.held
     original = os.listdir
     original_scandir = os.scandir
 

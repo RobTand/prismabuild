@@ -791,9 +791,9 @@ def _rendered_ram_cycle(obj, capsys, *, reason=None):
             assert admission[field] == gib * RAM_GIB, (field, admission)
         assert storage_tiers.tier_tokens(carrier) == expected_tokens
     expected_capacity = 112 if reason is None else 0
-    ledger = obj.queue.tier_ledger(RAM_ID)
-    assert ledger.capacity().get("ram_gib", 0) == expected_capacity
-    assert ledger.available().get("ram_gib", 0) == expected_capacity
+    ledger = obj.queue.tier(RAM_ID)
+    assert ledger.mint_supply().get('ram_gib', 0) == expected_capacity
+    assert ledger.free_supply().get('ram_gib', 0) == expected_capacity
     capsys.readouterr()
     return obj.evidence.discovered, record, persisted
 

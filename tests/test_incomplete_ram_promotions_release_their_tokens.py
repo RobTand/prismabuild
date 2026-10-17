@@ -71,8 +71,9 @@ def _tiers(ram: Path) -> dict[str, dict[str, object]]:
 
 
 def _hold(queue: pool.PoolQueue, key: str, gib: int) -> None:
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(key, {"ram_gib": gib})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(key, {'ram_gib': gib})
 
 
 def _file_partial(tmp_path: Path, queue: pool.PoolQueue, *, mover: str,
@@ -136,7 +137,7 @@ def test_a_half_landed_promotion_returns_its_tokens_and_its_files(
     assert events[0]["receipt_errors"] == [
         "shard-1.bin: [Errno 28] No space left on device"]
     assert events[0]["tokens_released"] == 2
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
     assert not (ram / "model" / "shard-0.bin").exists()
@@ -158,7 +159,7 @@ def test_a_refused_promotion_with_no_fragment_still_returns_its_tokens(
 
     assert [event["event"] for event in events] == [
         "ram-mover-incomplete-released"]
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
 
 
 def test_a_clean_landing_is_occupancy_not_stranding(
@@ -175,7 +176,7 @@ def test_a_clean_landing_is_occupancy_not_stranding(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
     assert residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
 
@@ -198,8 +199,8 @@ def test_queued_and_running_promotions_are_not_judged(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(OTHER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
+    assert queue.tier(RAM_TIER).holdings(OTHER) == {'ram_gib': 2}
 
 
 def test_a_holder_with_no_receipt_keeps_its_tokens(
@@ -213,7 +214,7 @@ def test_a_holder_with_no_receipt_keeps_its_tokens(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
 
 
 def _row(key: str, resources: dict[str, int], queue: pool.PoolQueue) -> dict:
@@ -298,6 +299,6 @@ def test_the_cycle_releases_a_live_consumer_stranded_promotion(
     assert not [line for line in lines
                 if line.get("event") == "stage-orphan-evicted"
                 and MOVER in json.dumps(line)]
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

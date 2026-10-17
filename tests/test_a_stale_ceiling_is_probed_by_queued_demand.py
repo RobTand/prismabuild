@@ -186,7 +186,7 @@ def _copy_ended(queue: pool.PoolQueue, key: str) -> None:
     """
 
     queue._release_reservation(key, host=socket.gethostname(), keep_tier=True)
-    assert FILL not in queue.tier_ledger(TIER).holder_tokens(key)
+    assert FILL not in queue.tier(TIER).holdings(key)
 
 
 @pytest.mark.parametrize("ceiling", [ARCHIVED_CEILING, LIVE_CEILING])
@@ -204,7 +204,7 @@ def test_a_stale_ceiling_no_longer_freezes_movers_priced_above_it(
     assert first is not None
     assert first["action_key"] in {key * 64 for key in MOVERS}
     assert _claim(queue) is None
-    assert queue.tier_ledger(TIER).available()[FILL] == int(ceiling)
+    assert queue.tier(TIER).free_supply()[FILL] == int(ceiling)
 
     # The offer is the larger of the fold's historical increment (3.5 here)
     # and the queued floor, and the announced supply names the selection.

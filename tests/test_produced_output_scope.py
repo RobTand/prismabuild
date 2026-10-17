@@ -91,7 +91,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 8})
     return queue
 
 
@@ -418,8 +418,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     ok = po.admit_instance(queue, instance, template)
     assert ok["ok"] is True
     assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
     # The funded-claim primitive family is delivered, so this answers the
     # window DECLARATION the producer seals against -- per-batch funding
     # (exact owner->mover transfer) remains the authority, and this call
@@ -436,8 +435,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     assert declared["batch_ref_schema"] == \
         pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
     # Declaration only: it acquires nothing for the reservation holder.
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
     assert po.admit_funded_window(
         queue, instance, template,
         need_gib_per_tier={"prismabuild-stage:other": 1})["refusal"] == \
@@ -491,11 +489,10 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
                                 batch_id="batch-0000", tier=STAGE_TIER,
                                 mover_key=MOVER0)
     assert committed["ok"] is True
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER0) == {STAGE_BARE: 1}
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER0) == {STAGE_BARE: 1}
+    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
     batch_ns = committed["batch_namespace"]
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(batch_ns) == {}
+    assert queue.tier(STAGE_TIER).holdings(batch_ns) == {}
 
 
 def _prewrite_scope(tmp_path: Path):
@@ -933,12 +930,12 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     mover = "a" * 64
     manifest = po.output_manifest_sha256([desc])
     batch_ns = po.batch_namespace(instance, "big", manifest)
-    ledger = queue.tier_ledger(STAGE_TIER)
-    assert ledger.acquire(batch_ns, {STAGE_BARE: 2}) is True
+    ledger = queue.tier(STAGE_TIER)
+    assert ledger.take(batch_ns, {STAGE_BARE: 2}) is True
     po._write_funding(po._funding_dir(queue.root, instance) / "big.funding.json", {
         "batch_id": "big", "tier": STAGE_TIER, "mover_key": mover,
         "batch_gib": 2, "manifest_digest": manifest})
-    held = ledger.held_dir
+    held = ledger.paths.held
     names = sorted(p.name for p in (held / batch_ns).iterdir())
     assert len(names) == 2
     (held / mover).mkdir(parents=True, exist_ok=True)
@@ -947,8 +944,8 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     resumed = po.commit_batch(queue, instance, template, [desc],
                               batch_id="big", tier=STAGE_TIER, mover_key=mover)
     assert resumed["ok"] is True, resumed
-    assert ledger.holder_tokens(mover).get(STAGE_BARE) == 2
-    assert ledger.holder_tokens(batch_ns) == {}
+    assert ledger.holdings(mover).get(STAGE_BARE) == 2
+    assert ledger.holdings(batch_ns) == {}
 
 
 def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
@@ -1065,8 +1062,8 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     for entry in rm.compose(
             rm.read_fragments(out_base, batch1["batch_namespace"]))["entries"].values():
         assert Path(str(entry["stage_path"])).read_bytes()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER0) == {}
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {STAGE_BARE: 1}
+    assert queue.tier(STAGE_TIER).holdings(MOVER0) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER1) == {STAGE_BARE: 1}
     # The rolled slot kept BOTH generations distinct on disk and in the
     # manifest: new bytes are a new identity, not an overwrite.
     assert (origin / "cotangent-0.pt").read_bytes() == b"B" * 8192
@@ -1102,9 +1099,8 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     second = po.safe_release_instance(queue, instance, template,
                                       lease_sdk=rlc)
     assert second["ok"] is True and second["released"] == 0
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER1) == {}
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER1) == {}
+    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
 
 
 def test_owner_superseded_retain(tmp_path: Path) -> None:
@@ -1159,8 +1155,8 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
             "producer_generation": "0" * 32,
             "owner_action_key": OWNER,
             "owner_attempt": dict(instance["owner_attempt"])}]))
-    ledger = queue.tier_ledger(STAGE_TIER)
-    assert ledger.acquire(ns, {STAGE_BARE: 1}) is True
+    ledger = queue.tier(STAGE_TIER)
+    assert ledger.take(ns, {STAGE_BARE: 1}) is True
     mover = "a" * 64
     po._write_funding(po._funding_dir(queue.root, instance) / "batch-w.funding.json", {
         "batch_id": "batch-w", "tier": STAGE_TIER, "mover_key": mover,
@@ -1174,7 +1170,7 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
     assert retained["ok"] is False
     assert retained["refusal"] == "funding-intent-reconcile-retain"
     # The remainder stands: nothing was reclaimed under the live mover.
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(ns) == {STAGE_BARE: 1}
+    assert queue.tier(STAGE_TIER).holdings(ns) == {STAGE_BARE: 1}
 
 
 def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
@@ -1374,8 +1370,7 @@ def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
     retained = po.safe_release_instance(queue, instance, template)
     assert retained["ok"] is False
     assert retained["refusal"].startswith("unknown-retain")
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
 
 
 def test_prefix_escape_and_bool_rejection(tmp_path: Path) -> None:

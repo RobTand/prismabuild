@@ -29,7 +29,7 @@ def dead_done_owner(fleet):
         'range_start_bytes': 0, 'range_end_bytes': 3 * base.SIZE,
         'errors': ['interrupted partial publication']})
     queue.finish(mover, status='executed', detail={'returncode': 0})
-    assert not queue.tier_ledger(base.TIER).holder_tokens(mover)
+    assert not queue.tier(base.TIER).holdings(mover)
     assert reader_lease.read_material(
         queue.records.residency_fragment_root(),
         consumer,
@@ -132,8 +132,8 @@ def test_uncertain_or_live_done_owner_retains(fleet, damage):
         else:
             path.unlink()
     else:
-        queue.mint_tier_capacity(base.TIER, {'stage_gib': 1})
-        assert queue.tier_ledger(base.TIER).acquire(mover, {'stage_gib': 1})
+        queue.tier(base.TIER).mint({'stage_gib': 1})
+        assert queue.tier(base.TIER).take(mover, {'stage_gib': 1})
     base.stage_release.sweep_dead_owner_fragments(queue, stage_roots={base.TIER: str(stage)})
     assert all((stage / name).exists() for name in base.NAMES)
     assert base.residency_map.fragment_path(

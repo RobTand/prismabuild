@@ -18,7 +18,7 @@ def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
     receipt.update(range_bytes=4 * SIZE, range_end_bytes=4 * SIZE,
                    bytes_staged=4 * SIZE)
     queue.record_move(mover, receipt)
-    held = queue.tier_ledger(TIER).holder_tokens(mover)
+    held = queue.tier(TIER).holdings(mover)
     successor, copier = base._key(), base._key()
     result = tier_loop.adopt(
         queue, old_key=mover, new_key=copier, consumer_action_key=successor,
@@ -27,7 +27,7 @@ def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
     assert not result['adopted'], (
         'The complete receipt claims 16 KiB but the two current fragment '
         f'entries cover only 8 KiB: {result}')
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == held
+    assert queue.tier(TIER).holdings(mover) == held
     assert not residency_map.fragment_path(
         queue.records.residency_fragment_root(), successor, copier).exists()
 
@@ -42,12 +42,12 @@ def test_matching_nonram_epochs_are_still_invalid_for_cleanup(fleet):
         doc = json.loads(path.read_text())
         doc['epoch'] = 'invalid-ssd-epoch'
         path.write_text(json.dumps(doc))
-    charge = queue.tier_ledger(TIER).holder_tokens(mover)
+    charge = queue.tier(TIER).holdings(mover)
     before = {name: (stage / staged_name(name)).read_bytes() for name in NAMES}
     result = _sweep(queue, stage)
     assert all((stage / staged_name(name)).exists() for name in NAMES), result
     assert {name: (stage / staged_name(name)).read_bytes() for name in NAMES} == before
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == charge
+    assert queue.tier(TIER).holdings(mover) == charge
     assert fragment_path.exists() and material_path.exists()
 
 

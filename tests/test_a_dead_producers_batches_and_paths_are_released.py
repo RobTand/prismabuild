@@ -123,7 +123,7 @@ class _Fleet:
         self.prefix = Path(self.template["output_prefix"])
         self.prefix.mkdir(parents=True, exist_ok=True)
         self.q = _queue(tmp_path, gib=8)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         self.stage = tmp_path / "stage"
         _announce_tier(self.q, self.stage)
         po.declare_template(self.q.root, self.template)
@@ -252,7 +252,7 @@ class _Producer:
             stage_root=str(self.fleet.stage),
             residency_root=po.output_fragment_root(q.root / pool.record_store.RESIDENCY))
         assert receipt.get("complete") is True, receipt
-        assert self.fleet.ledger.holder_tokens(mover) == {}
+        assert self.fleet.ledger.holdings(mover) == {}
         assert not staged.exists()
         funding = q.read_output_funding(mover, TIER)
         assert funding is not None and funding["state"] == "consumed"

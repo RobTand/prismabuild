@@ -752,9 +752,9 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                 raise ValueError(f"{path}: {why}")
             direct(request)
             manifests(request.get("params"), own_cas)
-    ledger = queue.tier_ledger(tier_id)
-    for key in ledger.held_keys():
-        if not ledger.holder_tokens(key).get("stage_gib", 0):
+    ledger = queue.tier(tier_id)
+    for key in ledger.holders():
+        if not ledger.holdings(key).get('stage_gib', 0):
             continue
         receipt = pool.record_store.read_bounded_document(
             queue.records.move_path(key),
@@ -1072,7 +1072,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             # never paths, so it cannot attribute a copy. The read
             # still fences the pass: an unreadable ledger is unknown
             # ownership, and the pass refuses on it.
-            queue.tier_ledger(tier_id).held_keys()
+            queue.tier(tier_id).holders()
         except (OSError, pool.PoolContractError) as exc:
             receipt["skipped"] = f"ledger_unreadable: {exc}"
             receipt["complete"] = False

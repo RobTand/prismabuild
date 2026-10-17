@@ -83,11 +83,11 @@ def test_landed_sub_gib_movers_keep_free_at_writable_minus_in_flight(tmp_path, c
     sub = GIB // 4
     writable_gib = count + 50
     _cycle(queue, tmp_path, writable_gib * GIB)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     total_bytes = 0
     for index in range(count):
         mover = _key(f"1555-landed-{index:04d}")
-        assert ledger.acquire(mover, {KIND: 1})
+        assert ledger.take(mover, {KIND: 1})
         queue.record_move(mover, {"tier_id": TIER, "complete": True,
                                   "bytes_staged": sub,
                                   "range_start_bytes": 0,
@@ -101,9 +101,9 @@ def test_landed_sub_gib_movers_keep_free_at_writable_minus_in_flight(tmp_path, c
     assert record["landed_rounding_gib"] == count - total_bytes // GIB
     assert record["in_flight_rounding_gib"] == 0
     assert record["in_flight_unknown_gib"] == 0
-    free = ledger.available().get(KIND, 0)
+    free = ledger.free_supply().get(KIND, 0)
     assert free == max(0, writable_gib - 0)
-    assert ledger.capacity()[KIND] == writable_gib + count
+    assert ledger.mint_supply()[KIND] == writable_gib + count
 
 
 @pytest.mark.parametrize("writable_gib,flight_tokens", [(50, 3), (2, 5)])
@@ -113,9 +113,9 @@ def test_free_holds_in_flight_deduction_with_zero_floor(tmp_path, writable_gib,
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     _cycle(queue, tmp_path, max(writable_gib, flight_tokens) * GIB)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover = _key(f"1555-flight-{writable_gib}-{flight_tokens}")
-    assert ledger.acquire(mover, {KIND: flight_tokens})
+    assert ledger.take(mover, {KIND: flight_tokens})
     record = _cycle(queue, tmp_path, writable_gib * GIB)
     assert record["landed_gib"] == 0
     assert record["in_flight_gib"] == flight_tokens
@@ -123,8 +123,8 @@ def test_free_holds_in_flight_deduction_with_zero_floor(tmp_path, writable_gib,
     assert record["in_flight_rounding_gib"] == 0
     # The retire keeps held tokens: the total falls only as holders
     # finish, while free already reads the shrunken supply.
-    assert ledger.capacity()[KIND] == max(writable_gib, flight_tokens)
-    assert ledger.available().get(KIND, 0) == max(0, writable_gib - flight_tokens)
+    assert ledger.mint_supply()[KIND] == max(writable_gib, flight_tokens)
+    assert ledger.free_supply().get(KIND, 0) == max(0, writable_gib - flight_tokens)
 
 
 def test_empty_tier_reports_zero_rounding(tmp_path):
@@ -150,8 +150,8 @@ def test_in_flight_mover_reports_declared_range_not_zero(tmp_path):
     plan = _plan(queue, consumer, [(mover, 0, span)])
     residency_plan.freeze(queue, plan)
     _cycle(queue, tmp_path, 100 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(mover, {KIND: 3})
+    ledger = queue.tier(TIER)
+    assert ledger.take(mover, {KIND: 3})
     record = _cycle(queue, tmp_path, 100 * GIB)
     assert record["landed_gib"] == 0
     assert record["in_flight_gib"] == 3
@@ -166,9 +166,9 @@ def test_in_flight_holder_without_plan_leg_reports_unknown(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     _cycle(queue, tmp_path, 100 * GIB)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover = _key("1555-mover-unknown")
-    assert ledger.acquire(mover, {KIND: 2})
+    assert ledger.take(mover, {KIND: 2})
     record = _cycle(queue, tmp_path, 100 * GIB)
     assert record["in_flight_gib"] == 2
     assert record["in_flight_bytes"] == 0
@@ -187,9 +187,9 @@ def test_mixed_known_and_unknown_excludes_unknown_from_waste(tmp_path):
     plan = _plan(queue, consumer, [(known, 0, span)])
     residency_plan.freeze(queue, plan)
     _cycle(queue, tmp_path, 100 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(known, {KIND: 3})
-    assert ledger.acquire(stranger, {KIND: 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(known, {KIND: 3})
+    assert ledger.take(stranger, {KIND: 2})
     record = _cycle(queue, tmp_path, 100 * GIB)
     assert record["in_flight_gib"] == 5
     assert record["in_flight_bytes"] == span

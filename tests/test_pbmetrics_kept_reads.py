@@ -395,8 +395,8 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
             "fill_supply": {"best_mb_s": 300.0, "ceiling_mb_s": 250.0,
                             "may_grow": False, "probing": True,
                             "probe_offer_mb_s": 324}})
-        queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-        ledger = queue.tier_ledger(STAGE_TIER)
+        queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+        ledger = queue.tier(STAGE_TIER)
         plan_consumers = [_key("consumer", index) for index in range(shape["plans"])]
         for index, consumer in enumerate(plan_consumers):
             phases = []
@@ -418,7 +418,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
                 manifest_bytes=start, phases=phases))
             if index % 4 == 0:
                 # A booked first phase: the ledger says it, no fragment does.
-                assert ledger.acquire(_key(f"plan-mover-{index}", 0), {"stage_gib": 1})
+                assert ledger.take(_key(f'plan-mover-{index}', 0), {'stage_gib': 1})
             if index % 5 == 0:
                 # A fragment directory whose file names no mover of the plan.
                 fragments = queue.records.residency_fragment_root() / consumer

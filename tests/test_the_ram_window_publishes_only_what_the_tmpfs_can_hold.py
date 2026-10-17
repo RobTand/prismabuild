@@ -106,15 +106,14 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_capacity_gib})
+    queue.tier(RAM_TIER).mint({'ram_gib': ram_capacity_gib})
     # A RAM fill's host half lands in the storage host's ledger (#1258).
     mint_storage_host_ledger(queue)
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
     start = 0
     for ordinal in range(landed):
         stage_lead = _hexkey(f"mover{ordinal}")
-        assert queue.tier_ledger(STAGE_TIER).acquire(
-            stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
+        assert queue.tier(STAGE_TIER).take(stage_lead, {'stage_gib': PHASE_GIB[ordinal]})
         end = start + PHASE_GIB[ordinal] * GIB
         residency_publication.vouch_landed(
             queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,

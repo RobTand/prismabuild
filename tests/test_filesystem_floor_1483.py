@@ -10,6 +10,7 @@ from submission_support import patch_store
 import pbrun
 from prismabuild import submission as submit_core
 
+import functools
 import json
 import multiprocessing
 import os
@@ -28,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import filesystem_floor as ff  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import pool, tier_holdings  # noqa: E402
 
 GIB = ff.GIB
 HOST = socket.gethostname()
@@ -325,17 +326,17 @@ def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce
     _stable(tmp_path)
     queue = _queue(tmp_path)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 4})
+    queue.tier(tier).mint({'stage_gib': 4})
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
                         ("tier-reservations", tier, "stage_gib"))["binding"]
-    host, stage = queue.ledger(HOST), queue.tier_ledger(tier)
+    host, stage = (queue.ledger(HOST), queue.tier(tier))
     assert host.acquire("a" * 64, {"spool_gb": 3})
     counted = ff.refresh_binding(queue.root, binding)
     assert counted["charge_bytes"] == 3 * GIB
     _leave(queue, binding["key"], 1)
-    assert not stage.acquire("grant-x", {"stage_gib": 2})
-    assert stage.last_token_shortage["resource"] == "filesystem_floor"
-    assert stage.acquire("grant-x", {"stage_gib": 1})
+    assert not stage.take('grant-x', {'stage_gib': 2})
+    assert stage.shortage['resource'] == 'filesystem_floor'
+    assert stage.take('grant-x', {'stage_gib': 1})
     assert ff.floor_status(queue.root)["unbound_byte_ledgers"] == []
 
 
@@ -397,18 +398,18 @@ def test_tier_advance_reports_the_floor_as_tier_short(tmp_path, enforce, ample_s
     _stable(tmp_path)
     queue = _queue(tmp_path)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 4})
+    queue.tier(tier).mint({'stage_gib': 4})
     binding = _register(queue, tmp_path / "stage", ("tier-reservations", tier, "stage_gib"))[
         "binding"]
     _leave(queue, binding["key"], 1)
-    assert queue.take_tier_advance(tier, "grant-advance", 2, "stage_gib")[0] == "tier-short"
-    ledger = queue.tier_ledger(tier)
-    assert not ledger.acquire("grant-probe", {"stage_gib": 2})
-    assert ledger.last_token_shortage["resource"] == "filesystem_floor"
-    assert queue.take_tier_advance(tier, "grant-advance", 1, "stage_gib")[0] == "taken"
+    assert queue.tier(tier).take_advance('grant-advance', 2, 'stage_gib')[0] == 'tier-short'
+    ledger = queue.tier(tier)
+    assert not ledger.take('grant-probe', {'stage_gib': 2})
+    assert ledger.shortage['resource'] == 'filesystem_floor'
+    assert queue.tier(tier).take_advance('grant-advance', 1, 'stage_gib')[0] == 'taken'
     # The tokens were there all along: a refresh, not more capacity, admits 2.
     ff.refresh_binding(queue.root, binding)
-    assert queue.take_tier_advance(tier, "grant-advance-2", 2, "stage_gib")[0] == "taken"
+    assert queue.tier(tier).take_advance('grant-advance-2', 2, 'stage_gib')[0] == 'taken'
 
 
 def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
@@ -430,7 +431,7 @@ def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
     monkeypatch.setenv(ff.MODE_ENV, "enforce")
     _leave(queue, binding["key"], 1)
     assert queue.reserve_fence(tf.TIER, grant, fields, 2) is False
-    assert queue.tier_ledger(tf.TIER).holder_tokens(grant) == {}
+    assert queue.tier(tf.TIER).holdings(grant) == {}
     ff.refresh_binding(queue.root, binding)
     assert queue.reserve_fence(tf.TIER, grant, fields, 2) is True
 
@@ -451,10 +452,10 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
     owner = str(world.inst["owner_action_key"])
     # Empty the owner's window, as a retire returning its tokens would, so
     # the refill has room to take.
-    world.ledger.release(owner)
+    world.ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED)
     refill = po.refill_window(world.q, world.inst, world.template, tier=restage.TIER)
     assert refill.get("acquired", 0) == 0, refill
-    assert world.ledger.holder_tokens(owner) == {}
+    assert world.ledger.holdings(owner) == {}
     ff.refresh_binding(world.q.root, binding)
     refill = po.refill_window(world.q, world.inst, world.template, tier=restage.TIER)
     assert refill.get("ok") is True and refill.get("acquired", 0) >= 1, refill
@@ -624,16 +625,19 @@ def test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage(
 def _contend(queue_root: str, tier: str, host: str, rounds: int, errors, wins) -> None:
     os.environ[ff.MODE_ENV] = "enforce"
     queue = pool.PoolQueue(queue_root)
-    ledgers = [queue.ledger(host), queue.tier_ledger(tier)]
+    host_ledger, tier_owner = queue.ledger(host), queue.tier(tier)
+    takes = [host_ledger.acquire, tier_owner.take]
+    returns = [host_ledger.release, functools.partial(
+        tier_owner.release_unspent, authority=tier_holdings.Unspent.NEVER_STARTED)]
     kinds = ["spool_gb", "stage_gib"]
     try:
         for i in range(rounds):
             which = (os.getpid() + i) % 2
             key = f"k{os.getpid()}-{i}"
-            if ledgers[which].acquire(key, {kinds[which]: 1}):
+            if takes[which](key, {kinds[which]: 1}):
                 with wins.get_lock():
                     wins.value += 1
-                ledgers[which].release(key)
+                returns[which](key)
             ff.refresh_local(queue_root, force=True)
     except Exception as exc:                                    # noqa: BLE001
         errors.put(repr(exc))
@@ -646,7 +650,7 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     _stable(tmp_path)
     queue = _queue(tmp_path, spool_gb=8)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 8})
+    queue.tier(tier).mint({'stage_gib': 8})
     _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
               ("tier-reservations", tier, "stage_gib"))
     context = multiprocessing.get_context("fork")
@@ -665,7 +669,7 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     # floor never wedges: most of the hundred succeed.
     assert wins.value >= 50, wins.value
     assert queue.ledger(HOST).held().get("spool_gb", 0) == 0
-    assert queue.tier_ledger(tier).held().get("stage_gib", 0) == 0
+    assert queue.tier(tier).holdings().get('stage_gib', 0) == 0
 
 
 def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce, ample_space):

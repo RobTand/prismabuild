@@ -65,6 +65,7 @@ from prismabuild import action_edges, kept_reads as read_cache  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
+from prismabuild import tier_holdings
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
 #: same spelling ``pbrun`` and ``pool_reset`` use.
@@ -1370,14 +1371,14 @@ def _starvation_holders(queue: pool.PoolQueue, tier_id: str,
     """
 
     try:
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier ledger {tier_id}: {exc}")
         return {key: None for key in keys}
     staged: dict[str, bool | None] = {}
     for key in keys:
         try:
-            staged[key] = bool(ledger.holder_tokens(key))
+            staged[key] = bool(ledger.holdings(key))
         except (OSError, ValueError, pool.PoolContractError) as exc:
             notes.append(f"starvation tier ledger {tier_id} holder {key[:12]}: {exc}")
             staged[key] = None
@@ -1689,7 +1690,7 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         unreadable.append(f"starvation tiers: {exc}")
         announced = {}
     try:
-        tier_ids = queue.tier_ids()
+        tier_ids = tier_holdings.ids(queue.records)
     except OSError as exc:
         notes.append(f"starvation tier ledgers: {exc}")
         unreadable.append(f"starvation tier ledgers: {exc}")
@@ -1705,8 +1706,8 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         ram_record = (record if isinstance(record, Mapping)
                       and record.get("tier") == "ram" else {})
         try:
-            ledger = queue.tier_ledger(tier_id)
-            capacity, available = ledger.capacity(), ledger.available()
+            ledger = queue.tier(tier_id)
+            capacity, available = (ledger.mint_supply(), ledger.free_supply())
         except (OSError, ValueError, pool.PoolContractError) as exc:
             notes.append(f"starvation tier ledger {tier_id}: {exc}")
             unreadable.append(f"starvation tier ledger {tier_id}: {exc}")
@@ -2046,9 +2047,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     report_paths.extend(("host", host, queue.root / pool.RESERVATIONS / host /
                          pool.CENSUS_UNREADABLE) for host in hosts)
     try:
-        report_paths.extend(("tier", tier_id, queue.root / pool.record_store.TIER_RESERVATIONS /
-                             queue.records.check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
-                            for tier_id in queue.tier_ids())
+        report_paths.extend((('tier', tier_id, queue.root / pool.record_store.TIER_RESERVATIONS / queue.records.check_tier_id(tier_id) / pool.CENSUS_UNREADABLE) for tier_id in tier_holdings.ids(queue.records)))
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier census reports: {exc}")
         unreadable.append(f"starvation tier census reports: {exc}")
@@ -3114,8 +3113,8 @@ def read_resident_sets(queue_root, *, now=None):
             row = json.loads(path.read_text())
             if not isinstance(row, dict) or not isinstance(row.get("host"), str):
                 raise ValueError("invalid resident capacity record")
-            ledger = pool.PoolQueue(queue_root).tier_ledger("local:" + row["host"])
-            row["held"] = ledger.held()
+            ledger = pool.PoolQueue(queue_root).tier('local:' + row['host'])
+            row["held"] = ledger.holdings()
             capacity.append(row)
         except (ValueError, OSError) as exc:
             unreadable.append(f"{path}: {exc}")

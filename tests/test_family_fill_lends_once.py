@@ -33,6 +33,7 @@ import test_prepaid_writer_integration as fx
 import test_produced_spool as sp
 import test_produced_spool_paced_export as paced
 from prismabuild import pool
+from prismabuild import tier_holdings
 
 
 def _landing_report(queue, mover: str, *, started: float) -> None:
@@ -52,9 +53,9 @@ def test_a_borrow_records_which_lenders_were_mid_copy(tmp_path, monkeypatch) -> 
 
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
-    ledger = queue.tier_ledger(fx.TIER)
-    assert ledger.acquire(fam.MOVER, {fam.FILL: 4})
-    assert ledger.acquire(fam.EGRESS, {fam.FILL: 3})
+    ledger = queue.tier(fx.TIER)
+    assert ledger.take(fam.MOVER, {fam.FILL: 4})
+    assert ledger.take(fam.EGRESS, {fam.FILL: 3})
     _landing_report(queue, fam.MOVER, started=2000.)
     export_key = fam._paced_export(spool)
     cpu_sampler = al._running(spool, monkeypatch, psi=0.)
@@ -114,11 +115,11 @@ def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
     paced.offer_fill(queue, 100)
-    ledger = queue.tier_ledger(fx.TIER)
-    held = int(ledger.available().get(fam.FILL, 0))
+    ledger = queue.tier(fx.TIER)
+    held = int(ledger.free_supply().get(fam.FILL, 0))
     assert held >= 100
-    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
-    assert ledger.available().get(fam.FILL, 0) == 0
+    assert ledger.take(fam.MOVER, {fam.FILL: held})
+    assert ledger.free_supply().get(fam.FILL, 0) == 0
 
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
@@ -197,11 +198,11 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
     paced.offer_fill(queue, 100)
-    ledger = queue.tier_ledger(fx.TIER)
-    held = int(ledger.available().get(fam.FILL, 0))
+    ledger = queue.tier(fx.TIER)
+    held = int(ledger.free_supply().get(fam.FILL, 0))
     assert held >= 100
-    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
-    assert ledger.available().get(fam.FILL, 0) == 0
+    assert ledger.take(fam.MOVER, {fam.FILL: held})
+    assert ledger.free_supply().get(fam.FILL, 0) == 0
 
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
@@ -215,9 +216,9 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     assert other["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 
     # The lender keeps only half of what the two live borrows drew.
-    assert ledger.release(fam.MOVER) == held
-    assert ledger.acquire(fam.MOVER, {fam.FILL: 50})
-    assert ledger.holder_tokens(fam.MOVER).get(fam.FILL) == 50
+    assert ledger.release_unspent(fam.MOVER, authority=tier_holdings.Unspent.NEVER_STARTED) == held
+    assert ledger.take(fam.MOVER, {fam.FILL: 50})
+    assert ledger.holdings(fam.MOVER).get(fam.FILL) == 50
 
     queue.finish(first, status="executed", claim_snapshot=claim)
     ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, first))

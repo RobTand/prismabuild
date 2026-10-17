@@ -23,6 +23,7 @@ import pytest
 import test_prepaid_writer_integration as fx
 import test_produced_spool as base
 from prismabuild import pool, produced_output as po, produced_spool as ps, storage_tiers
+from prismabuild import tier_holdings
 
 FILL = storage_tiers.FILL_KIND
 FILL_DEMAND = f"{FILL}{storage_tiers.TIER_DEMAND_SEPARATOR}{fx.TIER}"
@@ -31,7 +32,7 @@ FILL_DEMAND = f"{FILL}{storage_tiers.TIER_DEMAND_SEPARATOR}{fx.TIER}"
 def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     """Mint ``mb_s`` fill tokens and announce them, as the tier loop does."""
 
-    queue.mint_tier_capacity(fx.TIER, {fx.KIND: 4, FILL: mb_s})
+    queue.tier(fx.TIER).mint({fx.KIND: 4, FILL: mb_s})
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, FILL: mb_s}
@@ -112,12 +113,12 @@ def execute_export(spool, handle, destination, payload, *, rate=None):
     claim = spool.queue.claim(owner="spool-export-test", tags=[spool.host])
     assert claim is not None and claim["action_key"] == key
     assert claim["resources"] == demand
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.holder_tokens(key).get(FILL, 0) == (rate or 0)
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.holdings(key).get(FILL, 0) == (rate or 0)
     outcome = spool.queue.execute(claim, timeout_s=120)
     assert outcome.get("returncode") == 0, outcome
     spool.queue.finish(key, status="executed")
-    assert not ledger.holder_tokens(key)
+    assert not ledger.holdings(key)
     assert spool.poll_group("b1")["complete"]
     assert destination.read_bytes() == payload
     receipt = ps._read(spool._group("b1") / "receipt.json")
@@ -158,7 +159,7 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
     assert isinstance(bound, dict)
     assert bound["owner_action_key"] == spool.owner
     assert bound["owner_attempt"] == spool.instance["owner_attempt"]
-    holds = spool.queue.tier_ledger(fx.TIER).holder_tokens(spool.owner)
+    holds = spool.queue.tier(fx.TIER).holdings(spool.owner)
     cas_before = tree_snapshot(Path(spool.cas_root))
     states = (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
     rows_before = {state: tree_snapshot(spool.queue.root / state) for state in states}
@@ -204,7 +205,7 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
     assert source.read_bytes() == payload and ps._identity(source) == identity
     assert (group / "reservation.json").read_bytes() == reservation
     assert prewrite.read_bytes() == authority
-    assert spool.queue.tier_ledger(fx.TIER).holder_tokens(spool.owner) == holds
+    assert spool.queue.tier(fx.TIER).holdings(spool.owner) == holds
     assert spool.poll_group("b1") == {"ok": True, "complete": False}
     assert not spool.release_group("b1")["ok"]
     assert spool.reserve_group("b1", 64) == source.parent
@@ -284,7 +285,7 @@ def test_a_measured_only_price_still_reserves_and_executes(tmp_path):
     file_price_receipt(spool)
     assert ps.export_fill(spool.queue, fx.TIER, spool.owner) == 4  # shared ceil rule
     # Capacity for claim is independent of whether the tier announces an offer.
-    spool.queue.mint_tier_capacity(fx.TIER, {fx.KIND: 4, FILL: 4})
+    spool.queue.tier(fx.TIER).mint({fx.KIND: 4, FILL: 4})
     _source, destination, entries = base.prepare(spool)
     handle = spool.submit_group("b1", entries)
     assert sealed(spool)["params"]["demand"][FILL_DEMAND] == 4
@@ -325,22 +326,22 @@ def test_a_resolved_price_with_no_free_fill_is_an_admission_refusal(tmp_path):
     source, destination, entries = base.prepare(spool)
     handle = spool.submit_group("b1", entries)
     record = (spool._group("b1") / "export.json").read_bytes()
-    ledger = spool.queue.tier_ledger(fx.TIER)
+    ledger = spool.queue.tier(fx.TIER)
     stranger = "3" * 64
-    assert ledger.acquire(stranger, {FILL: 7})
+    assert ledger.take(stranger, {FILL: 7})
     assert spool.queue.claim(owner="spool-export-test", tags=[spool.host]) is None
     denials = spool.queue.latest_denials({handle["export_key"]})
     assert any(denial["reason"] == "tier_reservation_unavailable"
                for denial in denials.get(handle["export_key"], [])), denials
     assert spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).exists()
-    assert not ledger.holder_tokens(handle["export_key"])
-    assert ledger.holder_tokens(stranger).get(FILL) == 7
+    assert not ledger.holdings(handle['export_key'])
+    assert ledger.holdings(stranger).get(FILL) == 7
     assert not destination.exists() and source.read_bytes() == b"hello"
     assert not Path(str(destination) + ".tmp").exists()
     assert not (spool._group("b1") / "receipt.json").exists()
     assert spool.submit_group("b1", entries)["export_key"] == handle["export_key"]
     assert (spool._group("b1") / "export.json").read_bytes() == record
-    ledger.release(stranger)
+    ledger.release_unspent(stranger, authority=tier_holdings.Unspent.NEVER_STARTED)
     execute_export(spool, handle, destination, b"hello", rate=7)
 
 
@@ -358,14 +359,14 @@ def test_a_paced_export_reserves_the_fill_and_holds_its_rate(tmp_path):
     claimed = spool.queue.claim(owner="spool-export-test", tags=[spool.host])
     assert claimed is not None and claimed["action_key"] == handle["export_key"]
     assert claimed["resources"] == demand
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.holder_tokens(handle["export_key"]).get(FILL) == 1
-    assert ledger.available().get(FILL, 0) == 0     # a mover waits its turn
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.holdings(handle['export_key']).get(FILL) == 1
+    assert ledger.free_supply().get(FILL, 0) == 0     # a mover waits its turn
 
     outcome = spool.queue.execute(claimed, timeout_s=120)
     assert outcome.get("returncode") == 0, outcome
     spool.queue.finish(handle["export_key"], status="executed")
-    assert not ledger.holder_tokens(handle["export_key"])
+    assert not ledger.holdings(handle['export_key'])
     assert spool.poll_group("b1")["complete"]
     assert destination.read_bytes() == payload
 

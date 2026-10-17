@@ -54,7 +54,7 @@ def _queue(tmp_path: Path, gib: int = 6) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {KIND: gib})
+    q.tier(TIER).mint({KIND: gib})
     return q
 
 
@@ -128,7 +128,7 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
 
 def _one_batch(q, tmp_path, template, inst, owner, mover, batch_id, name):
     """One staged and funded output batch through the pool."""
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     descs, path = _descriptors(tmp_path, template, inst, name=name)
     _prewrite(q, inst, template, batch_id, TIER, descs)
     manifest = po.output_manifest_sha256(descs)
@@ -143,7 +143,7 @@ def _one_batch(q, tmp_path, template, inst, owner, mover, batch_id, name):
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id=batch_id, descriptors=descs)
     assert funded.get("ok") is True, funded
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
     return path, descs
 
 
@@ -177,12 +177,12 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     live_owner = _hexkey("1555-live-owner")
     live_mover = _hexkey("1555-live-mover")
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
     live_inst = _bind(q, template, live_owner)
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 2
-    assert ledger.holder_tokens(live_owner).get(KIND, 0) == 2
+    assert ledger.holdings(owner).get(KIND, 0) == 2
+    assert ledger.holdings(live_owner).get(KIND, 0) == 2
 
     dead_path, _dead_descs = _one_batch(q, tmp_path, template, inst, owner,
                                         dead_mover, "dead", "dead.bin")
@@ -225,16 +225,16 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
              and e.get("mover") == dead_mover]
     assert len(freed) == 1, events
     assert freed[0].get("released_gib") == 1, events
-    assert ledger.holder_tokens(dead_mover).get(KIND, 0) == 0
+    assert ledger.holdings(dead_mover).get(KIND, 0) == 0
     # Minted 6: the failed owner freed its grant, the live owner keeps
     # 1, the live mover holds 1, and the freed token returns to free.
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == 4
+    assert ledger.holdings(owner).get(KIND, 0) == 0
+    assert ledger.free_supply().get(KIND, 0) == 4
 
     # The live consumer's intent on another producer is untouched.
     live = q.read_output_funding(live_mover, TIER)
     assert live is not None and live["state"] == "transferring"
-    assert ledger.holder_tokens(live_mover).get(KIND, 0) == 1
+    assert ledger.holdings(live_mover).get(KIND, 0) == 1
 
 
 def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
@@ -242,7 +242,7 @@ def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
     owner = _hexkey("1555-owner-repub")
     mover = _hexkey("1555-mover-repub")
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
 
@@ -265,7 +265,7 @@ def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
     assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
 def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
@@ -273,7 +273,7 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     owner = _hexkey("1555-owner-claim")
     mover = _hexkey("1555-mover-claim")
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
 
@@ -298,7 +298,7 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
     assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
 def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
@@ -306,7 +306,7 @@ def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
     owner = _hexkey("1555-owner-present")
     mover = _hexkey("1555-mover-present")
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
 
@@ -320,7 +320,7 @@ def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
     assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
 def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
@@ -328,7 +328,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
     owner = _hexkey("1555-owner-partial")
     mover = _hexkey("1555-mover-partial")
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
 
@@ -346,7 +346,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="partial", descriptors=descs)
     assert funded.get("ok") is True, funded
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
 
     # The mover staged part of its batch, then was withdrawn: bytes
     # may sit on the stage, so the reconcile must not free them.
@@ -357,7 +357,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
                           "manifest_sha256": manifest})
     assert q.withdraw(mover, by="test", reason="stopped") is not None
     events = _settle(q)
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
     assert not any(e.get("event") == "output-funding-tokens-released"
                    and e.get("mover") == mover for e in events), events
 
@@ -404,7 +404,7 @@ def _stranded_with_live_intent(tmp_path):
 def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, restart):
     """Each fault leaves a retryable state, also after a loop restart."""
     q, mover, live_mover, receipts, *_ = _stranded_with_live_intent(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     live_before = q.read_output_funding(live_mover, TIER)
     observed_faults = []
     with monkeypatch.context() as patch:
@@ -432,36 +432,35 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
         _cycle(q, tmp_path, receipts)
         assert fault in observed_faults, f"cycle never reached the {fault} fault"
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-        assert ledger.holder_tokens(mover).get(KIND, 0) == (
-            1 if fault == "token-release" else 0)
+        assert ledger.holdings(mover).get(KIND, 0) == (1 if fault == 'token-release' else 0)
         assert q.read_output_funding(live_mover, TIER) == live_before
-        assert ledger.holder_tokens(live_mover).get(KIND, 0) == 1
+        assert ledger.holdings(live_mover).get(KIND, 0) == 1
 
     if restart:
         q = pool.PoolQueue(q.root)
         receipts = tier_loop.ReceiptCache()
     _cycle(q, tmp_path, receipts)
     assert q.read_output_funding(mover, TIER)["state"] == "released"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == 4
+    assert ledger.holdings(mover).get(KIND, 0) == 0
+    assert ledger.free_supply().get(KIND, 0) == 4
     assert q.read_output_funding(live_mover, TIER) == live_before
-    assert ledger.holder_tokens(live_mover).get(KIND, 0) == 1
+    assert ledger.holdings(live_mover).get(KIND, 0) == 1
     _cycle(q, tmp_path, receipts)
-    assert ledger.available().get(KIND, 0) == 4
+    assert ledger.free_supply().get(KIND, 0) == 4
 
 
 def test_released_record_with_held_tokens_recovers_after_restart(tmp_path):
     """Repair the unsafe state that the previous release order created."""
     q, mover, live_mover, _, *_ = _stranded_with_live_intent(tmp_path)
     assert q.release_output_funding(mover, TIER)
-    ledger = q.tier_ledger(TIER)
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    ledger = q.tier(TIER)
+    assert ledger.holdings(mover).get(KIND, 0) == 1
     live_before = q.read_output_funding(live_mover, TIER)
     q = pool.PoolQueue(q.root)
     _cycle(q, tmp_path, tier_loop.ReceiptCache())
     assert q.read_output_funding(mover, TIER)["state"] == "released"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == 4
+    assert ledger.holdings(mover).get(KIND, 0) == 0
+    assert ledger.free_supply().get(KIND, 0) == 4
     assert q.read_output_funding(live_mover, TIER) == live_before
 
 
@@ -481,10 +480,10 @@ def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeyp
         patch.setattr(pool.ResourceLedger, "release", fail_release)
         _cycle(q, tmp_path, receipts)
         assert prewrite.exists()
-        assert q.tier_ledger(TIER).holder_tokens(mover).get(KIND, 0) == 1
+        assert q.tier(TIER).holdings(mover).get(KIND, 0) == 1
     q = pool.PoolQueue(q.root)
     _cycle(q, tmp_path, tier_loop.ReceiptCache())
-    assert q.tier_ledger(TIER).holder_tokens(mover).get(KIND, 0) == 0
+    assert q.tier(TIER).holdings(mover).get(KIND, 0) == 0
     assert q.read_output_funding(live_mover, TIER)["state"] == "transferring"
 
 
@@ -517,7 +516,7 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
         monkeypatch.setattr(tier_loop.os, "lstat", unreadable)
     events = _settle(q)
     assert q.read_output_funding(mover, TIER)["state"] == state
-    assert q.tier_ledger(TIER).holder_tokens(mover).get(KIND, 0) == 1
+    assert q.tier(TIER).holdings(mover).get(KIND, 0) == 1
     assert not any(e["event"] == "output-funding-tokens-released"
                    and e["mover"] == mover for e in events)
     assert q.read_output_funding(live_mover, TIER)["state"] == "transferring"
@@ -552,15 +551,15 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
     _settle(q)
     assert raced
     assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-    assert q.tier_ledger(TIER).holder_tokens(mover).get(KIND, 0) == 1
+    assert q.tier(TIER).holdings(mover).get(KIND, 0) == 1
 
 
 def test_partial_token_release_retries_without_settling_marker(tmp_path, monkeypatch):
     """A short token release leaves the marker open for another pass."""
     q, mover, _, _, *_ = _stranded_with_live_intent(tmp_path)
-    ledger = q.tier_ledger(TIER)
-    assert ledger.acquire(mover, {KIND: 1})
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 2
+    ledger = q.tier(TIER)
+    assert ledger.take(mover, {KIND: 1})
+    assert ledger.holdings(mover).get(KIND, 0) == 2
     release = pool.ResourceLedger.release
 
     def short_release(self, key):
@@ -572,20 +571,20 @@ def test_partial_token_release_retries_without_settling_marker(tmp_path, monkeyp
         patch.setattr(pool.ResourceLedger, "release", short_release)
         _settle(q)
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-        assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+        assert ledger.holdings(mover).get(KIND, 0) == 1
     _settle(pool.PoolQueue(q.root))
     assert q.read_output_funding(mover, TIER)["state"] == "released"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert ledger.holdings(mover).get(KIND, 0) == 0
 
 
 def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
     """An unreadable token census cannot establish a completed release."""
     q, mover, _, _, *_ = _stranded_with_live_intent(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     scan = pool.immutable_files.scan_required
 
     def unreadable_holder(path):
-        if path == ledger.held_dir / mover:
+        if path == ledger.paths.held / mover:
             raise PermissionError("injected token census failure")
         return scan(path)
 
@@ -593,6 +592,6 @@ def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
         patch.setattr(pool.immutable_files, 'scan_required', unreadable_holder)
         _settle(q)
         assert q.read_output_funding(mover, TIER)["state"] == "transferring"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert ledger.holdings(mover).get(KIND, 0) == 0
     _settle(pool.PoolQueue(q.root))
     assert q.read_output_funding(mover, TIER)["state"] == "released"

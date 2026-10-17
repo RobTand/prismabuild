@@ -110,22 +110,22 @@ def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 32})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": sum(PHASE_GIB) * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 112})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
+    queue.tier(RAM_TIER).mint({'ram_gib': 112})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
     phases = list(plan["phases"])
     assert isinstance(phases, list)
     for ordinal in landed:
         phase = phases[ordinal]
         assert isinstance(phase, dict)
         stage_lead = _hexkey(f"mover{ordinal}")
-        assert queue.tier_ledger(STAGE_TIER).acquire(
-            stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
+        assert queue.tier(STAGE_TIER).take(stage_lead, {'stage_gib': PHASE_GIB[ordinal]})
         # Landed means landed (#759): the tokens are the booking, and the
         # fragment beside the receipt is what says the bytes arrived.
         residency_publication.vouch_landed(
@@ -185,14 +185,14 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     ram = tmp_path / "ram"
     ram.mkdir()
     stage_release.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 20})
+    queue.tier(RAM_TIER).mint({'ram_gib': 20})
     tiers[RAM_TIER].update(capacity_bytes=20 * GIB, window_gib=20)
-    ledger = queue.tier_ledger(RAM_TIER)
+    ledger = queue.tier(RAM_TIER)
     for key, consumer, start, end, name in (
         (_hexkey("rampromote1"), CONSUMER, 2 * GIB, 10 * GIB, "adopted"),
         (_hexkey("ramorphan"), "d" * 64, 0, 8 * GIB, "orphan"),
     ):
-        assert ledger.acquire(key, {"ram_gib": 8})
+        assert ledger.take(key, {'ram_gib': 8})
         residency_publication.vouch_landed(
             queue, consumer_action_key=consumer, mover_action_key=key,
             tier_id=RAM_TIER, stage_root=ram, manifest_sha256=MANIFEST,
@@ -203,7 +203,7 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     # 16 held + head 2 + next missing 8 = 26 > 20; ask for ten free.
     assert pressure[RAM_TIER] == 10, pressure
     stage_release.sweep(queue, stage_roots={RAM_TIER: str(ram)}, pressure=pressure)
-    assert ledger.holder_tokens(_hexkey("ramorphan")) == {}
-    assert ledger.holder_tokens(_hexkey("rampromote1")) == {"ram_gib": 8}
+    assert ledger.holdings(_hexkey('ramorphan')) == {}
+    assert ledger.holdings(_hexkey('rampromote1')) == {'ram_gib': 8}
     tier_loop.ram_residency_window(queue, tiers=tiers)
     assert queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()

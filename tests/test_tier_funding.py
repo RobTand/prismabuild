@@ -49,6 +49,7 @@ from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -95,9 +96,10 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
+    queue.tier(TIER).mint({'stage_gib': stage_gib})
     if ram_gib:
-        queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})
+        queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
     return queue
 
 
@@ -274,7 +276,7 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
 def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     """Exact-fit funded claim: stealer blocked, free untouched, fuse shut."""
     queue = _queue(tmp_path, stage_gib=5)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("exact-mover"), _hexkey("exact-consumer")
     plan = _plan(queue, consumer, mover, tag="exact")
 
@@ -288,7 +290,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
              "kind": "stage_gib", "published_unix": 1.0}
     grant_dum = window_credit.grant_key(consumer, TIER, "mover_row", "dummy")
     assert queue.reserve_fence(TIER, grant_dum, dummy, 2) is True
-    assert ledger.available().get("stage_gib") == 3
+    assert ledger.free_supply().get('stage_gib') == 3
     big = _hexkey("exact-stealer")
     _stealer_row(queue, big, 4)
     assert queue.claim(tags=["dl380g10"], owner="w-steal") is None
@@ -298,7 +300,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     got = queue.claim(tags=["dl380g10"], owner="w-small")
     assert got is not None and got["action_key"] == small
     queue.finish(small, status="executed")
-    assert int(ledger.release(grant_dum)) == 2
+    assert int(ledger.release_unspent(grant_dum, authority=tier_holdings.Unspent.NEVER_STARTED)) == 2
 
     # The funded mover then claims its fence with no new money: the same
     # scan denies the 4 GiB stealer and admits the mover behind it.
@@ -306,20 +308,20 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-exact")
     generation = _reserve_and_transfer(
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
-    assert ledger.available().get("stage_gib") == 3
-    free_before = ledger.available().get("stage_gib")
+    assert ledger.free_supply().get('stage_gib') == 3
+    free_before = ledger.free_supply().get('stage_gib')
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     assert got is not None and got["action_key"] == mover
     assert queue.records.item_path(pool.record_store.READY, big).exists()
     # No new money: the fence covered the whole demand.
-    assert ledger.available().get("stage_gib") == free_before
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert ledger.free_supply().get('stage_gib') == free_before
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
 
     queue.finish(mover, status="executed")
-    assert ledger.available().get("stage_gib") == 5
+    assert ledger.free_supply().get('stage_gib') == 5
     # Consumed credit is never reused.
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     got = queue.claim(tags=["dl380g10"], owner="w-steal-again")
@@ -339,8 +341,8 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
 
     # Occupy the whole second tier with a squatter holding real tokens.
-    ram_ledger = queue.tier_ledger(RAM_TIER)
-    assert ram_ledger.acquire("squatter", {"ram_gib": 4}) is True
+    ram_ledger = queue.tier(RAM_TIER)
+    assert ram_ledger.take('squatter', {'ram_gib': 4}) is True
 
     # The claim is denied on the second tier -- before any persistence, so
     # before any consumed-marking: the first tier's entitlement must survive
@@ -350,19 +352,19 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
-    stage_ledger = queue.tier_ledger(TIER)
-    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    stage_ledger = queue.tier(TIER)
+    assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
 
-    assert ram_ledger.release("squatter") == 4
+    assert ram_ledger.release_unspent('squatter', authority=tier_holdings.Unspent.NEVER_STARTED) == 4
     got = queue.claim(tags=["dl380g10"], owner="w-retry-2")
     assert got is not None and got["action_key"] == mover
     # Same generation, spent exactly once: still exactly 2, not 4.
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
-    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
     queue.finish(mover, status="executed")
-    assert stage_ledger.available().get("stage_gib") == 4
+    assert stage_ledger.free_supply().get('stage_gib') == 4
 
 
 def test_physical_tokens_never_count_as_credit(tmp_path: Path) -> None:
@@ -371,15 +373,15 @@ def test_physical_tokens_never_count_as_credit(tmp_path: Path) -> None:
     mover, consumer = _hexkey("phys-mover"), _hexkey("phys-consumer")
     plan = _plan(queue, consumer, mover, tag="phys")
     row = _publish_mover(queue, plan, mover)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     # A previous attempt's leftovers, held with no funding record at all.
-    assert ledger.acquire(mover, {"stage_gib": 2}) is True
+    assert ledger.take(mover, {'stage_gib': 2}) is True
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     got = queue.claim(tags=["dl380g10"], owner="w-phys")
     assert got is not None and got["action_key"] == mover
     # Full charge on top of occupancy: 2 old + 2 new, never 2 total.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 4
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 4
+    assert ledger.free_supply().get('stage_gib') == 2
     queue.finish(mover, status="executed")
 
 
@@ -496,7 +498,7 @@ def test_funding_writers_serialize_on_mover_lock(tmp_path: Path) -> None:
 def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     """Claim -> copy -> DONE pins bytes; no credit helper frees them."""
     queue = _queue(tmp_path, stage_gib=4)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("pin-mover"), _hexkey("pin-consumer")
     plan = _plan(queue, consumer, mover, tag="pin")
     row = _publish_mover(queue, plan, mover)
@@ -512,8 +514,8 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
         "bytes_staged": 2 * GIB})
     queue.finish(mover, status="executed")
     # Landed: the mover still holds its 2 GiB under DONE, record consumed.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert ledger.free_supply().get('stage_gib') == 2
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
@@ -528,21 +530,21 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     assert queue.advance_funding_state(
         mover, TIER, expect="transferring", advance_to="consumed",
         generation=generation) is False
-    free_before = ledger.available().get("stage_gib")
+    free_before = ledger.free_supply().get('stage_gib')
     assert queue.reserve_fence(TIER, grant, _fields(
         queue, plan, mover, row, kind="stage_gib"), 2) is True
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert ledger.available().get("stage_gib") == free_before
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert ledger.free_supply().get('stage_gib') == free_before
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     # Only the owner path may return landed bytes; until it does the
     # ledger still charges them to the mover that staged them.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
 
 
 def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -> None:
     """Injected claim-record failure: no execution, exact fence recovery."""
     queue = _queue(tmp_path, stage_gib=4)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("inj-mover"), _hexkey("inj-consumer")
     plan = _plan(queue, consumer, mover, tag="inj")
     row = _publish_mover(queue, plan, mover)
@@ -569,28 +571,28 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert ledger.free_supply().get('stage_gib') == 2
 
     # Retry spends the same fence exactly once: holdings do not grow.
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_write)
     got = queue.claim(tags=["dl380g10"], owner="w-inj-retry")
     assert got is not None and got["action_key"] == mover
     assert got["tier_funding"][TIER]["generation"] == generation
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert ledger.free_supply().get('stage_gib') == 2
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     queue.finish(mover, status="executed")
-    assert ledger.available().get("stage_gib") == 4
+    assert ledger.free_supply().get('stage_gib') == 4
 
 
 def test_lease_write_failure_returns_remainder_keeps_fence(
         tmp_path: Path, monkeypatch) -> None:
     """Injected lease failure on a funded+remainder claim: exact unwind."""
     queue = _queue(tmp_path, stage_gib=4, ram_gib=4)
-    stage_ledger = queue.tier_ledger(TIER)
-    ram_ledger = queue.tier_ledger(RAM_TIER)
+    stage_ledger = queue.tier(TIER)
+    ram_ledger = queue.tier(RAM_TIER)
     mover, consumer = _hexkey("lease-mover"), _hexkey("lease-consumer")
     plan = _plan(queue, consumer, mover, tag="lease")
     resources = {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, RAM_KIND: 2}
@@ -614,22 +616,22 @@ def test_lease_write_failure_returns_remainder_keeps_fence(
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
-    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert stage_ledger.available().get("stage_gib") == 2
-    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 0
-    assert ram_ledger.available().get("ram_gib") == 4
+    assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert stage_ledger.free_supply().get('stage_gib') == 2
+    assert int(ram_ledger.holdings(mover).get('ram_gib', 0)) == 0
+    assert ram_ledger.free_supply().get('ram_gib') == 4
 
     # Retry takes the remainder exactly once beside the same fence.
     monkeypatch.setattr(pool.PoolQueue, "write_lease", real_lease)
     got = queue.claim(tags=["dl380g10"], owner="w-lease-retry")
     assert got is not None and got["action_key"] == mover
-    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 2
-    assert stage_ledger.available().get("stage_gib") == 2
-    assert ram_ledger.available().get("ram_gib") == 2
+    assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert int(ram_ledger.holdings(mover).get('ram_gib', 0)) == 2
+    assert stage_ledger.free_supply().get('stage_gib') == 2
+    assert ram_ledger.free_supply().get('ram_gib') == 2
     queue.finish(mover, status="executed")
-    assert stage_ledger.available().get("stage_gib") == 4
-    assert ram_ledger.available().get("ram_gib") == 4
+    assert stage_ledger.free_supply().get('stage_gib') == 4
+    assert ram_ledger.free_supply().get('ram_gib') == 4
 
 
 def test_mark_failure_unwinds_without_execution(
@@ -647,8 +649,8 @@ def test_mark_failure_unwinds_without_execution(
     generation shut spending the fence exactly once.
     """
     queue = _queue(tmp_path, stage_gib=4, ram_gib=4)
-    stage_ledger = queue.tier_ledger(TIER)
-    ram_ledger = queue.tier_ledger(RAM_TIER)
+    stage_ledger = queue.tier(TIER)
+    ram_ledger = queue.tier(RAM_TIER)
     mover, consumer = _hexkey("mark-mover"), _hexkey("mark-consumer")
     plan = _plan(queue, consumer, mover, tag="mark")
     resources = {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, RAM_KIND: 2}
@@ -677,10 +679,10 @@ def test_mark_failure_unwinds_without_execution(
         record = queue.read_funding(mover, TIER)
         assert record is not None and record["state"] == "transferring"
         assert str(record["generation"]) == generation
-        assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-        assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 0
-        assert stage_ledger.available().get("stage_gib") == 2
-        assert ram_ledger.available().get("ram_gib") == 4
+        assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
+        assert int(ram_ledger.holdings(mover).get('ram_gib', 0)) == 0
+        assert stage_ledger.free_supply().get('stage_gib') == 2
+        assert ram_ledger.free_supply().get('ram_gib') == 4
     assert failures["count"] == 2
 
     # Injection exhausted: the retry fuses the same generation shut and runs
@@ -690,16 +692,16 @@ def test_mark_failure_unwinds_without_execution(
     got = queue.claim(tags=["dl380g10"], owner="w-mark-retry")
     assert got is not None and got["action_key"] == mover
     assert got["tier_funding"][TIER]["generation"] == generation
-    assert int(stage_ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert int(ram_ledger.holder_tokens(mover).get("ram_gib", 0)) == 2
-    assert stage_ledger.available().get("stage_gib") == 2
-    assert ram_ledger.available().get("ram_gib") == 2
+    assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert int(ram_ledger.holdings(mover).get('ram_gib', 0)) == 2
+    assert stage_ledger.free_supply().get('stage_gib') == 2
+    assert ram_ledger.free_supply().get('ram_gib') == 2
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
     queue.finish(mover, status="executed")
-    assert stage_ledger.available().get("stage_gib") == 4
-    assert ram_ledger.available().get("ram_gib") == 4
+    assert stage_ledger.free_supply().get('stage_gib') == 4
+    assert ram_ledger.free_supply().get('ram_gib') == 4
 
 
 def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
@@ -712,7 +714,7 @@ def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
     full set held authorizes a subtraction.
     """
     queue = _queue(tmp_path, stage_gib=4)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("part-mover"), _hexkey("part-consumer")
     plan = _plan(queue, consumer, mover, tag="part")
     row = _publish_mover(queue, plan, mover)
@@ -729,10 +731,10 @@ def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
     # Fully held under the same publication: still no cover.
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     # One bound token gone: nothing.
-    assert ledger.release_except(mover, bound[1:]) == 1
+    assert ledger.release_unspent(mover, keep=bound[1:], authority=tier_holdings.Unspent.NEVER_STARTED) == 1
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     # All gone: still nothing.
-    assert ledger.release(mover) == 1
+    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
     assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
     queue.finish(mover, status="executed")
 
@@ -754,7 +756,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     from prismabuild import stage_release
     from prismabuild import residency_map
     queue = _queue(tmp_path, stage_gib=3)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -799,8 +801,8 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
         "stage_root": str(stage), "complete": True, "bytes_staged": span})
     queue.finish(mover, status="executed")
     # Landed and pinned: charged to the mover, record consumed.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 2
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
@@ -820,8 +822,8 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
         queue, mover, consumer_action_key=consumer, stage_root=str(stage))
     assert not staged.exists()
     assert int(receipt.get("tokens_released", 0)) == 1
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 3
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 3
     got = queue.claim(tags=["dl380g10"], owner="w-real-steal-2")
     assert got is not None and got["action_key"] == stealer
     queue.finish(stealer, status="executed")

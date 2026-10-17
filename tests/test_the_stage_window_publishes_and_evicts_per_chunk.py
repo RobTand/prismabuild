@@ -237,8 +237,8 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(_key(0, 0), {"stage_gib": 1})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 8})
+    assert queue.tier(STAGE_TIER).take(_key(0, 0), {'stage_gib': 1})
     # The booking above is the room; these are the records the finished
     # copy left, which is what the census now reports (#759).
     residency_publication.vouch_landed(
@@ -264,7 +264,7 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
 def live_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(STAGE_TIER, {"stage_gib": 5})
+    q.tier(STAGE_TIER).mint({'stage_gib': 5})
     return q
 
 

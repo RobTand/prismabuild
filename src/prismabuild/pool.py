@@ -138,8 +138,7 @@ import time
 import uuid
 
 from . import scratch_lifetime, record_store
-from . import endings
-from . import lifecycle
+from . import endings, lifecycle, tier_holdings
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
@@ -820,8 +819,7 @@ MAX_CONTROLLER_JOURNAL_LINE_BYTES = 4096
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
 #: Occupancy kinds are absent on purpose -- see
-#: :meth:`PoolQueue.release_tier_rate_reservations` (#636).
-TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
+#: :meth:`tier_holdings.release_rates_all` (#636).
 
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
@@ -2622,6 +2620,8 @@ def held_names_visible(ledger, key: str) -> set[str]:
     ``EACCES`` as an empty listing, which is the trap this exists for).
     """
 
+    if isinstance(ledger, tier_holdings.TierLedger):
+        return ledger.holder_state(key)
     try:
         paths = (ledger._glob_names(ledger.held_dir / key, "*-*", strict=True)
                  if isinstance(ledger, ResourceLedger)
@@ -3457,10 +3457,10 @@ def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | Non
 def _guarded_mutation(*, blocking: bool):
     """Run a ``ResourceLedger`` mutator under its mutation exclusion.
 
-    Tier ledgers built by :meth:`PoolQueue.tier_ledger` carry the tier's
+    Tier ledgers built by :meth:`PoolQueue.tier` carry the tier's
     mint lock as that exclusion, so every token rename on the ledger
     serializes against the reclaim headroom scan (see
-    :meth:`PoolQueue._reclaim_dead_markers`): a held/private token renamed
+    :meth:`TierLedger._reclaim_mint`): a held/private token renamed
     to free between the free listing and the holder listing is missed by
     both, and the overstated headroom reissues a dead name with no backing
     -- then a claimant takes the phantom before the same apply's retire
@@ -3545,7 +3545,7 @@ class ResourceLedger:
         # census was exact (#936; see report_census).
         self.last_census_report: dict[str, object] | None = None
         # Optional ``(*, blocking: bool) -> context manager`` yielding the
-        # acquisition status. PoolQueue.tier_ledger supplies its mint lock;
+        # acquisition status. PoolQueue.tier supplies its mint lock;
         # otherwise every host constructor uses the reservation-owner lock.
         # Census/cache purpose is explicit and independent of exclusion,
         # never inferred from a host/tier name or guard presence.
@@ -3583,7 +3583,7 @@ class ResourceLedger:
     def _strict_census(self) -> bool:
         """Whether this ledger refuses to mint from a partial view.
 
-        Tier ledgers built by :meth:`PoolQueue.tier_ledger` enumerate
+        Tier ledgers built by :meth:`PoolQueue.tier` enumerate
         their grow/reclaim census error-visibly and abort the mint/reissue
         on any census error; host ledgers keep the legacy tolerant scans.
         The fork is by explicit factory purpose, never by name or locking.
@@ -4071,7 +4071,7 @@ class ResourceLedger:
         the disposition itself.  The mint marker is never touched, so the
         name can never be re-minted into free while the bytes remain;
         honest regrowth reissues exactly these filed names when backing
-        exists (see :meth:`PoolQueue._reclaim_dead_markers`).  A second
+        exists (see :meth:`TierLedger._reclaim_mint`).  A second
         destroy of the same name finds it already dead and counts it
         without moving anything; a name live elsewhere is never taken.
         There is no second ledger: the dead namespace lives in the same
@@ -4209,7 +4209,7 @@ class ResourceLedger:
         are never counted as free (:meth:`available` reads ``free/`` only).
         A caller that decides a shrink from the total must not trust a lower
         bound to say the ledger is already small enough (see
-        ``_apply_tier_capacity``).
+        ``TierLedger._apply_mint``).
         """
 
         counts: dict[str, int] = {}
@@ -4529,7 +4529,8 @@ class ResourceLedger:
         return handle
 
     @_guarded_mutation(blocking=True)
-    def commit_acquire(self, action_key: str, handle: str) -> int:
+    def commit_acquire(self, action_key: str, handle: str, *,
+                       moved_tokens: list[str] | None = None) -> int:
         """Move a claimant's private tokens under its action.  Count moved.
 
         Called by the winner of the ready-to-claimed rename, and by nobody
@@ -4581,6 +4582,8 @@ class ResourceLedger:
             elif token.name == gpu_admission.METADATA:
                 moved += int((record_store.read_document(landing) or {}).get("borrowed_gpu", 0))
             else:
+                if moved_tokens is not None:
+                    moved_tokens.append(token.name)
                 moved += 1
         try:
             source.rmdir()
@@ -4729,7 +4732,8 @@ class ResourceLedger:
 
     @_guarded_mutation(blocking=True)
     def transfer_tokens(self, from_key: str, to_key: str,
-                        names: Sequence[str]) -> int:
+                        names: Sequence[str], *,
+                        moved_tokens: list[str] | None = None) -> int:
         """Move an exact token subset between holders, never via free.
 
         The prepaid-output primitive: fund one sealed batch from the
@@ -4808,6 +4812,8 @@ class ResourceLedger:
                 os.rename(origin, landing)
             except OSError:
                 continue
+            if moved_tokens is not None:
+                moved_tokens.append(name)
             done += 1
         try:
             source.rmdir()
@@ -5252,17 +5258,16 @@ class _ClaimReservation:
         # The transferred fence never touches free; only this take's remainder returns.
         for tier_id in sorted(self.tier_demand):
             try:
-                ledger = self.queue.tier_ledger(tier_id)
+                ledger = self.queue.tier(tier_id)
             except (OSError, PoolContractError, ValueError):
                 continue
             entry = self.tier_funded.get(tier_id)
             names = (entry.get("tokens") if isinstance(entry, dict) else None)
             try:
                 if isinstance(names, list) and names:
-                    ledger.release_except(
-                        self.action_key, {str(name) for name in names})
+                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
                 else:
-                    ledger.release(self.action_key)
+                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
             except (OSError, PoolContractError, ValueError):
                 continue
 
@@ -6893,7 +6898,7 @@ class PoolQueue:
         occupancy_demand = {
             tier_id: kinds for tier_id, needs in tier_demand.items()
             if (kinds := {kind: need for kind, need in needs.items()
-                          if kind not in TIER_RATE_KINDS})}
+                          if kind not in tier_holdings.RATE_KINDS})}
         if occupancy_demand and residency is None and produced_ref is None:
             # Derived, never typed (#595): every tier demand the fleet's own
             # submitters seal travels beside the residency block whose
@@ -8303,7 +8308,7 @@ class PoolQueue:
             return self._prepared_move_entry(action_key, record,
                                              expected_version)
         try:
-            lock = self.tier_mint_lock(tier_id)
+            lock = self.tier(tier_id).mutation_lock()
         except (PoolContractError, OSError) as exc:
             return f"cannot derive its tier mint lock: {exc}"
         try:
@@ -8367,7 +8372,7 @@ class PoolQueue:
         """
 
         try:
-            held = held_names_visible(self.tier_ledger(tier_id), action_key)
+            held = self.tier(tier_id).holder_state(action_key)
         except (OSError, PoolContractError) as exc:
             return f"cannot read its tier ledger: {exc}"
         if held:
@@ -8556,7 +8561,7 @@ class PoolQueue:
         if not (isinstance(tier_id, str) and tier_id):
             return unlink_locked()
         try:
-            lock = self.tier_mint_lock(tier_id)
+            lock = self.tier(tier_id).mutation_lock()
         except (PoolContractError, OSError) as exc:
             return f"cannot derive its tier mint lock: {exc}"
         try:
@@ -8803,7 +8808,7 @@ class PoolQueue:
         path: Path | None = None
         if isinstance(tier_id, str) and tier_id:
             try:
-                lock = self.tier_mint_lock(tier_id)
+                lock = self.tier(tier_id).mutation_lock()
             except (PoolContractError, OSError):
                 lock = None
             if lock is not None:
@@ -9996,8 +10001,7 @@ class PoolQueue:
                         # apart.  Error-visible, so a holder this cannot list
                         # is unknown, never "holds nothing".
                         try:
-                            held = held_names_visible(self.tier_ledger(
-                                str(plan["tier_id"])), mover)  # type: ignore[index]
+                            held = self.tier(str(plan['tier_id'])).holder_state(mover)  # type: ignore[index]
                         except (OSError, ValueError, PoolContractError) as exc:
                             state, detail = "unknown", f"done; tier ledger unreadable: {exc!r}"
                         else:
@@ -11942,57 +11946,9 @@ class PoolQueue:
     # -- storage tiers (#583) --------------------------------------------
 
 
-    def tier_ledger(self, tier_id: str) -> ResourceLedger:
-        """The cluster-scoped ledger of one storage tier.
+    def tier(self, tier_id: str) -> tier_holdings.TierLedger:
+        return tier_holdings.TierLedger(self.records, self.ledger, tier_id)
 
-        The same ``ResourceLedger`` a box uses, keyed by tier id instead of
-        hostname and rooted under ``TIER_RESERVATIONS`` so that no reader
-        of ``reservations/`` mistakes a tier for a box.  A tier id carries
-        a ``:`` (``prismabuild-stage:dl380g10``), which no hostname does.
-
-        The ledger carries this tier's mint lock as its mutation guard
-        (see ``_guarded_mutation``): every token rename through it --
-        claim begin/commit/abandon, release variants, transfer, mint
-        grow/shrink, egress decharge, stale-handle sweep, and the grant
-        ``acquire`` in :meth:`_reserve_fence_locked` -- serializes against
-        the reclaim headroom scan.  Callers need no per-site locking; the
-        factory attaches the guard and explicit tier census/cache purpose.
-        Host ledgers use a distinct reservation-owner mutation lock.
-        Deployment note: workers without this guard
-        (older generations) admit outside the exclusion, so mixed-version
-        operation can still overissue -- see the quiescence requirement
-        on :meth:`_reclaim_dead_markers`.
-        """
-
-        checked = self.records.check_tier_id(tier_id)
-
-        def _tier_guard(*, blocking: bool = True):
-            return self.tier_mint_lock(checked, blocking=blocking)
-
-        return ResourceLedger(self.root / TIER_RESERVATIONS, host=checked,
-                              mutation_guard=_tier_guard, tier_census=True)
-
-    def tier_mint_lock(self, tier_id: str, *, blocking: bool = True):
-        """Serialize the minters of one tier's capacity, never other tiers.
-
-        ``mint_tier_capacity`` runs ``ensure_capacity`` then
-        ``retire_free_capacity``; the ``O_EXCL`` mint-marker analysis that
-        makes each half safe assumes one minter per ledger, and the host
-        ledgers do the same work only inside the box's serialized capacity
-        prelude (#593).  A second minter -- ``tier_loop --once`` beside the
-        supervised role -- takes this lock rather than interleaving with the
-        first, so two minters against one tier are inside the analysis
-        instead of outside it.  Per tier, so two boxes' loops still mint
-        their own tiers concurrently; the lock file lives beside the queue
-        rather than in the ledger so retiring a tier never removes it.
-        Non-blocking acquisition yields ``False`` instead of raising, for a
-        caller that would rather decline than wait.
-        """
-
-        name = hashlib.sha256(
-            f"tier-mint:{self.records.check_tier_id(tier_id)}".encode()).hexdigest()
-        return posix_lock.held(self.root / "tier-mint-locks" / f"{name}.lock",
-                               blocking=blocking)
 
     def stage_ownership_lock(self, stage_root, *, blocking: bool = True):
         """Serialize the owners of one stage root's files, never other roots.
@@ -12192,64 +12148,8 @@ class PoolQueue:
         with self.stage_ownership_lock(str(stage_root)):
             pass
 
-    def tier_ids(self) -> list[str]:
-        """Every tier that has a ledger, whether or not it holds anything.
 
-        Contained against every ``OSError``, not only the two ``immutable_files.scan_optional``
-        tolerates, and deliberately here rather than in ``immutable_files.scan_optional``: a host
-        ledger's scan must keep failing loudly, because a box that cannot read
-        its own reservations does not know what it holds.  This directory is
-        different.  It is brand new, it is on the shared mount, nothing touches
-        it while the feature is off, and its readers are ``finish`` and the
-        reapers -- so a ``PermissionError`` or an NFS ``ESTALE`` on a cold
-        handle would abort a conclusion *after* the claim was entombed and its
-        lease unlinked but *before* the outcome was written, and would abort a
-        whole reaper cycle on every box for as long as it persisted.  An empty
-        listing is the safe answer: release is documented safe to call twice,
-        so a token this call could not return is returned by the next release
-        on the same key or by the reaper's reclaim.
-        """
 
-        try:
-            return sorted(
-                directory.name for directory in immutable_files.scan_optional(
-                    self.root / TIER_RESERVATIONS,
-                )
-                if directory.is_dir() and not directory.name.startswith(".")
-            )
-        except OSError:
-            return []
-
-    def tier_holdings(self, action_key: str) -> dict[str, dict[str, int]]:
-        """The tier tokens one action holds, by tier id; empty when it holds none."""
-
-        holdings: dict[str, dict[str, int]] = {}
-        for tier_id in self.tier_ids():
-            tokens = self.tier_ledger(tier_id).holder_tokens(action_key)
-            if tokens:
-                holdings[tier_id] = tokens
-        return holdings
-
-    def release_tier_rate_reservations(self, action_key: str) -> int:
-        """Return the tier tokens that price a rate, keeping the ones that
-        price occupancy.
-
-        The kinds to *release* are enumerated rather than the kinds to keep,
-        so a tier resource added later is kept by default: keeping a token too
-        long costs admission, releasing an occupancy token early costs the
-        accounting for bytes that are still on the device, and the tier loop's
-        sweep then reads capacity that is already spent (#636, and the
-        argument ``_release_reservation`` already makes).
-        """
-
-        released = 0
-        for tier_id in self.tier_ids():
-            try:
-                released += self.tier_ledger(tier_id).release_kinds(
-                    action_key, TIER_RATE_KINDS)
-            except (OSError, PoolContractError):
-                continue
-        return released
 
     #: Host-ledger holder prefix for RAM-tier fill holds (#1222).  The
     #: holder names a mover grant, so eviction and reaping can release
@@ -12257,250 +12157,12 @@ class PoolQueue:
     #: subtract exactly those holds.
     RAM_HOST_MEMORY_PREFIX = storage_tiers.RAM_HOST_MEMORY_PREFIX
 
-    def hold_tier_host_memory(self, host: str, grant: str,
-                              gib: int) -> tuple[str, str]:
-        """A RAM fill takes host ``mem_gb`` tokens under its grant (#1222).
 
-        One pool, two consumers: rows and tier fills acquire from the same
-        host ledger, so a fill that cannot fit beside the rows is refused
-        here, at plan time, before any bytes move.  The hold lives under
-        :attr:`RAM_HOST_MEMORY_PREFIX` plus the mover grant.
 
-        Tri-state (#1245 review B3): ``("taken", "")`` when the hold
-        landed, ``("short", ...)`` when the pool refused it, and
-        ``("unknown", ...)`` when the ledger could not be asked -- an
-        unreadable pool is never mistaken for a free one, and the detail
-        names the error so the caller can defer with evidence.
-        """
 
-        try:
-            taken = bool(self.ledger(host).acquire(
-                self.RAM_HOST_MEMORY_PREFIX + str(grant),
-                {"mem_gb": int(gib)}))
-        except (OSError, PoolContractError, ValueError) as exc:
-            return "unknown", f"host mem ledger unreadable: {exc!r}"
-        if taken:
-            return "taken", ""
-        return "short", "host mem pool refused the hold"
 
-    def release_tier_host_memory(self, host: str, grant: str) -> int:
-        """Return every host ``mem_gb`` token a RAM fill holds (#1222).
 
-        Safe to call twice, like every release: a fill whose tokens were
-        already returned holds nothing.
-        """
 
-        try:
-            return int(self.ledger(host).release(
-                self.RAM_HOST_MEMORY_PREFIX + str(grant)))
-        except (OSError, PoolContractError, ValueError):
-            return 0
-
-    def _ram_tier_host(self, tier_id: str) -> str:
-        """The host a RAM tier id belongs to (``ram:dl380g10``)."""
-
-        return str(tier_id).split(":", 1)[1]
-
-    def take_tier_advance(self, tier_id: str, grant: str, gib: int,
-                          kind: str) -> tuple[str, str]:
-        """Take an advance from both pools it must answer to (#1245 B1).
-
-        One primitive for the whole take: on the RAM tier a fill holds
-        host ``mem_gb`` tokens under the *same holder name* as its tier
-        tokens, so the two ledgers cannot drift apart at a call site this
-        method does not cover.  Host first -- a tier take without its host
-        hold would leave the window saying room the host pool has already
-        spent -- and the host half rolls back if the tier half fails.
-
-        The kind must be an occupancy kind: rate kinds never mirror into
-        host GiB, so handing one here refuses loudly rather than minting
-        bytes out of a ration (#1245 review r2).
-
-        Tri-state verdicts: ``("taken", "")``, ``("host-short", ...)``
-        when the host pool refused, ``("tier-short", ...)`` when the tier
-        ledger did, and ``("unknown", ...)`` when either ledger could not
-        be asked (#1245 review B3).
-        """
-
-        ram = storage_tiers.tier_kind_of(str(tier_id)) == "ram"
-        if kind in TIER_RATE_KINDS:
-            raise PoolContractError(
-                f"rate kind {kind!r} is not an occupancy kind: RAM host "
-                "mirrors hold GiB, never a fill ration (#1245 review r2)")
-        if ram:
-            host_state, host_detail = self.hold_tier_host_memory(
-                self._ram_tier_host(str(tier_id)), grant, gib)
-            if host_state == "unknown":
-                return "unknown", host_detail
-            if host_state == "short":
-                return "host-short", host_detail
-        try:
-            taken = bool(self.tier_ledger(tier_id).acquire(
-                str(grant), {str(kind): int(gib)}))
-        except (OSError, PoolContractError, ValueError) as exc:
-            if ram:
-                self.release_tier_host_memory(
-                    self._ram_tier_host(str(tier_id)), grant)
-            return "unknown", f"tier ledger unreadable: {exc!r}"
-        if not taken:
-            if ram:
-                self.release_tier_host_memory(
-                    self._ram_tier_host(str(tier_id)), grant)
-            return "tier-short", "tier pool refused the take"
-        return "taken", ""
-
-    def cancel_tier_fence(self, tier_id: str, holder: str) -> dict[str, int]:
-        """Release a fence from both pools it answers to (#1245 B1).
-
-        The tier tokens go through ``window_credit.cancel`` as before; on
-        the RAM tier the fill's host hold returns under the same holder
-        name in the same step, so a cancelled fence leaves neither pool
-        holding its half.  Safe twice, like the cancel it wraps.
-        """
-
-        outcome = window_credit.cancel(self.tier_ledger(tier_id), str(holder))
-        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
-            self.release_tier_host_memory(
-                self._ram_tier_host(str(tier_id)), str(holder))
-        return outcome
-
-    def release_tier_holder(self, tier_id: str, holder: str) -> int:
-        """Release one holder's whole tier take, both pools (#1245 B1).
-
-        For sweeps and ghost-token reaping that release by key: the tier
-        ledger's release as before, plus the RAM-tier host hold under the
-        same name when this tier is the RAM tier.  Returns the tier token
-        count released; the host release is a side effect.
-        """
-
-        try:
-            released = int(self.tier_ledger(tier_id).release(str(holder)))
-        except (OSError, PoolContractError, ValueError):
-            released = 0
-        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
-            self.release_tier_host_memory(
-                self._ram_tier_host(str(tier_id)), str(holder))
-        return released
-
-    def reconcile_ram_host_holds(
-            self, tier_id: str,
-            expected_holders: Iterable[str], *,
-            release_orphans: bool = True) -> dict[str, object]:
-        """Two-way sync of the RAM host mirror (#1245 review r1/r2).
-
-        Claim-path takes straight off the tier ledger hold no
-        ``ram-host:`` tokens, so the single writer makes every live tier
-        holder's host hold *equal* to its occupancy tokens each cycle:
-        the excess is trimmed by name, and what is missing is topped
-        up.  The adjustment is always a delta, never a release and a
-        re-take: a row admission that lands between two steps must not
-        be able to take the half the mirror already holds (r3 R4), so a
-        failed top-up leaves the existing half exactly as it was.  Rate
-        kinds are never mirrored -- the RAM occupancy kind crosses by
-        name, and nothing else (r3 R7).  A host half that cannot land is
-        named (``ram-host-hold-missing``) and reported unconverged, so
-        the window gate refuses growth until the sync lands it;
-        unreadable ledgers reconcile nothing and also report
-        unconverged -- no verdict is not evidence of a clean mirror.
-        Holders named in ``expected_holders`` are in flight and left for
-        a later pass.
-
-        ``release_orphans=False`` runs the sync half alone: the top-up and
-        trim of live tier holders, which read the two ledgers and nothing
-        else, and which alone decide ``converged``.  The tier loop runs
-        that half before discovery, so the window gate decides on a
-        verdict this cycle gathered (#1253); the
-        orphan release waits for the in-cycle pass, where the consumer
-        census names the holders still in flight.
-        """
-
-        if storage_tiers.tier_kind_of(str(tier_id)) != "ram":
-            return {"events": [], "converged": True}
-        host = self._ram_tier_host(str(tier_id))
-        try:
-            tier = self.tier_ledger(tier_id)
-            tier_live = set(tier.held_keys())
-            host_ledger = self.ledger(host)
-            holders = host_ledger.held_keys()
-        except (OSError, PoolContractError, ValueError):
-            return {"events": [], "converged": False}
-        expected = {str(name) for name in expected_holders}
-        events: list[dict[str, object]] = []
-        converged = True
-        prefix = self.RAM_HOST_MEMORY_PREFIX
-        # Missing halves first, orphans second: a released orphan must not
-        # be re-acquired, and a missing half must not be read off a holder
-        # the orphan pass is about to release.
-        for holder in sorted(tier_live):
-            try:
-                tokens = tier.holder_tokens(holder)
-            except (OSError, PoolContractError, ValueError):
-                converged = False
-                continue
-            # The RAM occupancy kind by name, and nothing else: a kind
-            # added to the tier ledger later cannot silently become
-            # host GiB (r3 R7).
-            target = int(tokens.get(storage_tiers.RAM_CAPACITY_KIND, 0))
-            mirror = prefix + holder
-            try:
-                current = int(host_ledger.holder_tokens(
-                    mirror).get("mem_gb", 0))
-            except (OSError, PoolContractError, ValueError):
-                # An unguarded read would abort the whole cycle (r3 R6).
-                converged = False
-                continue
-            if current == target:
-                continue
-            if current < target:
-                # Top up by the delta only: acquire merges into
-                # held/<mirror> through commit_acquire, so the half
-                # already held is never released while a concurrent row
-                # admission takes the freed tokens (r3 R4).  A failed
-                # top-up leaves ``current`` exactly as it was.
-                try:
-                    taken = host_ledger.acquire(
-                        mirror, {"mem_gb": target - current})
-                except (OSError, PoolContractError, ValueError) as exc:
-                    taken = False
-                    detail = repr(exc)
-                else:
-                    detail = str(host_ledger.last_token_shortage or "")
-                if not taken:
-                    converged = False
-                    events.append({"reason": "ram-host-hold-missing",
-                                   "holder": mirror, "gib": target,
-                                   "detail": detail})
-                continue
-            # current > target: trim the excess by name; the surviving
-            # half stays held.  The unsafe direction healed: the host
-            # half outlived part of its tier half.
-            try:
-                released_counts = host_ledger.release_count(
-                    mirror, {"mem_gb": current - target})
-            except (OSError, PoolContractError, ValueError) as exc:
-                converged = False
-                events.append({"reason": "ram-host-hold-missing",
-                               "holder": mirror, "gib": target,
-                               "detail": f"trim failed: {exc!r}"})
-            else:
-                released = int(released_counts.get("mem_gb", 0))
-                if released:
-                    events.append({"reason": "ram-host-hold-trimmed",
-                                   "holder": mirror,
-                                   "released_gib": released})
-        if not release_orphans:
-            return {"events": events, "converged": converged}
-        for holder in holders:
-            if not holder.startswith(prefix):
-                continue
-            suffix = holder[len(prefix):]
-            if suffix in tier_live or suffix in expected:
-                continue
-            released = self.release_tier_host_memory(host, suffix)
-            if released:
-                events.append({"reason": "orphan_ram_host_hold",
-                               "holder": holder, "released_gib": released})
-        return {"events": events, "converged": converged}
 
     def rows_host_memory_held(self, host: str) -> int | None:
         """Host ``mem_gb`` tokens held by rows, not by RAM fills (#1222).
@@ -12531,113 +12193,8 @@ class PoolQueue:
             total -= int(tokens.get("mem_gb", 0))
         return max(0, total)
 
-    def release_tier_reservations(self, action_key: str) -> int:
-        """Return every tier token filed under this action, on every tier.
 
-        By key and with no holder to resolve: a tier ledger has exactly one
-        directory per tier, so a key can hold on several tiers without any
-        of them being a second claim holder.  Safe to call twice.
 
-        Tier by tier, and each one contained: this runs inside ``finish`` and
-        the reapers, between the entombed claim and the written outcome, so a
-        shared-mount read that fails must cost one tier's tokens until the next
-        release rather than the action's own ending.  A directory name that is
-        not a tier id (``PoolContractError`` out of ``tier_ledger``) is skipped
-        for the same reason -- nothing of ours writes one, and a stray name is
-        not a reason to lose an outcome.
-        """
-
-        released = 0
-        for tier_id in self.tier_ids():
-            try:
-                released += self.tier_ledger(tier_id).release(action_key)
-            except (OSError, PoolContractError):
-                continue
-        return released
-
-    def transfer_tier_reservation(self, tier_id: str, from_key: str,
-                                  to_key: str, *, faults: list | None = None
-                                  ) -> int:
-        """Hand one tier's whole reservation from one mover key to another (#598).
-
-        The bytes do not move; only the name the ledger files them under does.
-        ``ResourceLedger.transfer`` never lets a token be free in between, so
-        the tier's occupancy is the same number at every instant of the hand-
-        over -- which is the invariant the stage reservation rests on, stated
-        for a transfer rather than for a release.
-
-        On the RAM tier the host ``mem_gb`` hold moves with it, under the
-        same new name (#1245 review B1): tier first, then host, so a crash
-        between the two leaves the host half under the old name -- the
-        shape :meth:`reconcile_ram_host_holds` heals by name next cycle.
-        """
-
-        moved = self.tier_ledger(tier_id).transfer(str(from_key), str(to_key))
-        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
-            host = self._ram_tier_host(str(tier_id))
-            try:
-                self.ledger(host).transfer(
-                    self.RAM_HOST_MEMORY_PREFIX + str(from_key),
-                    self.RAM_HOST_MEMORY_PREFIX + str(to_key))
-            except (OSError, PoolContractError, ValueError) as exc:
-                # The tier half moved and the host half did not: named, not
-                # swallowed, and healed by name when the two-way sync next
-                # runs (#1245 review r2).
-                if faults is not None:
-                    faults.append({"reason": "ram_host_transfer_failed",
-                                   "tier_id": str(tier_id),
-                                   "from": str(from_key), "to": str(to_key),
-                                   "error": repr(exc)})
-        return moved
-
-    def transfer_tier_reservation_count(self, tier_id: str, from_key: str,
-                                        to_key: str, count: int, *,
-                                        faults: list | None = None) -> int:
-        """Hand up to ``count`` of one tier's reservation to another key (#1594).
-
-        The per-chunk half of splitting a prelaunch group: the group's whole
-        demand sits under one holder, and each chunk mover takes only its own
-        tokens through :meth:`ResourceLedger.transfer_count` -- never free in
-        between, so the tier's occupancy is the same number at every instant,
-        and a re-call with the remaining count finishes an interrupted move.
-        Returns the count moved this call.
-
-        On the RAM tier the host ``mem_gb`` hold moves with it, under the
-        same new name (#1245 review B1), exactly as
-        :meth:`transfer_tier_reservation` pairs the two halves: tier first,
-        then host, so a crash between the two leaves the host half under the
-        old name -- the shape :meth:`reconcile_ram_host_holds` heals by name
-        next cycle.  The host half moves exactly the tier-moved count, never
-        the requested one: a short tier move (a source that holds fewer than
-        ``count``) must not strand host tokens under the new name with no
-        tier tokens behind them.  The host hold is count-aligned with the
-        tier reservation by construction (the sync makes each live tier
-        holder's host hold equal to its occupancy tokens), so moving the
-        same number on both sides keeps the two halves attributable and the
-        sums unchanged; a partial split is therefore consistent on RAM tiers
-        too, with the same named-fault-and-heal shape when the host half
-        cannot land.
-        """
-
-        moved = self.tier_ledger(tier_id).transfer_count(
-            str(from_key), str(to_key), count)
-        if storage_tiers.tier_kind_of(str(tier_id)) == "ram":
-            host = self._ram_tier_host(str(tier_id))
-            try:
-                self.ledger(host).transfer_count(
-                    self.RAM_HOST_MEMORY_PREFIX + str(from_key),
-                    self.RAM_HOST_MEMORY_PREFIX + str(to_key),
-                    moved)
-            except (OSError, PoolContractError, ValueError) as exc:
-                # The tier half moved and the host half did not: named, not
-                # swallowed, and healed by name when the two-way sync next
-                # runs (#1245 review r2).
-                if faults is not None:
-                    faults.append({"reason": "ram_host_transfer_failed",
-                                   "tier_id": str(tier_id),
-                                   "from": str(from_key), "to": str(to_key),
-                                   "error": repr(exc)})
-        return moved
 
     # -- advance-credit funding records (window progress protection) --------
 
@@ -13018,8 +12575,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(
-                self.tier_ledger(tier_id).held_dir / key, "*-*")}
+            held_names = self.tier(tier_id).token_names(key)
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -13096,9 +12652,9 @@ class PoolQueue:
                               else None)
         if current is not None and current.get("state") == "consumed":
             try:
-                ledger = self.tier_ledger(tier_id)
+                ledger = self.tier(tier_id)
                 kind = str(fields["kind"])
-                mover_holds = int(ledger.holder_tokens(mover).get(kind, 0))
+                mover_holds = int(ledger.holdings(mover).get(kind, 0))
             except (OSError, PoolContractError, ValueError, KeyError, TypeError):
                 return False
             try:
@@ -13112,8 +12668,8 @@ class PoolQueue:
             # generation rather than wedge on a terminal record.
         if current is not None and current.get("state") == "transferring":
             try:
-                ledger = self.tier_ledger(str(tier_id))
-                ledger_names = held_names_visible(ledger, mover)
+                ledger = self.tier(str(tier_id))
+                ledger_names = ledger.holder_state(mover)
             except (OSError, PoolContractError, ValueError):
                 return False
             bound = current.get("tokens")
@@ -13167,8 +12723,7 @@ class PoolQueue:
                     # Mover holds exactly the bound set (no extras): move
                     # it to the grant without a free interval.
                     try:
-                        moved = int(self.transfer_tier_reservation(
-                            str(tier_id), mover, grant))
+                        moved = int(self.tier(str(tier_id)).handover(mover, grant))
                     except (OSError, PoolContractError, ValueError):
                         return False
                     # transfer moves the whole holder; keep is empty so the
@@ -13177,7 +12732,7 @@ class PoolQueue:
                     if moved != len(bound_set):
                         # Complete the remainder if split, else retain.
                         try:
-                            rest = held_names_visible(ledger, mover)
+                            rest = ledger.holder_state(mover)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         if rest:
@@ -13234,8 +12789,7 @@ class PoolQueue:
                     maybe_stale = True
                 if maybe_stale:
                     try:
-                        grant_names = held_names_visible(
-                            self.tier_ledger(str(tier_id)), grant)
+                        grant_names = self.tier(str(tier_id)).holder_state(grant)
                     except (OSError, PoolContractError, ValueError):
                         return False
                     bound_set = {str(name) for name in bound}
@@ -13245,8 +12799,7 @@ class PoolQueue:
                         # extras: finish moving the remainder grant-ward,
                         # then close (both checked).
                         try:
-                            self.transfer_tier_reservation(
-                                str(tier_id), mover, grant)
+                            self.tier(str(tier_id)).handover(mover, grant)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         # Verify exact post-transfer ownership before
@@ -13262,11 +12815,9 @@ class PoolQueue:
                         # transferring->released beside a leftover, never
                         # take a fresh deficit beside the split.
                         try:
-                            ledger_after = self.tier_ledger(str(tier_id))
-                            mover_left = held_names_visible(
-                                ledger_after, mover)
-                            grant_after = held_names_visible(
-                                ledger_after, grant)
+                            ledger_after = self.tier(str(tier_id))
+                            mover_left = ledger_after.holder_state(mover)
+                            grant_after = ledger_after.holder_state(grant)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         if mover_left or not (bound_set <= grant_after):
@@ -13298,8 +12849,7 @@ class PoolQueue:
         if (current is not None and current.get("state") == "reserved"
                 and isinstance(current.get("tokens"), list)):
             try:
-                grant_names = held_names_visible(
-                    self.tier_ledger(str(tier_id)), grant)
+                grant_names = self.tier(str(tier_id)).holder_state(grant)
             except (OSError, PoolContractError, ValueError):
                 return False
             try:
@@ -13327,22 +12877,22 @@ class PoolQueue:
             # than keep a binding the claim path would refuse.
 
         try:
-            ledger = self.tier_ledger(tier_id)
+            ledger = self.tier(tier_id)
             kind = str(fields["kind"])
-            have = int(ledger.holder_tokens(grant).get(kind, 0))
+            have = int(ledger.holdings(grant).get(kind, 0))
         except (OSError, PoolContractError, ValueError, KeyError, TypeError):
             return False
         deficit = int(demand_gib) - have
         if deficit > 0:
             try:
-                if not ledger.acquire(grant, {kind: int(deficit)}):
+                if not ledger.take(grant, {kind: int(deficit)}):
                     # ``acquire`` is all-or-nothing: a ``False`` leaves
                     # nothing half-held, so there is nothing to unwind.
                     return False
             except (OSError, PoolContractError, ValueError):
                 return False
         try:
-            names = sorted(held_names_visible(ledger, grant))
+            names = sorted(ledger.holder_state(grant))
         except (OSError, PoolContractError, ValueError):
             return False
         generation = uuid.uuid4().hex
@@ -13406,8 +12956,7 @@ class PoolQueue:
                         record_store.value_or_raise(self.records.item_presence(CLAIMED, mover)),
                     )):
                 return 0
-            return int(self.transfer_tier_reservation(
-                tier_id, grant, mover, faults=faults))
+            return int(self.tier(tier_id).handover(grant, mover, faults=faults))
         except (OSError, PoolContractError, ValueError):
             return 0
 
@@ -13675,7 +13224,7 @@ class PoolQueue:
                 counts["kept"] += 1
                 continue
             try:
-                ledger = self.tier_ledger(tier_id)
+                ledger = self.tier(tier_id)
             except (OSError, PoolContractError, ValueError):
                 counts["kept"] += 1
                 continue
@@ -13703,7 +13252,7 @@ class PoolQueue:
         return counts
 
     def _output_funding_terminal(self, mover: str, tier_id: str,
-                                 ledger: "ResourceLedger") -> bool:
+                                 ledger: "tier_holdings.TierLedger") -> bool:
         """Every retirement fact for one record, fail-closed (see above)."""
 
         record, file_state = self.output_funding_file_state(mover, tier_id)
@@ -13720,9 +13269,8 @@ class PoolQueue:
                 return False
             if os.path.lexists(self.records.lease_path(mover)):
                 return False
-            with os.scandir(ledger.held_dir / mover) as entries:
-                if any(True for _ in entries):
-                    return False
+            if ledger.holder_has_entries(mover):
+                return False
         except FileNotFoundError:
             # The holder directory is absent: the mover holds nothing here.
             return True
@@ -14188,10 +13736,8 @@ class PoolQueue:
                 or str(owner_live["scope"]) != str(binding.get("owner_scope_id"))):
             return {"ok": False, "refusal": "stale-superseded-owner"}
         try:
-            ledger = self.tier_ledger(tier)
-            held_names = sorted(path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")
-                if path.name.startswith(kind + "-"))
+            ledger = self.tier(tier)
+            held_names = sorted(name for name in ledger.token_names(str(owner_key)) if name.startswith(kind + '-'))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if self.read_output_funding(str(mover_key), tier) is not None:
@@ -14229,8 +13775,7 @@ class PoolQueue:
                         return {"ok": False, "refusal": "token-names-spoken"}
             else:
                 if len(unspoken_names) < batch_gib:
-                    return {"ok": False, "refusal": "tier-reservation-unavailable",
-                            "available": ledger.available()}
+                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
                 selected = unspoken_names[:batch_gib]
         with self.action_transition_lock(str(owner_key),
                                      blocking=False) as owner_acquired:
@@ -14450,13 +13995,11 @@ class PoolQueue:
                     binding.get("template_sha256"))):
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
-            ledger = self.tier_ledger(tier)
+            ledger = self.tier(tier)
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
-            held_names = sorted(path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")
-                if path.name.startswith(kind + "-"))
+            held_names = sorted(name for name in ledger.token_names(str(owner_key)) if name.startswith(kind + '-'))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Same disjointness rule as stage_output_intent (R7 liveness): a
@@ -14495,9 +14038,7 @@ class PoolQueue:
                         return {"ok": False, "refusal": "token-names-spoken"}
             else:
                 if len(unspoken_names) < batch_gib:
-                    return {"ok": False,
-                            "refusal": "tier-reservation-unavailable",
-                            "available": ledger.available()}
+                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
                 selected = unspoken_names[:batch_gib]
         # Owner outer, mover inner (R1): serializes against owner finish.
         with self.action_transition_lock(str(owner_key),
@@ -14542,9 +14083,8 @@ class PoolQueue:
         if live_mover_published != float(mover_published):
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
-            ledger = self.tier_ledger(tier)
-            held_now = {path.name for path in immutable_files.match_optional(
-                ledger.held_dir / owner_key, "*-*")}
+            ledger = self.tier(tier)
+            held_now = ledger.token_names(owner_key)
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Existing record for this mover: idempotent re-drive, never a
@@ -14647,7 +14187,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
         names = [str(n) for n in filed.get("tokens", [])]  # type: ignore[union-attr]
         try:
-            moved = int(ledger.transfer_tokens(owner_key, mover_key, names))
+            moved = int(ledger.handover_named(owner_key, mover_key, names))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if moved < len(names):
@@ -14774,8 +14314,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(
-                self.tier_ledger(str(tier_id)).held_dir / key, "*-*")}
+            held_names = self.tier(str(tier_id)).token_names(key)
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -14928,8 +14467,8 @@ class PoolQueue:
                 if not names:
                     return {"ok": False, "refusal": "unknown-retain: funding-tokens"}
                 try:
-                    ledger = self.tier_ledger(tier)
-                    moved = int(ledger.transfer_tokens(owner_key, mover, names))
+                    ledger = self.tier(tier)
+                    moved = int(ledger.handover_named(owner_key, mover, names))
                 except (OSError, PoolContractError, ValueError) as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
                 if moved < len(names):
@@ -15195,9 +14734,7 @@ class PoolQueue:
                 intents.append(record)
             elif state == "released":
                 try:
-                    if held_names_visible(
-                            self.tier_ledger(str(record["tier_id"])),
-                            str(record["mover_action_key"])):
+                    if self.tier(str(record['tier_id'])).holder_state(str(record['mover_action_key'])):
                         intents.append(record)
                 except (OSError, PoolContractError, ValueError):
                     unknown = True
@@ -15250,9 +14787,8 @@ class PoolQueue:
         """
 
         try:
-            ledger = self.tier_ledger(str(tier_id))
-            held_names = {path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")}
+            ledger = self.tier(str(tier_id))
+            held_names = ledger.token_names(str(owner_key))
         except (OSError, PoolContractError, ValueError):
             return (0, True)
         spoken, unknown = self.output_census_for_owner(str(owner_key))
@@ -15308,8 +14844,7 @@ class PoolQueue:
                 if not isinstance(tokens, list):
                     return (outstanding, True)
                 try:
-                    mover_held = int(ledger.holder_tokens(
-                        str(record.get("mover_action_key"))).get(kind, 0))
+                    mover_held = int(ledger.holdings(str(record.get('mover_action_key'))).get(kind, 0))
                 except (OSError, PoolContractError, ValueError):
                     return (outstanding, True)
                 live = min(len(tokens), mover_held)
@@ -15338,10 +14873,9 @@ class PoolQueue:
         """
 
         try:
-            holder_dir = self.tier_ledger(str(tier_id)).held_dir / str(owner_key)
+            ledger = self.tier(str(tier_id))
             try:
-                with os.scandir(holder_dir) as entries:
-                    held = {entry.name for entry in entries}
+                held = ledger.holder_entries(str(owner_key))
             except FileNotFoundError:
                 held = set()
             except NotADirectoryError:
@@ -15750,7 +15284,7 @@ class PoolQueue:
             # copy has stopped, so the pool-side bandwidth it reserved is being
             # drawn by nobody, and a finished mover holding it refuses the next
             # one against a supply that is idle (#636).
-            return released + self.release_tier_rate_reservations(action_key)
+            return released + tier_holdings.release_rates_all(self, action_key)
         # Prepaid-output protection (R1+R2): an owner finish/reaper must not
         # free an outstanding output intent's still-source-held tokens between
         # partial transfers, yet a cancelled producer must not strand its
@@ -15772,9 +15306,9 @@ class PoolQueue:
                     census.append(self.output_census_for_owner(str(action_key)))
                 return census[0]
 
-            for tier_id in self.tier_ids():
+            for tier_id in tier_holdings.ids(self.records):
                 try:
-                    ledger = self.tier_ledger(tier_id)
+                    ledger = self.tier(tier_id)
                 except (OSError, PoolContractError):
                     continue
                 try:
@@ -15787,251 +15321,17 @@ class PoolQueue:
                     if unknown:
                         continue
                     if keep:
-                        tier_released += ledger.release_except(
-                            str(action_key), keep)
+                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
                     else:
-                        tier_released += ledger.release(str(action_key))
+                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
                 except (OSError, PoolContractError, ValueError):
                     continue
             return released + tier_released
 
-    def mint_tier_capacity(self, tier_id: str, tokens: Mapping[str, int]) -> dict[str, object]:
-        """Make a tier's ledger say what discovery measured, up or down.
 
-        Up is ``ensure_capacity``; down is ``retire_free_capacity``, which
-        deletes free tokens only, so a mover mid-flight keeps its
-        reservation and the total falls as holders finish.  A kind that
-        discovery no longer reports is retired to zero: a stage pool that
-        was exported and is gone must stop admitting movers.
 
-        Under the tier's mint lock, because the two halves are only safe in
-        one minter's hands: the marker analysis ``ensure_capacity`` rests on
-        assumes no second minter adopts and mints concurrently, and a retire
-        racing another minter's ensure could take a token the other just
-        freed for re-adoption.  The lock is per tier, so the supervised loop
-        and an operator ``--once`` run serialize only against each other.
-        """
 
-        with self.tier_mint_lock(tier_id):
-            ledger = self.tier_ledger(tier_id)
-            wanted = {str(kind): int(count) for kind, count in tokens.items()}
-            if any(count < 0 for count in wanted.values()):
-                raise PoolContractError("tier capacity must not be negative")
-            return self._apply_tier_capacity(tier_id, ledger, wanted)
 
-    def _apply_tier_capacity(
-        self, tier_id: str, ledger: ResourceLedger, wanted: dict[str, int],
-    ) -> dict[str, object]:
-        """Grow then shrink one tier ledger to ``wanted``, sans lock.
-
-        The body of :meth:`mint_tier_capacity` once inside the tier mint
-        lock.  Factored so a caller that must snapshot the wanted number
-        under the SAME lock (the tier loop's landed count, which an egress
-        decharge may change between a read and a mint) can do so without a
-        second minter interleaving; see :meth:`mint_tier_capacity_guarded`.
-        Never call without holding :meth:`tier_mint_lock` for the tier:
-        the sequence (reclaim scan, ensure, retire) is atomic only under
-        it.  The ledger calls below re-acquire the same lock through
-        their mutation guard (same-thread nesting is safe); that
-        re-entrancy is what keeps direct ledger users serialized too.
-        """
-
-        reclaimed = self._reclaim_dead_markers(ledger, wanted)
-        ledger.ensure_capacity({kind: count for kind, count in wanted.items() if count > 0})
-        total, unreadable = ledger.capacity_census()
-        if not unreadable:
-            lower = {kind: wanted.get(kind, 0) for kind in total
-                     if total[kind] > wanted.get(kind, 0)}
-        else:
-            # A holder could not be read, so the total is a lower bound and
-            # cannot say the tier is already at or below wanted: a hidden
-            # holder under a falling wanted would skip the retire and keep
-            # unbacked free tokens.  The retire decides every kind, counting
-            # the unreadable holder as held (#936).
-            lower = {kind: wanted.get(kind, 0) for kind in set(total) | set(wanted)}
-        if lower:
-            retired = ledger.retire_free_capacity(lower)
-            census = ledger.last_census_report
-        else:
-            # No retire ran, so nothing wrote this cycle's report: an exact
-            # census removes any earlier one (#936).
-            retired = {}
-            census = ledger.report_census(unreadable, asked=(), retired={})
-        return {"tier_id": tier_id, "capacity": ledger.capacity(),
-                "retired": retired, "reclaimed": reclaimed,
-                "census_unreadable": census}
-
-    def _reclaim_dead_markers(
-        self, ledger: ResourceLedger, wanted: Mapping[str, int],
-    ) -> dict[str, int]:
-        """Reissue destroyed names the wanted number has headroom for (#733 R5).
-
-        The authority is the durable dead set (``minted/dead/``): each entry
-        IS the destroyed token file itself, renamed there atomically by
-        :meth:`ResourceLedger.retire_held`, so no scan infers absence and
-        no unlink-then-record gap exists.  Reissue is one atomic rename
-        back to free; the original marker was never touched, so the
-        reissued token is immediately consistent -- no ensure pass needed,
-        no transient unmarked state.  Only names with no live token
-        anywhere are reissued, up to per-kind ``wanted - live`` headroom;
-        a name live in free is deduped (its dead file removed, nothing
-        counted), a name live in held drops its stale dead file and stays
-        charged.  Dead beyond headroom wait for honest growth.
-
-        Exclusion, stated precisely (#733 R6): the headroom gate counts
-        live tokens with two directory listings, and a token renamed
-        held/private -> free between the free scan and the holder scan
-        would be missed by both, overstating headroom and reissuing a
-        dead name with no backing -- a phantom a claimant could then
-        take before the same apply's retire trims it.  That interleaving
-        is closed by the ledger's mutation guard: this body runs inside
-        the tier mint lock (see :meth:`_apply_tier_capacity`), and every
-        token rename through a factory-built tier ledger takes the same
-        lock, so no such rename lands between these two listings.  The
-        same apply's retire then trims only genuine excess, and no
-        prefix of the apply exposes unbacked free credit.  The live
-        census itself is error-visible on a tier ledger: an unreadable
-        free or holder directory aborts the reclaim with the dead set
-        retained, so a hidden live holder can never read as headroom.
-
-        Deployment: the exclusion holds only among workers carrying the
-        guard.  Mixed-version operation -- a worker or storage role on a
-        generation without ``_guarded_mutation`` admitting, releasing, or
-        minting on the same tier -- can still land the rename between
-        the scans and overissue with no bounded-overshoot allowance.
-        Deploying this generation requires a quiescent queue and reader
-        state with no new tier-admitted workloads until worker AND
-        storage roles converge on the guarded generation (root reviews
-        the actual publication).
-        """
-
-        reclaimed: dict[str, int] = {}
-        dead_dir = ledger.minted_dir / "dead"
-        try:
-            names = sorted(path.name for path in ledger._census_scan(
-                dead_dir, optional=True) if path.is_file())
-        except OSError:
-            # Unknown dead set: retain everything, decide nothing.
-            return reclaimed
-        if not names:
-            return reclaimed
-        try:
-            live: set[str] = set()
-            for path in ledger._census_glob(ledger.free_dir, "*-*"):
-                live.add(path.name)
-            for holder in ledger._census_scan(ledger.held_dir):
-                if _holder_is_dir(holder):
-                    live.update(
-                        path.name
-                        for path in ledger._census_glob(holder, "*-*"))
-        except OSError:
-            # Unknown live set: a hidden holder would read as empty and
-            # overstate headroom, so reissue nothing and retain the dead
-            # set for the next cycle.  On a tier ledger the census above
-            # is error-visible; host readers keep their tolerant scans.
-            return reclaimed
-        try:
-            live_count: dict[str, int] = {}
-            for name in live:
-                kind = name.rsplit("-", 1)[0]
-                live_count[kind] = live_count.get(kind, 0) + 1
-        except (AttributeError, TypeError):
-            return reclaimed
-        for name in names:
-            kind, _, _ = name.rpartition("-")
-            if not kind or kind not in wanted:
-                continue
-            if name in live:
-                # Live again (a rename the destroy raced, or a duplicate
-                # aftermath): the slot needs no reissue, just convergence.
-                # Free keeps its token; held keeps its charge; either way
-                # the dead file goes and nothing is counted.
-                try:
-                    (dead_dir / name).unlink()
-                except OSError:
-                    pass
-                continue
-            if live_count.get(kind, 0) >= int(wanted[kind]):
-                continue
-            try:
-                os.rename(dead_dir / name, ledger.free_dir / name)
-            except OSError:
-                continue
-            live_count[kind] = live_count.get(kind, 0) + 1
-            live.add(name)
-            reclaimed[kind] = reclaimed.get(kind, 0) + 1
-        return reclaimed
-
-    def mint_tier_capacity_guarded(self, tier_id: str, wanted_fn) -> dict[str, object]:
-        """Mint one tier's capacity to a number snapshotted under the lock.
-
-        ``wanted_fn(ledger)`` is called holding the tier mint lock and must
-        return the wanted ``{kind: count}`` mapping; the ensure+retire then
-        applies before the lock is released.  This closes the read-then-mint
-        race a shared-egress decharge would otherwise lose to: a landed
-        count read before the egress and minted after it would reintroduce
-        the very credits the egress just decharged.  Callers that need no
-        snapshot use :meth:`mint_tier_capacity`.
-        """
-
-        with self.tier_mint_lock(tier_id):
-            ledger = self.tier_ledger(tier_id)
-            wanted = wanted_fn(ledger)
-            wanted = {str(kind): int(count) for kind, count in dict(wanted).items()}
-            if any(count < 0 for count in wanted.values()):
-                raise PoolContractError("tier capacity must not be negative")
-            return self._apply_tier_capacity(tier_id, ledger, wanted)
-
-    def release_tier_holder_for_egress(
-        self, tier_id: str, action_key: str, *,
-        destroy: Mapping[str, int], free: Mapping[str, int],
-    ) -> dict[str, object]:
-        """Settle one egressing mover's tier hold: decharge, then free.
-
-        ``destroy`` names per-kind token counts whose bytes stay on the
-        stage under a co-owner (the shared-egress duplicate): they are
-        destroyed first via :meth:`ResourceLedger.retire_held`, and only
-        then are up to ``free`` per-kind counts returned with
-        :meth:`ResourceLedger.release_count`.  Destroy-before-release is
-        what makes an interrupted settle retry-safe: the retry recomputes
-        both counts from the fragment's stable byte buckets capped at the
-        still-held remainder, so a crash after the destroy frees exactly
-        the freed bytes' worth, and a crash before it leaves everything
-        held.  A destroy shortfall (unlink failure) is reported and its
-        tokens stay held: a failed decharge must never be freed as the
-        duplicate it was meant to destroy.  Free-side rename failures
-        likewise stay held and converge on retry.
-
-        No lock is taken here beyond what the ledger methods take
-        themselves: the caller (the egress, under the mover transition
-        lock, the stage ownership lock and the tier mint lock as its leaf)
-        already excludes concurrent ownership decisions and
-        stale-snapshot mints, and each ledger call below re-acquires the
-        same tier mint lock (same-thread nesting re-acquires safely), so
-        a direct caller without the outer lock is still serialized
-        against the reclaim scan.  Lock order stays
-        transition -> ownership -> mint throughout.  Returns
-        ``{"destroyed": {...}, "released": {...}, "shortfall": {...}}``;
-        all three count actual token files.
-        """
-
-        ledger = self.tier_ledger(tier_id)
-        destroyed = ledger.retire_held(action_key, destroy)
-        shortfall = {kind: int(count) - int(destroyed.get(kind, 0))
-                     for kind, count in destroy.items()
-                     if int(count) - int(destroyed.get(kind, 0)) > 0}
-        released = ledger.release_count(action_key, free)
-        # The RAM tier's host hold settles with the tokens it mirrored
-        # (#1245 review B1) -- but only when the settle completed: a
-        # destroy shortfall keeps tokens held, and the bytes it stands
-        # for keep their host half too, so the retry converges on the
-        # same pair of pools.
-        if (not shortfall
-                and storage_tiers.tier_kind_of(str(tier_id)) == "ram"):
-            self.release_tier_host_memory(
-                self._ram_tier_host(str(tier_id)), action_key)
-        return {"destroyed": destroyed, "released": released,
-                "shortfall": shortfall}
 
 
     def announce_tier(self, record: Mapping[str, object], *,
@@ -16098,7 +15398,7 @@ class PoolQueue:
             raise ValueError(f"tier commitment record {path.name} is not one")
         return record
 
-    def _window_fence_state(self, ledger: "ResourceLedger", tier_id: str,
+    def _window_fence_state(self, ledger: "tier_holdings.TierLedger", tier_id: str,
                             action_key: str,
                             sealed: Mapping[str, object] | None) -> str | None:
         """``"pending"``, ``"unknown"`` or ``None`` for this row's ``reserved`` fence.
@@ -16139,8 +15439,8 @@ class PoolQueue:
             return None
         held: set[str] = set()
         try:
-            for holder in ledger.held_keys():
-                held |= held_names_visible(ledger, holder)
+            for holder in ledger.holders():
+                held |= ledger.holder_state(holder)
         except (OSError, PoolContractError, ValueError):
             return "unknown"
         return "pending" if {str(name) for name in tokens} <= held else None
@@ -16216,13 +15516,13 @@ class PoolQueue:
                 if isinstance(sealed, Mapping) else None,
                 immutable_ref)
         for tier_id, needs in sorted(tier_demand.items()):
-            ledger = self.tier_ledger(tier_id)
-            if not ledger.base.is_dir():
+            ledger = self.tier(tier_id)
+            if not ledger.declared():
                 return {"tier_id": tier_id, "reason": "tier_unknown", "demand": dict(needs)}
             # A holder this census cannot read is counted as held and named
             # (#936): the total is a lower bound, and a refusal it causes is
             # attributed to the unreadable holder, never called never-fits.
-            total, unreadable = ledger.capacity_census()
+            total, unreadable = ledger.mint_census()
             if any(total.get(kind, 0) < need for kind, need in needs.items()):
                 if unreadable:
                     return {"tier_id": tier_id, "reason": "tier_census_unreadable",
@@ -16375,12 +15675,9 @@ class PoolQueue:
                     return {"tier_id": tier_id,
                             "reason": f"window_funding_{fence}",
                             "demand": dict(needs)}
-            handle = ledger.begin_acquire(action_key, remainder)
+            handle = ledger.begin_take(action_key, remainder)
             if handle is None:
-                shortage = {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
-                            "token_shortage": ledger.last_token_shortage,
-                            "capacity_total": total, "available": ledger.available(),
-                            "demand": dict(needs)}
+                shortage = {'tier_id': tier_id, 'reason': 'tier_reservation_unavailable', 'token_shortage': ledger.shortage, 'capacity_total': total, 'available': ledger.free_supply(), 'demand': dict(needs)}
                 if unreadable:
                     # While a holder is unreadable every shrink retires this
                     # tier's free tokens, so the shortage is the holder's.
@@ -16485,13 +15782,13 @@ class PoolQueue:
                 return None
             need = int(needs[storage_tiers.FILL_KIND])
             try:
-                ledger = self.tier_ledger(tier_id)
-                free = int(ledger.available().get(storage_tiers.FILL_KIND, 0))
+                ledger = self.tier(tier_id)
+                free = int(ledger.free_supply().get(storage_tiers.FILL_KIND, 0))
                 lenders: dict[str, int] = {}
-                for holder in ledger.held_keys():
+                for holder in ledger.holders():
                     if holder == action_key:
                         continue
-                    count = ledger.holder_tokens(holder).get(storage_tiers.FILL_KIND, 0)
+                    count = ledger.holdings(holder).get(storage_tiers.FILL_KIND, 0)
                     if not count:
                         continue
                     if holder not in family:
@@ -16533,8 +15830,7 @@ class PoolQueue:
             taken = int(entry["taken_free"])  # type: ignore[call-overload]
             if not taken:
                 continue
-            handle = self.tier_ledger(tier_id).begin_acquire(
-                action_key, {storage_tiers.FILL_KIND: taken})
+            handle = self.tier(tier_id).begin_take(action_key, {storage_tiers.FILL_KIND: taken})
             if handle is None:
                 self._abandon_tier_acquire(handles)
                 handles.clear()
@@ -16636,7 +15932,7 @@ class PoolQueue:
                 continue
             released, unread, overcommit = [], [], 0
             try:
-                ledger = self.tier_ledger(str(tier_id))
+                ledger = self.tier(str(tier_id))
             except (OSError, PoolContractError, ValueError):
                 entry["lenders_unread"] = sorted(entry["lent"])
                 continue
@@ -16646,7 +15942,7 @@ class PoolQueue:
                 exclude=own_key if isinstance(own_key, str) else None)
             for lender, count in sorted(entry["lent"].items()):
                 try:
-                    held = ledger.holder_tokens(str(lender)).get(storage_tiers.FILL_KIND, 0)
+                    held = ledger.holdings(str(lender)).get(storage_tiers.FILL_KIND, 0)
                 except OSError:
                     unread.append(lender)
                     continue
@@ -16663,14 +15959,12 @@ class PoolQueue:
     def _abandon_tier_acquire(self, handles: Mapping[str, str]) -> int:
         """Return every claimant-private tier handle; a committed one owns nothing and is a no-op."""
 
-        return sum(self.tier_ledger(tier_id).abandon_acquire(handle)
-                   for tier_id, handle in sorted(handles.items()))
+        return sum((self.tier(tier_id).abandon_take(handle) for tier_id, handle in sorted(handles.items())))
 
     def _commit_tier_acquire(self, action_key: str, handles: Mapping[str, str]) -> int:
         """File every tier handle under the action key; returns the tokens that moved."""
 
-        return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
-                   for tier_id, handle in sorted(handles.items()))
+        return sum((self.tier(tier_id).commit_take(action_key, handle) for tier_id, handle in sorted(handles.items())))
 
     # -- residency (#583) -------------------------------------------------
 
@@ -17042,7 +16336,7 @@ class PoolQueue:
         # and nothing may name another tier.
         tier_needs = {
             k: v for k, v in declared_grouped.get(str(tier_id), {}).items()
-            if k not in TIER_RATE_KINDS}
+            if k not in tier_holdings.RATE_KINDS}
         if (set(tier_needs) != {kind} or int(tier_needs[kind]) != int(floor)
                 or len(declared_grouped) != 1):
             raise PoolContractError(
@@ -17818,12 +17112,10 @@ class PoolQueue:
             # tier predates the pin and is read as it was before.
             return True
         if fresh:
-            ledger = self.tier_ledger(tier_id)
+            ledger = self.tier(tier_id)
             # A missing holder counts only after its parent lists it absent.
             # Unlike holder_tokens' tolerant glob, every listing error raises.
-            if lead not in os.listdir(ledger.held_dir):
-                return False
-            if not any("-" in name for name in os.listdir(ledger.held_dir / lead)):
+            if not ledger.holder_fresh_present(lead):
                 return False
             if record_store.value_or_raise(self.records.confirmed_item(CLAIMED, lead)) is not None:
                 return False
@@ -17831,7 +17123,7 @@ class PoolQueue:
             return (isinstance(receipt, Mapping) and receipt.get("complete") is True
                     and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
         try:
-            if not self.tier_ledger(tier_id).holder_tokens(lead):
+            if not self.tier(tier_id).holdings(lead):
                 return False
         except PoolContractError:
             return True
@@ -22808,9 +22100,9 @@ class PoolQueue:
         # Tier ledgers too: a claimant that died between taking a tier's
         # tokens and committing them left a private directory that no key
         # names, on a ledger no box's reaper walks.
-        for tier_id in self.tier_ids():
+        for tier_id in tier_holdings.ids(self.records):
             try:
-                names = self.tier_ledger(tier_id).sweep_stale_acquisitions(grace_s=grace_s)
+                names = self.tier(tier_id).reap_pending_takes(grace_s=grace_s)
             except (OSError, PoolContractError):
                 # Same containment as the release path: an unreadable tier
                 # costs this cycle that tier's sweep, never the rest of the

@@ -34,7 +34,7 @@ MANIFEST = "9" * 64
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8, storage_tiers.FILL_KIND: 200})
+    q.tier(TIER).mint({'stage_gib': 8, storage_tiers.FILL_KIND: 200})
     return q
 
 
@@ -63,16 +63,15 @@ def test_a_mover_that_kept_its_pin_still_returns_its_bandwidth(
     queue: pool.PoolQueue,
 ) -> None:
     claimed = _claim_mover(queue)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(MOVER) == {"stage_gib": 2,
-                                           storage_tiers.FILL_KIND: 188}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(MOVER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}
 
     queue._release_reservation(MOVER, host="dl380g10", keep_tier=True)
 
     # The bytes are on the device, so the occupancy stays charged to this key.
     # The copy has stopped, so the rate does not.
-    assert ledger.holder_tokens(MOVER) == {"stage_gib": 2}
-    assert ledger.held() == {"stage_gib": 2}
+    assert ledger.holdings(MOVER) == {'stage_gib': 2}
+    assert ledger.holdings() == {'stage_gib': 2}
     assert claimed["action_key"] == MOVER
 
     # And the next mover, which asks for the same 188, can now be admitted.
@@ -89,7 +88,7 @@ def test_releasing_everything_still_releases_everything(
 
     _claim_mover(queue)
     queue._release_reservation(MOVER, host="dl380g10", keep_tier=False)
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(TIER).holdings(MOVER) == {}
 
 
 def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
@@ -102,10 +101,9 @@ def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
     """
 
     _claim_mover(queue)
-    ledger = queue.tier_ledger(TIER)
-    queue.transfer_tier_reservation(TIER, MOVER, OTHER)
-    assert ledger.holder_tokens(OTHER) == {"stage_gib": 2,
-                                           storage_tiers.FILL_KIND: 188}
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).handover(MOVER, OTHER)
+    assert ledger.holdings(OTHER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}
 
     events = tier_loop.reclaim_idle_rates(queue)
 
@@ -113,7 +111,7 @@ def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
     assert events[0]["released"] == 188
     assert events[0]["rates"] == {storage_tiers.FILL_KIND: 188}
     assert events[0]["tier_id"] == TIER
-    assert ledger.holder_tokens(OTHER) == {"stage_gib": 2}
+    assert ledger.holdings(OTHER) == {'stage_gib': 2}
     # Idempotent: a second cycle has nothing left to say.
     assert tier_loop.reclaim_idle_rates(queue) == []
 
@@ -125,5 +123,4 @@ def test_the_cycle_leaves_a_running_copys_rate_alone(
 
     _claim_mover(queue)
     assert tier_loop.reclaim_idle_rates(queue) == []
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {
-        "stage_gib": 2, storage_tiers.FILL_KIND: 188}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}

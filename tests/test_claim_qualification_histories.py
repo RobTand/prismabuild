@@ -6,6 +6,7 @@ import pytest
 from prismabuild import local_scratch, pool
 from test_local_scratch_measured_placement import FAST, SLOW, fleet as scratch_fleet
 from test_measurement_drains_gpu_backfill import fleet
+from prismabuild import tier_holdings
 
 
 def _rewrite(queue, key, **changes):
@@ -21,7 +22,7 @@ def _assert_unclaimed(queue, key, ready_bytes):
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert not queue.records.lease_path(key).exists()
     assert queue.ledger().holder_tokens(key) == {}
-    assert queue.tier_holdings(key) == {}
+    assert tier_holdings.for_action(queue, key) == {}
     assert queue.passes(key) == 0
 
 
@@ -170,7 +171,7 @@ def test_scratch_yield_publication_failure_is_caught_before_handler_publication(
     assert persisted["reason"] == "local_scratch_io_profile_invalid"
     assert persisted["evidence"] == {"error": str(yield_error)}
     assert queue.records.item_path(pool.record_store.READY, key).read_bytes() == ready_bytes
-    assert queue.tier_holdings(key) == {}
+    assert tier_holdings.for_action(queue, key) == {}
     scratch_fleet.ready_unspent()
 
 
@@ -198,7 +199,7 @@ def test_scratch_yield_publication_preserves_an_uncaught_error_and_diagnostic(
     assert persisted["reason"] == "deferred_for_local_scratch_io"
     assert persisted["evidence"]["yield_to"] == FAST
     assert queue.records.item_path(pool.record_store.READY, key).read_bytes() == ready_bytes
-    assert queue.tier_holdings(key) == {}
+    assert tier_holdings.for_action(queue, key) == {}
     scratch_fleet.ready_unspent()
 
 
@@ -238,5 +239,5 @@ def test_scratch_root_replacement_after_placement_keeps_boundary_exception_conte
     assert persisted["reason"] == "local_scratch_io_profile_invalid"
     assert persisted["evidence"] == {"error": "scratch profile/root changed before admission"}
     assert queue.records.item_path(pool.record_store.READY, key).read_bytes() == ready_bytes
-    assert queue.tier_holdings(key) == {}
+    assert tier_holdings.for_action(queue, key) == {}
     scratch_fleet.ready_unspent()

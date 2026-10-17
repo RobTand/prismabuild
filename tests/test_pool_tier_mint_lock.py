@@ -54,11 +54,11 @@ def test_a_second_minter_waits_for_the_first(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     held: list[bool] = []
 
-    with queue.tier_mint_lock(TIER):
+    with queue.tier(TIER).mutation_lock():
         def probe() -> None:
-            with queue.tier_mint_lock(OTHER_TIER, blocking=False) as free:
+            with queue.tier(OTHER_TIER).mutation_lock(blocking=False) as free:
                 assert free is True, "an unrelated tier must not be locked"
-            with queue.tier_mint_lock(TIER, blocking=False) as second:
+            with queue.tier(TIER).mutation_lock(blocking=False) as second:
                 held.append(second)
 
         worker = threading.Thread(target=probe)
@@ -78,7 +78,7 @@ def test_concurrent_mints_converge_on_the_minted_capacity(tmp_path: Path) -> Non
     def mint() -> None:
         try:
             for _ in range(5):
-                queue.mint_tier_capacity(TIER, {KIND: 6, FILL: 60})
+                queue.tier(TIER).mint({KIND: 6, FILL: 60})
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -89,22 +89,22 @@ def test_concurrent_mints_converge_on_the_minted_capacity(tmp_path: Path) -> Non
         worker.join(timeout=120.0)
     assert not any(worker.is_alive() for worker in workers)
     assert errors == []
-    assert queue.tier_ledger(TIER).capacity() == {KIND: 6, FILL: 60}
+    assert queue.tier(TIER).mint_supply() == {KIND: 6, FILL: 60}
 
 
 def test_minting_down_retires_only_free_tokens(tmp_path: Path) -> None:
     """The lock serializes the retire half too: a holder keeps its tokens."""
 
     queue = _queue(tmp_path)
-    queue.mint_tier_capacity(TIER, {KIND: 4})
-    ledger = queue.tier_ledger(TIER)
-    handle = ledger.begin_acquire("a" * 64, {KIND: 3})
+    queue.tier(TIER).mint({KIND: 4})
+    ledger = queue.tier(TIER)
+    handle = ledger.begin_take('a' * 64, {KIND: 3})
     assert handle is not None
-    assert ledger.commit_acquire("a" * 64, handle) == 3
+    assert ledger.commit_take('a' * 64, handle) == 3
 
-    result = queue.mint_tier_capacity(TIER, {KIND: 1})
+    result = queue.tier(TIER).mint({KIND: 1})
 
-    assert ledger.holder_tokens("a" * 64) == {KIND: 3}
+    assert ledger.holdings('a' * 64) == {KIND: 3}
     assert result["capacity"] == {KIND: 3}
     assert result["retired"] == {KIND: 1}
 
@@ -173,7 +173,7 @@ def test_the_probe_is_sized_for_the_oldest_ready_mover(
     assert record["fill_source"] == "probe"
     assert record["tokens"][FILL] == 210
     assert record["fill_probe_mb_s"] == 210
-    free = queue.tier_ledger(TIER).available().get(FILL, 0)
+    free = queue.tier(TIER).free_supply().get(FILL, 0)
     assert free == 110
     assert free >= 50, (
         "C's demand fits beside A's on an unmeasured pool: the mint cannot "

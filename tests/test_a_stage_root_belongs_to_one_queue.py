@@ -61,9 +61,9 @@ def _staged_file(stage: Path, relative: str, size: int = 4096) -> Path:
 def _held_mover(queue: pool.PoolQueue, stage: Path, path: Path) -> None:
     """A finished mover holding two tokens for one staged file, by fragment."""
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 8})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {'stage_gib': 2})
     queue.record_move(MOVER, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                               "stage_root": str(stage), "complete": True,
                               "bytes_staged": 2 * GIB})
@@ -163,7 +163,7 @@ def test_an_egress_on_an_unregistered_root_keeps_bytes_and_tokens(queue, stage) 
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0 and receipt["tokens_released"] == 0
     assert path.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
     fragment = residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY,
         CONSUMER,
@@ -185,7 +185,7 @@ def test_a_sweep_of_an_unregistered_root_refuses_once_per_tier(queue, stage) -> 
     assert swept[0]["tier_id"] == TIER
     assert swept[0]["skipped"] == "stage_root_unregistered"
     assert path.exists() and nobodys.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
 
 
 def test_another_queues_root_is_refused_by_name(queue, stage, tmp_path) -> None:
@@ -226,7 +226,7 @@ def test_a_registered_root_is_swept_and_the_marker_survives(queue, stage) -> Non
 
     assert [r["reason"] for r in swept] == ["orphan-sweep", "unattributed-reconcile"]
     assert not path.exists() and not nobodys.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(TIER).holdings(MOVER) == {}
     assert (stage / stage_release.STAGE_ROOT_MARKER).is_file(), \
         "the sweep must not delete the fact that lets it sweep"
     assert stage_release.stage_root_refusal(queue, stage) is None
@@ -320,9 +320,9 @@ def test_a_present_but_unregistered_root_keeps_tokens_and_refuses_movers(
     assert record["stage_root_owner"].startswith("stage_root_belongs_to_another_queue")
     assert record["stage_root_admits"] is False
     assert record["tokens"]["stage_gib"] == 8
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.capacity()["stage_gib"] == 8
-    assert ledger.available()["stage_gib"] == 8
+    ledger = queue.tier(TIER)
+    assert ledger.mint_supply()['stage_gib'] == 8
+    assert ledger.free_supply()['stage_gib'] == 8
     assert "stage-root-refuses-movers" in capsys.readouterr().out
 
 

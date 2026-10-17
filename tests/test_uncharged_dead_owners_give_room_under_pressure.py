@@ -122,11 +122,10 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
         "complete": charged, "errors": [], "seconds": 20.0, "unix": unix})
     queue.finish(mover, status="executed", detail={"returncode": 0})
     if charged:
-        queue.mint_tier_capacity(TIER, {"stage_gib": len(names)})
-        assert queue.tier_ledger(TIER).acquire(
-            mover, {"stage_gib": len(names)}) is True
+        queue.tier(TIER).mint({'stage_gib': len(names)})
+        assert queue.tier(TIER).take(mover, {'stage_gib': len(names)}) is True
     else:
-        assert mover not in queue.tier_ledger(TIER).held_keys()
+        assert mover not in queue.tier(TIER).holders()
     return consumer, mover
 
 
@@ -236,8 +235,8 @@ def test_no_pressure_evicts_none(fleet, pressure):
 def test_room_the_ledger_already_has_evicts_none(fleet):
     queue, stage, _ = fleet
     owner = dead_owner(fleet, ["roomy-00001"], unix=100.0)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+    queue.tier(TIER).mint({'stage_gib': 1})
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 1
 
     receipts = _sweep(queue, stage, {TIER: 1})
 
@@ -268,13 +267,13 @@ def test_charged_and_uncharged_orphans_share_one_age_order(fleet):
     queue, stage, _ = fleet
     uncharged_old = dead_owner(fleet, ["mix-00100"], unix=100.0)
     charged_new = dead_owner(fleet, ["mix-00200"], unix=200.0, charged=True)
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
 
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert not _owned(queue, *uncharged_old), receipts
     assert _owned(queue, *charged_new), receipts
-    assert charged_new[1] in queue.tier_ledger(TIER).held_keys()
+    assert charged_new[1] in queue.tier(TIER).holders()
 
 
 def test_an_older_charged_orphan_goes_first_and_covers_the_room(fleet):
@@ -285,7 +284,7 @@ def test_an_older_charged_orphan_goes_first_and_covers_the_room(fleet):
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert not _owned(queue, *charged_old), receipts
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 1
     assert _owned(queue, *uncharged_new), receipts
 
 
