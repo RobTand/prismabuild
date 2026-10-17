@@ -15,6 +15,9 @@ from rebind_source_reviews import review_source_hash
 
 
 ENTRY_MOVES = {
+    'pbtest_capabilities:load_config': 'prismabuild.pbtest_capabilities:load_config',
+    'tier_loop:_cycle': 'prismabuild.tier_cycle:_cycle',
+    'tier_loop:publish_landing_expectations': 'prismabuild.tier_cycle:publish_landing_expectations',
     'pbrun:build_git_checkout_snapshot': 'prismabuild.submission:snapshot_checkout',
     'pbrun:residency_stage_rows': 'prismabuild.residency_plan:prepare_window',
     'pbrun:residency_stage_rows.<locals>.seal_stage_mover': 'prismabuild.residency_plan:prepare_window.<locals>.seal_stage_mover',
@@ -41,7 +44,23 @@ ENTRY_MOVES = {
         '_retire_produced_orphan')},
 }
 
+DATA_PLAN_MOVES = {
+    'prismabuild.decomposition:DataPlans.rows_for_children': 'pbcampaign:frozen_child_data_plans',
+    'prismabuild.decomposition:DataPlans.freeze': 'pbcampaign:frozen_child_data_plans',
+}
+CATALOGUE_RULES = (
+    Replacement('record_kinds.py',
+                '"pbcampaign:frozen_child_data_plans", ("pbcampaign:frozen_child_data_plans",)',
+                '"prismabuild.decomposition:DataPlans.rows_for_children", ("prismabuild.decomposition:DataPlans.freeze",)'),
+)
+
 RULES = (
+    Replacement('compat_adapters.py', 'load("tier_loop")', 'load("prismabuild.tier_cycle")'),
+    Replacement('compat_tier_adapters.py', 'load("tier_loop")', 'load("prismabuild.tier_cycle")'),
+    Replacement('compat_movement_writer_adapters.py', 'load("tier_loop")', 'load("prismabuild.tier_cycle")'),
+    Replacement('compat_input_adapters.py', 'load("pbtest_capabilities")', 'load("prismabuild.pbtest_capabilities")'),
+    Replacement('compat_domain_adapters.py', 'args=SimpleNamespace(), queue=None, cas=cas)',
+                'args=load("prismabuild.submission_types").SubmissionRequest(cwd="/compat/checkout"), queue=None, cas=cas)'),
     Replacement('compat_core_adapters.py', 'load("pbrun")', 'load("prismabuild.submission")', 3),
     Replacement('compat_builder_adapters.py', 'load("pbrun").seal_action_from_template(template)',
                 'load("prismabuild.submission").seal(template)'),
@@ -127,7 +146,7 @@ def main():
     catalogue = root / 'src/prismabuild/record_kinds.py'
     before = catalogue.read_text()
     occurrences = []
-    after = before
+    after = transformed(before, CATALOGUE_RULES)
     for old, current in ENTRY_MOVES.items():
         module, name = current.split(':')
         source = root / ('src/' + module.replace('.', '/') + '.py')
@@ -146,8 +165,20 @@ def main():
         occurrences.append(dict(before=old, current=current, occurrences=prior or present,
             source=str(source.relative_to(root)), source_sha256=review_source_hash(raw), line=targets[0].lineno,
             target_ast_sha256=review_source_hash(ast.dump(targets[0], include_attributes=False).encode())))
+    for current, old in DATA_PLAN_MOVES.items():
+        module, name = current.split(':')
+        source = root / ('src/' + module.replace('.', '/') + '.py')
+        raw = source.read_bytes()
+        targets = definitions(raw).get(name, [])
+        present = after.count('"' + current + '"')
+        if len(targets) != 1 or present != 1:
+            raise ValueError(('data-plan source owner or catalogue occurrence is not unique', current))
+        occurrences.append(dict(before=old, current=current, occurrences=present,
+            source=str(source.relative_to(root)), source_sha256=review_source_hash(raw), line=targets[0].lineno,
+            target_ast_sha256=review_source_hash(ast.dump(targets[0], include_attributes=False).encode())))
     normalized = ast.parse(after)
-    reverse = {new: old for old, new in ENTRY_MOVES.items()}
+    reverse = {new: old for old, new in ENTRY_MOVES.items() if '"' + old + '"' in before}
+    reverse.update({new: old for new, old in DATA_PLAN_MOVES.items() if '"' + old + '"' in before})
     for node in ast.walk(normalized):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in reverse:
             node.value = reverse[node.value]
