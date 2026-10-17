@@ -18449,7 +18449,9 @@ pointer or setting and promises no permanent support for a pinned snapshot.
 Retained operations run in fresh `python -I -S` processes with closure/stdlib-only
 paths. Complete source closures, raw receipts, imported module paths/hashes and
 executing source/code are attested. Current and historical production writers
-must reproduce golden bytes before both reader directions pass. Absent old
+must each reproduce golden bytes in two independent isolated processes before
+both reader directions pass. Corpus adoption requires the verified successful
+PB producer chain, exact request/source binding and reproduction flag. Absent old
 participants are source-bound absence observations, never codec passes.
 Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical

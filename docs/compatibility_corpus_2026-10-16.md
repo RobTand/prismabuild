@@ -10,11 +10,11 @@ publication, deployment or live-store mutation authority.
 
 ## Catalogue and inventory
 
-`src/prismabuild/record_kinds.py` records 152 kinds with wire identity, location,
+`src/prismabuild/record_kinds.py` records 168 kinds with wire identity, location,
 field policy, accepted legacy shapes, actual reader and writer references,
-and 377 cases. These comprise 363 production-writer scenarios, 11 caller inputs
+and 474 cases. These comprise 457 production-writer scenarios, 14 caller inputs
 and three immutable configuration sources. Caller inputs and configurations
-earn no runtime-writer credit. The policies are 62 closed, 89 additive and one
+earn no runtime-writer credit. The policies are 64 closed, 103 additive and one
 presence-only safety reader. That last reader deliberately treats malformed
 resident-pin bodies as protection; inventing a JSON decoder would weaken its
 actual contract.
@@ -34,18 +34,20 @@ operator-only disposition to its actual source witnesses. A new reader or
 constructor invalidates that disposition. Qualification fixtures and old
 artifacts do not become supported generations by being retained.
 
-The current inventory has 279 versioned IDs plus one unversioned record across
-source, controls and history. All 152 catalogue entries have current and
+The current inventory has 279 versioned IDs plus 16 unversioned record kinds across
+source, controls and history. All 168 catalogue entries have current and
 historical captures or explicit source-bound participant absences. Other
-dispositions are 57 operator controls, 13 identity domains, four derived
+dispositions are 57 operator controls, 13 identity domains, three derived
 projections, 16 retired APIs, one rejected retired schema and 37 test/history
 references. The original card's 225 IDs, 15 newer versions and roughly 30 closed
 modules were historical estimates, not acceptance targets.
 
 `tests/compat/field_sets.json` pins 292 resolved field sets and 221 symbolic
 field expressions across 51 production modules. Symbolic expressions stay
-visible. The scanner also reports all serialization sites and six dynamic
-schema constructors; discovery alone does not qualify their runtime paths.
+visible. The scanner also reports 2,086 serialization sites across all scopes and six
+dynamic schema constructors. All six dynamic schema sites have exact source-hash,
+owner, line and field reviews. Unreviewed or stale dynamic sites fail the gate.
+Discovery alone does not qualify their runtime paths.
 `reconcile_record_writers.py` joins source constructors to actual executed-line
 proofs from verified native logs and reports uncovered constructors explicitly.
 
@@ -110,7 +112,8 @@ the actual old consumer still runs in its own deployed closure. They do not
 invent a deployed writer, fill missing siblings from the candidate, or combine
 writer source with the old reader's search path.
 
-There are 377 current golden records and 740 historical records. Fourteen
+There are 474 current golden records and 934 historical records: 466 from the
+live/designated a174 closure and 468 from the prepared bridge control. Fourteen
 immutable participant-absence observations have no codec credit: D38 caller
 inputs, the actual a174 shape-gate absence and the introduced publication-ending
 namespace. A real old queue listing and validator control also observes the new
@@ -142,7 +145,12 @@ publication; the old wire shape stays unchanged. The same twelve old consumers
 then accepted the new writer, and all twelve historical goldens stayed exact.
 `audit_runtime_transition.py` reruns this comparison. An independent isolated
 production-writer mutation is also rejected by the unchanged old landing reader.
-No historical bytes were repaired to make a test pass.
+No historical bytes were repaired to make a test pass. The six superseded
+current-runtime goldens remain byte-for-byte in
+`tests/compat/history-controls/superseded-current-runtime/`; their actual Core
+source digests changed when commit `96daf6252` relocated the generator path in
+a Core comment. Even that comment change alters the attested source hash. They are
+provenance controls, not the final current writer bytes.
 
 Other controls reject closure tampering, candidate-path poisoning, counterfeit
 code with an old filename, setup-only reader calls, unknown closed fields and
@@ -151,6 +159,15 @@ actual consumers. The first duplication failure, fixture defects, empty
 selection, usage errors and every mixed RED capture remain in evidence.
 The optional `--surface-json` submission was rejected by frozen pytest before
 collection and earns zero native credit. No sealed request was edited.
+
+The actual generator exposed nondeterministic landing/mover bytes when fixture
+clock and hostname seeding ran after the new builder dispatch. The original
+current and historical capture files remain unchanged in
+`tests/compat/history-controls/rejected-nondeterministic/`. Seeding now precedes
+all dispatch, and the new captures reproduce independently. A separate guard-only
+run against the unchanged faulty adapter fails before generating a golden.
+This is a generator control; the unchanged old-reader production mutant above
+provides reverse-consumer rejection credit.
 
 ## Rerun and integration limits
 
@@ -164,9 +181,13 @@ Run product-backed capture through published `pbrun.py`, with a frozen checkout,
 `--anywhere --cpus 1 --demand mem_gb=1 --priority -10`, native threads one and
 worker `TMPDIR=/home/rob/pbt17`. Invoke `record_compat.py --generate NEW_DIRECTORY
 --kind KIND` inside the admitted action. Preserve every output directory.
-`adopt_compat_capture.py` adopts only cases with complete directions or explicit
-absence evidence and retains excluded failures in provenance. Never replace
-captured historical bytes. Use `compat_sources.py` to recapture published or
+The generator invokes each selected current and historical writer twice in
+independent isolated processes and requires byte equality before writing a
+golden. `adopt_compat_capture.py` requires `--primary-audit` from the successful
+source-bound PB chain, exact request output path, complete directions or explicit
+absence evidence, and the independent-reproduction flag. Partial producers,
+ENOSPC/no-CAS results and nonreproduced captures cannot become corpus inputs.
+Excluded failures remain in provenance. Never replace captured historical bytes. Use `compat_sources.py` to recapture published or
 prepared source closures; its capture refuses an existing changed output.
 
 The complete native gate uses published `pbtest.py`, no deselection, no
@@ -182,13 +203,22 @@ physical abandonment, broker RootGO or deployed drain safety. Profile cost and
 configuration scenarios qualify their selected consumer boundaries separately
 from full CAS profile-source authentication.
 
-Metadata references overlap 46 active modules, especially PoolQueue (34 kinds),
-Core (17), decomposition (11), produced output (10) and prelaunch groups (nine).
+Current and legacy metadata references overlap 51 modules, especially PoolQueue
+(42 kinds), Core (17), produced output (15), decomposition (12) and prelaunch
+groups (10). This overlap is an integration review obligation, not a request to
+move those owners or create aliases.
 The only production changes beyond the catalogue/window are five ID references,
 the Core/helper/result source pin and the GC precondition text. PoolQueue and
 RecordStore production code are untouched. Root's future C06 integration must
 change current attempt ownership to `endings.resolve_attempt` /
-`PoolQueue.attempt_ending` once. Historical closures keep their actual old owner.
+`PoolQueue.attempt_ending` once. Historical closures keep their actual old owner. Root also reports a qualified
+C06 private FD schema 1 in `client_channel.py`: two strict atomic JSON records
+between parent and pbrun/recovery from the same `RUNTIME_ROOT`. It is an
+invocation control with no durable queue record or worker consumer. Root must
+add a source-bound control disposition at integration, rather than invent a
+historical participant. That later source is absent from this frozen gate.
+Root evidence is `active/c06-root-design/frontend-callers-r2/qualification.json`
+and `client-exit-site-audit.json`.
 If C05 changes `immutable_files.py`, regenerate the Core pin and current runtime
 goldens; never rewrite historical runtime goldens.
 
