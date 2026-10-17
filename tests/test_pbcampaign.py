@@ -363,12 +363,12 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_main(*, report) -> int:
-        seen["argv"] = list(sys.argv)
-        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return finish_submission(report)
+    def fake_submit(request, *, report, **kwargs):
+        seen["request"] = request
+        finish_submission(report)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submit_core, "submit", fake_submit)
     published = pbcampaign.submit_row(
         {
             "argv": ["/bin/bash", "-lc", "./probe.sh"],
@@ -382,10 +382,10 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
     )
 
     assert published["status"] == "submitted"
-    argv = seen["argv"]
-    assert argv[argv.index("--host-class") + 1] == "gb10"
-    assert argv[argv.index("--max-attempts") + 1] == "1"
-    assert "--measurement" in argv and "--retry-safe" in argv
+    request = seen["request"]
+    assert request.host_class == "gb10"
+    assert request.max_attempts == 1
+    assert request.measurement and request.retry_safe
 
 
 def test_the_four_fields_are_one_pbrun_command_line_and_nothing_else() -> None:

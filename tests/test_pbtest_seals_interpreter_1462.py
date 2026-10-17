@@ -1,5 +1,6 @@
 """The generated producer seals its interpreter, environment and queue row."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import shutil
@@ -65,7 +66,7 @@ def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     )
     with monkeypatch.context() as scoped:
         scoped.setattr(pbrun, 'SH', root)
-        scoped.setattr(pbrun, 'RUNTIME_ROOT', PUBLISHED)
+        patch_store(scoped, client=pbrun, runtime_root=PUBLISHED)
         scoped.setattr(sys, 'argv', [*command[1:2], '--detach', *command[2:]])
         assert pbrun.main() == 0
     requests = list((root / 'cas/requests').rglob('*.json'))

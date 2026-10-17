@@ -1,6 +1,7 @@
 """Where an action may run is derived from the checkout, not asked of the caller."""
 
 from __future__ import annotations
+from submission_support import patch_store
 from submission_support import refusal_value
 from prismabuild import submission as submit_core
 
@@ -359,7 +360,7 @@ def test_effective_placement_is_normalized_into_action_identity(
 
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
     )
@@ -418,7 +419,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
 
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
     )
@@ -2176,7 +2177,7 @@ def class_submission(tmp_path, monkeypatch):
     }}))
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools")
     sealed = []
     real_seal = core_module.seal_action
@@ -2339,7 +2340,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
         offer_path.write_text(json.dumps(offer))
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
     earlier = tmp_path / "earlier-path"
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
@@ -2982,7 +2983,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 
     def submit(case):
@@ -3146,7 +3147,7 @@ def raw_copy_submission(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
     monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 
     def submit(mode):

@@ -25,7 +25,7 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
         tmp_path: Path, monkeypatch, use_defaults, changed_member) -> None:
     source = tmp_path / "source"
     published = tmp_path / "fleet" / "repo"
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", source)
+    patch_store(monkeypatch, client=pbrun, runtime_root=source)
     patch_store(monkeypatch, client=pbrun, root=published.parent)
     roots = {} if use_defaults else {"source_root": source, "published_root": published}
     members = ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py",

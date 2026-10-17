@@ -70,7 +70,7 @@ def _sealed_body(argv, monkeypatch, tmp_path):
 
     monkeypatch.setattr(submit_core.pb, "seal_action", _stop)
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
         submit_core,

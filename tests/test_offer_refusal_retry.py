@@ -15,6 +15,7 @@ that stays unreadable, and a reader that survives cleanup.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 from submission_support import refusal_value
 
 import errno
@@ -98,7 +99,7 @@ PUBLISHED_RUNTIME = Path(
 
 
 def _submit(monkeypatch, work: Path, *tags: str) -> int:
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     # Zero is one observation with the full read budget, then 75 when
     # nothing has landed.  A positive wait caps the first forked reader's
     # budget at the time left, so 10 ms timed it out on a loaded box and the
