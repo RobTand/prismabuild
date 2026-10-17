@@ -66,7 +66,10 @@ def _committed_then_withdrawn(tmp_path):
     unit, movers = _declared_movers(queue, consumer)
     first = _cycles(queue, tiers, 10)
     assert _holder_tokens(queue, unit.holder) > 0 or any(
-        queue.records.item_path(pool.record_store.READY, mover).exists() for mover in movers), _names(first)
+        queue.records.item_path(pool.record_store.READY, mover).exists(
+        ) for mover in movers), _names(
+            first,
+        )
     assert "committed.json" in " ".join(_group_files(queue, consumer)), _names(first)
     queue.withdraw(consumer, reason="test: the owner withdrew the band", by="test")
     ended = _cycles(queue, tiers, 8)
@@ -155,7 +158,9 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
 
 
 def _row(queue, mover: str) -> dict:
-    return json.loads(queue.records.item_path(pool.record_store.READY, mover).read_text(encoding="utf-8"))
+    return json.loads(
+        queue.records.item_path(pool.record_store.READY, mover).read_text(encoding="utf-8"),
+    )
 
 
 def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:

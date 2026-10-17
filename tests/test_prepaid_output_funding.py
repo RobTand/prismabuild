@@ -688,7 +688,11 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     real_claim_write = pool.record_store._write_json
 
     def fail_claim_record(path, *a, **k):
-        if str(path).endswith(f"{mover}.json") and f"{pool.record_store.CLAIMED}{os.sep}" in str(path):
+        if str(path).endswith(
+            f"{mover}.json",
+        ) and f"{pool.record_store.CLAIMED}{os.sep}" in str(
+            path,
+        ):
             observed_faults.append("claim-record")
             raise OSError("injected claim-record failure")
         return real_claim_write(path, *a, **k)

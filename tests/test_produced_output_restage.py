@@ -839,7 +839,10 @@ def test_a_replayed_ensure_answers_the_same_generation(tmp_path: Path) -> None:
     _assert_funded_once(world, str(one["mover_key"]))
 
 
-def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_concurrent_ensures_collapse_onto_one_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Two callers, one materialization.
 
     The intent is appended under the output-prefix ownership lock, so the

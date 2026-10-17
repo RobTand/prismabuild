@@ -32,7 +32,11 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
         patch.setattr(immutable_files, "publish_immutable", unavailable)
         with pytest.raises(OSError, match="decision write unavailable"):
             _end_claim(queue, original, "finish_retry", clock)
-    marks = list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    marks = list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
+    )
     assert len(marks) == 1
     attempt = queue.records.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
@@ -51,6 +55,10 @@ def test_ready_successor_read_prevents_restoring_old_claim_after_cached_absence(
     assert isinstance(ending, pool.PublicationSupersession)
     assert ending.successor_published_unix == successor["published_unix"]
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
-    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+    assert not list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
+    )
     assert attempt.read_bytes() == attempt_bytes
     assert not queue.records.attempt_path(original, 2).exists()

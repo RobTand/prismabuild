@@ -38,7 +38,9 @@ def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monk
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--priority", "1") == 0
     assert _one_json_line(capsys.readouterr())["action_key"] == direct["action_key"]
     # Attaching does not silently replace the existing generation's reason.
-    record = json.loads(queue.records.item_path(pool.record_store.READY, direct["action_key"]).read_text())
+    record = json.loads(
+        queue.records.item_path(pool.record_store.READY, direct["action_key"]).read_text(),
+    )
     assert record["priority_reason"] == REASON
 
 
