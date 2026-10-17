@@ -34,12 +34,12 @@ def test_transition_busy_is_recorded_while_a_neighbour_claims(tmp_path, monkeypa
         default_demand={"cpu": 1, "mem_gb": 1})
     publish(queue, KEY_A, priority=1)
     publish(queue, KEY_B)
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def contested(key, **kwargs):
         return original(key, blocking=False) if key != KEY_A else _unheld()
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
+    monkeypatch.setattr(queue, "action_transition_lock", contested)
     assert queue.claim()["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "transition_busy"

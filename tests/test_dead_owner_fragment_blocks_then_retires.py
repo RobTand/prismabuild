@@ -361,7 +361,7 @@ def test_republication_after_census_retains_new_generation(fleet, monkeypatch, o
 def _probe_locks(root, keys, result):
     queue = pool.PoolQueue(root)
     for key in keys:
-        with queue._transition_locked(key, blocking=False) as acquired:
+        with queue.action_transition_lock(key, blocking=False) as acquired:
             result.put(acquired)
 
 
