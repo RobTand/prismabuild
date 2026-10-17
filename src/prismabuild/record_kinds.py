@@ -35,6 +35,22 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("q-passes", None, "passes/<key>.json including ordinary and per-host measurement clocks", "additive",
+               "prismabuild.pool:PoolQueue.passes", ("prismabuild.pool:PoolQueue.record_pass",),
+               ("first", "replay", "ordinary", "measurement"),
+               ("invalid counters degrade to zero; old writer keeps its actual drain-note API",), negative_field="passes"),
+    RecordKind("host-cpu-map", None, "private host reservation cpu-map.json", "closed",
+               "prismabuild.pool:ResourceLedger.ensure_cpu_tiers", ("prismabuild.pool:ResourceLedger.ensure_cpu_tiers",),
+               ("initial", "replay"), ("an existing map must exactly match; no topology remap or physical affinity change",), negative_field="preferred"),
+    RecordKind("host-cpu-metadata", None, "private held/<key>/.adaptive.json", "additive",
+               "prismabuild.adaptive_cpu:Controller.decision", ("prismabuild.pool:ResourceLedger.begin_acquire",),
+               ("measurement", "borrowed", "allowance"), ("supplied admission facts; actual consumer preserves the measurement holder refusal",),
+               negative_field="measurement", negative_value=False, stable_paths=True),
+    RecordKind("host-gpu-metadata", None, "private held/<key>/.gpu.json", "additive",
+               "prismabuild.adaptive_gpu:Controller.decision", ("prismabuild.pool:ResourceLedger.begin_acquire",),
+               ("measurement", "exclusive"), ("private token metadata only; no GPU hardware work or admission proof",),
+               negative_field="measurement", negative_value=False, stable_paths=True),
+
     RecordKind("checkout-recovery-plan", "prismabuild.checkout_recovery_plan.v1", "operator-held exact banked checkout recovery plan", "closed",
                "prismabuild.checkout_recovery:apply_checkout_recovery", ("prismabuild.checkout_recovery:_checkout_recovery_capture",), ("banked",),
                ("actual private Git/CAS/queue/archive and cleanup; supplied process/stat observations are not physical abandonment or operator RootGO",), stable_paths=True),

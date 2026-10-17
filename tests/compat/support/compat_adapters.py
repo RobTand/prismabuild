@@ -130,6 +130,8 @@ def operate(request, store, load):
     if family.startswith("upgrade-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_upgrade_adapters.py")))["operate"]
         return adapter(request, store, load)
+    if family in ("q-passes", "host-cpu-map", "host-cpu-metadata", "host-gpu-metadata"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_unversioned_adapters.py")))["operate"](request, store, load)
     if family.startswith("host-"):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_host_adapters.py")))["operate"]
         return adapter(request, store, load)
