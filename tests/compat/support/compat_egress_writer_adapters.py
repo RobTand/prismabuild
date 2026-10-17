@@ -100,8 +100,8 @@ def operate(request, store, load):
                 lease.write_material(root, consumer_action_key=C, mover_action_key=M, tier_id=TIER, stage_root=str(stage),
                     manifest_sha256=D, generation="7" * 32, entries={"0:/compat/input": {"stage_path": str(target), "bytes": 8,
                         "sha256": digest, "file_id": lease.stat_identity(str(target))}})
-                queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-                assert queue.tier_ledger(TIER).acquire(M, {"stage_gib": 1})
+                queue.tier(TIER).mint({"stage_gib": 1})
+                assert queue.tier(TIER).take(M, {"stage_gib": 1})
                 value = release.evict(queue, M, consumer_action_key=C, stage_root=str(stage))
                 assert value["entries_deleted"] == 1 and not target.exists(), value
         assert isinstance(value, dict), value

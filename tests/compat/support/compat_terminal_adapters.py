@@ -17,6 +17,7 @@ def terminal_reader(load):
 
 
 def operate(request, store, load):
+    bl = load("prismabuild.batch_ledger")
     variant = request["case"].split("/", 1)[1]
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
@@ -52,7 +53,7 @@ def operate(request, store, load):
         claim.update(max_attempts=1, retry_safe=False)
         pool._write_json_atomic(claim_path, claim)
         ended = queue.finish(owner, status="failed", detail={"returncode": 1})
-        assert not claim_path.exists(), {"ended": str(ended), "producer_state": po._producer_attempt_state(queue, instance)}
+        assert not claim_path.exists(), {"ended": str(ended), "producer_state": bl.producer_attempt_state(queue, instance)}
         ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
             batch_id="batch", descriptors=[descriptor], tier_id="prismabuild-stage:compat")
         published = queue.publish(action_key=key, cas_root=store / "cas", checkout_root="/compat/checkout",
@@ -60,7 +61,7 @@ def operate(request, store, load):
         item = {**json.loads(published.read_bytes()), "produced_output_batch": ref}
         Path(descriptor["path"]).unlink()
         assert po.dead_input_dependency(queue, item) is not None, {
-            "producer_state": po._producer_attempt_state(queue, instance), "batch": po._read_commitments(po._commitments_path(queue.root, instance)),
+            "producer_state": bl.producer_attempt_state(queue, instance), "batch": bl.BatchLedger.for_instance(queue.root, instance).capture(),
             "reference": ref, "origin_exists": Path(descriptor["path"]).exists()}
         assert queue.fail_dead_input_dependency(item, key)
     elif variant == "unreadable-writer":

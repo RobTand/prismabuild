@@ -29,6 +29,7 @@ def c13_dotted(node):
 
 def c13_canonical_tree(tree,manifest):
     aliases={}
+    loader_aliases=set()
     for n in ast.walk(tree):
         if isinstance(n,ast.Import):
             for a in n.names: aliases[a.asname or a.name]=a.name
@@ -36,6 +37,14 @@ def c13_canonical_tree(tree,manifest):
             for a in n.names:
                 module=('prismabuild'+('.'+n.module if n.module else '')) if n.level else (n.module or 'prismabuild')
                 aliases[a.asname or a.name]=module+'.'+a.name
+        elif (isinstance(n,ast.Assign) and len(n.targets)==1
+              and isinstance(n.targets[0],ast.Name) and isinstance(n.value,ast.Call)
+              and isinstance(n.value.func,ast.Name) and n.value.func.id=='load'
+              and len(n.value.args)==1 and isinstance(n.value.args[0],ast.Constant)
+              and n.value.args[0].value in ('prismabuild.batch_ledger','prismabuild.output_contract')):
+            name=n.targets[0].id
+            aliases[name]=n.value.args[0].value
+            loader_aliases.add(name)
     top_names={n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
     if 'BatchLedger' in top_names:
         aliases['BatchLedger']='prismabuild.batch_ledger.BatchLedger'
@@ -85,7 +94,7 @@ def c13_canonical_tree(tree,manifest):
                     self.generic_visit(item)
             visitor=Bindings()
             for item in node.body:visitor.visit(item)
-            scopes.append(bound-global_names)
+            scopes.append(bound-global_names-loader_aliases)
             result=self.generic_visit(node)
             scopes.pop()
             return result
@@ -103,6 +112,13 @@ def c13_canonical_tree(tree,manifest):
             name=resolve(node)
             return ast.Name(id=identity(name),ctx=node.ctx)
         def visit_Call(self,node):
+            # C31 current fixture setup now uses C10's already-owned tier API.
+            if (isinstance(node.func,ast.Attribute) and node.func.attr=='take'
+                    and isinstance(node.func.value,ast.Call)
+                    and isinstance(node.func.value.func,ast.Attribute)
+                    and node.func.value.func.attr=='tier'):
+                node.func.attr='acquire'
+                node.func.value.func.attr='tier_ledger'
             if (isinstance(node.func,ast.Attribute) and node.func.attr in ('capture','file')
                     and isinstance(node.func.value,ast.Call)
                     and resolve(node.func.value.func)=='prismabuild.batch_ledger.BatchLedger.for_instance'):

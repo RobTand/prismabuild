@@ -15,11 +15,13 @@ TIER = "prismabuild-stage:compat"
 
 
 def context(store, load):
+    bl = load("prismabuild.batch_ledger")
+    oc = load("prismabuild.output_contract")
     spool, po, pool, core = (load("prismabuild." + name) for name in ("produced_spool", "produced_output", "pool", "core"))
     body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
-    template = runpy.run_path(str(Path(__file__).with_name("compat_output_adapters.py")))["template"](po, "staged")
+    template = runpy.run_path(str(Path(__file__).with_name("compat_output_adapters.py")))["template"](oc, "staged")
     template["output_prefix"] = str(store / "canonical")
-    template = po.validate_template(template)
+    template = oc.validate_template(template)
     body["environment"]["variables"] = {spool.ROOT_ENV: str(store / "local"), spool.MAX_ENV: "8"}
     action = core.seal_action(body)
     cas = core.PrismaBuildCAS(store / "cas")
@@ -27,9 +29,9 @@ def context(store, load):
     owner = action["action_key"]
     queue = pool.PoolQueue(store / "queue")
     queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({"stage_gib": 2})
     published = queue.publish(action_key=owner, cas_root=cas.root, checkout_root="/compat/checkout",
-        worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, **po.owner_demand_terms(template)}, produced_output_template=template)
+        worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)}, produced_output_template=template)
     claim = json.loads(published.read_bytes())
     scope = po._broker_scope_id(owner, G)
     claim.update(claimed_by="compat", claimed_host="compat-host", claimed_unix=100.,
@@ -39,11 +41,11 @@ def context(store, load):
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner, claim_snapshot=claim,
         env={core.ACTION_KEY_ENV: owner, core.ACTION_NONCE_ENV: G, core.ACTION_SCOPE_ENV: scope})
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"]
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     producer = spool.ProducedSpool(queue, instance, template, cas_root=cas.root, root=store / "local", max_bytes=8)
     destination = store / "canonical/weights"
-    assert po.require_prewrite(queue, instance, template, batch_id="batch", tier=TIER,
+    assert bl.BatchLedger.reserve(queue, instance, template, batch_id="batch", tier=TIER,
         class_bytes={"payload": 8, "checkpoint": 0, "temp": 0}, paths=[str(destination), str(destination) + ".tmp"])["ok"]
     payload = producer.reserve_group("batch", 8)
     source = payload / "weights"
