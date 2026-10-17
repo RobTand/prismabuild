@@ -20,7 +20,7 @@ def operate(request, store, load):
     write = request["op"] == "write"
     if family in ("q-funding", "q-output-funding"):
         output = family == "q-output-funding"
-        path = queue.funding_output_path(M, "stage:compat") if output else queue.funding_path(M, "stage:compat")
+        path = queue.records.funding_output_path(M, "stage:compat") if output else queue.records.funding_path(M, "stage:compat")
         reader = queue.funding.read_output if output else queue.funding.read_window
         writer = queue.funding.write_output if output else queue.funding.write_window
         if write:
@@ -37,8 +37,8 @@ def operate(request, store, load):
             if not output and variant in ("prelaunch-birth", "prelaunch-binding", "reserve-fence"):
                 uuid.uuid4 = lambda: uuid.UUID(G)
                 if variant == "reserve-fence":
-                    queue.mint_tier_capacity("stage:compat", {"stage_gib": 1})
-                    assert queue.funding.reserve_window("stage:compat", C, value, 1)
+                    queue.tier("stage:compat").mint({"stage_gib": 1})
+                    assert queue.funding.reserve_window("stage:compat", C, value, 1).bound
                 else:
                     group = load("prismabuild.prelaunch_group")
                     arguments = dict(tier_id="stage:compat", consumer=C, digest=D, mover=M,

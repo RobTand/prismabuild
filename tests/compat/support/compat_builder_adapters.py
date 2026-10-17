@@ -74,7 +74,7 @@ def output_funding(request, store, load):
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
     mover, owner, nonce, tier = "a" * 64, "c" * 64, "7" * 32, "prismabuild-stage:compat"
-    path = queue.funding_output_path(mover, tier)
+    path = queue.records.funding_output_path(mover, tier)
     if request["op"] == "read":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(request["raw"]))

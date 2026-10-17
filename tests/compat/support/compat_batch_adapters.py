@@ -27,7 +27,7 @@ def context(store, load, variant):
         template["export_rate_family"] = "compat-rate"
     template = oc.validate_template(template)
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.tier(TIER).mint({"stage_gib": 2})
     path = queue.publish(action_key=C, cas_root=store / "cas", checkout_root="/compat/checkout",
         worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)},
@@ -37,7 +37,7 @@ def context(store, load, variant):
     record.update(claimed_by="compat-owner", claimed_host="compat-host", claimed_unix=100.0,
                   resource_scope={"action_key": C, "nonce": G, "scope_id": scope})
     path.unlink()
-    queue.records.replace_record_at(queue.item_path(pool.CLAIMED, C), record)
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, C), record)
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=C, claim_snapshot=record,
         env={"PRISMABUILD_ACTION_KEY": C, "PRISMABUILD_ACTION_NONCE": G, "PRISMABUILD_ACTION_SCOPE": scope})
@@ -102,7 +102,7 @@ def operate(request, store, load):
     write = request["op"] == "write"
     if family == "out-ref":
         po, pool, core, queue, template, instance = context(store, load, variant)
-        path = queue.item_path(pool.CLAIMED, C)
+        path = queue.records.item_path(pool.CLAIMED, C)
         if write:
             raw = extract(path.read_bytes(), "produced_output")
         else:

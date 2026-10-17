@@ -279,7 +279,7 @@ class FundingLedger:
         The tolerant spelling for reads that decide nothing: ``None`` covers
         both true absence and unreadable/corrupt/empty records.  A mutation
         that would destroy or replace the record's authority (reserve,
-        settle, cancel) must instead use :meth:`read_funding_evidence`,
+        settle, cancel) must instead use :meth:`window_evidence`,
         which names the difference -- a present but unreadable record is
         unproved authority, never absence, and may not be unlinked, closed,
         or fenced beside.
@@ -296,7 +296,7 @@ class FundingLedger:
         """``("record", record, None)`` / ``("absent", None, None)`` /
         ``("unknown", None, reason)`` for one funding record.
 
-        The authoritative spelling (see :meth:`read_funding`): I/O errors, a
+        The authoritative spelling (see :meth:`read_window`): I/O errors, a
         present-but-empty file, unparsable bytes, and validation failures
         are all *unknown* -- the record exists and may still bind tokens, so
         an unknown answer retains authority instead of licensing a fresh
@@ -334,7 +334,7 @@ class FundingLedger:
         The binding (tier, consumer, plan, mover, range, kind, tokens,
         generation) is immutable per generation: a fresh reservation mints a
         fresh generation rather than editing one.  Only ``state`` advances,
-        through :meth:`advance_funding_state`.
+        through :meth:`advance_window`.
 
         Every writer holds the mover's transition lock: this call acquires
         it non-blocking and refuses with ``PoolContractError`` when a claim
@@ -342,7 +342,7 @@ class FundingLedger:
         never races a verifying claim.  The generation check itself is
         read-check-replace -- a loud refusal on rotation, not an atomic
         compare-and-swap; the lock is what makes concurrent writers safe.
-        See :meth:`_write_funding_record_locked` for the body.
+        See :meth:`_write_locked` for the body.
         """
 
         checked = self.validate_window(record)
@@ -435,7 +435,7 @@ class FundingLedger:
         consumed-marking, or the coordinator's settle -- decides; the other
         defers).  Same-thread nesting re-acquires safely, so the claim path
         (which holds the lock throughout) may call either spelling.  See
-        :meth:`_advance_funding_state_locked` for the body.
+        :meth:`advance_locked` for the body.
         """
 
         with self.queue.mover_transition_lock(str(mover_action_key),
@@ -453,10 +453,10 @@ class FundingLedger:
         """Move either funding binding one legal step, or refuse with ``False``.
 
         Caller holds the mover's transition lock (see
-        :meth:`advance_funding_state`).
+        :meth:`advance_window`).
 
         Legal steps are :data:`_FUNDING_TRANSITIONS` -- the same table
-        :meth:`_write_funding_record_locked` enforces, so the two can never
+        :meth:`_write_locked` enforces, so the two can never
         disagree about what a step is.  When ``generation`` is given it must
         match the filed record: the check turns a stale writer into a loud
         ``False``, while the mover lock (held by the caller) is what keeps
@@ -609,7 +609,7 @@ class FundingLedger:
 
         Serialized on the mover's transition lock (non-blocking: a claim
         holding it makes this defer rather than queue behind execution).
-        See :meth:`_reserve_fence_locked` for the body.
+        See :meth:`_reserve_window_locked` for the body.
         """
 
         mover = str(fields["mover_action_key"])
@@ -624,7 +624,7 @@ class FundingLedger:
                               demand_gib: int) -> bool:
         """Hold one next-need under the grant key and bind it, idempotently.
 
-        Caller holds the mover's transition lock (see :meth:`reserve_fence`):
+        Caller holds the mover's transition lock (see :meth:`reserve_window`):
         the generation this call reads, writes, or replaces is never pulled
         out from under a verifying claim, because a claim holds the same
         lock from its tier acquire through its consumed-marking.
@@ -1199,9 +1199,9 @@ class FundingLedger:
         The facts are re-read under the mover's transition lock before the
         rename, and any read failure keeps the record where it is.  Retired
         records stay readable at their per-mover address through
-        :meth:`read_output_funding` and :meth:`output_funding_file_state`, so
+        :meth:`read_output` and :meth:`output_evidence`, so
         every decision about one mover reads what it read before.  Only the
-        directory scans stop reading them: :meth:`output_census_for_owner`
+        directory scans stop reading them: :meth:`output_census`
         never counted a ``consumed`` record, and
         :meth:`_output_outstanding_window_tokens` counts one only while its
         mover holds tokens, which a retired mover proved it does not.
@@ -2519,7 +2519,7 @@ class FundingLedger:
             dead_input: Mapping[str, object] | None = None) -> ReleaseVerdict:
         """Retire an output intent only when mover nonexecution is proven (R2).
 
-        The lock-free body of :meth:`release_output_funding`; the caller
+        The lock-free body of :meth:`release_output`; the caller
         holds the mover's transition lock (#1202's dead-input ending calls
         this before it files its terminal, while no terminal row exists,
         which is the one context in which the FAILED check below can never
@@ -2913,7 +2913,7 @@ class FundingLedger:
         ``"unknown"``: the funding record is unreadable or malformed, or a
         holder directory could not be read.  The record exists and may still
         bind tokens, so none of these proves the fence absent (see
-        :meth:`read_funding_evidence` and :func:`held_names_visible`), and the
+        :meth:`window_evidence` and :func:`held_names_visible`), and the
         claim defers and asks again.  ``None``: proven absent or stale -- no
         record, another state or publication, or bound tokens that are gone --
         and the claim pays as before, so nothing waits on a fence that cannot

@@ -35,7 +35,7 @@ def binding(variant):
 @pytest.mark.parametrize("variant", ["window", "output"])
 def test_both_bindings_share_the_same_durable_state_table(tmp_path, variant):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.funding
     value = binding(variant)
     write = ledger.write_window if variant == "window" else ledger.write_output
@@ -63,7 +63,7 @@ def test_both_bindings_share_the_same_durable_state_table(tmp_path, variant):
 @pytest.mark.parametrize("variant", ["window", "output"])
 def test_cover_keeps_absence_separate_from_unknown(tmp_path, variant):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     row = {"action_key": MOVER}
     if variant == "output":
         row["produced_output_batch"] = {
@@ -84,7 +84,7 @@ def test_cover_keeps_absence_separate_from_unknown(tmp_path, variant):
 
 def test_release_keeps_unknown_for_dead_input_retry(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     assert queue.funding.release_output(MOVER, TIER) is funding.ReleaseVerdict.REFUSED
     path = queue.records.funding_output_path(MOVER, TIER)
     path.parent.mkdir(parents=True, exist_ok=True)
