@@ -51,6 +51,7 @@ turning it on is one ``touch`` and does not edit config under running agents.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 import os
 import re
 import sys
@@ -124,12 +125,14 @@ def contends_pattern(declared: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile(f"{interpreters}|{LOCK_WRAPPERS}" if interpreters else LOCK_WRAPPERS)
 
 
+@lru_cache(maxsize=1)
 def configured_contends_pattern() -> re.Pattern[str]:
     try:
         interpreters = Roster.at(_RUNTIME_ROOT).gpu_interpreters
     except (OSError, ValueError):
         interpreters = ()
     return contends_pattern(interpreters)
+
 
 #: Commands that never start GPU work, whatever their text contains.  A commit
 #: message quoting the refused pattern is prose ABOUT the rule, not an instance

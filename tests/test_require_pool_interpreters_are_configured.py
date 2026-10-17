@@ -66,4 +66,5 @@ def test_importing_the_hook_defers_the_roster_read_until_classification(monkeypa
 
     assert reads == []
     assert module.contends("flock /home/rob/.gpu.lock python train.py")
+    assert module.contends("flock /home/rob/.gpu.lock python second.py")
     assert len(reads) == 1
