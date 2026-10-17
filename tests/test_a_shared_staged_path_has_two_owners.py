@@ -584,8 +584,8 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
                               command="not-a-list")
     # The mover's own tokens are held: a tainted pass must retain bytes AND
     # tokens, releasing nothing it cannot account for.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    assert queue.tier_ledger(TIER).acquire(MOVER_A, {"stage_gib": 2}) is True
+    queue.tier(TIER).mint({'stage_gib': 8})
+    assert queue.tier(TIER).take(MOVER_A, {'stage_gib': 2}) is True
 
     receipt = stage_release.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
@@ -593,7 +593,7 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     assert shared.exists()
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER_A) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER_A) == {'stage_gib': 2}
     assert any("malformed resources" in error for error in receipt["errors"])
     # An identified mover whose sealed argv carries no range flags is refused
     # with the reason the pass files today; the pass still fails closed.

@@ -166,9 +166,9 @@ def test_a_fresh_mover_adopts_the_stale_movers_resident_range(
                     receipts=tier_loop.ReceiptCache(),
                     discover=lambda **_kwargs: {TIER: _tier_record(stage, gib=20)})
 
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(new) == {"stage_gib": PHASE_GIB}
-    assert ledger.holder_tokens(old) == {}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(new) == {'stage_gib': PHASE_GIB}
+    assert ledger.holdings(old) == {}
     assert not queue.records.item_path(pool.record_store.READY, new).exists()
     receipt = queue.move_record(new)
     assert receipt is not None

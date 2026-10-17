@@ -87,7 +87,7 @@ def _failed_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
 
     prepared = submission._prepare(tmp_path, monkeypatch)
     queue = prepared["queue"]
-    queue.mint_tier_capacity(submission.TIER, {"stage_gib": 8})
+    queue.tier(submission.TIER).mint({'stage_gib': 8})
     assert pbrun.main() == 0
     failed = submission._detach_key(capsys)
     plan = residency_plan.read(queue, failed)
