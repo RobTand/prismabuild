@@ -253,7 +253,7 @@ def test_a_contention_spec_is_refused_without_a_policy_or_out_of_form() -> None:
 #: as a real hold's does.
 MOVER = textwrap.dedent('''
     import os, sys, threading, time
-    sys.path.insert(0, {tools!r})
+    sys.path.insert(0, {source!r})
     from prismabuild import prewarm_loop, stage_move
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
@@ -307,7 +307,7 @@ def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
                   hold_on: int = 0, hold: float = 0.0,
                   heartbeat: float = HEARTBEAT) -> str:
     receipt = (argv[argv.index("--receipt") + 1] if "--receipt" in argv else "")
-    return MOVER.format(tools=str(ROOT / "tools" / "fleet"), heartbeat=heartbeat,
+    return MOVER.format(source=str(ROOT / "src"), heartbeat=heartbeat,
                         argv=argv, read=read, rate=float(rate),
                         hold_on=int(hold_on), hold=float(hold), receipt=receipt)
 

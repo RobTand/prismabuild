@@ -141,6 +141,11 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_prewarm_receipt_recovery.py', 'tests/test_prewarm_requires_known_receipts.py'}:
             after = after.replace('repository / "tools" / "fleet" / "prewarm_loop.py"',
                                   'repository / "src" / "prismabuild" / "prewarm_loop.py"')
+        if path in {'tests/test_a_stalled_mover_ends_no_progress.py',
+                    'tests/test_a_wedged_egress_ends_no_progress.py'}:
+            after = after.replace('sys.path.insert(0, {tools!r})', 'sys.path.insert(0, {source!r})')
+            after = after.replace('format(tools=str(ROOT / "tools" / "fleet"),',
+                                  'format(source=str(ROOT / "src"),')
         if path == 'tests/test_produced_output_tier_host_egress.py':
             start = after.index('def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(')
             end = after.index('\ndef test_', start + 1)

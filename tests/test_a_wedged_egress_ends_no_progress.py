@@ -57,7 +57,7 @@ WAITING = _hexkey("waiting-at-the-gate")
 #: later one hangs (``None``: none does), and each one sleeps ``delay``.
 EGRESS = textwrap.dedent('''
     import os, sys, time
-    sys.path.insert(0, {tools!r})
+    sys.path.insert(0, {source!r})
     from prismabuild import stage_release
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
@@ -226,7 +226,7 @@ def _egress_source(tmp_path: Path, mover: str, *, after: int | None,
             "--mover-action-key", mover, "--consumer-action-key", CONSUMER,
             "--stage-root", str(tmp_path / "stage"),
             "--receipt", str(tmp_path / "egress-receipt.json")]
-    return EGRESS.format(tools=str(ROOT / "tools" / "fleet"),
+    return EGRESS.format(source=str(ROOT / "src"),
                          heartbeat=HEARTBEAT, stage=str(tmp_path / "stage"),
                          marker=str(tmp_path / "unlinks.txt"), after=after,
                          delay=float(delay), argv=argv,
@@ -548,7 +548,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 #: taken the way ``stage_release`` takes it, then nothing.
 HOLDER = textwrap.dedent('''
     import sys, time
-    sys.path.insert(0, {tools!r})
+    sys.path.insert(0, {source!r})
     from prismabuild import stage_release
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
@@ -576,7 +576,7 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
     policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
               "phases": [{"name": name, "grace_s": grace}
                          for name in ("snapshot", "drain", "release")]}
-    source = HOLDER.format(tools=str(ROOT / "tools" / "fleet"),
+    source = HOLDER.format(source=str(ROOT / "src"),
                            queue=str(tmp_path / "queue"),
                            stage=str(tmp_path / "stage"),
                            marker=str(tmp_path / "held.txt"))
@@ -619,7 +619,7 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
 MOVER_RESUME_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
-    sys.path.insert(0, {tools!r})
+    sys.path.insert(0, {source!r})
     from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
@@ -655,7 +655,7 @@ MOVER_RESUME_HOLD = textwrap.dedent('''
 MOVER_RESUME_PARSE_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
-    sys.path.insert(0, {tools!r})
+    sys.path.insert(0, {source!r})
     from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
