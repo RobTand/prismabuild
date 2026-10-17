@@ -34,6 +34,7 @@ class StopRequest:
     """A sticky stop flag whose signal handler never takes a waiter's lock."""
 
     def __init__(self):
+        self._pid = os.getpid()
         self._requested = False
         self._read_fd, self._write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
 
@@ -41,6 +42,8 @@ class StopRequest:
         return self._requested
 
     def set(self) -> None:
+        if os.getpid() != self._pid:
+            return
         self._requested = True
         try:
             os.write(self._write_fd, b"\0")
