@@ -29,6 +29,18 @@ PARKED_ROOT = MAINTENANCE_GATE.parent / "rollout" / "parked"
 GENERATION_DRIFT_DIR = "generation-drift"
 GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
 
+_stop_wakeup_pid: int | None = None
+
+
+def _detach_inherited_stop_wakeup() -> None:
+    global _stop_wakeup_pid
+    if _stop_wakeup_pid is not None:
+        signal.set_wakeup_fd(-1)
+        _stop_wakeup_pid = None
+
+
+os.register_at_fork(after_in_child=_detach_inherited_stop_wakeup)
+
 
 class StopRequest:
     """A sticky stop flag whose signal handler never takes a waiter's lock."""
@@ -51,12 +63,23 @@ class StopRequest:
             pass
 
     def wait(self, timeout: float | None = None) -> bool:
-        if not self._requested:
-            select.select([self._read_fd], [], [],
-                          None if timeout is None else max(0.0, timeout))
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while not self._requested:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([self._read_fd], [], [], remaining)
+            if not ready:
+                return self._requested
+            try:
+                os.read(self._read_fd, 65536)
+            except BlockingIOError:
+                pass
+            if deadline is not None and time.monotonic() >= deadline:
+                return self._requested
         return self._requested
 
     def _close(self) -> None:
+        if os.getpid() != self._pid:
+            return
         try:
             os.close(self._write_fd)
         finally:
@@ -66,9 +89,15 @@ class StopRequest:
 @contextmanager
 def stop_requests(*signals: int):
     """Request cooperative stop and restore the caller's signal handlers."""
+    global _stop_wakeup_pid
     stop = StopRequest()
     previous = {}
+    previous_owner = _stop_wakeup_pid
+    previous_wakeup = None
     try:
+        # The native handler must wake select before deferred Python dispatch.
+        previous_wakeup = signal.set_wakeup_fd(stop._write_fd, warn_on_full_buffer=False)
+        _stop_wakeup_pid = stop._pid
         for signum in signals:
             previous[signum] = signal.signal(signum, lambda *_: stop.set())
         yield stop
@@ -77,7 +106,12 @@ def stop_requests(*signals: int):
             for signum, handler in reversed(tuple(previous.items())):
                 signal.signal(signum, handler)
         finally:
-            stop._close()
+            try:
+                if os.getpid() == stop._pid and previous_wakeup is not None:
+                    signal.set_wakeup_fd(previous_wakeup)
+                    _stop_wakeup_pid = previous_owner
+            finally:
+                stop._close()
 
 
 ROLE_LOCK_ROOT = Path(f"/tmp/prismabuild-roles-{os.getuid()}")

@@ -135,3 +135,67 @@ print('fork-isolated', flush=True)
 ''', signum)
     assert code == 0, output.decode()
     assert output == b'fork-isolated\n'
+
+
+@pytest.mark.parametrize('signum', [int(signal.SIGTERM), int(signal.SIGINT)])
+def test_native_wakeup_precedes_the_deferred_python_stop_callback(tmp_path, signum):
+    code, output = child_result(tmp_path, '''
+with stop_requests(signum) as stop:
+    handler = signal.getsignal(signum)
+    pending = []
+    signal.signal(signum, lambda *args: pending.append(args))
+    os.kill(os.getpid(), signum)
+    assert pending and not stop.is_set()
+    assert select.select([stop._read_fd], [], [], 0.03)[0] == [stop._read_fd], 'kernel signal did not notify independently of Python callback'
+    assert not stop.is_set()
+    for args in pending:
+        handler(*args)
+    assert stop.wait(0) is True
+print('native-wake', flush=True)
+''', signum)
+    assert code == 0, output.decode()
+    assert output == b'native-wake\n'
+
+
+def test_an_unselected_signal_does_not_shorten_the_stop_wait(tmp_path):
+    code, output = child_result(tmp_path, '''
+import time
+observed = []
+previous = signal.signal(signal.SIGUSR1, lambda *args: observed.append(args))
+try:
+    with stop_requests(signum) as stop:
+        os.kill(os.getpid(), signal.SIGUSR1)
+        assert observed
+        started = time.monotonic()
+        assert stop.wait(0.03) is False
+        assert time.monotonic() - started >= 0.02
+        assert not stop.is_set()
+        stop.set()
+        assert stop.wait(0) is True
+finally:
+    signal.signal(signal.SIGUSR1, previous)
+print('unselected', flush=True)
+''')
+    assert code == 0, output.decode()
+    assert output == b'unselected\n'
+
+
+def test_the_role_restores_the_previous_native_wakeup_descriptor(tmp_path):
+    code, output = child_result(tmp_path, '''
+read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+previous_fd = signal.set_wakeup_fd(write_fd)
+previous_handler = signal.signal(signal.SIGUSR1, lambda *_: None)
+try:
+    with stop_requests(signum) as stop:
+        assert stop.wait(0) is False
+    os.kill(os.getpid(), signal.SIGUSR1)
+    assert os.read(read_fd, 1) == bytes([int(signal.SIGUSR1)])
+finally:
+    signal.set_wakeup_fd(previous_fd)
+    signal.signal(signal.SIGUSR1, previous_handler)
+    os.close(write_fd)
+    os.close(read_fd)
+print('restored', flush=True)
+''')
+    assert code == 0, output.decode()
+    assert output == b'restored\n'

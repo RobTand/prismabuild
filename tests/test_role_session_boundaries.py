@@ -1,7 +1,6 @@
 """Real signal, reader and HTTP boundaries in private role processes."""
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
 import http.client
 import json
 import multiprocessing
@@ -69,8 +68,10 @@ def _run_role(main, log, release_receiver=None, release_event=None):
             except EOFError:
                 pass
         threading.Thread(target=release_reader, daemon=True).start()
-    with log.open("w") as stream, redirect_stdout(stream), redirect_stderr(stream):
-        raise SystemExit(main())
+    # Multiprocessing flushes these after the target returns. Restoring a
+    # stream held by a vanished parent thread would deadlock that final flush.
+    sys.stdout = sys.stderr = log.open("w")
+    raise SystemExit(main())
 
 
 def _finish(process, release=None):
