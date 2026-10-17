@@ -22,7 +22,7 @@ def proof_blob(path, fact):
     return raw
 
 
-def snapshot_proof(blob, snapshot, parent):
+def snapshot_proof(blob, snapshot, parent, closure):
     with tempfile.TemporaryDirectory(prefix="c14-proof-") as temp:
         repo = Path(temp) / "source.git"
         subprocess.run(["git", "clone", "--bare", "--quiet", str(blob), str(repo)], check=True)
@@ -30,10 +30,16 @@ def snapshot_proof(blob, snapshot, parent):
             return subprocess.check_output(["git", "--git-dir", str(repo), *args], text=True).strip()
         actual = git("rev-parse", snapshot["commit"] + "^{tree}")
         expected = git("rev-parse", parent + "^{tree}")
-        if actual != expected:
-            raise ValueError(f"snapshot tree differs from frozen parent {parent}")
+        changed = git("diff", "--name-only", parent, snapshot["commit"]).splitlines()
+        allowed = {item["path"]: item for item in closure["files"]}
+        if set(changed) - allowed.keys():
+            raise ValueError(f"snapshot changes source outside its sealed closure: {changed}")
+        for path, fact in allowed.items():
+            raw = subprocess.check_output(["git", "--git-dir", str(repo), "show", snapshot["commit"] + ":" + path])
+            if len(raw) != fact["bytes"] or hashlib.sha256(raw).hexdigest() != fact["sha256"]:
+                raise ValueError(f"snapshot closure differs: {path}")
         return {"commit": snapshot["commit"], "parent": parent, "tree": actual,
-                "input": snapshot["input"]}
+                "input": snapshot["input"], "source_tree": expected, "closure_paths": changed}
 
 
 def action_proof(root, key, *, parent, snapshots):
@@ -68,7 +74,7 @@ def action_proof(root, key, *, parent, snapshots):
         inputs.append(fact)
         if fact == snapshot["input"]:
             if fact["sha256"] not in snapshots:
-                snapshots[fact["sha256"]] = snapshot_proof(blob, snapshot, parent)
+                snapshots[fact["sha256"]] = snapshot_proof(blob, snapshot, parent, action["code_closure"])
     if snapshot["input"]["sha256"] not in snapshots:
         raise ValueError(f"{key}: source snapshot is absent from sealed inputs")
     cleanup = terminal["resource_scope_cleanup"]

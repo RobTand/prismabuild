@@ -169,6 +169,6 @@ def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypat
                            timeout_s=None, wait_s=0.01)
     with pytest.raises(submit_core.SubmissionRefused) as exc:
         submit_core.announce_placement(queue, action, args=args, cwd=checkout,
-                                 portable_checkout=True, display=submit_core.render_submission)
+                                 portable_checkout=True, display=pbrun.render_submission)
     assert remedy in str(exc.value)
     assert queue.ready_items() == []
