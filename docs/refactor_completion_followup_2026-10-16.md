@@ -252,3 +252,23 @@ NFS4 and PB-assigned CPU affinity was preserved. This is constructor evidence.
 The actual ARM actor entry and four paired-host scenarios remain separate
 gates, as do the five-role drain requirements and final rollout acceptance.
 No live service or runtime generation was published.
+
+## Backing fixture and production probe follow-up
+
+The test-only correction from `050ebba208450f0dc1ed4994f3c914590daae9a6`
+is integrated. Its actual whole-file gate passed all 23 cases, including the
+8 architecture cases. Root and Claude independently checked the source,
+terminal, logs, receipt, native roster and teardown. The positive allocation
+fixture uses a private directory on tmpfs; its real-hole negative control uses
+the same backing. Every earlier assertion remains. The production probe and
+its sparse-file predicate are unchanged.
+
+`PROBE-BACKING-01` remains a separate production follow-up for the owner of
+`tools/fleet/gate_1730_probe.py`. The current periodic writer is compressible,
+and `st_blocks < size` can label compressed data as sparse. Measurements on a
+compressing filesystem therefore need an incompressible writer and a hole
+check that distinguishes holes from compression. The failed random-data
+controls also observed delayed allocation, so changing the pattern alone has
+not established a fix. This fixture correction grants no physical throughput
+or production-probe qualification. The reproduced failure and controls remain
+under `active/backing-root-review/` and the capability handoff.
