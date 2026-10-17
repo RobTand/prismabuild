@@ -291,7 +291,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
 def d38_config(monkeypatch, tmp_path):
     """Private record-only fleet setting; enforcement tests opt in explicitly."""
 
-    import d38_gate
+    from prismabuild import d38_gate
 
     directory = tmp_path / "d38-config"
     directory.mkdir()
@@ -474,6 +474,12 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     def isolated_import(loader, module):
         load(loader, module)
         stem = Path(getattr(module, "__file__", "") or "").stem
+        if stem == "pbrun" and hasattr(module, "configured_store"):
+            from prismabuild.submission_types import FleetStore
+            configured = FleetStore(root / "fleet", module.RUNTIME_ROOT,
+                module.fleet_roster.Roster.beside(module.__file__),
+                runtime_version=root / "fleet/repo/RUNTIME_VERSION.json")
+            setattr(module, "configured_store", lambda: configured)
         for module_name, attr, sub in LIVE_DEFAULTS:
             if module_name.rsplit(".", 1)[-1] != stem or not hasattr(module, attr):
                 continue
@@ -1074,3 +1080,26 @@ def action_common(
         "execution_scope": {"kind": "platform_keyed",
                             "platform_key": "linux-aarch64-sm121"},
     }
+
+
+@pytest.fixture(autouse=True)
+def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
+    import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
+    from prismabuild.submission_types import FleetStore
+    root = tmp_path / "fleet"
+    store = FleetStore(root, pbrun.RUNTIME_ROOT,
+        pbrun.fleet_roster.Roster.beside(pbrun.__file__),
+        runtime_version=root / "repo" / "RUNTIME_VERSION.json", d38_config_path=d38_config)
+    monkeypatch.setattr(pbrun, "configured_store", lambda: store)
+    import submission_frontend
+    def fixture_store(entrypoint, *, root=store.root):
+        if Path(root) == Path("/mnt/shared/prismabuild-fleet"):
+            root = store.root
+        return FleetStore(root, store.runtime_root, store.roster_path,
+                          runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
+    monkeypatch.setattr(submission_frontend, "store_for", fixture_store)
+    for module in list(sys.modules.values()):
+        if getattr(module, "store_for", None) is not None:
+            monkeypatch.setattr(module, "store_for", fixture_store)
