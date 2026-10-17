@@ -966,3 +966,543 @@ def snapshot_checkout(
             raise SubmissionRefused("pbrun: checkout changed while it was snapshotted")
         snapshot_input, _ = cas.ingest_input(
             bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
+        )
+    return pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": commit,
+            "parent": parent,
+            "subdirectory": subdirectory,
+            "input": snapshot_input,
+            "refs": resolved_refs,
+        }
+    )
+
+
+def require_relocatable_checkout(
+    command: list[str],
+    variables: dict[str, str],
+    cwd: Path,
+    *,
+    repository_root: Path | None = None,
+) -> None:
+    """Refuse any value that would escape a materialized tree to the source."""
+
+    root = repository_root or git_repository_root(cwd)
+    if root is None:
+        raise SubmissionRefused(
+            "pbrun: cannot verify relocation outside a Git checkout"
+        )
+    source = str(root.resolve())
+    # Keep scanning embedded shell/application strings (including escaped
+    # quotes), but require the checkout's last component to end. A hyphen,
+    # dot, underscore or other filename continuation names a sibling instead.
+    # Colons delimit path lists; quotes and shell punctuation delimit values.
+    source_path = re.compile(
+        re.escape(source) + r'''(?=$|[/\s:=,;'"`()\[\]{}<>|&]|\\['"])'''
+    )
+    offenders = [f"argv: {token}" for token in command if source_path.search(str(token))]
+    offenders.extend(
+        f"environment {name}: {value}"
+        for name, value in variables.items()
+        if source_path.search(str(value))
+    )
+    if offenders:
+        rendered = "\n".join(f"  - {value}" for value in offenders)
+        raise SubmissionRefused(
+            "pbrun: portable execution refuses a submitter repository path "
+            "(a submitter checkout path):\n"
+            f"{rendered}\n"
+            "Use paths relative to --cwd, move external data outside the "
+            "checkout, or ingest external data as a declared CAS input."
+        )
+
+
+_FLEET_DEMAND_KINDS = frozenset({"cpu", "gpu", "mem_gb", "disk_metadata"})
+
+
+_SPOOL_WINDOW_KIND = "spool_gb"
+
+
+_SPOOL_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
+
+
+_SPOOL_MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
+
+
+def normalize_spool_declaration(variables: dict[str, str]) -> None:
+    """Seal a declared spool bound's effective window switch before sealing (#905).
+
+    A new submission that declares a spool bound
+    (``PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES``) is accounted by default:
+    unless the environment already says so, the effective switch
+    ``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`` is set to ``"1"`` **before**
+    the ownership and stamp fingerprints are taken, so the sealed action's
+    identity carries the accounting its claim charges.  ``HOST_WINDOW=0``
+    beside a declared bound is a contradictory declaration and is refused by
+    name: a declared spool that is not charged would silently evade the host
+    ledger.  No bound declares nothing, so an unchanged request without a
+    spool bound is byte-for-byte what it was.
+
+    ``produced_spool.host_window_terms`` itself stays switch-gated: an
+    already-sealed request keeps its meaning, explicit ``0`` included.  This
+    normalization is only ever applied while a new submission is being
+    sealed.
+    """
+
+    if _SPOOL_MAX_ENV not in variables:
+        return
+    switch = variables.get(_SPOOL_WINDOW_ENV, "")
+    if switch == "0":
+        raise SubmissionRefused(
+            f"pbrun: {_SPOOL_MAX_ENV} declares a spool bound, but "
+            f"{_SPOOL_WINDOW_ENV}=0 would not charge it to the host "
+            f"ledger's {_SPOOL_WINDOW_KIND}; a declared spool is accounted "
+            f"by default (#905). Drop the bound to declare no spool, or "
+            f"drop {_SPOOL_WINDOW_ENV}=0.")
+    if switch in ("", "1"):
+        variables[_SPOOL_WINDOW_ENV] = "1"
+
+
+def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
+    """The host demand a sealed environment's spool window derives, or ``{}``.
+
+    A declared spool bound is accounted by default (#905):
+    :func:`normalize_spool_declaration` has sealed the effective switch in
+    ``variables``, so the action's identity carries the accounting the claim
+    charges and the producer's own claim check asks for the reservation.
+
+    The window is a ``spool_gb`` reservation charged through the host ledger
+    at claim, which only the pull queue holds: a SLURM allocation has no host
+    ledger to charge it to.  Off -- neither the switch nor a declared bound
+    -- nothing is imported or read, and every submission seals exactly as
+    before.
+    """
+
+    if _SPOOL_WINDOW_ENV not in variables and _SPOOL_MAX_ENV not in variables:
+        return {}     # the undeclared path imports and reads nothing new
+    normalize_spool_declaration(variables)
+    from prismabuild import produced_spool
+
+    try:
+        terms = produced_spool.host_window_terms(variables)
+    except produced_spool.SpoolError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+    if terms and transport != "pool":
+        raise SubmissionRefused(
+            f"pbrun: {_SPOOL_WINDOW_ENV}=1 needs the pull queue: the spool "
+            f"window is a host-ledger reservation, and --transport {transport} "
+            "cannot hold a host spool")
+    return terms
+
+
+_SCRATCH_PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
+
+
+_SCRATCH_IO_ENV = "PRISMABUILD_LOCAL_SCRATCH_IO"
+
+
+def scratch_io_intent(variables, *, transport):
+    if _SCRATCH_IO_ENV not in variables:
+        return None
+    from prismabuild import local_scratch
+    try:
+        return local_scratch.io_intent(variables, transport=transport)
+    except local_scratch.LocalScratchError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+
+
+def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dict[str, int]:
+    """The host demand a sealed environment's scratch pairs derive, or ``{}``.
+
+    Off -- no ``PRISMABUILD_LOCAL_SCRATCH_PAIRS``, or an empty one -- nothing
+    is imported or read.  On, each declared ``ROOT_ENV:MAX_ENV`` pair charges
+    its ceiling to the box's local-disk kind at claim, which only the pull
+    queue holds.
+    """
+
+    scratch_io_intent(variables, transport=transport)
+    if not variables.get(_SCRATCH_PAIRS_ENV):
+        return {}     # the undeclared path imports and reads nothing new
+    from prismabuild import local_scratch
+
+    try:
+        terms = local_scratch.scratch_terms(variables)
+    except local_scratch.LocalScratchError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+    if terms and transport != "pool":
+        raise SubmissionRefused(
+            f"pbrun: {_SCRATCH_PAIRS_ENV} needs the pull queue: bounded local "
+            f"scratch is a host-ledger reservation, and --transport {transport} "
+            "cannot hold one")
+    return terms
+
+
+def local_disk_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
+    """The one local-disk demand: the spool window plus declared scratch.
+
+    Both draw from the ``spool_gb`` kind a box declares with ``--spool-gb``,
+    because they share the box's disk (#747, #911).  A declared spool bound
+    is normalised to an accounted window here (#905), so the sum is the one
+    reservation the claim takes.  With neither declared this is ``{}``.
+    """
+
+    total = sum(terms.get(_SPOOL_WINDOW_KIND, 0) for terms in (
+        spool_window_terms(variables, transport=transport),
+        scratch_window_terms(variables, transport=transport)))
+    return {_SPOOL_WINDOW_KIND: total} if total else {}
+
+
+def validate_fleet_demand(demand: Mapping[str, object]) -> None:
+    """Refuse a ``pbrun`` resource that no live worker offer can hold.
+
+    The generic pool ledger intentionally remains open to producer-specific
+    resources. ``pbrun`` is the fleet-command client, though, and both its
+    live pool offers and SLURM translation have this closed vocabulary.
+    """
+
+    if "" in demand:
+        raise SubmissionRefused("--demand resource name cannot be empty")
+    if _SPOOL_WINDOW_KIND in demand:
+        # Named apart from the generic refusal because it is a host kind a
+        # worker can offer, just never a typed one (#747).
+        raise SubmissionRefused(
+            f"--demand must not name {_SPOOL_WINDOW_KIND!r}: it is derived from "
+            f"the sealed {_SPOOL_WINDOW_ENV}=1 and {_SPOOL_MAX_ENV} environment "
+            f"and the pairs {_SCRATCH_PAIRS_ENV} names")
+    unsupported = sorted(set(demand) - _FLEET_DEMAND_KINDS)
+    if unsupported:
+        rendered = ", ".join(repr(kind) for kind in unsupported)
+        accepted = ", ".join(sorted(_FLEET_DEMAND_KINDS))
+        raise SubmissionRefused(
+            f"--demand has unsupported resource {rendered}; accepted resources are {accepted}"
+        )
+
+
+def _parse_demand(text: str) -> dict[str, int]:
+    demand: dict[str, int] = {}
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise SubmissionRefused(f"--demand wants k=v pairs, got {part!r}")
+        key, _, value = part.partition("=")
+        key = key.strip()
+        if not key:
+            raise SubmissionRefused("--demand resource name cannot be empty")
+        try:
+            demand[key] = int(value)
+        except ValueError:
+            raise SubmissionRefused(
+                f"--demand resource {key!r} needs an integer count, got {value!r}"
+            ) from None
+    validate_fleet_demand(demand)
+    return demand
+
+
+class _OfferSnapshot(pool.PoolQueue):
+    """One bounded, read-only worker-offer discovery for submission advice.
+
+    The child reads records only.  The parent deliberately applies offer age
+    and future-skew rules every time it asks a verdict, after that full scan
+    has completed.  A snapshot therefore cannot turn a slow scan into a fresh
+    offer, and retained capability keeps its existing infinite-age meaning.
+    """
+
+    def __init__(self, root, records) -> None:
+        super().__init__(root)
+        self._records = list(records)
+
+    def _offer_records(self):
+        return list(self._records)
+
+
+def bounded_offer_snapshot(queue) -> _OfferSnapshot:
+    """Read worker offers once in an abandonable child, or refuse before READY.
+
+    Queue publication, claims and waits stay on the real ``PoolQueue``.  This
+    boundary covers only the advisory/capability offer scan which pbrun makes
+    before it can publish runnable work; request/CAS and later queue I/O are
+    still synchronous shared-filesystem operations.
+    """
+
+    abandoned: list[dict[str, object]] = []
+    result = _bounded_reader.bounded(
+        "worker-offers", queue._offer_records,
+        deadline=_bounded_reader.Deadline(SUBMISSION_OFFER_READ_TIMEOUT_S),
+        abandoned=abandoned,
+    )
+    if result.get("status") == "ok":
+        value = result.get("value")
+        if isinstance(value, list):
+            return _OfferSnapshot(queue.root, value)
+        reason = "reader returned an invalid snapshot"
+    elif result.get("status") == "timed_out":
+        reason = (f"timed out after {result.get('elapsed_s', SUBMISSION_OFFER_READ_TIMEOUT_S)}s")
+    else:
+        reason = f"failed: {result.get('type', 'RuntimeError')}: {result.get('error', '')}"
+    retained = f" retained reader={json.dumps(abandoned, sort_keys=True)}" if abandoned else ""
+    message = ("pbrun: worker-offer discovery " + reason + "; refusing submission; "
+               "no runnable submission was published." + retained)
+    if result.get("status") == "timed_out" and not abandoned:
+        raise OfferDiscoveryTimedOut(message)
+    raise SubmissionRefused(message)
+
+
+def exclusive_gpu_demand(queue, tags) -> int:
+    """The GPU slots "the whole box" means, from what the boxes announce.
+
+    The largest capacity among live workers that carry every required tag: a
+    demand smaller than that would leave a box able to run something else
+    alongside, which is what ``--exclusive`` is asking not to happen, and a
+    demand larger than that is unclaimable on every box in the fleet.
+    """
+
+    wanted = {str(x) for x in (tags or [])}
+    best = 0
+    for offer in queue.offers():
+        if not capability_eligibility.HostPresence.from_offer(offer).matches(wanted, needs_gpu=True):
+            continue
+        capacity = offer.get("capacity") or {}
+        best = max(best, int(capacity.get("gpu", 0)))
+    if best <= 0:
+        raise SubmissionRefused(
+            "pbrun: --exclusive needs to know how many GPU slots one box has, "
+            "and no live worker matching "
+            f"{sorted(wanted) or '(any tag)'} has announced one. Start a "
+            "worker, or say it explicitly with --gpu-capacity N.")
+    return best
+
+
+def result_and_stamp_names(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    identity=None,
+    logical_cwd=None,
+    placement=None,
+):
+    """The result file and the closure stamp this submission writes.
+
+    Returned together because they share one fingerprint and one reason for
+    its shape.  The commit is IN that fingerprint, so both names belong to the
+    commit they describe.  Without it, one command run from one checkout has
+    one stamp path and one result path forever while the *content* of both
+    moves with every commit:
+
+    * the stamp gets rewritten under a worker still verifying the previous
+      commit's action, which reads as "live code closure differs from the
+      action-pinned closure" -- a real refusal for a file that was correct
+      when the action was sealed; and
+    * a 31-minute suite at one commit and its re-run at the next write the
+      same ``pbrun_result.*.txt``, so whichever finishes second destroys the
+      other's **declared** result and the runner reports "action succeeded
+      without its declared result file".  Not hypothetical: that ate a green
+      1268-test suite on 2026-09-04.
+
+    The same command, commit, and normalized effective placement still
+    fingerprint identically, so reordered/duplicate tags do not disturb a CAS
+    hit. A different admissible worker population gets different paths just as
+    it gets a different action key.
+    """
+
+    identity = _git_identity(cwd) if identity is None else identity
+    cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
+    fingerprint = hashlib.sha256(
+        json.dumps([command, cwd_identity, demand, variables, identity,
+                    placement or {"required_tags": []}],
+                   sort_keys=True).encode()
+    ).hexdigest()[:16]
+    return (f"{RESULT_PREFIX}{fingerprint}.txt",
+            f"{STAMP_PREFIX}{fingerprint}.json")
+
+
+def container_owner(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    determinism,
+    retry_policy,
+    marker_root,
+    identity=None,
+    logical_cwd=None,
+    placement=None,
+    container_images=(),
+) -> str:
+    """The submitter's ownership hash: git identity stays with pbrun.
+
+    The construction lives in ``prismabuild.movement_actions.container_owner``
+    (the one implementation, shared with the produced-output writer lane);
+    this wrapper injects pbrun's ``_git_identity`` so a template without an
+    explicit identity keeps its exact historical digest.
+    """
+
+    return movement_actions.container_owner(
+        command, cwd, demand, variables,
+        determinism=determinism, retry_policy=retry_policy,
+        marker_root=marker_root, identity=identity,
+        logical_cwd=logical_cwd, placement=placement,
+        container_images=container_images, identity_fn=_git_identity)
+
+
+def keep_droppings_out_of_git(cwd: Path) -> Path | None:
+    """Teach git to ignore the stamp and the result logs, locally.
+
+    Ask git where its exclude file is; do not compute it.  ``cwd/.git`` is a
+    DIRECTORY only for a repository root that is not a linked worktree -- in
+    a ``git worktree`` checkout it is a file, and in a subdirectory of the
+    repo it is nothing -- so the old path silently did nothing in exactly the
+    checkouts agents make.  The stamp then showed as untracked, and in a tree
+    several agents stage broadly in, an untracked file is a file that gets
+    committed: one landed on this branch.
+
+    ``--git-common-dir``, not ``--git-dir``.  Measured, because the two differ
+    in a worktree and only one is read: a pattern in
+    ``.git/worktrees/<name>/info/exclude`` does not match (``git check-ignore``
+    exits 1), the same pattern in the common ``.git/info/exclude`` does.  That
+    is also the right scope -- these generated basename grammars are pbrun's
+    everywhere in the repo, not per worktree.
+
+    Returns the file it wrote, or ``None`` when Git says this is not a
+    repository. Once Git identifies a checkout, inspection or publication
+    failure refuses: proceeding could leave a broad legacy glob hiding input
+    bytes from the action identity.
+    """
+
+    try:
+        marker = pb.find_git_worktree_marker(cwd)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from exc
+    try:
+        out = pb._git_run(cwd, "rev-parse", "--git-common-dir", timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SubmissionRefused(
+            f"pbrun: cannot inspect local Git excludes: {exc}"
+        ) from exc
+    if out.returncode != 0:
+        if marker is not None:
+            detail = (out.stderr or out.stdout).strip()
+            raise SubmissionRefused(
+                "pbrun: cannot inspect local Git excludes: Git rev-parse "
+                f"failed for recognized checkout {cwd}: "
+                f"{detail or out.returncode}"
+            )
+        return None                           # true plain directory
+    try:
+        common = Path(out.stdout.strip())
+        if not common.is_absolute():
+            common = cwd / common             # older git answers ".git"
+        exclude = common / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        current = exclude.read_text() if exclude.exists() else ""
+        legacy_patterns = {f"{STAMP_PREFIX}*", f"{RESULT_PREFIX}*"}
+        lines = [
+            line
+            for line in current.splitlines(keepends=True)
+            if line.rstrip("\r\n") not in legacy_patterns
+        ]
+        updated = "".join(lines)
+        if updated and not updated.endswith(("\n", "\r")):
+            updated += "\n"
+        present = {line.rstrip("\r\n") for line in lines}
+        for pattern in pb.pbrun_git_exclude_patterns():
+            if pattern not in present:
+                updated += pattern + "\n"
+        if updated != current:
+            scratch = exclude.with_name(
+                f"{exclude.name}.pbrun.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+            )
+            try:
+                scratch.write_text(updated, encoding="utf-8")
+                os.replace(scratch, exclude)
+            finally:
+                if scratch.exists():
+                    scratch.unlink()
+        return exclude
+    except OSError as exc:
+        raise SubmissionRefused(
+            f"pbrun: cannot update pbrun Git excludes: {exc}"
+        ) from exc
+
+
+def command_dependency_contract(
+    cwd: Path, command: list[str], *, repository_root: Path,
+    environment: dict[str, str] | None, caller_environment: dict[str, str] | None,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Bind the invocation and its direct path requirements in one resolution."""
+    cwd = cwd.resolve()
+    root = repository_root.resolve()
+
+    def resolved_path(candidate: Path) -> Path:
+        try:
+            return candidate.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise SubmissionRefused(f"pbrun: cannot resolve declared path {candidate}: {exc}") from exc
+
+    def stays_within(candidate: Path, owner: Path) -> bool:
+        try:
+            parts = candidate.relative_to(owner).parts
+        except ValueError:
+            return False
+        depth = 0
+        for part in parts:
+            depth += -1 if part == ".." else 1
+            if depth < 0:
+                return False
+        return True
+
+    def portable(candidate: Path) -> bool:
+        return stays_within(candidate, root) or stays_within(candidate, SHARED_ROOT.resolve())
+
+    def path_scope(candidate: Path) -> tuple[bool, bool]:
+        location = resolved_path(candidate.parent) / candidate.name
+        target = resolved_path(candidate)
+        local = not portable(candidate) or not portable(location) or not portable(target)
+        checkout_local = (stays_within(candidate, root) and stays_within(location, root)
+                          and stays_within(target, root))
+        return local, checkout_local
+
+    if not command or not command[0]:
+        raise SubmissionRefused("pbrun: portable placement requires argv[0]")
+    raw = command[0]
+    if os.sep in raw:
+        executable_path = os.path.join(str(cwd), raw)
+        if not os.path.isfile(executable_path) or not os.access(executable_path, os.X_OK):
+            raise SubmissionRefused(
+                "pbrun: command executable is absent or not executable "
+                f"on the submitting box: {raw!r}. Pass --tag for the "
+                "worker class that owns it, or --anywhere to assert an "
+                "identical executable contract on every eligible worker.")
+        executable = Path(executable_path)
+    else:
+        declared_path = (environment or {}).get("PATH") or os.defpath
+        search = [str(cwd / entry) for entry in declared_path.split(os.pathsep)]
+        found = shutil.which(raw, path=os.pathsep.join(search))
+        if found is None:
+            raise SubmissionRefused(
+                "pbrun: command executable cannot be resolved from the "
+                f"declared PATH: {raw!r}. Pass --tag for the worker class "
+                "that owns it, or --anywhere to assert an identical "
+                "executable contract on every eligible worker.")
+        executable = Path(found)
+    # Traverse directory symlinks and .. before making a relocatable command.
+    # relpath/abspath would cancel .. lexically and could select another file.
+    # Keep the leaf: dereferencing a venv Python loses the venv invocation.
+    executable = resolved_path(executable.parent) / executable.name
+    # Executables and inputs need evidence for a retained local alias.
+    # A portable target does not make that alias available to the worker.
+    requirements = {str(executable): "executable"} if path_scope(executable)[0] else {}
+    bindings: dict[str, str | None] = {}
+
+    def bind_input(raw: str) -> str:
+        if not (os.path.isabs(raw) or os.sep in raw or os.path.exists(os.path.join(str(cwd), raw))):
+            return raw
+        if raw not in bindings:
+            path = os.path.join(str(cwd), raw)
+            local, checkout_local = path_scope(Path(path))
+            if local:
