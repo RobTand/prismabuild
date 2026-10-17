@@ -28,10 +28,6 @@ KEY = "d" * 64
 from fleet_world import FleetWorld
 
 
-def _queue(tmp_path: Path):
-    return FleetWorld(tmp_path, queue_name='queue').queue
-
-
 def _outcome(status: str, returncode: int) -> dict:
     return {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -62,7 +58,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     state: str, status: str, returncode: int, exit_code: int,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     path = queue.records.item_path(state, KEY)
     os.mkfifo(path)
     readable = tmp_path / "readable.json"
@@ -96,7 +92,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
 def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     os.mkfifo(queue.records.item_path(pool.record_store.DONE, KEY))
     _fast_reads(monkeypatch)
     row = pbwait.wait_one(

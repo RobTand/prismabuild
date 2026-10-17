@@ -5,6 +5,7 @@ the unchanged claim path accepts, and the R2 terminal cleanup.
 The integrator runs them; nothing here runs anything itself.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Admission, FleetWorld
 
 
 import hashlib
@@ -39,10 +40,7 @@ def _hexkey(seed: str) -> str:
 
 def _queue(tmp_path: Path, *, stage_gib: int) -> pool.PoolQueue:
     """An admitted queue with a real minted stage tier."""
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 4, 'mem_gb': 8}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.tier(TIER).mint({'stage_gib': stage_gib})
     return queue
 
@@ -89,12 +87,15 @@ def _publish(queue: pool.PoolQueue, plan: dict, mover: str) -> dict:
         if str(row["action_key"]) == mover:
             mover_row = dict(row)
     assert mover_row is not None
-    queue.publish(
-        action_key=mover, cas_root=mover_row["cas_root"],
-        checkout_root=mover_row["checkout_root"],
-        worker_script=mover_row["worker_script"],
-        tags=["dl380g10"], resources=mover_row["resources"],
-        residency=mover_row["residency"])
+    ActionRows(queue).publish(
+        mover,
+        cas_root=mover_row['cas_root'],
+        checkout_root=mover_row['checkout_root'],
+        worker_script=mover_row['worker_script'],
+        tags=['dl380g10'],
+        resources=mover_row['resources'],
+        residency=mover_row['residency'],
+    )
     row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row

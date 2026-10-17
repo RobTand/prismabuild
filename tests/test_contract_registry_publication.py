@@ -1,5 +1,6 @@
 """A publisher cannot expose sealed work to a worker that ignores its contract."""
 from __future__ import annotations
+from fleet_world import ActionRows
 from submission_support import refusal_value
 import pbrun
 from prismabuild import submission as submit_core
@@ -77,17 +78,18 @@ def _sealed_request(tmp_path, params, *, movement_tool=None):
     return pool.PoolQueue(tmp_path / "queue"), action, cas, checkout
 
 
-def _publish(queue, action, cas, checkout, *, tags=()):
-    return queue.publish(action_key=action["action_key"], cas_root=cas.root,
-                         checkout_root=checkout, worker_script="/worker.py",
-                         resources=DEMAND, tags=tags)
-
-
 @pytest.mark.parametrize("tag", PROGRESS_TAGS)
 def test_a_progress_tag_without_its_sealed_declaration_never_reaches_ready(tmp_path, tag):
     queue, action, cas, checkout = _sealed_request(tmp_path, {})
     with pytest.raises(pool.PoolContractError, match=tag + ".*requires"):
-        _publish(queue, action, cas, checkout, tags=[tag])
+        ActionRows(queue).publish(
+            action['action_key'],
+            cas_root=cas.root,
+            checkout_root=checkout,
+            worker_script='/worker.py',
+            resources=DEMAND,
+            tags=[tag],
+        )
     assert not queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 
@@ -104,7 +106,14 @@ def test_an_alternate_publisher_derives_the_fence_from_the_sealed_request(
         tmp_path, extra, required):
     queue, action, cas, checkout = _sealed_request(
         tmp_path, {pb.PROGRESS_PARAM: PROGRESS, **extra})
-    path = _publish(queue, action, cas, checkout)
+    path = ActionRows(queue).publish(
+               action['action_key'],
+               cas_root=cas.root,
+               checkout_root=checkout,
+               worker_script='/worker.py',
+               resources=DEMAND,
+               tags=(),
+           )
     row = json.loads(path.read_text())
     assert set(row["tags"]) == required
     assert action["params"]["placement"]["required_tags"] == []
@@ -121,7 +130,14 @@ def test_egress_support_follows_the_executed_movement_identity(
         movement_tool=movement_authority / "tools/fleet" / script)
     role = movement_actions.capacity_role(action, DEMAND, residency=None)
     assert role is not None and role.role == "returns_capacity"
-    path = _publish(queue, action, cas, checkout)
+    path = ActionRows(queue).publish(
+               action['action_key'],
+               cas_root=cas.root,
+               checkout_root=checkout,
+               worker_script='/worker.py',
+               resources=DEMAND,
+               tags=(),
+           )
     tags = set(json.loads(path.read_text())["tags"])
     assert {contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG,
             contracts.POOL_CONTENTION_TAG} <= tags
@@ -147,7 +163,14 @@ def test_unknown_sealed_declaration_never_authorizes_a_progress_tag(tmp_path, da
     else:
         _replace_request_with_corrupt_json(request)
     with pytest.raises(pool.PoolContractError):
-        _publish(queue, action, cas, checkout, tags=[contracts.PROGRESS_TAG])
+        ActionRows(queue).publish(
+            action['action_key'],
+            cas_root=cas.root,
+            checkout_root=checkout,
+            worker_script='/worker.py',
+            resources=DEMAND,
+            tags=[contracts.PROGRESS_TAG],
+        )
     assert not queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 

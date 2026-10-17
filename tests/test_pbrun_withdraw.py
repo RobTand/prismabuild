@@ -9,6 +9,7 @@ one rather than guessing -- the wrong guess here kills somebody else's work.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 from submission_support import patch_store
 
 import json
@@ -66,11 +67,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str) -> None:
-    q.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-              worker_script="/w.py")
-
-
 # -- the wait loop -----------------------------------------------------------
 
 
@@ -107,7 +103,7 @@ def test_watching_withdrawn_does_not_disturb_done_or_failed(
 def test_withdrawing_by_prefix_reports_what_it_did(
     queue: pool.PoolQueue, capsys
 ) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     rc = submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", by="rob@sparky", store=pbrun.configured_store(), display=pbrun.render_submission)
     assert rc == 0
     assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
@@ -125,7 +121,7 @@ def test_one_bad_name_does_not_stop_the_others(
     keys = [uuid.uuid4().hex + uuid.uuid4().hex for _ in range(4)]
     absent = (uuid.uuid4().hex + uuid.uuid4().hex)[:12]
     for key in keys:
-        _publish(queue, key)
+        ActionRows(queue).publish(key)
     rc = submit_core.withdraw_main(queue, [k[:12] for k in keys] + [absent], store=pbrun.configured_store(), display=pbrun.render_submission)
     assert rc == 2, "the unknown name is still reported as a failure"
     for key in keys:
@@ -136,8 +132,8 @@ def test_one_bad_name_does_not_stop_the_others(
 def test_an_ambiguous_prefix_withdraws_nothing(
     queue: pool.PoolQueue, capsys
 ) -> None:
-    _publish(queue, "ab" + "c" * 62)
-    _publish(queue, "ab" + "d" * 62)
+    ActionRows(queue).publish('ab' + 'c' * 62)
+    ActionRows(queue).publish('ab' + 'd' * 62)
     assert submit_core.withdraw_main(queue, ["ab"], store=pbrun.configured_store(), display=pbrun.render_submission) == 2
     assert list(queue.records.dir(pool.record_store.WITHDRAWN).glob("*.json")) == []
     assert "say more of the key" in capsys.readouterr().err
@@ -148,7 +144,7 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
 ) -> None:
     """Reading "withdrawn" must not be read as "already dead"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     record = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
@@ -170,7 +166,7 @@ def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(
     stop pretending the work has stopped.
     """
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     record = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
@@ -190,7 +186,7 @@ def test_a_holder_that_never_announced_is_reported_as_unknown(
 ) -> None:
     """"Cannot tell" is a third answer, and it is not "it stopped"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     record = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
@@ -204,7 +200,7 @@ def test_a_holder_that_never_announced_is_reported_as_unknown(
 def test_a_worker_on_the_published_bytes_draws_no_warning(
     queue: pool.PoolQueue, capsys, monkeypatch
 ) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     record = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
@@ -232,10 +228,10 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     q.records.ensure_layout()
-    _publish(q, KEY_A)
+    ActionRows(q).publish(KEY_A)
     q.withdraw(KEY_A, reason="four suites, one box", by="rob@sparky")
 
-    _publish(q, KEY_A)                      # the same command, the same tree
+    ActionRows(q).publish(KEY_A)                      # the same command, the same tree
     q.claim()
     q.finish(KEY_A, status="executed", detail={"returncode": 0})
 
@@ -248,7 +244,7 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
 def test_an_already_finished_action_is_reported_not_refiled(
     queue: pool.PoolQueue, capsys
 ) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="executed")
     assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
@@ -271,7 +267,7 @@ def test_the_command_line_withdraws_without_a_submission(
 ) -> None:
     """The whole path an operator actually types, argparse included."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(sys, "argv",
                         ["pbrun", "--withdraw", KEY_A[:12],

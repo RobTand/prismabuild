@@ -10,6 +10,7 @@ payload is still using.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 from prismabuild import submission
 
 import json
@@ -42,16 +43,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources={"cpu": 1},
-    )
-
-
 def _claim_on_the_holder(q: pool.PoolQueue, key: str) -> dict:
     """Claim as the holder box, with a launcher-style lease and no process."""
 
@@ -79,7 +70,13 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
 ) -> None:
     """The issue #64 probe, inverted: no replacement is admitted meanwhile."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _claim_on_the_holder(queue, KEY_A)
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
 
@@ -108,7 +105,13 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
     assert "withdrawn_note" not in live
 
     # And nothing else can run on the holder's only token.
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(
+        KEY_B,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
         assert queue.claim(owner="another-worker", capacity={"cpu": 1}) is None
 
@@ -118,7 +121,13 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
 ) -> None:
     """What the holder's launcher checkpoint does next, and what it frees."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = _claim_on_the_holder(queue, KEY_A)
     _withdraw_from_elsewhere(queue, KEY_A, reason="cancel remotely")
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
@@ -141,7 +150,13 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
     assert not queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
     # Only now is the holder's token available to somebody else.
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(
+        KEY_B,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
         other = queue.claim(owner="another-worker", capacity={"cpu": 1})
     assert other is not None and other["action_key"] == KEY_B
@@ -152,7 +167,13 @@ def test_a_local_withdrawal_defers_release_to_the_claiming_worker(
 ) -> None:
     """The gate must not hold capacity when there is nothing left to stop."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="local-worker", capacity={"cpu": 1})
     assert claimed is not None
     result = queue.withdraw(KEY_A, reason="changed my mind")
@@ -170,7 +191,13 @@ def test_pbrun_says_the_release_is_pending_on_the_holder(
 ) -> None:
     """An operator reading "released 0" must not read it as "nothing to do"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _claim_on_the_holder(queue, KEY_A)
 
     with mock.patch.object(pool.socket, "gethostname", return_value=OPERATOR), \

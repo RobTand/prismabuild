@@ -10,6 +10,7 @@ files an ordinary cancellation and still retires the window.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from prismabuild import claim_identity
 
@@ -63,16 +64,6 @@ def _sealed_shape(monkeypatch) -> None:
 
 def _owner(host: str) -> str:
     return f"{host}:supervisor-9:8"
-
-
-def _publish(queue: pool.PoolQueue, key: str, **kw) -> None:
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co",
-                  worker_script=queue.root / "worker.py",
-                  resources=kw.pop("resources", {"cpu": 1}),
-                  max_attempts=kw.pop("max_attempts", 3),
-                  retry_safe=kw.pop("retry_safe", True),
-                  tags=kw.pop("tags", ["x86"]), **kw)
 
 
 def _claim(queue: pool.PoolQueue, host: str, tag: str = "x86") -> dict:
@@ -190,7 +181,16 @@ def test_handoff_proof_refuses_before_withdrawal(
     owner = _owner(host)
 
     stale_key = _hexkey("r13stale")
-    _publish(queue, stale_key)
+    ActionRows(queue).publish(
+        stale_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     live = _claim(queue, host)
     tampered = dict(live, claimed_unix=float(live["claimed_unix"]) + 100.0)
     with pytest.raises(pool.PoolContractError):
@@ -200,7 +200,16 @@ def test_handoff_proof_refuses_before_withdrawal(
     assert queue.records.item_path(pool.record_store.CLAIMED, stale_key).exists()
 
     other_key = _hexkey("r13other")
-    _publish(queue, other_key, tags=["other"])
+    ActionRows(queue).publish(
+        other_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['other'],
+    )
     foreign = _claim(queue, host, tag="other")
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(stale_key, reason="t", by=owner,
@@ -208,7 +217,16 @@ def test_handoff_proof_refuses_before_withdrawal(
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, stale_key).exists()
 
     spent_key = _hexkey("r13spent")
-    _publish(queue, spent_key, max_attempts=1)
+    ActionRows(queue).publish(
+        spent_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+    )
     spent = queue.claim(tags=["x86"], owner=f"{host}:1:spent",
                         capacity={"cpu": 4, "mem_gb": 16})
     assert spent is not None
@@ -218,7 +236,16 @@ def test_handoff_proof_refuses_before_withdrawal(
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, spent_key).exists()
 
     covered_key = _hexkey("r13covered")
-    _publish(queue, covered_key)
+    ActionRows(queue).publish(
+        covered_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     covered = _claim(queue, host)
     queue.withdraw(covered_key, reason="operator", by="operator:test")
     with pytest.raises(pool.PoolContractError):
@@ -241,7 +268,16 @@ def test_forged_snapshot_bindings_refuse(
     owner = _owner(host)
 
     flip_key = _hexkey("r13flip")
-    _publish(queue, flip_key, retry_safe=False, max_attempts=1)
+    ActionRows(queue).publish(
+        flip_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=False,
+        tags=['x86'],
+    )
     flip_live = queue.claim(tags=["x86"], owner=f"{host}:1:flip",
                             capacity={"cpu": 4, "mem_gb": 16})
     assert flip_live is not None
@@ -254,7 +290,16 @@ def test_forged_snapshot_bindings_refuse(
     assert queue.records.item_path(pool.record_store.CLAIMED, flip_key).exists()
 
     inflate_key = _hexkey("r13inflate")
-    _publish(queue, inflate_key, max_attempts=1)
+    ActionRows(queue).publish(
+        inflate_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+    )
     inflate_live = queue.claim(tags=["x86"], owner=f"{host}:1:inflate",
                                capacity={"cpu": 4, "mem_gb": 16})
     assert inflate_live is not None
@@ -265,7 +310,16 @@ def test_forged_snapshot_bindings_refuse(
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, inflate_key).exists()
 
     key_key = _hexkey("r13key")
-    _publish(queue, key_key)
+    ActionRows(queue).publish(
+        key_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     key_live = _claim(queue, host)
     wrong_key = dict(key_live, action_key=_hexkey("r13wrong"))
     with pytest.raises(pool.PoolContractError):
@@ -274,7 +328,16 @@ def test_forged_snapshot_bindings_refuse(
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, key_key).exists()
 
     scope_key = _hexkey("r13scope")
-    _publish(queue, scope_key)
+    ActionRows(queue).publish(
+        scope_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     scope_live = _claim(queue, host)
     nonce = "ab" * 16
     unit = ("prismabuild-job"
@@ -360,7 +423,16 @@ def test_repeat_handoff_never_retargets_successor(
     host = socket.gethostname()
     owner = _owner(host)
     key = _hexkey("r15retarget")
-    _publish(queue, key)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     snap_a = _claim(queue, host)
     pre = queue.plan_requeue(dict(snap_a))
     queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
@@ -409,7 +481,16 @@ def test_malformed_scope_block_refuses_without_withdrawal(
     host = socket.gethostname()
     owner = _owner(host)
     key = _hexkey("r15malformed")
-    _publish(queue, key)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     snap = _claim(queue, host)
     broken = dict(snap, resource_scope="broken")
     queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(broken))
@@ -430,7 +511,16 @@ def test_scope_intent_gate(queue: pool.PoolQueue, monkeypatch) -> None:
     owner = _owner(host)
 
     intent_key = _hexkey("r15intent")
-    _publish(queue, intent_key)
+    ActionRows(queue).publish(
+        intent_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     intent_live = _claim(queue, host)
     intented = dict(intent_live, resource_scope_intent={
         "action_key": intent_key, "nonce": "ab" * 16})
@@ -455,7 +545,16 @@ def test_scope_intent_gate(queue: pool.PoolQueue, monkeypatch) -> None:
         json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, intent_key).read_text()))
 
     both_key = _hexkey("r15both")
-    _publish(queue, both_key)
+    ActionRows(queue).publish(
+        both_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     both_live = _claim(queue, host)
     scoped = _scoped_live(queue, both_key, both_live, "ab" * 16)
     drifted = dict(scoped, resource_scope_intent={

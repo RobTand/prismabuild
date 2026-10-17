@@ -17,6 +17,7 @@ reads, writes or touches the live queue.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import errno
 from pathlib import Path
@@ -43,21 +44,16 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        **kw,
-    )
-
-
 def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue: pool.PoolQueue,
 ) -> None:
-    _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 2},
+    )
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None and "residency" not in item
 
@@ -112,8 +108,17 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
     cas = pb.PrismaBuildCAS(queue.root / "cas")
     cas.publish_action_request(action)
     key = str(action["action_key"])
-    _publish(queue, key, CAMPAIGN_RESOURCES, tags=CAMPAIGN_TAGS, needs_gpu=True,
-             max_attempts=1, retry_safe=False)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=CAMPAIGN_RESOURCES,
+        tags=CAMPAIGN_TAGS,
+        needs_gpu=True,
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = queue.claim(
         owner="sparky-worker-0",
         capacity={"cpu": 20, "gpu": 1, "mem_gb": 121},
@@ -136,7 +141,13 @@ def test_the_residency_gate_is_inert_without_a_residency_block(
 ) -> None:
     """The gate reads one absent field and says so; it cannot refuse anything."""
 
-    _publish(queue, KEY, {"cpu": 1})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None
     assert queue.residency_verdict(item) == {"state": "not_requested"}
@@ -183,7 +194,13 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
     touches while the feature is off.
     """
 
-    _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 2},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
@@ -206,7 +223,13 @@ def test_without_the_containment_that_finish_loses_the_outcome(
 ) -> None:
     """The bite test: the unguarded scan is what costs the ending."""
 
-    _publish(queue, KEY, {"cpu": 1})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
@@ -229,7 +252,13 @@ def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(
     would stop the poll on every box for as long as it persisted.
     """
 
-    _publish(queue, KEY, {"cpu": 1})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)

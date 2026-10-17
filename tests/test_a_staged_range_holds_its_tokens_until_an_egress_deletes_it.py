@@ -15,6 +15,7 @@ operation, an error in the deletes keeps the tokens, and a mover no live item
 names any more is swept.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import errno
 import json
@@ -47,11 +48,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return q
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw) -> None:
-    q.publish(action_key=key, cas_root=q.root / "cas", checkout_root=q.root / "co",
-              worker_script=q.root / "worker.py", resources=resources, **kw)
-
-
 def _residency(**overrides) -> dict[str, object]:
     block = {
         "schema": pool.RESIDENCY_SCHEMA_V1,
@@ -66,8 +62,16 @@ def _residency(**overrides) -> dict[str, object]:
 
 
 def _claim_mover(q: pool.PoolQueue, *, host: str = "dl380g10") -> dict[str, object]:
-    _publish(q, MOVER, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(q).publish(
+        MOVER,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = q.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=[host])
     assert claimed is not None and claimed["action_key"] == MOVER
     return claimed
@@ -158,7 +162,13 @@ def test_a_receipt_for_another_tier_does_not_pin_this_one(queue) -> None:
 def test_an_ordinary_action_is_unaffected(queue) -> None:
     """No residency block, no pin, and no new read on the way out."""
 
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+    )
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None
     queue.finish(CONSUMER, status="executed")
@@ -194,10 +204,20 @@ def _compose_map(queue, *, consumer: str = CONSUMER) -> Path:
 def test_a_consumer_is_admitted_on_a_lead_that_holds_its_bytes(queue) -> None:
     _finished_pinned_mover(queue)
     _compose_map(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
 
@@ -216,10 +236,20 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
     """
 
     _finished_pinned_mover(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
     denial = _denial(queue, CONSUMER)
@@ -249,10 +279,20 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
 
     _finished_pinned_mover(queue)
     _compose_map(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
     real = pool.record_store.RecordStore.residency_map_path
 
     class _StalledPath:
@@ -317,10 +357,20 @@ def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
     _claim_mover(queue)
     _receipt(queue, staged=0)
     queue.finish(MOVER, status="executed")
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
 
@@ -338,10 +388,20 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
     """The gate reads the ledger, so residency can be lost as well as gained."""
 
     _finished_pinned_mover(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
     tier_holdings.egress_all(queue, MOVER)
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
@@ -357,10 +417,19 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
     _receipt(queue)
     queue.finish(MOVER, status="executed")
     tier_holdings.egress_all(queue, MOVER)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     _compose_map(queue)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
@@ -553,10 +622,20 @@ def test_a_mover_a_ready_consumer_still_names_is_left_alone(queue, tmp_path) -> 
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     assert stage_release.sweep(queue, stage_roots={TIER: str(stage)}) == []
     assert _held(queue) == {"stage_gib": 2}

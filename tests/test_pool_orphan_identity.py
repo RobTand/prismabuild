@@ -1,12 +1,12 @@
 """Quarantining an old stub must preserve its replacement and reservations."""
+from fleet_world import FleetWorld
 from prismabuild import pool
 
 KEY = "b" * 64
 
 
 def _queue(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.READY, KEY),
         {"action_key": KEY},

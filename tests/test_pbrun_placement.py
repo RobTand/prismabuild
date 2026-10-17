@@ -1,6 +1,7 @@
 """Where an action may run is derived from the checkout, not asked of the caller."""
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 from submission_support import patch_store
 from submission_support import refusal_value
 from prismabuild import submission as submit_core
@@ -1557,12 +1558,12 @@ def test_bounded_offer_snapshot_refuses_a_reader_error(tmp_path, monkeypatch):
 
 def test_offer_snapshot_rechecks_freshness_in_the_parent(tmp_path, monkeypatch):
     queue = pool_module.PoolQueue(tmp_path / "q")
-    monkeypatch.setattr(pool_module, "_now", lambda: 100.0)
+    FleetClock(source=lambda: 100.0).install(monkeypatch, scope="pool")
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"gpu": 1})
     snapshot = submit_core.bounded_offer_snapshot(queue)
 
-    monkeypatch.setattr(pool_module, "_now", lambda: 300.0)
+    FleetClock(source=lambda: 300.0).install(monkeypatch, scope="pool")
     assert snapshot.offers() == []
     assert len(snapshot.offers(max_age_s=float("inf"))) == 1
 
@@ -2029,7 +2030,7 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
 
     work = _git_checkout(tmp_path)
     now = [1_000.0 + offset_s]
-    monkeypatch.setattr(pool_module, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     queue = pool_module.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})

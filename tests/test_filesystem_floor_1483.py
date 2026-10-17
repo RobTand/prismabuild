@@ -6,6 +6,7 @@ tests and the live ZFS case retain their own samples. Host disk occupancy
 therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 from submission_support import patch_store
 import pbrun
@@ -44,8 +45,7 @@ def _stable(path: Path) -> dict:
 
 
 def _queue(tmp_path: Path, *, spool_gb: int = 4) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path).queue
     queue.ledger(HOST).ensure_capacity({"spool_gb": spool_gb, "mem_gb": 2})
     return queue
 

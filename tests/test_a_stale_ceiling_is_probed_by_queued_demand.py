@@ -123,10 +123,6 @@ def _receipt(*, unix: float, action_key: str, delivered: float,
     }
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 def _cycle(queue: pool.PoolQueue, receipts=None) -> dict[str, object]:
     """One real tier cycle over this queue's receipts and ready work."""
 
@@ -166,7 +162,7 @@ def _frozen_queue(tmp_path: Path, ceiling: float = ARCHIVED_CEILING,
                   *, sharers: int | None = 1) -> pool.PoolQueue:
     """The freeze shape: a stale ceiling and six ready movers priced above it."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move(POISONED_KEY, _poisoned_receipt(ceiling, sharers=sharers))
     for key in MOVERS:
         _ready_mover(queue, key, PROBE)
@@ -235,7 +231,7 @@ def test_no_priceable_history_and_no_ready_demand_offer_the_plain_ceiling(
     """Nothing invents a size: the fold cannot price a reader and no mover is
     queued, so the offer is exactly the measured ceiling."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move(POISONED_KEY, _poisoned_receipt(ceiling, sharers=None))
 
     record = _cycle(queue)
@@ -269,7 +265,7 @@ def test_no_ready_demand_keeps_the_fold_offer(tmp_path):
     """'No ready demand means exactly the measured ceiling' is superseded: the
     #707 fold offer (ceiling + median single-reader share) is the fallback."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=120.0, sealed=166,
                                          achieved=120.0))
@@ -288,7 +284,7 @@ def test_no_ready_demand_keeps_the_fold_offer(tmp_path):
 
 
 def test_a_larger_fold_offer_is_retained_over_a_smaller_queued_floor(tmp_path):
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=120.0, sealed=166,
                                          achieved=120.0))
@@ -356,7 +352,7 @@ def test_two_readers_below_the_ceiling_refute_it_together(tmp_path):
     pool doing more than the ceiling claimed, measured from admitted work.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     # A priced seed: one reader's share is 150, so the historical offer is
     # 450 and the queued floor (466) is the larger and selected.
     queue.record_move("f" * 64, _receipt(unix=100.0, action_key="f" * 64,
@@ -443,7 +439,7 @@ def test_a_best_after_the_ceiling_does_not_refreeze_the_probe(tmp_path):
     as the ceiling branch it replaced.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=522.0, sealed=166,
                                          achieved=130.0, seconds=100.0))

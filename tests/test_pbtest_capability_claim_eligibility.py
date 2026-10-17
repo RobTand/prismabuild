@@ -7,6 +7,7 @@ before spending an attempt, and the submit-side verdict refuses a fleet that
 offers no capability at all.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 import pbrun
 from prismabuild import submission as submit_core
 
@@ -45,12 +46,6 @@ def _dependency(tmp_path: Path, payload: bytes = b"required bytes") -> dict:
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
-def _publish(queue, key, **kwargs):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources={"cpu": 1, "mem_gb": 1},
-                  **kwargs)
-
-
 def _item_of(queue, key):
     return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
 
@@ -76,7 +71,7 @@ def test_publish_seals_the_requirements_and_adds_the_capability_tag(
         tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "a" * 64, requires_files=[entry])
+    ActionRows(queue).publish('a' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     record = _item_of(queue, "a" * 64)
     assert record["requires_files"] == [entry]
@@ -86,13 +81,19 @@ def test_publish_seals_the_requirements_and_adds_the_capability_tag(
 def test_publish_refuses_malformed_entries_and_a_bare_capability(tmp_path):
     queue = _queue_at(tmp_path)
     with pytest.raises(pool.PoolContractError, match="requires_files"):
-        _publish(queue, "b" * 64,
-                 requires_files=[{"path": "relative/x", "sha256": "a" * 64}])
+        ActionRows(queue).publish(
+            'b' * 64,
+            resources={'cpu': 1, 'mem_gb': 1},
+            requires_files=[{'path': 'relative/x', 'sha256': 'a' * 64}],
+        )
     with pytest.raises(pool.PoolContractError, match="requires_files"):
-        _publish(queue, "c" * 64,
-                 requires_files=[{"path": "/x", "sha256": "nope"}])
+        ActionRows(queue).publish(
+            'c' * 64,
+            resources={'cpu': 1, 'mem_gb': 1},
+            requires_files=[{'path': '/x', 'sha256': 'nope'}],
+        )
     with pytest.raises(pool.PoolContractError, match=TAG):
-        _publish(queue, "d" * 64, tags=[TAG])
+        ActionRows(queue).publish('d' * 64, resources={'cpu': 1, 'mem_gb': 1}, tags=[TAG])
     assert not queue.records.item_path(pool.record_store.READY, "b" * 64).exists()
     assert not queue.records.item_path(pool.record_store.READY, "c" * 64).exists()
     assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
@@ -100,7 +101,7 @@ def test_publish_refuses_malformed_entries_and_a_bare_capability(tmp_path):
 
 def test_an_item_without_requirements_is_byte_identical_to_before(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "e" * 64)
+    ActionRows(queue).publish('e' * 64, resources={'cpu': 1, 'mem_gb': 1})
     record = _item_of(queue, "e" * 64)
     assert "requires_files" not in record
     assert TAG not in record["tags"]
@@ -113,7 +114,7 @@ def test_an_item_without_requirements_is_byte_identical_to_before(tmp_path):
 def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "f" * 64, requires_files=[entry])
+    ActionRows(queue).publish('f' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     probe = _intent(entry)
     # An old generation: no tag, no answers -> never capable.
@@ -158,7 +159,7 @@ def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
 def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "1" * 64, requires_files=[entry])
+    ActionRows(queue).publish('1' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     os_path = Path(entry["path"])
     os_path.unlink()
@@ -172,7 +173,7 @@ def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
 def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "2" * 64, requires_files=[entry])
+    ActionRows(queue).publish('2' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     Path(entry["path"]).write_bytes(b"drifted")
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
@@ -187,7 +188,7 @@ def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
 def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "3" * 64, requires_files=[entry])
+    ActionRows(queue).publish('3' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     claimed = queue.claim(capacity=dict(CAPACITY), tags=[TAG])
     assert claimed is not None
@@ -196,7 +197,7 @@ def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
 
 def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "4" * 64)
+    ActionRows(queue).publish('4' * 64, resources={'cpu': 1, 'mem_gb': 1})
     item = _item_of(queue, "4" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
     queue.records.item_path(pool.record_store.READY, "4" * 64).write_text(json.dumps(item))
@@ -208,7 +209,7 @@ def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
 
 def test_a_row_with_malformed_requirements_is_denied_not_run(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "5" * 64)
+    ActionRows(queue).publish('5' * 64, resources={'cpu': 1, 'mem_gb': 1})
     item = _item_of(queue, "5" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
     item["requires_files"] = [{"path": "relative"}]

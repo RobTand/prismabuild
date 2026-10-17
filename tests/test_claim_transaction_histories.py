@@ -1,4 +1,5 @@
 """Claim-frame uncertainty and persisted recovery use different authority."""
+from fleet_world import Clock as FleetClock
 
 import multiprocessing
 import os
@@ -120,7 +121,7 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
             process.join(10)
 
     later = float(persisted["claimed_unix"]) + pool.LEASE_TIMEOUT_S * 2
-    monkeypatch.setattr(pool, "_now", lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
     assert queue.reap_stale(timeout_s=1) == [mover]
     restored = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert restored["published_unix"] == row["published_unix"]

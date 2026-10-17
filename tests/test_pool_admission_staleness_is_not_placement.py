@@ -31,6 +31,7 @@ all three READY items carried ``tags: ["sparky"]``.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -80,11 +81,15 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
 def _publish(queue: pool.PoolQueue, seed: str, *, tags: list[str],
              resources: dict | None = None) -> str:
     key = seed * 64
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=str(queue.root),
-                  worker_script=ROOT / "tools/prismabuild_worker.py",
-                  resources=dict(resources or SMALL_CPU_WORK),
-                  tags=tags, needs_gpu=False)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=str(queue.root),
+        worker_script=ROOT / 'tools/prismabuild_worker.py',
+        resources=dict(resources or SMALL_CPU_WORK),
+        tags=tags,
+        needs_gpu=False,
+    )
     return key
 
 

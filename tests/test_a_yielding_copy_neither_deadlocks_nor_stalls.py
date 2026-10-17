@@ -18,6 +18,7 @@ Three defects in the first cut of the reader plan:
 Everything runs on ``tmp_path`` queues (#628).
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -72,7 +73,7 @@ def clock(monkeypatch) -> _Clock:
     controlled = _Clock()
     for module in (pool, pool.pb, pool.materialize):
         monkeypatch.setattr(module, "time", controlled)
-    monkeypatch.setattr(pool, "_now", controlled.time)
+    FleetClock(source=controlled.time).install(monkeypatch, scope="pool")
     return controlled
 
 

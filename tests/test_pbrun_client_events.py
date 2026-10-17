@@ -81,9 +81,16 @@ def test_main_execution_facts_match_the_actual_interpreter_exit(
         tmp_path, status, returncode, expected):
     action, _, queue = _setup(tmp_path)
     state = 'done' if status == 'executed' else 'withdrawn' if status == 'withdrawn' else 'failed'
-    queue.records.item_path(state, action['action_key']).write_text(json.dumps(dict(
-        action_key=action['action_key'], status=status, attempts=1, finished_host='fixture',
-        detail=dict(returncode=returncode, stdout='unchanged payload\n', stderr=''))))
+    queue.records.replace_record_at(
+        queue.records.item_path(state, action['action_key']),
+        dict(
+            action_key=action['action_key'],
+            status=status,
+            attempts=1,
+            finished_host='fixture',
+            detail=dict(returncode=returncode, stdout='unchanged payload\n', stderr=''),
+        ),
+    )
     actual, output, events = _run(tmp_path, action, mode='queued')
     assert actual == expected
     assert events.problem is None

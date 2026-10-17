@@ -280,10 +280,6 @@ def _fills(staged: dict[str, object]) -> set[int]:
     return {int(row["resources"][KIND]) for row in rows}
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 @pytest.mark.parametrize("offer", [428, 214])
 def test_a_fresh_mover_is_sealed_at_the_measured_copy_not_the_offer(
         tmp_path: Path, offer: int) -> None:
@@ -292,7 +288,7 @@ def test_a_fresh_mover_is_sealed_at_the_measured_copy_not_the_offer(
     Before #909 it was sealed at ``min(440, offer)``: the whole offer.
     """
 
-    staged = _seal(tmp_path, _queue(tmp_path), offer=offer,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=offer,
                    receipts=[dict(record) for record in WINDOWS])
     assert _fills(staged) == {116}
     source = staged["plan"]["demand_source"]            # type: ignore[index]
@@ -307,7 +303,7 @@ def test_a_one_copy_window_is_sealed_at_the_named_share(
 
     lone = _landed("1" * 64, NEWER, 47.0, unix=500.0)
     fleet = _fleet(FLEET_NEW, 138.0, unix=400.0, count=3)
-    staged = _seal(tmp_path, _queue(tmp_path), offer=428,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=428,
                    receipts=[lone, *fleet])
     assert _fills(staged) == {138}
     measured = staged["plan"]["demand_source"]["fill_measured"]  # type: ignore[index]
@@ -318,7 +314,7 @@ def test_a_one_copy_window_is_sealed_at_the_named_share(
 
 def test_the_offer_still_caps_a_seal_admission_could_not_honour(
         tmp_path: Path) -> None:
-    staged = _seal(tmp_path, _queue(tmp_path), offer=100,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=100,
                    receipts=[dict(record) for record in WINDOWS])
     assert _fills(staged) == {100}
     assert staged["plan"]["demand_source"]["fill"] == "tier-offer-cap"  # type: ignore[index]
@@ -328,7 +324,7 @@ def test_a_mover_with_nothing_measured_is_sealed_at_the_named_bound(
         tmp_path: Path) -> None:
     """No receipt prices a copy: the offer is the stated bound, and says so."""
 
-    staged = _seal(tmp_path, _queue(tmp_path), offer=428, receipts=[])
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=428, receipts=[])
     assert _fills(staged) == {428}
     source = staged["plan"]["demand_source"]            # type: ignore[index]
     assert source["fill"] == "tier-offer"
@@ -341,7 +337,7 @@ def test_a_mover_with_nothing_measured_is_sealed_at_the_named_bound(
 def test_the_submitters_declaration_reaches_the_plan(tmp_path: Path) -> None:
     import pbrun
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     staged = _seal(tmp_path, queue, offer=None, receipts=[])
     assert "reader" not in staged["plan"]           # undeclared: byte-identical
     args = argparse.Namespace(residency_prefetch_depth_gib=22,

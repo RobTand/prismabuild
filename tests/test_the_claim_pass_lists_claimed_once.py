@@ -22,6 +22,7 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import os
@@ -42,10 +43,14 @@ READY_ITEMS = 40
 
 def _publish(queue: pool.PoolQueue, index: int, tags: list[str]) -> str:
     key = f"{index + 1:064x}"
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co",
-                  worker_script=queue.root / "worker.py",
-                  resources={"cpu": 1}, tags=tags)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        tags=tags,
+    )
     return key
 
 

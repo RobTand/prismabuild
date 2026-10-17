@@ -25,6 +25,7 @@ not be dropped for not fitting yet (#1230 kept it only when it fit then).
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 from pathlib import Path
@@ -260,7 +261,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
     """
 
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     ledger = queue.ledger()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
@@ -356,7 +357,7 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
     tiers = {"preferred": list(range(cpus)), "fallback": []}
     capacity = {"cpu": cpus, "gpu": 1, "mem_gb": 120}
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     host = {"psi_some": 0.}

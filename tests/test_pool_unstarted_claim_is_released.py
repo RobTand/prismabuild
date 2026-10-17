@@ -30,6 +30,7 @@ is not knowable across boxes.  It stops the taking from destroying the work.
 Issue #222.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -50,13 +51,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
 
 
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1}, **kw,
-    )
-
-
 def _reap_later(q: pool.PoolQueue) -> list[str]:
     """Reap with the clock advanced past every grace, as a stalled box would."""
 
@@ -70,7 +64,15 @@ def test_a_claim_whose_lease_never_arrived_is_released(
 ) -> None:
     """The observed loss: one attempt, no lease, no output, gone for good."""
 
-    _publish(queue, max_attempts=1, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+    )
     assert queue.claim(owner="sparklina:43944:a4bcd411",
                        capacity={"cpu": 1}) is not None
     # The claimant blocked between the rename and ``write_lease``.
@@ -99,7 +101,15 @@ def test_the_release_is_recorded_where_an_investigator_looks(
 ) -> None:
     """A release that left no trace would be a silent retry."""
 
-    _publish(queue, max_attempts=1, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+    )
     assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
     queue.records.lease_path(KEY).unlink()
 
@@ -119,7 +129,15 @@ def test_a_lease_that_expired_is_still_a_charged_attempt(
 ) -> None:
     """A claim that ran and stopped heartbeating is unchanged: it lost a lease."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
     # The lease is there and stale -- the shape of a worker that died running.
 
@@ -144,7 +162,15 @@ def test_a_finisher_that_died_holding_the_claim_keeps_its_outcome(
     what it did.
     """
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
     # The finisher's own attempt, published before it entombed the claim.
@@ -172,7 +198,15 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
 ) -> None:
     """Durable cancellation prevents an unstarted release after marker retirement."""
 
-    _publish(queue, max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+    )
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
     original = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
@@ -211,7 +245,15 @@ def test_a_claim_lost_before_its_record_was_rewritten_is_released(
     proves a launch is exactly as absent.
     """
 
-    _publish(queue, max_attempts=1, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+    )
     assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(path.read_text())

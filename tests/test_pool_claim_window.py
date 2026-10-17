@@ -1,6 +1,7 @@
 """The rename-to-rewrite window inside ``claim()`` is not a dead claimant (#36)."""
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import os
@@ -13,15 +14,6 @@ from prismabuild import pool  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 KEY = "c" * 64
-
-
-def _publish(queue: pool.PoolQueue, tmp_path: Path) -> None:
-    queue.publish(
-        action_key=KEY,
-        cas_root=tmp_path / "cas",
-        checkout_root=tmp_path / "co",
-        worker_script=tmp_path / "w.py",
-    )
 
 
 def _enter_claim_window(queue: pool.PoolQueue) -> Path:
@@ -45,7 +37,12 @@ def test_a_claim_between_rename_and_rewrite_is_not_reaped(tmp_path: Path) -> Non
         pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    _publish(queue, tmp_path)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=tmp_path / 'cas',
+        checkout_root=tmp_path / 'co',
+        worker_script=tmp_path / 'w.py',
+    )
     claimed = _enter_claim_window(queue)
 
     assert queue.reap_stale() == []
@@ -60,7 +57,12 @@ def test_a_claimant_dead_inside_the_window_is_still_reaped(tmp_path: Path) -> No
         pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    _publish(queue, tmp_path)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=tmp_path / 'cas',
+        checkout_root=tmp_path / 'co',
+        worker_script=tmp_path / 'w.py',
+    )
     _enter_claim_window(queue)
     intent = queue.records.item_path(pool.record_store.INTENT, KEY)
     record = json.loads(intent.read_text())
@@ -80,7 +82,12 @@ def test_a_claimed_record_with_no_clock_at_all_is_still_reaped(tmp_path: Path) -
         pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    _publish(queue, tmp_path)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=tmp_path / 'cas',
+        checkout_root=tmp_path / 'co',
+        worker_script=tmp_path / 'w.py',
+    )
     _enter_claim_window(queue)
     queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
 

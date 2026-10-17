@@ -1,4 +1,5 @@
 """A slightly faster worker clock must not hide the fleet's only x86 box."""
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -16,7 +17,7 @@ import pbstatus
 
 def _offers(tmp_path, monkeypatch, ahead_s):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0)
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"cpu": 20, "mem_gb": 104, "gpu": 1})

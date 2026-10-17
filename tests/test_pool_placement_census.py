@@ -13,6 +13,7 @@ These tests pin the metric and the one matcher it shares with placement.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import importlib.util
 import json
@@ -48,15 +49,6 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
                    has_gpu=False, capacity=X86)
     return queue
-
-
-def _publish(queue: pool.PoolQueue, seed: str, **kw) -> None:
-    queue.publish(
-        action_key=seed * 64, cas_root=queue.root / "cas",
-        checkout_root="/home/rob/tmp/ts101",
-        worker_script="/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py",
-        **kw,
-    )
 
 
 def test_placeable_hosts_names_every_box_that_fits(tmp_path: Path) -> None:
@@ -111,11 +103,46 @@ def test_the_census_counts_items_placeable_on_exactly_one_box(
 
     queue = _fleet(tmp_path)
     with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
-        _publish(queue, "a", tags=["sparky"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "b", tags=["sparky"], resources={"cpu": 2, "mem_gb": 8})
-        _publish(queue, "c", tags=["gx10-6b77"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "e", tags=["dl380g10"], resources={"mem_gb": 4096})
+        ActionRows(queue).publish(
+            'a' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['sparky'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'b' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['sparky'],
+            resources={'cpu': 2, 'mem_gb': 8},
+        )
+        ActionRows(queue).publish(
+            'c' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gx10-6b77'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'd' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gb10'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'e' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['dl380g10'],
+            resources={'mem_gb': 4096},
+        )
 
     census = queue.placement_census()
 
@@ -197,7 +224,14 @@ def test_an_idle_worker_says_how_much_of_the_queue_is_one_box_wide(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="otherbox", tags=["otherbox"], has_gpu=False,
                    capacity={"cpu": 8, "mem_gb": 16})
-    _publish(queue, "a", tags=["otherbox"], resources={"cpu": 1, "mem_gb": 4})
+    ActionRows(queue).publish(
+        'a' * 64,
+        cas_root=queue.root / 'cas',
+        checkout_root='/home/rob/tmp/ts101',
+        worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+        tags=['otherbox'],
+        resources={'cpu': 1, 'mem_gb': 4},
+    )
 
     spec = importlib.util.spec_from_file_location("wl_census", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
@@ -238,7 +272,14 @@ def test_a_box_local_checkout_caps_the_width_at_one_box(tmp_path: Path) -> None:
 
     queue = _fleet(tmp_path)
     with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
-        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
+        ActionRows(queue).publish(
+            'd' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gb10'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
 
     census = queue.placement_census()
 

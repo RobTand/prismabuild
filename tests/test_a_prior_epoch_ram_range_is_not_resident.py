@@ -26,6 +26,7 @@ read through the queue's own ledger; the consumer is published through the
 real ``PoolQueue.publish``.  No payload runs and no GPU is touched.
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 import json
 from pathlib import Path
@@ -49,8 +50,7 @@ NEW_EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 
 
 def _queue(tmp_path: Path, *, announce_ram: bool = True) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path).queue
     queue.tier(STAGE_TIER).mint({'stage_gib': 8})
     ledger = queue.tier(STAGE_TIER)
     assert ledger.take(STAGE_LEAD, {'stage_gib': 2})

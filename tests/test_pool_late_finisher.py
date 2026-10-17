@@ -10,6 +10,7 @@ and removed its claim.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from prismabuild import claim_identity
 
@@ -34,23 +35,20 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY_A,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources={"cpu": 1},
-        **kw,
-    )
-
-
 def test_a_late_finisher_does_not_conclude_the_newer_retry(
     queue: pool.PoolQueue,
 ) -> None:
     """The issue #62 probe, inverted: the retry keeps everything it owns."""
 
-    _publish(queue, max_attempts=2, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=2,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
     # The documented path: the heartbeat is lost, the reaper requeues, and a
@@ -97,7 +95,15 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
 ) -> None:
     """With no reaper record in the way, the late attempt files its own."""
 
-    _publish(queue, max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
     # A second claim of the same key without a reaper in between: the claim
@@ -106,7 +112,15 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()
     queue.records.lease_path(KEY_A).unlink()
     queue.ledger().release(KEY_A)
-    _publish(queue, max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+    )
     retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
     assert retry is not None
     assert retry["published_unix"] != first["published_unix"]
@@ -135,7 +149,13 @@ def test_the_finisher_of_its_own_claim_is_not_treated_as_late(
 ) -> None:
     """The guard must not fire on the ordinary path, or nothing ever ends."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
     result = queue.finish(
@@ -154,7 +174,13 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
 ) -> None:
     """The guards that rewrite a claim in place must not look like a retry."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert claimed is not None
     live_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)

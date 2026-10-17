@@ -13,6 +13,7 @@ now checks only the measurement's own predicted CPUs against
 * holder-free complete clearance can actually claim (#1422).
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 from pathlib import Path
@@ -39,7 +40,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = Clock(now=T0)
-    monkeypatch.setattr(pool, "_now", lambda: now.now)
+    FleetClock(source=lambda: now.now).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now.now)
     return now
 
@@ -56,8 +57,13 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _publish(queue, clock, key, resources):
     clock.now += 0.001
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources=resources)
+    ActionRows(queue).publish(
+        key,
+        cas_root='/cas',
+        checkout_root='/co',
+        worker_script='/w.py',
+        resources=resources,
+    )
     return key
 
 

@@ -14,6 +14,7 @@ end to end.  These pin the pieces those cases rest on:
 Everything runs on ``tmp_path`` queues (#628).
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 import json
 from pathlib import Path
@@ -148,8 +149,7 @@ def test_seconds_a_copy_stood_aside_are_not_a_shortfall() -> None:
 
 
 def _queue(tmp_path: Path, *, fill: int) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path).queue
     tokens = {"stage_gib": 16}
     if fill:
         tokens[storage_tiers.FILL_KIND] = fill

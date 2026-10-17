@@ -20,6 +20,7 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -45,17 +46,6 @@ from fleet_world import FleetWorld
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
-
-
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        **kw,
-    )
 
 
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
@@ -133,9 +123,23 @@ def test_the_tier_id_decides_the_capacity_kind_for_demand_and_for_refusal(
         tier_id=arc, range_start_bytes=0, range_end_bytes=2 * GIB)
     assert derived == {f"arc_gib@{arc}": 2}
     block = dict(_residency(range_start=0, range_end=2 * GIB), tier_id=arc)
-    _publish(queue, MOVER, {"cpu": 1, **derived}, residency=block)
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, **derived},
+        residency=block,
+    )
     with pytest.raises(pool.PoolContractError, match=f"arc_gib@{arc}"):
-        _publish(queue, MOVER, {"cpu": 1, f"arc_gib@{arc}": 1}, residency=block)
+        ActionRows(queue).publish(
+            MOVER,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1, f'arc_gib@{arc}': 1},
+            residency=block,
+        )
     # A stated tier that contradicts the id is a mistake, not a preference.
     with pytest.raises(ValueError):
         storage_tiers.residency_demand(
@@ -164,15 +168,43 @@ def test_publish_refuses_a_demand_below_the_range_it_declares(
     block = _residency(range_start=lead["start_bytes"], range_end=lead["end_bytes"])
 
     with pytest.raises(pool.PoolContractError, match="below the 3 GiB"):
-        _publish(queue, MOVER, {"cpu": 1, STAGE: derived[STAGE] - 1}, residency=block)
+        ActionRows(queue).publish(
+            MOVER,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1, STAGE: derived[STAGE] - 1},
+            residency=block,
+        )
     with pytest.raises(pool.PoolContractError, match="below the 3 GiB"):
-        _publish(queue, MOVER, {"cpu": 1}, residency=block)
+        ActionRows(queue).publish(
+            MOVER,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1},
+            residency=block,
+        )
     # The derived demand publishes, and so does more than it (a mover may
     # reserve headroom; it may never reserve less than it will write).
-    _publish(queue, MOVER, {"cpu": 1, **derived}, residency=block)
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, **derived},
+        residency=block,
+    )
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, MOVER))
     assert item is not None and item["residency"]["range_end_bytes"] == 3 * GIB
-    _publish(queue, MOVER, {"cpu": 1, STAGE: derived[STAGE] + 1}, residency=block)
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, STAGE: derived[STAGE] + 1},
+        residency=block,
+    )
 
 
 def test_publish_refuses_a_malformed_residency_block(queue: pool.PoolQueue) -> None:
@@ -189,21 +221,43 @@ def test_publish_refuses_a_malformed_residency_block(queue: pool.PoolQueue) -> N
         block = dict(good)
         mutate(block)
         with pytest.raises(pool.PoolContractError):
-            _publish(queue, MOVER, {"cpu": 1, STAGE: 1}, residency=block)
+            ActionRows(queue).publish(
+                MOVER,
+                cas_root=queue.root / 'cas',
+                checkout_root=queue.root / 'co',
+                worker_script=queue.root / 'worker.py',
+                resources={'cpu': 1, STAGE: 1},
+                residency=block,
+            )
     # A block that asks for nothing at all is a mistake, not a no-op.
     with pytest.raises(pool.PoolContractError):
-        _publish(queue, MOVER, {"cpu": 1},
-                 residency={"schema": pool.RESIDENCY_SCHEMA_V1})
+        ActionRows(queue).publish(
+            MOVER,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1},
+            residency={'schema': pool.RESIDENCY_SCHEMA_V1},
+        )
 
 
 # -- gating ----------------------------------------------------------------
 
 
 def _publish_consumer(q: pool.PoolQueue, leads: list[str]) -> None:
-    _publish(q, CONSUMER, {"cpu": 1}, residency={
-        "schema": pool.RESIDENCY_SCHEMA_V1,
-        "manifest_sha256": "a" * 64, "manifest_bytes": 4096, "leads": leads,
-    })
+    ActionRows(q).publish(
+        CONSUMER,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': 'a' * 64,
+            'manifest_bytes': 4096,
+            'leads': leads,
+        },
+    )
 
 
 def _compose_map(q: pool.PoolQueue, *, mover: str = MOVER) -> Path:
@@ -242,7 +296,13 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
     assert queue.passes(CONSUMER) == 0
 
     # The mover runs and finishes; now the consumer is admitted.
-    _publish(queue, MOVER, {"cpu": 1})
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
@@ -266,7 +326,13 @@ def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
 ) -> None:
     """The descriptor is deterministic on purpose, so a cached mover looks done."""
 
-    _publish(queue, MOVER, {"cpu": 1})
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None
     queue.finish(MOVER, status="cache_hit", claim_snapshot=mover_claim)
@@ -290,7 +356,15 @@ def test_every_lead_must_be_resident_not_merely_the_first(
         # One attempt each: a mover that fails must stay failed, or the
         # requeued row is what the next claim returns and the gate is not
         # what this test observed.
-        _publish(queue, key, {"cpu": 1}, max_attempts=1, retry_safe=False)
+        ActionRows(queue).publish(
+            key,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1},
+            max_attempts=1,
+            retry_safe=False,
+        )
         claim = queue.claim(owner="mover", capacity={"cpu": 4})
         assert claim is not None and claim["action_key"] == key
         if key == MOVER:
@@ -336,7 +410,13 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
     mover that is still queued, which is the denial nobody can act on.
     """
 
-    _publish(queue, MOVER, {"cpu": 1})
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     dropped = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, MOVER))
     assert dropped is not None
     queue.records.item_path(pool.record_store.READY, MOVER).unlink()
@@ -364,8 +444,14 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
 
     other = "b" * 64
     queue.tier(TIER).mint({'stage_gib': 4})
-    _publish(queue, MOVER, {"cpu": 1, STAGE: 1}, residency=dict(
-        _residency(range_start=0, range_end=GIB), manifest_sha256=other))
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 1},
+        residency=dict(_residency(range_start=0, range_end=GIB), manifest_sha256=other),
+    )
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
@@ -391,16 +477,36 @@ def test_publish_refuses_a_block_whose_manifest_fields_are_not_a_manifest(
     for bad in (17, {"a": 1}, None, "short", "A" * 64, "g" * 64):
         block = dict(_residency(range_start=0, range_end=GIB), manifest_sha256=bad)
         with pytest.raises(pool.PoolContractError, match="manifest_sha256"):
-            _publish(queue, MOVER, {"cpu": 1, STAGE: 1}, residency=block)
+            ActionRows(queue).publish(
+                MOVER,
+                cas_root=queue.root / 'cas',
+                checkout_root=queue.root / 'co',
+                worker_script=queue.root / 'worker.py',
+                resources={'cpu': 1, STAGE: 1},
+                residency=block,
+            )
     for bad in (0, -1, True, "4096", None):
         block = dict(_residency(range_start=0, range_end=GIB), manifest_bytes=bad)
         with pytest.raises(pool.PoolContractError, match="manifest_bytes"):
-            _publish(queue, MOVER, {"cpu": 1, STAGE: 1}, residency=block)
+            ActionRows(queue).publish(
+                MOVER,
+                cas_root=queue.root / 'cas',
+                checkout_root=queue.root / 'co',
+                worker_script=queue.root / 'worker.py',
+                resources={'cpu': 1, STAGE: 1},
+                residency=block,
+            )
     # A leads-only block needs them too: a lead list without a manifest names
     # movers whose ranges nothing can be checked against.
     with pytest.raises(pool.PoolContractError, match="manifest_sha256"):
-        _publish(queue, CONSUMER, {"cpu": 1}, residency={
-            "schema": pool.RESIDENCY_SCHEMA_V1, "leads": [MOVER]})
+        ActionRows(queue).publish(
+            CONSUMER,
+            cas_root=queue.root / 'cas',
+            checkout_root=queue.root / 'co',
+            worker_script=queue.root / 'worker.py',
+            resources={'cpu': 1},
+            residency={'schema': pool.RESIDENCY_SCHEMA_V1, 'leads': [MOVER]},
+        )
 
 
 def test_a_map_composed_before_the_lead_landed_does_not_admit(
@@ -417,7 +523,13 @@ def test_a_map_composed_before_the_lead_landed_does_not_admit(
     """
 
     _publish_consumer(queue, [MOVER])
-    _publish(queue, MOVER, {"cpu": 1})
+    ActionRows(queue).publish(
+        MOVER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     mover_claim = queue.claim(owner="mover", capacity={"cpu": 4})
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)

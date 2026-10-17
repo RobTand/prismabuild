@@ -17,6 +17,7 @@ not merely survive the poison, it went on to the next record.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import errno
@@ -43,17 +44,6 @@ from fleet_world import FleetWorld
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
-
-
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        **kw,
-    )
 
 
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
@@ -91,10 +81,20 @@ def _write_foreign_bytes(path: Path, payload: bytes) -> None:
 
 
 def _publish_consumer(q: pool.PoolQueue, leads: list[str]) -> None:
-    _publish(q, CONSUMER, {"cpu": 1}, priority=1, residency={
-        "schema": pool.RESIDENCY_SCHEMA_V1,
-        "manifest_sha256": "a" * 64, "manifest_bytes": 4096, "leads": leads,
-    })
+    ActionRows(q).publish(
+        CONSUMER,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1},
+        priority=1,
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': 'a' * 64,
+            'manifest_bytes': 4096,
+            'leads': leads,
+        },
+    )
 
 
 # -- a tier id ``publish`` would have refused -------------------------------
@@ -108,13 +108,30 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
     # in a record this pool never wrote.  The range block keeps the initial
     # publish honest (#595: tier demand travels with a block); the poison
     # arrives in the rewrite below.
-    _publish(queue, POISON, {"cpu": 1, STAGE: 1}, priority=1, residency={
-        "schema": pool.RESIDENCY_SCHEMA_V1,
-        "manifest_sha256": "0" * 64, "manifest_bytes": 1, "tier_id": TIER,
-        "range_start_bytes": 0, "range_end_bytes": 1,
-    })
+    ActionRows(queue).publish(
+        POISON,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, STAGE: 1},
+        priority=1,
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': '0' * 64,
+            'manifest_bytes': 1,
+            'tier_id': TIER,
+            'range_start_bytes': 0,
+            'range_end_bytes': 1,
+        },
+    )
     _rewrite_resources(queue, POISON, {"cpu": 1, f"stage_gib@{bad_tier}": 1})
-    _publish(queue, GOOD, {"cpu": 1})
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     # One poll, and it did both things: filed the poison as a denial and
@@ -147,9 +164,22 @@ def test_a_foreign_resources_block_is_a_denial_and_the_poll_carries_on(
     raise nothing in the worker loop catches.
     """
 
-    _publish(queue, POISON, {"cpu": 1}, priority=1)
+    ActionRows(queue).publish(
+        POISON,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        priority=1,
+    )
     _rewrite_resources(queue, POISON, bad_resources)
-    _publish(queue, GOOD, {"cpu": 1})
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None and claimed["action_key"] == GOOD
@@ -174,7 +204,13 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
         b'{"status": "execut',
     )
     _publish_consumer(queue, [MOVER])
-    _publish(queue, GOOD, {"cpu": 1})
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None and claimed["action_key"] == GOOD
@@ -212,7 +248,13 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
 
     monkeypatch.setattr(pool.record_store, '_read_json', stale_for_the_done_path)
     _publish_consumer(queue, [MOVER])
-    _publish(queue, GOOD, {"cpu": 1})
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None and claimed["action_key"] == GOOD

@@ -1,4 +1,5 @@
 """A slow shared-directory scan must not extend worker offer lifetimes."""
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -15,7 +16,7 @@ from prismabuild import pool
                          ids=["excessive-future", "positive-infinity", "nan", "bool", "missing"])
 def test_invalid_offer_time_cannot_vouch_for_a_worker(tmp_path, monkeypatch, announced):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue.announce(host="current", tags=[], has_gpu=False)
     queue.announce(host="invalid", tags=[], has_gpu=False)
     path = queue.root / pool.record_store.WORKERS / "invalid.json"
@@ -30,7 +31,7 @@ def test_invalid_offer_time_cannot_vouch_for_a_worker(tmp_path, monkeypatch, ann
 def test_offers_expire_at_scan_completion(tmp_path, monkeypatch, stall_at):
     queue = pool.PoolQueue(tmp_path / "queue")
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     queue.announce(host="a-old", tags=[], has_gpu=False)
     clock[0] = 1060.0
     queue.announce(host="z-current", tags=[], has_gpu=False)

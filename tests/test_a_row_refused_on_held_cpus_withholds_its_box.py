@@ -19,6 +19,7 @@ now withholds while those holders drain soon.  Busy CPUs no holder holds are
 load the pool does not own, which no drain clears, so they still do not.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import json
@@ -53,7 +54,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -85,10 +86,15 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources,
-              tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        tags=kw.pop('tags', [pool.socket.gethostname()]),
+        **kw,
+    )
     return key
 
 

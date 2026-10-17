@@ -57,8 +57,10 @@ def test_bounded_wait_keeps_healthy_terminal_verdicts(
     status: str, returncode: int, expected: int,
 ) -> None:
     queue = Queue(tmp_path / "queue")
-    queue.records.item_path(state, KEY).write_text(
-        json.dumps(_ending(status, returncode)), encoding="utf-8")
+    queue.records.replace_record_at(
+        queue.records.item_path(state, KEY),
+        _ending(status, returncode),
+    )
 
     assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == expected
     assert "unavailable pool outcome" not in capsys.readouterr().err
@@ -120,7 +122,7 @@ def test_immutable_verification_timeout_is_loud_non_success(
 ) -> None:
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
-    queue.records.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), outcome)
     real_read = action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
@@ -176,8 +178,7 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.records.item_path("done", KEY).write_text(
-        json.dumps(_ending("executed", 0)), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), _ending('executed', 0))
     retained: list[int] = []
 
     def retain(pid, _section, _started, abandoned):
@@ -283,8 +284,7 @@ def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.records.item_path("done", KEY).write_text(
-        json.dumps(_ending("executed", 0)), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), _ending('executed', 0))
     real = action_client.bounded_outcome_observation
     calls: list[str] = []
 

@@ -11,6 +11,7 @@ live capacity, observation, bounded discovery/publication, full-demand claims,
 token acquisition and finish all run normally against one private host ledger.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import importlib.util
 import json
@@ -48,15 +49,6 @@ def _denial(queue, key):
                if record["action_key"] == key]
     assert len(matches) == 1, records
     return matches[0]
-
-
-def _publish(queue, key, *, resources, priority):
-    queue.publish(
-        action_key=key, cas_root=queue.root.parent / "cas",
-        worker_script=REPO / "tools" / "prismabuild_worker.py",
-        checkout_root=queue.root.parent / "checkout", resources=resources,
-        priority=priority, max_attempts=1, retry_safe=False,
-    )
 
 
 def _kernel_counters(cpus, *, now=None):
@@ -147,8 +139,26 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     ledger = queue.ledger(host)
     sibling = pool.PoolQueue(queue.root)
     assert sibling.ledger().base == ledger.base
-    _publish(queue, FIRST, resources=DEMAND, priority=20)
-    _publish(queue, SECOND, resources=DEMAND, priority=10)
+    ActionRows(queue).publish(
+        FIRST,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
+    ActionRows(queue).publish(
+        SECOND,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=10,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     entered = threading.Event()
     release = threading.Event()
@@ -228,7 +238,16 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             # A new, higher-priority ordinary row is scanned normally before
             # the denied tagged row. It takes only spare CPU/memory: cooperation
             # among declarers is NOT isolation from ordinary same-host work.
-            _publish(sibling, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=30)
+            ActionRows(sibling).publish(
+                ORDINARY,
+                cas_root=sibling.root.parent / 'cas',
+                worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                checkout_root=sibling.root.parent / 'checkout',
+                resources={'cpu': 1, 'mem_gb': 1},
+                priority=30,
+                max_attempts=1,
+                retry_safe=False,
+            )
             ordinary = sibling.claim(owner="ordinary-sibling", **claim_args)
             assert ordinary is not None and ordinary["action_key"] == ORDINARY
             assert ledger.holder_tokens(ORDINARY) == {"cpu": 1, "mem_gb": 1}
@@ -369,8 +388,26 @@ def test_disabled_worker_admits_ordinary_and_refuses_tagged_work(
         monkeypatch, tmp_path, assume_idle=False, metadata_capacity=capacity)
     ledger = queue.ledger()
     executions, failures = [], []
-    _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=20)
-    _publish(queue, SECOND, resources=DEMAND, priority=10)
+    ActionRows(queue).publish(
+        ORDINARY,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources={'cpu': 1, 'mem_gb': 1},
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
+    ActionRows(queue).publish(
+        SECOND,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=10,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     def execute(actual_queue, item, *, python, timeout_s, containment=False):
         try:
@@ -408,7 +445,16 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     worker, queue, args = _fixture_worker(monkeypatch, tmp_path, assume_idle=False)
     ledger = queue.ledger()
     executions, failures = [], []
-    _publish(queue, FIRST, resources=DEMAND, priority=20)
+    ActionRows(queue).publish(
+        FIRST,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     def execute(actual_queue, item, *, python, timeout_s, containment=False):
         try:
@@ -433,9 +479,26 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
                     # signal handling is real) offers zero while FIRST runs.
                     # It may retire only FREE tokens, then admit ordinary work.
                     args.disk_metadata_capacity = 0
-                    _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1},
-                             priority=30)
-                    _publish(queue, SECOND, resources=DEMAND, priority=10)
+                    ActionRows(queue).publish(
+                        ORDINARY,
+                        cas_root=queue.root.parent / 'cas',
+                        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                        checkout_root=queue.root.parent / 'checkout',
+                        resources={'cpu': 1, 'mem_gb': 1},
+                        priority=30,
+                        max_attempts=1,
+                        retry_safe=False,
+                    )
+                    ActionRows(queue).publish(
+                        SECOND,
+                        cas_root=queue.root.parent / 'cas',
+                        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                        checkout_root=queue.root.parent / 'checkout',
+                        resources=DEMAND,
+                        priority=10,
+                        max_attempts=1,
+                        retry_safe=False,
+                    )
                     assert worker.main() == 0
                     assert worker.main() == 0  # actual tagged sibling denial
                     _assert_disabled_offer(queue)
@@ -461,8 +524,26 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
     args.disk_metadata_capacity = 0
     if not held_on_disable:
-        _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=30)
-        _publish(queue, SECOND, resources=DEMAND, priority=10)
+        ActionRows(queue).publish(
+            ORDINARY,
+            cas_root=queue.root.parent / 'cas',
+            worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+            checkout_root=queue.root.parent / 'checkout',
+            resources={'cpu': 1, 'mem_gb': 1},
+            priority=30,
+            max_attempts=1,
+            retry_safe=False,
+        )
+        ActionRows(queue).publish(
+            SECOND,
+            cas_root=queue.root.parent / 'cas',
+            worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+            checkout_root=queue.root.parent / 'checkout',
+            resources=DEMAND,
+            priority=10,
+            max_attempts=1,
+            retry_safe=False,
+        )
         assert worker.main() == 0
         if failures:
             raise failures[0]

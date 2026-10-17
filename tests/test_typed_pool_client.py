@@ -21,7 +21,10 @@ from test_pbrun_bounded_pool_wait import KEY, Queue, _ending
 def test_typed_wait_and_renderer_share_one_observation(
         tmp_path, capsys, monkeypatch, directory, status, returncode, expected, timed_out):
     queue = Queue(tmp_path / 'queue')
-    queue.records.item_path(directory, KEY).write_text(json.dumps(_ending(status, returncode)))
+    queue.records.replace_record_at(
+        queue.records.item_path(directory, KEY),
+        _ending(status, returncode),
+    )
     outcome = client.await_pool_outcome(queue, KEY, patience=action_wait.ProbeOnce(0))
     assert capsys.readouterr() == ('', '')
     assert isinstance(outcome.ending.verdict, client.ClientExecution)
@@ -44,7 +47,7 @@ def test_typed_wait_and_renderer_share_one_observation(
 
 def test_pool_wait_preserves_the_existing_client_lifetime(tmp_path):
     queue = Queue(tmp_path / 'queue')
-    queue.records.item_path('done', KEY).write_text(json.dumps(_ending('executed', 0)))
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), _ending('executed', 0))
     reader = action_wait.RetainedReader('earlier attachment', 123, 17, 1.0)
     with action_wait.client_readers() as history:
         history.record_abandoned([reader.to_record()])

@@ -4,6 +4,7 @@ Private CPU queues, real sealed publisher, ledger, claim and copy process.
 The fixture uses synthetic producer scope authority and explicit unpaced copy,
 as disclosed by test_produced_output_restage; no fleet state is touched.
 """
+from fleet_world import Clock as FleetClock
 
 from prismabuild import funding
 from pathlib import Path
@@ -213,7 +214,7 @@ def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, m
     w, mover, claimed, funding, _ = _funded_claim(tmp_path)
     w.q.records.lease_path(mover).unlink()
     now = pool._now()
-    monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 1)
+    FleetClock(source=lambda: now + pool.HEARTBEAT_S + 1).install(monkeypatch, scope="pool")
     held = w.ledger.holdings(mover)
     w.q.reap_stale(timeout_s=3600)
     ended = w.q.records.item_path(pool.record_store.FAILED, mover)

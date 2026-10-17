@@ -9,6 +9,7 @@ ages the item: the box does other work while the tier is busy.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from prismabuild import funding
 
@@ -60,11 +61,11 @@ def _range_block() -> dict[str, object]:
 
 def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
     kw.setdefault("residency", _range_block())
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
+    ActionRows(q).publish(
+        key,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
         resources=resources,
         **kw,
     )

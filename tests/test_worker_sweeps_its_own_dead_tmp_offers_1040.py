@@ -1,4 +1,5 @@
 """Offer temporaries a killed writer left behind (#1040)."""
+from fleet_world import Clock as FleetClock
 
 import importlib.util
 import json
@@ -86,7 +87,7 @@ def test_missing_directory_is_not_an_error(worker, tmp_path):
 
 def test_day_old_offer_is_marked_retired_and_kept(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue.announce(host="gone", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 2 * 86400.0)
@@ -101,7 +102,7 @@ def test_day_old_offer_is_marked_retired_and_kept(tmp_path, monkeypatch):
 
 def test_an_hour_old_offer_is_stale_not_retired(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue.announce(host="slow", tags=[], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 3600.0)

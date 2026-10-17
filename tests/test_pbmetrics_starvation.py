@@ -76,13 +76,22 @@ def starved_queue(tmp_path, monkeypatch):
     record = json.loads(ready_path.read_text())
     record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
                    "claimed_by": f"worker-{HOST}"})
-    queue.records.item_path(pool.record_store.CLAIMED, MOVER2).write_text(json.dumps(record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.CLAIMED, MOVER2),
+        record,
+    )
     ready_path.unlink()
-    queue.records.lease_path(MOVER2).write_text(json.dumps({
-        "action_key": MOVER2, "owner": record["claimed_by"], "host": HOST,
-        "claimed_unix": record["claimed_unix"],
-        "published_unix": record["published_unix"],
-        "heartbeat_unix": NOW - 1}))
+    queue.records.replace_record_at(
+        queue.records.lease_path(MOVER2),
+        {
+            'action_key': MOVER2,
+            'owner': record['claimed_by'],
+            'host': HOST,
+            'claimed_unix': record['claimed_unix'],
+            'published_unix': record['published_unix'],
+            'heartbeat_unix': NOW - 1,
+        },
+    )
     queue.publish(**_row(MOVER, {STAGE_KIND: 2}, queue,
                          residency=_mover_residency(0, 2 * storage_tiers.GIB)))
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue, residency={
@@ -95,22 +104,29 @@ def starved_queue(tmp_path, monkeypatch):
     consumer_record = json.loads(ready_consumer.read_text())
     consumer_record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
                             "claimed_by": f"worker-{HOST}"})
-    queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).write_text(
-        json.dumps(consumer_record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.CLAIMED, CONSUMER),
+        consumer_record,
+    )
     ready_consumer.unlink()
-    queue.records.lease_path(CONSUMER).write_text(json.dumps({
-        "action_key": CONSUMER, "owner": consumer_record["claimed_by"],
-        "host": HOST, "claimed_unix": consumer_record["claimed_unix"],
-        "published_unix": consumer_record["published_unix"],
-        "heartbeat_unix": NOW - 1,
-        "progress_observation": {
-            "phase": "encode", "quiet_s": 800.0, "grace_s": 900.0,
-            "last_accepted": {"phase": "phase-0000",
-                              "reported_unix": NOW - 800,
-                              "units_completed": 3}},
-        "execution_observation": {
-            "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
-                      "silent_s": 700.0}}}))
+    queue.records.replace_record_at(
+        queue.records.lease_path(CONSUMER),
+        {
+            'action_key': CONSUMER,
+            'owner': consumer_record['claimed_by'],
+            'host': HOST,
+            'claimed_unix': consumer_record['claimed_unix'],
+            'published_unix': consumer_record['published_unix'],
+            'heartbeat_unix': NOW - 1,
+            'progress_observation': {
+                'phase': 'encode',
+                'quiet_s': 800.0,
+                'grace_s': 900.0,
+                'last_accepted': {'phase': 'phase-0000', 'reported_unix': NOW - 800, 'units_completed': 3},
+            },
+            'execution_observation': {'child': {'alive': True, 'pid_count': 3, 'cpu_seconds': 12.0, 'silent_s': 700.0}},
+        },
+    )
     # Two phases, neither staged anywhere: the movers are unpublished and
     # hold no tokens, so the whole plan reads as promotion backlog behind a
     # cursor accepted at phase-0000.

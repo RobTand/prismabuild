@@ -1,3 +1,4 @@
+from fleet_world import Clock as FleetClock
 from prismabuild import claim_identity
 """A stale claim read cannot authorize cleanup of a different leased attempt."""
 import json
@@ -56,7 +57,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
     with monkeypatch.context() as patch:
         patch.setattr(pool.record_store, '_read_json',
                       lambda path, **kwargs: dict(first) if path == claim_path else read(path, **kwargs))
-        patch.setattr(pool, '_now', lambda: later)
+        FleetClock(source=lambda: later).install(patch, scope="pool")
         patch.setattr(queue, 'cleanup_action_containers', observed_cleanup)
         requeued = queue.reap_stale()
 
@@ -72,7 +73,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
 
     # A later consistent read can recover the expired successor normally.
     with monkeypatch.context() as patch:
-        patch.setattr(pool, '_now', lambda: later)
+        FleetClock(source=lambda: later).install(patch, scope="pool")
         assert queue.reap_stale() == [key]
     assert queue.ledger().held() == {}
     ending = json.loads(queue.records.attempt_path(newer, 1).read_text())

@@ -13,6 +13,7 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -36,26 +37,32 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        **kw,
+def _publish_consumer(q: pool.PoolQueue, leads: list[str]) -> None:
+    ActionRows(q).publish(
+        CONSUMER,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': 'a' * 64,
+            'manifest_bytes': 4096,
+            'leads': leads,
+        },
     )
 
 
-def _publish_consumer(q: pool.PoolQueue, leads: list[str]) -> None:
-    _publish(q, CONSUMER, {"cpu": 1}, residency={
-        "schema": pool.RESIDENCY_SCHEMA_V1,
-        "manifest_sha256": "a" * 64, "manifest_bytes": 4096, "leads": leads,
-    })
-
-
 def _fail(q: pool.PoolQueue, key: str) -> None:
-    _publish(q, key, {"cpu": 1}, max_attempts=1, retry_safe=False)
+    ActionRows(q).publish(
+        key,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=False,
+    )
     claim = q.claim(owner="mover", capacity={"cpu": 4})
     assert claim is not None and claim["action_key"] == key
     q.finish(key, status="failed", claim_snapshot=claim)

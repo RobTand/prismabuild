@@ -1,6 +1,7 @@
 """The pull-queue transport, exercised on the primitives that can lose work."""
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import os
@@ -127,14 +128,14 @@ def test_priority_then_age_orders_the_queue(
 
     published = [300.0]
     real_now = pool._now
-    monkeypatch.setattr(pool, "_now", lambda: published[0])
+    FleetClock(source=lambda: published[0]).install(monkeypatch, scope="pool")
     key_oldest = "c" * 64
     ActionRows(queue).publish(key_oldest, priority=0)
     published[0] = 400.0
     ActionRows(queue).publish(KEY_B, priority=5)
     published[0] = 500.0
     ActionRows(queue).publish(KEY_A, priority=0)
-    monkeypatch.setattr(pool, "_now", real_now)
+    FleetClock(source=real_now).install(monkeypatch, scope="pool")
 
     assert queue.claim()["action_key"] == KEY_B         # the band outranks age
     assert queue.claim()["action_key"] == key_oldest    # then oldest first

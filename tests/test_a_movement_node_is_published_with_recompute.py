@@ -15,6 +15,7 @@ a requeue, and the launch appends ``--recompute``.  Everything else launches
 exactly as SLURM would.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -57,9 +58,14 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _publish(queue: pool.PoolQueue, key: str, **extra) -> dict[str, object]:
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
-                  resources={"cpu": 1, "mem_gb": 1}, **extra)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        **extra,
+    )
     return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
 

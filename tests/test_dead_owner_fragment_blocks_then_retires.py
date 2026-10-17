@@ -15,6 +15,7 @@ for the refusal, and the real `sweep`/`evict` for housekeeping. No payload is
 hashed beyond the small fixture bytes.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import os
 import uuid
@@ -57,12 +58,12 @@ def fleet(tmp_path: Path):
 
 
 def _publish(queue: pool.PoolQueue, key: str, **kw: object) -> dict:
-    queue.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        resources=kw.pop("resources", {"cpu": 1}),
+    ActionRows(queue).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script=kw.pop('worker_script', '/w.py'),
+        resources=kw.pop('resources', {'cpu': 1}),
         **kw,
     )
     claimed = queue.claim(capacity={"cpu": 4})

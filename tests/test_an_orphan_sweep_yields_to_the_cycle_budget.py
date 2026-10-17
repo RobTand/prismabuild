@@ -26,6 +26,7 @@ Every fixture is a temp stage root registered to a temp queue (never a real
 /stage or /ram), and the staged files are sparse.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -85,7 +86,7 @@ class _Sweeps:
         self.fleet = fleet
         self.queue, self.stage, _ = fleet
         self.clock = FakeClock()
-        monkeypatch.setattr(pool, "_now", self.clock)
+        FleetClock(source=self.clock).install(monkeypatch, scope="pool")
         self.liveness = tier_loop.Liveness(
             interval_s=INTERVAL_S, bound_s=BOUND_S, poll_s=POLL_S)
         #: Every orphan eviction, in order: ``(mover, record age at start)``.
@@ -261,7 +262,7 @@ def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
     import test_a_consumer_stages_only_to_its_refill_horizon as hz
 
     clock = FakeClock()
-    monkeypatch.setattr(pool, "_now", clock)
+    FleetClock(source=clock).install(monkeypatch, scope="pool")
     real_evict = staged_path.evict
     ages: list[float] = []
 

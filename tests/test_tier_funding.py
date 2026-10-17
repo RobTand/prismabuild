@@ -34,6 +34,7 @@ handling, cycle output tick) and REUSES this contract via root -- no second
 funding protocol is defined here.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 from prismabuild import funding
 
@@ -95,10 +96,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, mover: str, *,
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 4, 'mem_gb': 8}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.tier(TIER).mint({'stage_gib': stage_gib})
     if ram_gib:
         queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})

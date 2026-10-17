@@ -27,6 +27,7 @@ established window already judges it); only per-CPU foreign moves to the
 absolute line, which is where the sum was the defect.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import io
@@ -52,7 +53,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -69,8 +70,13 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _publish(queue, clock, key, resources):
     clock[0] += 0.001
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources=resources)
+    ActionRows(queue).publish(
+        key,
+        cas_root='/cas',
+        checkout_root='/co',
+        worker_script='/w.py',
+        resources=resources,
+    )
     return key
 
 

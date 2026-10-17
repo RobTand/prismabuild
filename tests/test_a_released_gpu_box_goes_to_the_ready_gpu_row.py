@@ -27,6 +27,7 @@ that demands no GPU is admitted only if the GPU row still fits afterwards.
 CPU work that fits beside it is still admitted, and nothing is evicted.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 from contextlib import contextmanager
 import hashlib
@@ -70,7 +71,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -125,11 +126,16 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     # A distinct publish time per row, so the ready order within a band is
     # the order this file publishes in, then the denial count.
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources,
-              priority=kw.pop("priority", BAND),
-              tags=kw.pop("tags", [socket.gethostname()]), **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        priority=kw.pop('priority', BAND),
+        tags=kw.pop('tags', [socket.gethostname()]),
+        **kw,
+    )
     return key
 
 

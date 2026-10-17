@@ -7,6 +7,7 @@ the only blocker.  The submission now waits within the leg's own budget;
 an image no box reports at all stays an immediate refusal.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -251,7 +252,7 @@ def test_a_retained_offer_on_the_old_generation_waits(tmp_path, monkeypatch):
     queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN)
     later = pool._now() + 10 * pool.OFFER_TIMEOUT_S
-    monkeypatch.setattr(pool, "_now", lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
 
     assert pbcanary.generation_pending(
         _paths(tmp_path), SPEC, NEW_GEN, HOST) is True

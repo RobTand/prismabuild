@@ -37,6 +37,7 @@ directly rather than a fleet worker loop; `safe_release_instance` is only
 shown retaining (its full path needs the accepted reader_lease SDK).
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 from prismabuild import funding
 from prismabuild import batch_ledger as bl
@@ -111,10 +112,7 @@ def _template(prefix: str, window_gib: int = 2) -> dict:
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
+    q = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     q.tier(TIER).mint({KIND: gib})
     return q
 

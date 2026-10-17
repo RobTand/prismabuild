@@ -1,4 +1,5 @@
 """Maintenance defers only unstarted attempts and preserves later publication."""
+from fleet_world import ActionRows
 import json
 from functools import partial
 from pathlib import Path
@@ -13,14 +14,15 @@ KEY = 'a' * 64
 from prismabuild import role_session
 
 
-def _publish(queue, **kwargs):
-    queue.publish(action_key=KEY, cas_root='/cas', checkout_root='/checkout',
-                  worker_script='/worker.py', resources={'cpu': 1, 'mem_gb': 1}, max_attempts=1, **kwargs)
-
-
 def test_maintenance_after_claim_returns_capacity_without_burning_attempt(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / 'queue')
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        max_attempts=1,
+    )
     def execute(*args, **kwargs):
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
@@ -35,9 +37,22 @@ def test_maintenance_after_claim_returns_capacity_without_burning_attempt(tmp_pa
 
 def test_maintenance_deferral_never_overwrites_a_later_submission(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / 'queue')
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        max_attempts=1,
+    )
     def execute(*args, **kwargs):
-        _publish(queue, priority=9)
+        ActionRows(queue).publish(
+            KEY,
+            checkout_root='/checkout',
+            worker_script='/worker.py',
+            resources={'cpu': 1, 'mem_gb': 1},
+            max_attempts=1,
+            priority=9,
+        )
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
     assert queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True) is None
@@ -48,7 +63,13 @@ def test_maintenance_deferral_never_overwrites_a_later_submission(tmp_path, monk
 
 def test_ordinary_broker_failure_is_not_misreported_as_maintenance(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / 'queue')
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        max_attempts=1,
+    )
     def execute(*args, **kwargs):
         raise OSError('broker disconnected')
     monkeypatch.setattr(queue, 'execute', execute)

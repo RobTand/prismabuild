@@ -1,5 +1,6 @@
 """Configured class image drift gates container claims, not native work (#807)."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import copy
 import json
@@ -71,7 +72,7 @@ def denials(queue):
     ({'image_contents': None}, 'inventory_unknown'),
 ])
 def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, monkeypatch, change, reason):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue')
     q.ledger().ensure_capacity(CAPACITY)
     publish(q)
@@ -87,7 +88,7 @@ def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, mon
 
 
 def test_unknown_class_inventory_refuses_even_with_positive_action_reference(tmp_path, monkeypatch):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=None) is None
@@ -95,13 +96,13 @@ def test_unknown_class_inventory_refuses_even_with_positive_action_reference(tmp
 
 
 def test_native_claim_survives_class_drift(tmp_path, monkeypatch):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=False)
     assert q.claim(capacity=CAPACITY, container_class_policy=policy(), container_inventory=None) is not None
 
 
 def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_path, monkeypatch):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     q.announce(
         host='seen',
@@ -120,7 +121,7 @@ def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_p
 
 
 def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path, monkeypatch):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
                       container_class_policy=policy(), container_inventory=snapshot())
@@ -135,7 +136,7 @@ def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path
 
 @pytest.mark.parametrize('container', [True, False])
 def test_offer_reports_refusal_and_only_excludes_declared_container_rows(tmp_path, monkeypatch, container):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(image_contents={}), now=1000.)
     q.announce(
@@ -155,7 +156,7 @@ def test_offer_reports_refusal_and_only_excludes_declared_container_rows(tmp_pat
 
 def test_offer_class_observation_cannot_borrow_fresh_offer_time(tmp_path, monkeypatch):
     now = [1000.]
-    monkeypatch.setattr(pool, '_now', lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     evidence = policy().evaluate(snapshot(), now=1000.)
     now[0] = 1031.
@@ -175,7 +176,7 @@ def test_offer_class_observation_cannot_borrow_fresh_offer_time(tmp_path, monkey
 
 def test_expiry_during_reservation_abandons_only_this_handle(tmp_path, monkeypatch):
     now = [1000.]
-    monkeypatch.setattr(pool, '_now', lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); q.ledger().ensure_capacity(CAPACITY); publish(q)
     real_begin = pool.ResourceLedger.begin_acquire
     def delayed_begin(self, *args, **kwargs):
@@ -227,7 +228,7 @@ def test_worker_config_load_is_bounded_and_rejects_duplicate_keys(tmp_path):
 
 def test_expiry_during_intent_write_restores_moved_item_and_returns_own_reservation(tmp_path, monkeypatch):
     now = [1000.]
-    monkeypatch.setattr(pool, '_now', lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
     original = q._write_claim_intent
     def delay(*args, **kwargs):
@@ -319,7 +320,7 @@ def test_configuration_identity_uses_the_existing_canonical_unicode_contract():
 @pytest.mark.parametrize('field', ['observed_unix', 'evaluated_unix'])
 @pytest.mark.parametrize('container', [True, False])
 def test_oversized_offer_timestamp_is_unknown_and_does_not_break_native_placement(tmp_path, monkeypatch, field, container):
-    monkeypatch.setattr(pool, '_now', lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=container)
     evidence = policy().evaluate(snapshot(), now=1000.)
     evidence[field] = 10 ** 400

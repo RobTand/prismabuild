@@ -8,6 +8,7 @@ interpreter exists", which is how CPU-only work pinned itself onto the GPU
 hosts and idled both GPUs for 100 minutes on 2026-09-28.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 from prismabuild import submission as submit_core
 
 import json
@@ -49,11 +50,6 @@ def _announce(queue, host, *, interpreters=None, tags=("gb10",),
     )
 
 
-def _publish(queue, key, **kwargs):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", **kwargs)
-
-
 def _item_of(queue, key):
     return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
 
@@ -77,7 +73,7 @@ def test_a_shared_venv_interpreter_is_placeable_on_every_box_that_has_it(tmp_pat
     for host in ("dl380g10", "sparky", "sparklina"):
         _announce(queue, host, tags=(contracts.INTERPRETER_TAG,),
                   interpreters=[PQ_PYTHON])
-    _publish(queue, "a" * 64, interpreter=PQ_PYTHON)
+    ActionRows(queue).publish('a' * 64, interpreter=PQ_PYTHON)
 
     probe = {"tags": [contracts.INTERPRETER_TAG], "interpreter": PQ_PYTHON,
              "resources": {"cpu": 1, "mem_gb": 1}}
@@ -139,7 +135,7 @@ def test_an_offer_without_answers_is_not_a_match_for_a_naming_item(tmp_path):
 
 def test_publish_seals_the_path_and_adds_the_capability_tag(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "b" * 64, interpreter=PQ_PYTHON)
+    ActionRows(queue).publish('b' * 64, interpreter=PQ_PYTHON)
     record = _item_of(queue, "b" * 64)
     assert record["interpreter"] == PQ_PYTHON
     assert contracts.INTERPRETER_TAG in record["tags"]
@@ -148,16 +144,16 @@ def test_publish_seals_the_path_and_adds_the_capability_tag(tmp_path):
 def test_publish_refuses_a_relative_path_and_a_bare_capability(tmp_path):
     queue = _queue_at(tmp_path)
     with pytest.raises(pool.PoolContractError, match="absolute"):
-        _publish(queue, "c" * 64, interpreter="venv/bin/python")
+        ActionRows(queue).publish('c' * 64, interpreter='venv/bin/python')
     with pytest.raises(pool.PoolContractError, match="interpreter"):
-        _publish(queue, "d" * 64, tags=[contracts.INTERPRETER_TAG])
+        ActionRows(queue).publish('d' * 64, tags=[contracts.INTERPRETER_TAG])
     assert not queue.records.item_path(pool.record_store.READY, "c" * 64).exists()
     assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
 
 
 def test_an_item_without_an_interpreter_is_byte_identical_to_before(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "e" * 64)
+    ActionRows(queue).publish('e' * 64)
     record = _item_of(queue, "e" * 64)
     assert "interpreter" not in record
     assert contracts.INTERPRETER_TAG not in record["tags"]
@@ -204,8 +200,11 @@ def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
 
 def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "f" * 64, resources={"cpu": 1, "mem_gb": 1},
-             interpreter="/no/such/bin/python")
+    ActionRows(queue).publish(
+        'f' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        interpreter='/no/such/bin/python',
+    )
 
     assert queue.claim(capacity=CAPACITY,
                        tags=[contracts.INTERPRETER_TAG, "gb10"]) is None
@@ -217,8 +216,11 @@ def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
 
 def test_the_claim_takes_an_interpreter_this_box_has(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "1" * 64, resources={"cpu": 1, "mem_gb": 1},
-             interpreter=sys.executable)
+    ActionRows(queue).publish(
+        '1' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        interpreter=sys.executable,
+    )
 
     claimed = queue.claim(capacity=CAPACITY,
                           tags=[contracts.INTERPRETER_TAG, "gb10"])
@@ -418,8 +420,7 @@ def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, targ
     assert local_dependencies.observe({str(dependency): "path"}) == {
         str(dependency): "absent" if missing else "executable" if target == "executable" else "path"}
     key = "d" * 64
-    _publish(q, key, resources={"cpu": 1},
-             local_dependencies={str(dependency): "path"})
+    ActionRows(q).publish(key, resources={'cpu': 1}, local_dependencies={str(dependency): 'path'})
     before = _item_of(q, key)
     assert local_dependencies.TAG in before["tags"]
     item = q.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
@@ -469,7 +470,7 @@ def test_local_dependency_capability_without_requirements_refuses(tmp_path):
     from prismabuild import local_dependencies
     q = _queue_at(tmp_path)
     with pytest.raises(pool.PoolContractError, match="requires local_dependencies"):
-        _publish(q, "e" * 64, tags=[local_dependencies.TAG])
+        ActionRows(q).publish('e' * 64, tags=[local_dependencies.TAG])
     assert not q.records.item_path(pool.record_store.READY, "e" * 64).exists()
 
 
@@ -502,7 +503,7 @@ def test_raw_file_suffix_is_absent_at_offer_and_claim(tmp_path, kind, suffix):
              "local_dependencies": requirements}
     placeable = queue.placeable(probe)
     key = "f" * 64
-    _publish(queue, key, resources={"cpu": 1}, local_dependencies=requirements)
+    ActionRows(queue).publish(key, resources={'cpu': 1}, local_dependencies=requirements)
     before = _item_of(queue, key)
     item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
     assert item is None

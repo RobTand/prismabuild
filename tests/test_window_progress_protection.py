@@ -25,6 +25,7 @@ settling, cancellation bounds, and pin charge).
   refuses it.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 from prismabuild import funding
 
@@ -134,10 +135,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, digest: str, *,
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 4, 'mem_gb': 8}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.tier(TIER).mint({'stage_gib': stage_gib})
     stage = tmp_path / "stage"

@@ -17,6 +17,7 @@ holder that runs for hours or a day (R12, a progress-governed campaign action
 with no total timeout) must not hold the box shut for anyone.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import importlib.util
@@ -67,7 +68,7 @@ def clock(monkeypatch):
     now = [T0]
     # One clock for the pool and the adaptive controller.  ``adaptive_cpu.time``
     # is the ``time`` module, so this also covers the controller's ``now``.
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -86,10 +87,15 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     # A distinct publish time per item, so the ready order is the order the
     # fixture publishes in rather than a digest tie-break.
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources,
-              tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        tags=kw.pop('tags', [pool.socket.gethostname()]),
+        **kw,
+    )
     return key
 
 

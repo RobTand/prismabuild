@@ -32,6 +32,7 @@ Every fixture is a temp queue and a temp stage root; nothing touches a real
 ``/stage``, ``/ram`` or the live queue.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import os
@@ -92,7 +93,7 @@ class _Loop:
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                  mode: str) -> None:
         self.clock = FakeClock()
-        monkeypatch.setattr(pool, "_now", self.clock)
+        FleetClock(source=self.clock).install(monkeypatch, scope="pool")
         self.queue, self.stage = hz._fixture_queue(tmp_path, STAGE_GIB)
         self.receipts = tier_loop.ReceiptCache()
         self.liveness = tier_loop.Liveness(interval_s=INTERVAL_S)

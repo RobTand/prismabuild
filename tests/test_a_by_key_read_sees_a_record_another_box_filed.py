@@ -96,10 +96,6 @@ class NegativeLookupCache:
         monkeypatch.setattr(os, "scandir", scandir)
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return pool.PoolQueue(tmp_path / "queue")
-
-
 def _file_receipt(queue: pool.PoolQueue, key: str, **fields) -> None:
     path = queue.records.move_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +105,7 @@ def _file_receipt(queue: pool.PoolQueue, key: str, **fields) -> None:
 
 def test_a_receipt_filed_after_the_first_poll_is_seen_on_the_next(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     queue.records.move_path(KEY).parent.mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
@@ -125,7 +121,7 @@ def test_a_receipt_filed_after_the_first_poll_is_seen_on_the_next(
 
 def test_the_owners_readiness_gate_turns_true_without_waiting_out_the_cache(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     queue.records.move_path(KEY).parent.mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
@@ -137,7 +133,7 @@ def test_the_owners_readiness_gate_turns_true_without_waiting_out_the_cache(
 
 def test_a_terminal_row_filed_after_the_first_poll_is_named(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
                   pool.record_store.WITHDRAWN):
         queue.records.dir(state).mkdir(parents=True, exist_ok=True)
@@ -154,7 +150,7 @@ def test_a_record_that_is_there_costs_no_directory_open(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The revalidation is the miss path only: a hit is one read."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _file_receipt(queue, KEY, complete=True)
     cache = NegativeLookupCache(monkeypatch)
 
@@ -164,7 +160,7 @@ def test_a_record_that_is_there_costs_no_directory_open(
 
 def test_a_directory_that_is_not_there_is_still_absent_not_an_error(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     NegativeLookupCache(monkeypatch)
 
     assert queue.move_record(KEY) is None
@@ -176,7 +172,7 @@ def test_a_row_claimed_after_the_first_poll_is_not_read_as_absent(
     """``_publish_output_mover_row`` republishes on "absent": a stale miss on
     ``claimed`` would republish a row that is being copied right now."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
                   pool.record_store.WITHDRAWN):
         queue.records.dir(state).mkdir(parents=True, exist_ok=True)
@@ -194,7 +190,7 @@ def test_revalidating_another_directory_does_not_refresh_this_one(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The model is not satisfied by opening just anything."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     receipt = queue.records.move_path(KEY)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
@@ -212,7 +208,7 @@ def test_a_parent_that_cannot_be_opened_leaves_the_first_answer(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Best effort: no caller meets a failure it did not meet before #808."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     queue.records.move_path(KEY).parent.mkdir(parents=True, exist_ok=True)
     real_open = os.open
 
@@ -236,7 +232,7 @@ def test_a_parent_that_cannot_be_opened_leaves_the_first_answer(
 ])
 def test_mover_polling_names_the_first_filed_state_not_the_newest_generation(
         tmp_path: Path, filed_states: tuple[str, ...], expected: str) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     for stamp, state in enumerate(filed_states):
         path = queue.records.item_path(state, KEY)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,7 +247,7 @@ def test_mover_polling_names_the_first_filed_state_not_the_newest_generation(
 
 def test_a_present_mover_needs_no_directory_refresh(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"action_key": KEY}))
@@ -265,7 +261,7 @@ def test_a_present_mover_needs_no_directory_refresh(
 
 
 def test_an_empty_live_record_does_not_hide_a_filed_ending(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_bytes(b"")
@@ -282,7 +278,7 @@ def test_an_empty_live_record_does_not_hide_a_filed_ending(tmp_path: Path) -> No
 @pytest.mark.parametrize("raw", [b"{", b"[]"])
 def test_an_invalid_live_record_does_not_fall_through_to_a_filed_ending(
         tmp_path: Path, raw: bytes) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_bytes(raw)
@@ -302,7 +298,7 @@ def test_an_invalid_live_record_does_not_fall_through_to_a_filed_ending(
 def test_a_failed_mover_read_retains_its_original_error_and_path(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         failing_read: int, error_type: type[Exception]) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     done = queue.records.item_path(pool.record_store.DONE, KEY)
@@ -337,7 +333,7 @@ def test_a_failed_mover_read_retains_its_original_error_and_path(
 def test_a_queued_read_falls_back_only_from_a_missing_or_empty_claim(
         tmp_path: Path, claimed_raw: bytes | None,
         expected: dict[str, object]) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     if claimed_raw is not None:
         claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
         claimed.parent.mkdir(parents=True, exist_ok=True)
@@ -354,7 +350,7 @@ def test_a_queued_read_falls_back_only_from_a_missing_or_empty_claim(
 
 def test_an_invalid_claim_does_not_fall_back_to_a_ready_record(
         tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_bytes(b"{")
@@ -372,7 +368,7 @@ def test_an_invalid_claim_does_not_fall_back_to_a_ready_record(
 
 def test_a_plain_claim_read_does_not_refresh_a_cached_miss(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     cache = NegativeLookupCache(monkeypatch)

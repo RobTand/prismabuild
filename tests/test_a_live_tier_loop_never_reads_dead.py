@@ -33,6 +33,7 @@ Nothing here touches the live queue, a real stage root or a real device.
 """
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -104,7 +105,7 @@ class _Loop:
         # host, so the retirement takes the in-process egress.
         monkeypatch.setattr(bench, "HOST", socket.gethostname())
         self.clock = FakeClock()
-        monkeypatch.setattr(pool, "_now", self.clock)
+        FleetClock(source=self.clock).install(monkeypatch, scope="pool")
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
         self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"

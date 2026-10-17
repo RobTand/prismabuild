@@ -17,6 +17,7 @@ around it.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -51,9 +52,14 @@ def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
 
 def _publish(q: pool.PoolQueue, *, max_attempts: int = 1,
              retry_safe: bool | None = None) -> float:
-    q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
-              worker_script="/w.py", max_attempts=max_attempts,
-              retry_safe=retry_safe)
+    ActionRows(q).publish(
+        KEY,
+        cas_root='/cas',
+        checkout_root='/co',
+        worker_script='/w.py',
+        max_attempts=max_attempts,
+        retry_safe=retry_safe,
+    )
     ready = json.loads(
         q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"),
     )

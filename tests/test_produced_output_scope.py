@@ -12,6 +12,7 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 
 from prismabuild.legacy_funding import LegacyFunding
@@ -93,10 +94,7 @@ def _template(output_prefix: str, **overrides) -> dict:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.tier(STAGE_TIER).mint({'stage_gib': 8})
     return queue
 

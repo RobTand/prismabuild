@@ -22,6 +22,7 @@ ordinary paced command); the claim is `PoolQueue.claim` directly rather than a
 fleet worker loop.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
@@ -102,10 +103,7 @@ def _template(prefix: str, window_gib: int = 1,
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
+    q = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     q.tier(TIER).mint({KIND: gib})
     return q
 

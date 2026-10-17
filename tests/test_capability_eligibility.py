@@ -1,5 +1,6 @@
 """Offer and live interpreter evidence preserve placement and claim authority."""
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import json
@@ -13,12 +14,6 @@ from prismabuild import (capability_eligibility as eligibility, container_images
 
 TAG = contracts.INTERPRETER_TAG
 CAPACITY = {"cpu": 1, "mem_gb": 1}
-
-
-def _publish(queue, key, interpreter):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/checkout",
-                  worker_script="/worker.py", resources=CAPACITY,
-                  interpreter=interpreter)
 
 
 def _denials(queue):
@@ -62,7 +57,13 @@ def test_worker_offer_and_live_claim_agree_on_observed_paths(tmp_path, kind):
             ),
         ),
     )
-    _publish(queue, "a" * 64, named)
+    ActionRows(queue).publish(
+        'a' * 64,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources=CAPACITY,
+        interpreter=named,
+    )
     expected = kind == "executable"
 
     assert queue.placeable({"tags": [TAG], "interpreter": named,
@@ -95,7 +96,13 @@ def test_live_claim_uses_current_path_instead_of_offer_answer(tmp_path, offered_
             ),
         ),
     )
-    _publish(queue, "a" * 64, named)
+    ActionRows(queue).publish(
+        'a' * 64,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources=CAPACITY,
+        interpreter=named,
+    )
 
     assert queue.placeable({"tags": [TAG], "interpreter": named,
                             "resources": CAPACITY}) is offered_present
@@ -116,9 +123,21 @@ def test_live_claim_uses_current_path_instead_of_offer_answer(tmp_path, offered_
 def test_publication_and_foreign_claim_keep_their_existing_validation(tmp_path, value, reason):
     queue = pool.PoolQueue(tmp_path / "queue")
     with pytest.raises(pool.PoolContractError, match="absolute path to an executable"):
-        _publish(queue, "a" * 64, value)
+        ActionRows(queue).publish(
+            'a' * 64,
+            checkout_root='/checkout',
+            worker_script='/worker.py',
+            resources=CAPACITY,
+            interpreter=value,
+        )
     assert not queue.records.item_path(pool.record_store.READY, "a" * 64).exists()
-    _publish(queue, "b" * 64, sys.executable)
+    ActionRows(queue).publish(
+        'b' * 64,
+        checkout_root='/checkout',
+        worker_script='/worker.py',
+        resources=CAPACITY,
+        interpreter=sys.executable,
+    )
     path = queue.records.item_path(pool.record_store.READY, "b" * 64)
     record = json.loads(path.read_text())
     record["interpreter"] = value
@@ -161,7 +180,13 @@ def test_missing_path_stays_missing_for_the_pass_and_refreshes_next_pass(tmp_pat
     named = str(path)
     queue = pool.PoolQueue(tmp_path / "queue")
     for digit in "ab":
-        _publish(queue, digit * 64, named)
+        ActionRows(queue).publish(
+            digit * 64,
+            checkout_root='/checkout',
+            worker_script='/worker.py',
+            resources=CAPACITY,
+            interpreter=named,
+        )
     isfile = eligibility.os.path.isfile
 
     def installed_after_lookup(candidate):
@@ -437,7 +462,7 @@ def _class_report():
     "omitted", "null", "malformed", "fresh", "stale", "future", "refused",
 ])
 def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkeypatch, report_kind):
-    monkeypatch.setattr(pool, "_now", lambda: 1000.)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.announce(
         host="observed",
