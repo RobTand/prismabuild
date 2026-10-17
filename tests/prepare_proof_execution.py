@@ -24,6 +24,13 @@ def inspect_population(root):
     profile = json.loads((root / "tests/proof_execution.json").read_bytes())
     if profile["schema"] != "prismabuild.proof_test_execution.v1":
         raise ValueError("unsupported proof execution population")
+    receipt_path = root / 'tests/receipt_execution.json'
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_bytes())
+        assert receipt['schema'] == 'prismabuild.receipt_test_execution.v1'
+        assert receipt['image'] == profile['root']['image']
+        assert not profile['root']['files'].keys() & receipt['root_files'].keys()
+        profile['root']['files'].update(receipt['root_files'])
     files = sorted(str(p.relative_to(root)) for p in (root / "tests").rglob("test_*.py"))
     roots = set(profile["root"]["files"])
     native = set(files) - roots

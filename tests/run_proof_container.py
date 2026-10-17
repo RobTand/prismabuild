@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -15,6 +16,22 @@ profile = json.loads((root / "tests/proof_execution.json").read_bytes())
 if profile["schema"] != "prismabuild.proof_test_execution.v1":
     raise ValueError("unsupported proof execution population")
 required = profile["root"]
+receipt_path = root / 'tests/receipt_execution.json'
+if receipt_path.exists():
+    receipt = json.loads(receipt_path.read_bytes())
+    if receipt['schema'] != 'prismabuild.receipt_test_execution.v1' or receipt['image'] != required['image']:
+        raise ValueError('unsupported receipt execution population or image')
+    required['files'].update(receipt['root_files'])
+running = Path('/proc/self/exe').read_bytes()
+print('c15-action-runtime: ' + json.dumps({
+    'complete': True, 'version': list(sys.version_info[:3]),
+    'executable': {'path': sys.executable, 'resolved_path': str(Path(sys.executable).resolve()),
+                   'bytes': len(running), 'sha256': hashlib.sha256(running).hexdigest()},
+    'executable_path_matches_running': Path(sys.executable).read_bytes() == running,
+    'affinity': sorted(os.sched_getaffinity(0)),
+    'native_threads': {name: os.environ.get(name) for name in (
+        'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')},
+}), flush=True)
 tests = args.tests or list(required["files"])
 if len(tests) != len(set(tests)) or any(path not in required["files"] for path in tests):
     raise ValueError("root container accepts only the declared root proof files, once each")
@@ -50,14 +67,19 @@ for key, value in {
     "OPENBLAS_NUM_THREADS": str(required["native_threads"]),
     "PRISMABUILD_PROOF_EXPECTED_AFFINITY": ",".join(map(str, affinity)),
     "PRISMABUILD_PROOF_ARTIFACT_ROOT": "/source/qualification_artifacts",
+    "TMPDIR": "/home/rob/pbt17",
 }.items():
     command.extend(["--env", f"{key}={value}"])
 bootstrap = (
-    "import os, runpy; "
+    "import os, runpy, sys; "
     "expected={int(x) for x in os.environ['PRISMABUILD_PROOF_EXPECTED_AFFINITY'].split(',')}; "
     "assert os.geteuid() == 0 and os.getegid() == 0, 'real container UID/GID 0 required'; "
     "assert os.sched_getaffinity(0) == expected, 'container changed PB CPU affinity'; "
-    "runpy.run_module('pytest', run_name='__main__', alter_sys=True)"
+    "os.makedirs('/home/rob/pbt17', exist_ok=True); "
+    "owner=runpy.run_path('/source/tools/fleet/pbtest_outcomes.py'); "
+    "raise SystemExit(owner['main'](sys.argv[1:], collection_spec=" + repr(
+        {'files': tests, 'roots': [[path, 'file'] for path in tests]}) + ", "
+    "collection_source=open('/source/tools/fleet/pbtest_collection.py').read()))"
 )
 command.extend([image, "-B", "-c", bootstrap, "-q", "-rA",
                 "-o", "addopts=", "-p", "no:cacheprovider",
