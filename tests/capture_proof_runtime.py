@@ -120,9 +120,8 @@ def retain_image_members(archive_path, destination):
     return {path.name: str(path) for path in destination.iterdir()}
 
 
-def captured_roots(origin, paths):
+def captured_roots(origin, paths, budget):
     roots = []
-    budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
     for path in sorted(set(Path(value).resolve() for value in paths), key=lambda p: (len(p.parts), str(p))):
         if any(path.is_relative_to(root['path']) for root in roots):
             continue
@@ -165,7 +164,8 @@ def runtime_capture(origin):
         if file_descriptor(cache) != before:
             raise ValueError('image loader cache changed while reading its listing')
         paths.extend([cache, tool])
-    roots = captured_roots(origin, paths)
+    budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
+    roots = captured_roots(origin, paths, budget)
     if origin == 'image':
         for name in ('/lib', '/lib64', '/usr/lib64'):
             path = Path(name)
