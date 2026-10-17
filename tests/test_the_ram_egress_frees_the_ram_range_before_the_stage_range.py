@@ -114,11 +114,11 @@ def _fixture(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path]:
         "manifest_sha256": MANIFEST, "manifest_bytes": 4 * GIB,
         "leads": residency_plan.leads_for(plan)})
 
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
     stage_mover, ram_mover = _hexkey("mover0"), _hexkey("rampromote0")
-    assert queue.tier_ledger(STAGE_TIER).acquire(stage_mover, {"stage_gib": 2})
-    assert queue.tier_ledger(RAM_TIER).acquire(ram_mover, {"ram_gib": 2})
+    assert queue.tier(STAGE_TIER).take(stage_mover, {'stage_gib': 2})
+    assert queue.tier(RAM_TIER).take(ram_mover, {'ram_gib': 2})
     queue.record_move(stage_mover, {
         "consumer_action_key": CONSUMER, "tier_id": STAGE_TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -199,5 +199,4 @@ def test_both_egresses_are_published_and_the_ram_one_first(
     assert queue.records.item_path(pool.record_store.READY, _hexkey("ramrelease0")).exists()
     assert queue.records.item_path(pool.record_store.READY, _hexkey("egress0")).exists()
     assert (ram / "model" / "shard-0.bin").exists()
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(_hexkey("rampromote0")) == {
-        "ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(_hexkey('rampromote0')) == {'ram_gib': 2}

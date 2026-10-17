@@ -163,7 +163,7 @@ def test_a_sharers_fence_grant_is_holding_toward_every_sharer(
              second: _plan(queue, second, label="sharer", phases=4)}
     _land_phase(queue, stage, plans[first], 0)
     grant = window_credit.grant_key(first, TIER, "mover_row", "phase-1")
-    assert queue.tier_ledger(TIER).acquire(grant, {"stage_gib": PHASE_GIB})
+    assert queue.tier(TIER).take(grant, {'stage_gib': PHASE_GIB})
     for key in (first, second):
         _claim_at(queue, key)
 

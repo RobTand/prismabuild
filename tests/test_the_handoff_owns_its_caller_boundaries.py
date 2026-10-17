@@ -55,7 +55,7 @@ import test_withdrawal_retires_the_plan_it_minted as retirement  # noqa: E402
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(retirement.TIER, {"stage_gib": 8})
+    q.tier(retirement.TIER).mint({'stage_gib': 8})
     return q
 
 

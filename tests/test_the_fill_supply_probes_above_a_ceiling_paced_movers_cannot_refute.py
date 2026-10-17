@@ -264,7 +264,7 @@ def test_a_frozen_tier_mints_from_the_probe_offer(tmp_path):
     assert record["fill_supply"]["probe_offer_mb_s"] == pytest.approx(240.0)
     assert record["fill_ceiling_receipt"] == "1" * 64
     # The ledger is the admission authority: it now holds the probe offer.
-    assert queue.tier_ledger(TIER).capacity()[FILL] == 240
+    assert queue.tier(TIER).mint_supply()[FILL] == 240
 
 
 def test_the_escaped_probe_refutes_the_ceiling_and_growth_resumes(tmp_path):
@@ -440,7 +440,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
     queue.records.ensure_layout()
     # The tier the loop would have minted by now: 5 GiB of stage, 130 MB/s of
     # fill -- sunk far under the 400 each mover's dispatch sealed.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5, FILL: 130})
+    queue.tier(TIER).mint({'stage_gib': 5, FILL: 130})
     plan = _stale_plan(queue, fills=(400, 400))
     _claim_consumer(queue, plan)
 
@@ -482,7 +482,7 @@ def test_a_mover_priced_under_the_tier_is_republished_verbatim(tmp_path):
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5, FILL: 130})
+    queue.tier(TIER).mint({'stage_gib': 5, FILL: 130})
     plan = _stale_plan(queue, fills=(100, 100))
     _claim_consumer(queue, plan)
 
