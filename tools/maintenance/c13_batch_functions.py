@@ -111,6 +111,27 @@ def main():
     stage=files['batch_ledger']['BatchLedger.publish_stage']
     expected=ast.FunctionDef(name='stage',args=stage.args,body=original_stage,decorator_list=[])
     blocks['immutable_stage_publication']=c13_body(expected)==c13_body(stage)
+    def before_assignment(nodes, name):
+        prefix=[]
+        for node in nodes:
+            if (isinstance(node,ast.Assign) and any(
+                    isinstance(target,ast.Name) and target.id=='local:'+name
+                    for target in node.targets)):
+                return prefix,True
+            if isinstance(node,ast.With):
+                body,found=before_assignment(node.body,name)
+                if found:
+                    node=copy.deepcopy(node)
+                    node.body=body
+                    return [*prefix,node],True
+            prefix.append(node)
+        return prefix,False
+    original_prefix=copy.deepcopy(old['commit_batch'])
+    current_prefix=copy.deepcopy(files['produced_output']['commit_batch'])
+    original_prefix.body,old_boundary=before_assignment(original_prefix.body,'batch_record')
+    current_prefix.body,new_boundary=before_assignment(current_prefix.body,'refused')
+    blocks['funding_and_commit_prefix']=(old_boundary and new_boundary
+                                       and c13_body(original_prefix)==c13_body(current_prefix))
     repins=next(n for n in ast.walk(old['_file_origin_repins']) if isinstance(n,ast.For) and isinstance(n.target,ast.Tuple) and isinstance(n.target.elts[0],ast.Name) and n.target.elts[0].id=='local:key')
     current=files['batch_ledger']['BatchLedger.repin_scope']
     expected=ast.FunctionDef(name='repins',args=current.args,body=repins.body,decorator_list=[])
