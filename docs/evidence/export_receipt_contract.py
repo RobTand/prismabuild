@@ -100,6 +100,31 @@ def functions(raw):
             for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
+def ordered_methods(raw):
+    tree = ast.parse(raw)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    result = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        owners, parent = [node.name], node
+        while parent in parents:
+            parent = parents[parent]
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                owners.insert(0, parent.name)
+        operations = []
+        for child in ast.walk(node):
+            if not isinstance(child, (ast.Call, ast.Raise, ast.ExceptHandler, ast.With, ast.If, ast.Return)):
+                continue
+            operations.append({'line': child.lineno, 'column': child.col_offset,
+                               'kind': type(child).__name__, 'source': ast.unparse(child)})
+        result['.'.join(owners)] = {
+            'source': ast.get_source_segment(raw.decode(), node),
+            'ast': dump(node), 'signature': functions(ast.unparse(node).encode())[node.name],
+            'ordered_source_operations': sorted(operations, key=lambda item: (item['line'], item['column']))}
+    return result
+
+
 class ApprovedAssertionBindings(ast.NodeTransformer):
     def __init__(self, path):
         self.path = path
@@ -145,7 +170,7 @@ def preserved_tests(root):
 
 def export(root, destination):
     destination.mkdir(parents=True, exist_ok=True)
-    bindings, capture_sites = {}, []
+    bindings, capture_sites, caller_order = {}, [], {}
 
     def retain(label, raw):
         identity = sha(raw)
@@ -164,6 +189,12 @@ def export(root, destination):
                 if name.endswith('.py'):
                     before, after = functions(result.stdout), functions((root / name).read_bytes())
                     assert all(after.get(n) == sig for n, sig in before.items() if not n.startswith('_')), name
+                    old_methods = ordered_methods(result.stdout)
+                    new_methods = ordered_methods((root / name).read_bytes())
+                    caller_order[name] = {symbol: {'before': old_methods.get(symbol),
+                                                   'after': new_methods.get(symbol)}
+                                          for symbol in sorted(set(old_methods) | set(new_methods))
+                                          if old_methods.get(symbol) != new_methods.get(symbol)}
             if name.endswith('.py'):
                 tree = ast.parse((root / name).read_bytes())
                 parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
@@ -189,7 +220,8 @@ def export(root, destination):
         'schema': 'c15.receipt-contract.v1', 'base': BASE,
         'head': git(root, 'rev-parse', 'HEAD').decode().strip(),
         'branch': git(root, 'branch', '--show-current').decode().strip(), 'checkout': str(root),
-        'capture_order_and_exceptions': POLICIES, 'capture_sites': capture_sites, 'source_bindings': bindings,
+        'capture_order_and_exceptions': POLICIES, 'capture_sites': capture_sites,
+        'complete_changed_method_order': caller_order, 'source_bindings': bindings,
         'bridge': metadata, 'shipping': {
             name: {'source': path, 'package': path, 'standalone': 'tools/' + name,
                    'installed_client': '/opt/prismabuild-resource-broker/' + name,
