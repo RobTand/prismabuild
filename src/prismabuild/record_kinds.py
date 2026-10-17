@@ -385,7 +385,7 @@ KINDS = (
                "prismabuild.core:validate_awaited_batch", ("pbrun:parse_awaited_batch", "prismabuild.core:validate_awaited_batch"),
                ("cli", "validated"), variant_writers=(("cli", "pbrun:parse_awaited_batch"),
                                                       ("validated", "prismabuild.core:validate_awaited_batch"))),
-    RecordKind("state-stage-root", "prismabuild.stage-root.v1", "stage root/.prismabuild-stage-root.json", "additive",
+    RecordKind("state-stage-root", "prismabuild.stage-root.v1", "stage root/.prismabuild-stage.json", "additive",
                "stage_release:stage_root_refusal", ("stage_release:register_stage_root",), ("first", "repeated"), stable_paths=True),
     RecordKind("state-merge-failure", "pbmergeq.known_failure.v1", "private merge queue baselines/known-failure-<identity>.json", "additive",
                "pbmergeq:Store.known_failure", ("pbmergeq:Store.remember_known_failure",), ("plain", "details")),

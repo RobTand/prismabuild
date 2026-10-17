@@ -42,6 +42,7 @@ def operate(request, store, load):
         # The setup's scope was a supplied identity, never a broker scope.
         # Exercise the supported legacy unscoped terminal API for this fixture.
         claim.pop("resource_scope")
+        claim.update(max_attempts=1, retry_safe=False)
         pool._write_json_atomic(claim_path, claim)
         ended = queue.finish(owner, status="failed", detail={"returncode": 1})
         assert not claim_path.exists(), {"ended": str(ended), "producer_state": po._producer_attempt_state(queue, instance)}
@@ -53,12 +54,7 @@ def operate(request, store, load):
         Path(descriptor["path"]).unlink()
         assert po.dead_input_dependency(queue, item) is not None, {
             "producer_state": po._producer_attempt_state(queue, instance), "batch": po._read_commitments(po._commitments_path(queue.root, instance)),
-            "reference": ref, "origin_exists": Path(descriptor["path"]).exists(),
-            "standing": repr(po.RecordStore(queue.root).standing(owner)),
-            "beside": [path.name for path in queue.item_path(pool.CLAIMED, owner).parent.glob(owner + ".*")],
-            "terminal": [{"state": state, **{name: body.get(name) for name in ("status", "published_unix", "action_key")}}
-                for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-                if (body := pool._read_json(queue.item_path(state, owner))) is not None]}
+            "reference": ref, "origin_exists": Path(descriptor["path"]).exists()}
         assert queue.fail_dead_input_dependency(item, key)
     elif variant == "unreadable-writer":
         ready = queue.item_path(pool.READY, key)
