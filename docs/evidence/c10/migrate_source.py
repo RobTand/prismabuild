@@ -78,7 +78,7 @@ def caller_aliases(tree):
                 name = (node.func.id if isinstance(node.func, ast.Name) else
                         node.func.attr if isinstance(node.func, ast.Attribute) else "")
                 called = functions.get(name)
-                if called is None:
+                if called is None or name == "held_names_visible":
                     continue
                 params = called.args.args
                 if isinstance(node.func, ast.Attribute) and params and params[0].arg == "self":
@@ -127,7 +127,8 @@ class CallerMove(ast.NodeTransformer):
         return node
 
     def visit_Call(self, node):
-        old = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        old = (node.func.attr if isinstance(node.func, ast.Attribute) else
+               node.func.id if isinstance(node.func, ast.Name) else "")
         receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
         bound = receiver is not None and self.is_tier(receiver)
         held = (old == "held_names_visible" and node.args and self.is_tier(node.args[0]))
@@ -176,16 +177,16 @@ def migrate_callers(root, path):
     scopes, aliases = caller_aliases(tree)
     mover = CallerMove(scopes, aliases)
     tree = mover.visit(tree)
-    pairs = zip(ast.walk(original), ast.walk(copy.deepcopy(original)))
-    del pairs
-    original_nodes = {(n.lineno, n.col_offset, type(n)): n for n in ast.walk(original) if isinstance(n, ast.expr)}
+    original_nodes = {(n.lineno, n.col_offset, n.end_lineno, n.end_col_offset, type(n)): n
+                      for n in ast.walk(original) if isinstance(n, ast.expr)}
     replacements = []
     lines = source.splitlines(keepends=True)
     starts = [0]
     for line in lines:
         starts.append(starts[-1] + len(line.encode()))
     for node in ast.walk(tree):
-        key = (getattr(node, "lineno", None), getattr(node, "col_offset", None), type(node))
+        key = (getattr(node, "lineno", None), getattr(node, "col_offset", None),
+               getattr(node, "end_lineno", None), getattr(node, "end_col_offset", None), type(node))
         old = original_nodes.get(key)
         if old is not None and ast.dump(old) != ast.dump(node):
             replacements.append((starts[old.lineno - 1] + old.col_offset,
@@ -200,7 +201,8 @@ def migrate_callers(root, path):
     for start, stop, replacement in reversed(chosen):
         raw = raw[:start] + replacement.encode() + raw[stop:]
     result = raw.decode()
-    if mover.need_import and "from prismabuild import tier_holdings" not in result:
+    if mover.need_import and not any("tier_holdings" in ast.unparse(n) for n in ast.parse(result).body
+                                     if isinstance(n, (ast.Import, ast.ImportFrom))):
         parsed = ast.parse(result)
         imports = [n for n in parsed.body if isinstance(n, (ast.Import, ast.ImportFrom))]
         if imports:
