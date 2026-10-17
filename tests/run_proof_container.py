@@ -88,13 +88,16 @@ def container_command(root, required, tests, affinity):
 
 def run_profile(root, required, tests, affinity, path, collect_only):
     from proof_container_runtime import (
-        ATTESTATION_SCHEMA, canonical, load_profile, observe_runtime,
+        ATTESTATION_SCHEMA, canonical, digest, load_profile, observe_runtime,
         require_identity, source_digests, verify_closure,
     )
 
     runtime = load_profile(path, root)
     outer = observe_runtime()
     require_identity(outer, runtime.primary)
+    if outer['affinity'] != affinity or outer['native_threads'] != {
+            name: '1' for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')}:
+        raise ValueError('outer runtime changed PB affinity or native thread bounds')
     outer_closure = verify_closure(runtime, ('host',))
     inspected = json.loads(subprocess.check_output([
         'docker', 'image', 'inspect', runtime.image, '--format',
@@ -105,9 +108,11 @@ def run_profile(root, required, tests, affinity, path, collect_only):
     image = dict(expected=runtime.image, actual=inspected['id'], architecture=inspected['architecture'])
     output = Path(tempfile.mkdtemp(prefix='pb-root-runtime-', dir=os.environ['TMPDIR']))
     attestation = output / 'attestation.json'
+    inner_attestation = output / 'inner-attestation.json'
     mode = 'collection' if collect_only else 'execution'
     arguments = (str(Path('/source') / runtime.path.relative_to(root)), tests, mode,
-                 outer, outer_closure, image, affinity, '/qualification-output/attestation.json', str(attestation))
+                 outer, outer_closure, image, affinity,
+                 '/qualification-output/inner-attestation.json', str(inner_attestation))
     bootstrap = (
         "import runpy; "
         "owner=runpy.run_path('/source/tests/proof_container_runtime.py'); "
@@ -122,10 +127,14 @@ def run_profile(root, required, tests, affinity, path, collect_only):
             target = captured['path']
             command.extend(['--mount', f'type=bind,src={target},dst={target},readonly'])
     command.extend(['--mount', f'type=bind,src={output},dst=/qualification-output',
-                    runtime.image, '-B', '-c', bootstrap])
+                    runtime.image, '-B', '-S', '-c', bootstrap])
     result = subprocess.run(command, check=False)
+    inner_descriptor = None
     try:
-        record = json.loads(attestation.read_bytes())
+        inner_raw = inner_attestation.read_bytes()
+        inner_descriptor = dict(path=str(inner_attestation), bytes=len(inner_raw),
+                                sha256=digest(inner_raw), raw_json=inner_raw.decode())
+        record = json.loads(inner_raw)
         if record['profile_sha256'] != runtime.sha256 or record['mode'] != mode:
             raise ValueError('inner attestation differs from the selected profile or mode')
         if record['exitstatus'] != result.returncode:
@@ -138,7 +147,10 @@ def run_profile(root, required, tests, affinity, path, collect_only):
                          mapped_native_providers={}), source_sha256=source_digests(root, tests, runtime),
             exitstatus=result.returncode or 1, error=f'{type(exc).__name__}: {exc}',
             attestation_path=str(attestation))
-    attestation.write_bytes(canonical(record) + b'\n')
+    record['inner_attestation'] = inner_descriptor
+    record['attestation_path'] = str(attestation)
+    with attestation.open('xb') as handle:
+        handle.write(canonical(record) + b'\n')
     print('prismabuild-root-runtime: ' + canonical(record).decode(), flush=True)
     return record['exitstatus'] if record['complete'] else record['exitstatus'] or 1
 

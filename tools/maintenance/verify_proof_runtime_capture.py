@@ -1,10 +1,20 @@
-"""Bind a captured root runtime to retained PB bytes without product imports."""
+"""Audit retained root capture bytes through the published PB entrypoints."""
 import argparse
 import base64
-import hashlib
-import json
 from pathlib import Path
 import subprocess
+import tarfile
+import runpy
+import os
+import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import (
+    canonical_sha256, compact_ascii_json_bytes, decode_strict_json, new_sha256,
+    raw_sha256, sorted_json,
+)
+from prismabuild.immutable_files import file_identity_nofollow
 
 
 SCHEMA = 'prismabuild.proof_runtime_capture_binding.v1'
@@ -13,84 +23,156 @@ HELPERS = ('tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py',
            'tests/run_proof_container.py')
 
 
-def sha(raw):
-    return hashlib.sha256(raw).hexdigest()
 
-
-def canonical(value, *, ascii):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      ensure_ascii=ascii, allow_nan=False).encode()
-
-
-def pb_hash(value):
-    return sha(canonical(value, ascii=False))
-
-
-def checked(path, descriptor):
+def read_capture_pin(path, descriptor):
     raw = path.read_bytes()
-    if len(raw) != descriptor['bytes'] or sha(raw) != descriptor['sha256']:
+    if len(raw) != descriptor['bytes'] or raw_sha256(raw) != descriptor['sha256']:
         raise ValueError(f'retained capture bytes differ: {path}')
     return raw
 
 
-def descriptor(path):
-    raw = path.read_bytes()
-    return dict(path=str(path.resolve()), bytes=len(raw), sha256=sha(raw))
+def capture_file_descriptor(path):
+    path = path.resolve()
+    digest, size, _ = file_identity_nofollow(path, where='retained proof runtime capture')
+    return dict(path=str(path), bytes=size, sha256=digest)
 
 
-def git(directory, *args):
+def retain_capture_archive(path, expected, expected_members, byte_root):
+    observed = capture_file_descriptor(path)
+    if {name:observed[name] for name in ('bytes','sha256')} != expected:
+        raise ValueError('retained capture closure archive differs')
+    byte_root.mkdir(parents=True, exist_ok=True)
+    retained = {}
+    with tarfile.open(path, 'r|gz') as archive:
+        for member in archive:
+            name = member.name.removeprefix('by-sha256/')
+            if (not member.isfile() or member.name != 'by-sha256/' + name
+                    or len(name) != 64 or any(char not in '0123456789abcdef' for char in name)
+                    or name in retained or name not in expected_members):
+                raise ValueError('capture archive has an unsafe or unexpected member')
+            if member.size != expected_members[name]:
+                raise ValueError('capture archive member size differs')
+            target = byte_root / name
+            hasher = new_sha256()
+            size = 0
+            with tempfile.NamedTemporaryFile(dir=byte_root, prefix='.' + name + '.', delete=False) as output:
+                temporary = Path(output.name)
+                try:
+                    with archive.extractfile(member) as source:
+                        for raw in iter(lambda: source.read(1024 * 1024), b''):
+                            hasher.update(raw)
+                            size += len(raw)
+                            output.write(raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                    if size != member.size or hasher.hexdigest() != name:
+                        raise ValueError('capture archive member bytes differ')
+                    if target.exists() or target.is_symlink():
+                        if target.is_symlink() or capture_file_descriptor(target) != dict(path=str(target.resolve()), bytes=size, sha256=name):
+                            raise ValueError('existing retained closure member differs')
+                    else:
+                        temporary.chmod(0o444)
+                        temporary.rename(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            retained[name] = capture_file_descriptor(target)
+    if set(retained) != set(expected_members):
+        raise ValueError('capture archive omits sealed closure or producer bytes')
+    return retained
+
+
+def capture_git_read(directory, *args):
     return subprocess.check_output(['git', '-c', 'core.hooksPath=/dev/null',
         '--git-dir=' + str(directory), *args], stderr=subprocess.PIPE)
 
 
-def verify(raw_root, output, expected_source):
+def capture_assigned_affinity(request, terminal, producer):
+    allocation = terminal['cpu_allocation']
+    if not isinstance(allocation, dict) or set(allocation) != {'preferred', 'fallback'}:
+        raise ValueError('capture terminal lacks its exact CPU allocation')
+    if any(not isinstance(allocation[name], list) for name in ('preferred', 'fallback')):
+        raise ValueError('capture CPU allocation tiers are not lists')
+    assigned = allocation['preferred'] + allocation['fallback']
+    if any(type(cpu) is not int or cpu < 0 for cpu in assigned) or len(assigned) != len(set(assigned)):
+        raise ValueError('capture CPU allocation contains invalid or duplicate IDs')
+    resources = terminal['resources']
+    if type(resources['cpu']) is not int or resources['cpu'] != 1 or len(assigned) != resources['cpu']:
+        raise ValueError('capture allocation does not match its one-CPU demand')
+    if request['params']['demand'] != resources or terminal['detail']['cpu_allocation'] != allocation:
+        raise ValueError('capture demand or terminal CPU allocation differs')
+    if terminal['finished_host'] != terminal['claimed_host'] or terminal['finished_host'] != producer['worker_id'] or producer['evidence']['hostname'] != producer['worker_id']:
+        raise ValueError('capture terminal and producer host identities differ')
+    return sorted(assigned)
+
+
+def bind_proof_runtime_capture(raw_root, output, expected_source):
     paths = {name: raw_root / filename for name, filename in {
         'request':'request.json', 'terminal':'terminal.json', 'receipt':'receipt.json',
         'stdout':'stdout_log.log', 'stderr':'stderr_log.log', 'result':'result.log',
         'source_bundle':'source.bundle'}.items()}
-    request, terminal, receipt = (json.loads(paths[name].read_bytes())
+    request, terminal, receipt = (decode_strict_json(paths[name].read_bytes(), where=name)
                                   for name in ('request', 'terminal', 'receipt'))
     key = request['action_key']
-    if key != pb_hash({k:v for k,v in request.items() if k != 'action_key'}):
+    if key != canonical_sha256({k:v for k,v in request.items() if k != 'action_key'}):
         raise ValueError('capture action key differs from its sealed request')
     if terminal['action_key'] != key or receipt['action_key'] != key:
         raise ValueError('capture terminal or receipt belongs to a different action')
     if terminal['status'] != 'executed' or terminal['detail']['returncode'] != 0:
         raise ValueError('capture did not execute successfully')
-    if receipt['receipt_sha256'] != pb_hash({k:v for k,v in receipt.items() if k != 'receipt_sha256'}):
+    if receipt['receipt_sha256'] != canonical_sha256({k:v for k,v in receipt.items() if k != 'receipt_sha256'}):
         raise ValueError('capture receipt digest differs')
-    if receipt['action_manifest_sha256'] != pb_hash(request):
+    if receipt['action_manifest_sha256'] != canonical_sha256(request):
         raise ValueError('capture receipt binds a different request')
     producer = receipt['producer']
     if producer['action_key'] != key or producer['inputs'] != request['inputs']:
         raise ValueError('capture producer or inputs differ')
-    if producer['attestation_sha256'] != pb_hash({k:v for k,v in producer.items() if k != 'attestation_sha256'}):
+    if producer['attestation_sha256'] != canonical_sha256({k:v for k,v in producer.items() if k != 'attestation_sha256'}):
         raise ValueError('capture producer attestation differs')
+    affinity = capture_assigned_affinity(request, terminal, producer)
     runtime = producer['runtime']
-    if runtime['runtime_sha256'] != pb_hash({k:v for k,v in runtime.items() if k != 'runtime_sha256'}):
+    if runtime['runtime_sha256'] != canonical_sha256({k:v for k,v in runtime.items() if k != 'runtime_sha256'}):
         raise ValueError('capture worker runtime attestation differs')
     for name in ('stdout', 'stderr'):
-        checked(paths[name], terminal['detail'][name + '_log'])
-    result = checked(paths['result'], receipt['result'])
+        read_capture_pin(paths[name], terminal['detail'][name + '_log'])
+    result = read_capture_pin(paths['result'], receipt['result'])
     lines = [line[len(PREFIX):] for line in result.decode().splitlines() if line.startswith(PREFIX)]
     if len(lines) != 1:
         raise ValueError('capture must produce exactly one source-owned record')
-    capture = json.loads(lines[0])
+    capture = decode_strict_json(lines[0].encode(), where='root capture record')
     if capture['schema'] != 'prismabuild.proof_runtime_capture.v1' or capture['complete'] is not True:
         raise ValueError('capture record is incomplete or unsupported')
+    if set(capture['source_sha256']) != set(HELPERS):
+        raise ValueError('capture helper source set differs')
     raw_profile = capture['profile_json'].encode()
-    if len(raw_profile) != capture['profile_bytes'] or sha(raw_profile) != capture['profile_sha256']:
+    if len(raw_profile) != capture['profile_bytes'] or raw_sha256(raw_profile) != capture['profile_sha256']:
         raise ValueError('capture profile bytes differ')
-    profile = json.loads(raw_profile)
+    profile = decode_strict_json(raw_profile, where='captured runtime profile')
     if profile['schema'] != 'prismabuild.proof_runtime_profile.v1':
         raise ValueError('unsupported captured profile')
     closure = profile['closure']
     if closure['schema'] != 'prismabuild.proof_runtime_closure.v1':
         raise ValueError('unsupported captured closure')
-    if closure['sha256'] != sha(canonical({k:v for k,v in closure.items() if k != 'sha256'}, ascii=True)):
+    if closure['sha256'] != raw_sha256(compact_ascii_json_bytes({k:v for k,v in closure.items() if k != 'sha256'})):
         raise ValueError('captured closure digest differs')
     if capture['closure_sha256'] != closure['sha256']:
         raise ValueError('capture binds a different closure')
+    members = {str(Path(root['path']) / relative):dict(bytes=entry['bytes'], sha256=entry['sha256'],
+               archive_member='by-sha256/' + entry['sha256'])
+               for root in closure['roots'] for relative,entry in root['entries'].items()
+               if entry['kind'] == 'file'}
+    if capture['closure_members'] != members:
+        raise ValueError('capture member map differs from the full sealed profile')
+    verification = capture['closure_verification']
+    maps = {root['path']:dict(origin=root['origin'], members=len(root['entries']),
+            entries_sha256=raw_sha256(compact_ascii_json_bytes(root['entries']))) for root in closure['roots']}
+    if verification != dict(verified=True, member_maps=maps,
+                            member_maps_sha256=raw_sha256(compact_ascii_json_bytes(maps))):
+        raise ValueError('capture mounted closure verification differs')
+    for providers in capture['mapped_native_providers'].values():
+        for path,actual in providers.items():
+            expected = members[path]
+            if actual != dict(resolved_path=path, bytes=expected['bytes'], sha256=expected['sha256']):
+                raise ValueError('capture mapped native provider differs from its sealed bytes')
     primary = {name:capture['outer'][name] for name in ('version', 'executable', 'elf_machine')}
     if profile['primary'] != primary:
         raise ValueError('capture profile borrowed a different primary runtime')
@@ -98,21 +180,46 @@ def verify(raw_root, output, expected_source):
         raise ValueError('capture did not enter through the declared standard interpreter and producer')
     if request['params']['interpreter'] != primary['executable']['path']:
         raise ValueError('capture did not declare its real primary interpreter to PB')
+    if terminal['interpreter'] != request['params']['interpreter']:
+        raise ValueError('capture terminal binds a different interpreter')
+    command = request['params']['command']
+    if command.count('--cas-root') != 1 or command[command.index('--cas-root') + 1] != terminal['cas_root'] or capture['cas_root'] != terminal['cas_root']:
+        raise ValueError('capture archive was not published into the actual action CAS')
+    for argument in ('--output', '--profile-path'):
+        if command.count(argument) != 1 or command[command.index(argument) + 1] != capture['profile_path']:
+            raise ValueError('capture profile was not its explicitly named derived output')
     if request['params'].get('container_images') != [profile['image']]:
         raise ValueError('capture image was not an exact declared placement dependency')
     expected_architecture = {62:'amd64',183:'arm64'}[primary['elf_machine']]
     if capture['image'] != dict(expected=profile['image'], actual=profile['image'], architecture=expected_architecture):
         raise ValueError('capture image identity or architecture differs')
-    if capture['outer']['affinity'] != capture['image_runtime']['affinity']:
-        raise ValueError('image capture changed PB affinity')
-    for name in ('outer', 'image_runtime'):
+    if (primary['elf_machine'], tuple(primary['version'])) not in {(183, (3, 12, 3)), (62, (3, 14, 4))}:
+        raise ValueError('capture is outside the declared standard runtime matrix')
+    if {name:capture['inner'][name] for name in ('version', 'executable', 'elf_machine')} != primary:
+        raise ValueError('capture mounted primary is a different actual runtime')
+    reader = profile['installed_reader']
+    if {name:capture['installed_reader'][name] for name in ('version', 'executable', 'elf_machine')} != {name:reader[name] for name in ('version', 'executable', 'elf_machine')}:
+        raise ValueError('capture installed reader is a different actual runtime')
+    for name in ('outer', 'image_runtime', 'inner', 'installed_reader'):
         observed = capture[name]
         if observed['elf_machine'] != primary['elf_machine']:
             raise ValueError('capture mixes native architectures')
         if observed['native_threads'] != dict(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1'):
             raise ValueError('capture native thread bounds differ')
-    if any(capture['image_runtime']['credentials'][name] != 0 for name in ('uid', 'euid', 'gid', 'egid')):
-        raise ValueError('capture did not observe a real root container')
+        if observed['affinity'] != affinity or any(type(cpu) is not int for cpu in observed['affinity']):
+            raise ValueError('capture runtime differs from its terminal-assigned affinity')
+        if observed['kernel']['machine'] != {62:'x86_64',183:'aarch64'}[primary['elf_machine']]:
+            raise ValueError('capture actual kernel and ELF architecture differ')
+        if observed['environment']['TMPDIR'] != '/home/rob/pbt17':
+            raise ValueError('capture runtime changed the declared private TMPDIR')
+    if capture['inner']['python_flags']['no_site'] != 1 or capture['installed_reader']['python_flags']['isolated'] != 1:
+        raise ValueError('capture primary or installed reader startup flags differ')
+    for name in ('image_runtime', 'inner'):
+        if any(capture[name]['credentials'][field] != 0 for field in ('uid', 'euid', 'gid', 'egid')):
+            raise ValueError('capture did not observe real container UID/GID0')
+    credentials = capture['installed_reader']['credentials']
+    if any(credentials[key] != reader[name] for key,name in [('uid','uid'),('euid','uid'),('gid','gid'),('egid','gid')]) or credentials['groups']:
+        raise ValueError('capture installed reader did not drop real credentials')
     cleanup = terminal['resource_scope_cleanup']
     physical = cleanup['export']
     if cleanup['complete'] is not True or any(physical[name] is not True for name in ('empty','ok','settled','released','stopped')) or physical['tickets_pending'] is not False:
@@ -120,34 +227,51 @@ def verify(raw_root, output, expected_source):
     snapshot = request['params']['checkout_snapshot']
     if snapshot != terminal['checkout_snapshot']:
         raise ValueError('capture source snapshots differ')
-    checked(paths['source_bundle'], snapshot['input'])
+    read_capture_pin(paths['source_bundle'], snapshot['input'])
     if request['inputs'] != [snapshot['input']]:
         raise ValueError('capture has unaccounted extra inputs')
     output.mkdir(parents=True, exist_ok=True)
     objects = output / 'source-objects.git'
     if not objects.exists():
         subprocess.run(['git','-c','core.hooksPath=/dev/null','init','--bare',str(objects)], check=True, capture_output=True)
-    git(objects, 'fetch', str(paths['source_bundle'].resolve()), snapshot['commit'])
-    if git(objects,'rev-list','--parents','-n','1',snapshot['commit']).decode().split() != [snapshot['commit'],snapshot['parent']]:
+    capture_git_read(objects, 'fetch', str(paths['source_bundle'].resolve()), snapshot['commit'])
+    if capture_git_read(objects,'rev-list','--parents','-n','1',snapshot['commit']).decode().split() != [snapshot['commit'],snapshot['parent']]:
         raise ValueError('capture source snapshot has a different parent')
     for name in HELPERS:
-        actual = git(objects, 'show', snapshot['commit'] + ':' + name)
-        if sha(actual) != capture['source_sha256'][name] or actual != (expected_source / name).read_bytes():
+        actual = capture_git_read(objects, 'show', snapshot['commit'] + ':' + name)
+        if raw_sha256(actual) != capture['source_sha256'][name] or actual != (expected_source / name).read_bytes():
             raise ValueError(f'capture helper is not the reviewed source: {name}')
-    executables = {}
-    binary_root = output / 'executables' / 'by-sha256'
-    binary_root.mkdir(parents=True, exist_ok=True)
+    expected_members = {entry['sha256']:entry['bytes'] for entry in members.values()}
+    attested = [producer['executable'], *(value for value in runtime.values()
+        if isinstance(value, dict) and {'path','resolved_path','bytes','sha256'} <= value.keys())]
+    for expected in attested:
+        if expected['sha256'] in expected_members and expected_members[expected['sha256']] != expected['bytes']:
+            raise ValueError('capture has conflicting content sizes')
+        expected_members[expected['sha256']] = expected['bytes']
+    for name in ('outer', 'image_runtime'):
+        expected = capture[name]['executable']
+        if expected['sha256'] in expected_members and expected_members[expected['sha256']] != expected['bytes']:
+            raise ValueError('capture has conflicting executable sizes')
+        expected_members[expected['sha256']] = expected['bytes']
+    byte_root = output / 'closure-by-sha256'
+    archive = raw_root / 'closure-archive.tar.gz'
+    executables = retain_capture_archive(archive, capture['closure_archive'], expected_members, byte_root)
+    owner = runpy.run_path(str(expected_source / 'tests/proof_container_runtime.py'))
+    observed_audit = owner['audit_native_closure'](closure,
+        lambda path: byte_root / members[path]['sha256'])
+    if observed_audit != closure['native_audit']:
+        raise ValueError('retained native dependency graph differs from the capture')
     for name in ('outer','image_runtime'):
         observed = capture[name]
         expected = observed['executable']
         raw = base64.b64decode(capture['executable_binaries'][expected['sha256']], validate=True)
-        if len(raw) != expected['bytes'] or sha(raw) != expected['sha256'] or raw[:6] != b'\x7fELF\x02\x01':
+        if len(raw) != expected['bytes'] or raw_sha256(raw) != expected['sha256'] or raw[:6] != b'\x7fELF\x02\x01':
             raise ValueError('capture executable bytes or ELF format differ')
         if int.from_bytes(raw[18:20], 'little') != observed['elf_machine']:
             raise ValueError('capture executable ELF architecture differs')
-        target = binary_root / expected['sha256']
-        target.write_bytes(raw)
-        executables[expected['sha256']] = descriptor(target)
+        target = byte_root / expected['sha256']
+        if target.read_bytes() != raw:
+            raise ValueError('capture executable is absent from the retained closure archive')
     profile_path = Path(capture['profile_path'])
     if profile_path.is_absolute() or '..' in profile_path.parts:
         raise ValueError('captured profile path is not snapshot-local')
@@ -155,14 +279,15 @@ def verify(raw_root, output, expected_source):
     profile_target.parent.mkdir(parents=True, exist_ok=True)
     profile_target.write_bytes(raw_profile)
     binding = dict(schema=SCHEMA,
-        profile=dict(path=str(profile_path), bytes=len(raw_profile), sha256=sha(raw_profile)),
+        profile=dict(path=str(profile_path), bytes=len(raw_profile), sha256=raw_sha256(raw_profile)),
         closure_sha256=closure['sha256'],
         capture=dict(action_key=key, source_pin=snapshot['parent'], snapshot_commit=snapshot['commit'],
-                     raw={name:descriptor(path) for name,path in paths.items()},
-                     helper_source_sha256=capture['source_sha256']), executables=executables)
+                     raw={name:capture_file_descriptor(path) for name,path in paths.items()},
+                     helper_source_sha256=capture['source_sha256'], assigned_affinity=affinity), executables=executables,
+        closure_archive=capture_file_descriptor(archive), closure_members=members, closure_byte_root=str(byte_root))
     target = output / 'capture-binding.json'
-    target.write_bytes(canonical(binding, ascii=True) + b'\n')
-    return descriptor(target)
+    target.write_bytes(compact_ascii_json_bytes(binding) + b'\n')
+    return capture_file_descriptor(target)
 
 
 def main():
@@ -171,7 +296,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--expected-source', required=True, type=Path)
     args = parser.parse_args()
-    print(json.dumps(verify(args.raw_dir.resolve(), args.output.resolve(), args.expected_source.resolve()), sort_keys=True))
+    print(sorted_json(bind_proof_runtime_capture(args.raw_dir.resolve(), args.output.resolve(), args.expected_source.resolve())))
 
 
 if __name__ == '__main__':

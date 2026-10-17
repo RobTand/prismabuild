@@ -19046,6 +19046,44 @@ See `compatibility_corpus_2026-10-16.md` and the C31 requirement-status record f
 source pins, actual qualification and remaining integration/deployment gates.
 
 
+### Root proof runtime qualification
+
+The root proof population retains its real UID/GID0 fixtures, assertions and
+node IDs. Ordinary portable execution records their real prerequisite failures.
+An explicit `tests/run_proof_container.py --runtime-profile <sealed.json>`
+route adds separate qualification in an already admitted action. Omitting the
+profile preserves the existing image runner. `--collect-only` uses the same
+whole files, source, profile and closure as execution.
+
+A profile binds the existing native image, exact primary interpreter, separate
+installed-reader interpreter, and complete inventories of selected read-only
+host mounts and required image paths. The primary starts with `-S` and the
+existing pinned qualification dependency path, excluding unsealed host venv
+site-packages. Capture seals the selected base stdlibs and native providers.
+Its retained-byte audit checks every declared symlink and traverses PT_INTERP
+and DT_NEEDED from all selected stdlib ELFs and interpreters. Unsupported or
+unresolved search paths refuse capture; observed process mappings supply
+separate evidence for the providers actually used during qualification.
+
+Capture runs through published PB with the exact interpreter and existing image
+as placement dependencies. It publishes an archive through the published CAS
+ingester. The independent retained-data auditor binds the raw request, terminal,
+receipt, logs, result and source bundle to every profile byte and archived
+member, including the actual PB producer/runtime files. No prewritten profile
+or successful older image runtime grants current standard-runtime credit.
+
+The `prismabuild-root-runtime:` footer records actual outer, inner primary and
+credential-drop reader observations separately. It carries real IDs, full
+patch version, executable SHA256/ELF, affinity, native bounds, source digests,
+mount checks and exit status. The raw root-owned inner attestation is preserved
+verbatim; the outer launcher writes its own distinct final envelope. Existing
+pytest runtime, completion and outcome footers remain unchanged.
+
+This is source support only. Real profile capture, bounded capture resources and
+progress policy, fresh collection/execution rosters, actual CAS chains and
+physical scope release remain qualification gates. It changes no deployment,
+installed trust guard, live service or interpreter support claim.
+
 ### Shared submission ownership (C14)
 
 `submission_types.SubmissionRequest` is the submission vocabulary. Campaign,
