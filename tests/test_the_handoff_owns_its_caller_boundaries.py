@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
@@ -84,13 +85,13 @@ def _stage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
 
     prepared = submission._prepare(tmp_path, monkeypatch)
     args = pbrun.parse_args()
-    built = pbrun.prepare_submission(args)
+    built = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
     template = built["template"]
     return {
         "queue": prepared["queue"], "template": template,
         "cas": template["cas"], "args": args,
-        "key": str(pbrun.seal_action_from_template(template)["action_key"]),
-        "tier": pbrun.resolve_stage_tier(
+        "key": str(submit_core.seal(template)["action_key"]),
+        "tier": submit_core.resolve_stage_tier(
             prepared["queue"], args.residency_tier),
     }
 
@@ -98,10 +99,10 @@ def _stage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
 def _stage_rows(built: dict[str, object]) -> dict[str, object]:
     """Call the real planner and file its plan, exactly as ``main`` does."""
 
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         built["template"], consumer_action_key=built["key"],
         tier=built["tier"], args=built["args"], queue=built["queue"],
-        cas=built["cas"])
+        cas=built["cas"], store=pbrun.configured_store())
     residency_plan.freeze(built["queue"], staged["plan"])
     return staged
 
@@ -320,7 +321,7 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     entered = threading.Event()
     completed = threading.Event()
     cleanup_events: list[dict[str, object]] = []
-    real_publication_row = pbrun.publication_row
+    real_publication_row = submit_core.publication_row
 
     def paused_publication_row(action, *args, **kwargs):
         # The consumer's own publication is the one after freeze and before its
@@ -332,7 +333,7 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
         assert completed.wait(10)
         return real_publication_row(action, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun, "publication_row", paused_publication_row)
+    monkeypatch.setattr(submit_core, "publication_row", paused_publication_row)
 
     def cleanup() -> None:
         assert entered.wait(10)

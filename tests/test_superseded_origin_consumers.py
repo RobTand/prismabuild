@@ -21,6 +21,7 @@ published, claimed and finished through the real ``PoolQueue``; submissions,
 supersessions and releases go through the real ``pbrun.main``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -39,6 +40,7 @@ from prismabuild import pool, produced_output as po  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _charged, _commit, _entry, _publish_consumer, _queue, _run_consumer,
@@ -62,8 +64,8 @@ def _fresh_reports(monkeypatch: pytest.MonkeyPatch) -> None:
 def _pbrun_env(tmp_path: Path, queue, monkeypatch) -> Path:
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path)
 

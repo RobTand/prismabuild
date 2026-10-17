@@ -10,6 +10,7 @@ can be read from, and a row filed before the tag existed, both read
 ``unknown``: explicit, never blank, never guessed.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import os
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 
 from test_pbrun_detach import (  # noqa: E402
@@ -78,17 +80,17 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
     """
 
     work = _checkout(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    template = pbrun.freeze_action_template(
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    template = submit_core.freeze(
         command=("/bin/bash", "-lc", "printf ok"), cwd=work, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1}, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="deterministic",
         retry_policy={"max_attempts": 3, "retry_safe": True},
         host_class=None, measurement=False, transport="pool",
         pool_measurement_class=False, data_manifest_path=None,
-        checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        checkout_snapshot_max_bytes=submit_core.CHECKOUT_SNAPSHOT_MAX_BYTES,
         snapshot_refs=(), exclusive=False, gpu_memory_gb=None,
-        execution_timeout_s=None, progress=None, profile=None)
+        execution_timeout_s=None, progress=None, profile=None, store=pbrun.configured_store())
     cas = template["cas"]
     args = pbrun.parse_args(["--max-attempts", "1", "--", "/bin/true"])
     queue = _queue(tmp_path)
@@ -102,7 +104,7 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
             variant.pop("tested_repository", None)
         else:
             variant["tested_repository"] = tag
-        sealed = pbrun.seal_action_from_template(variant)
+        sealed = submit_core.seal(variant)
         cas.publish_action_request(sealed)
         bodies = {
             path.read_bytes()
@@ -110,8 +112,8 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
             if json.loads(path.read_text(encoding="utf-8"))["action_key"]
             == sealed["action_key"]}
         assert len(bodies) == 1, "one seal files one request body"
-        row = pbrun.publication_row(
-            sealed, args=args, queue=queue, tested_repository=tag)
+        row = submit_core.publication_row(
+            sealed, args=args, queue=queue, tested_repository=tag, store=pbrun.configured_store())
         filed = json.loads(queue.publish(**row).read_text(encoding="utf-8"))
         seen[tag] = (sealed["action_key"], next(iter(bodies)), filed)
     assert len({entry[0] for entry in seen.values()}) == 1
@@ -123,10 +125,10 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
 
 
 def test_repository_naming_uses_the_sealed_root_or_unknown(tmp_path):
-    assert pbrun.tested_repository_name(_checkout(tmp_path)) == "work"
+    assert submit_core.tested_repository_name(_checkout(tmp_path)) == "work"
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert pbrun.tested_repository_name(plain) == UNKNOWN
+    assert submit_core.tested_repository_name(plain) == UNKNOWN
 
 
 def test_an_explicit_unknown_is_filed_not_dropped(tmp_path):
@@ -270,8 +272,8 @@ def test_linked_worktree_reports_its_main_repository(tmp_path):
         ["git", "-C", str(main), "worktree", "add", str(linked)],
         capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert pbrun.tested_repository_name(linked) == "main"
-    assert pbrun.tested_repository_name(main) == "main"
+    assert submit_core.tested_repository_name(linked) == "main"
+    assert submit_core.tested_repository_name(main) == "main"
 
 
 def test_worktree_of_a_bare_origin_names_the_bare_stem(tmp_path):
@@ -299,4 +301,4 @@ def test_worktree_of_a_bare_origin_names_the_bare_stem(tmp_path):
          "worktree", "add", str(wt), "main"],
         capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert pbrun.tested_repository_name(wt) == "blue"
+    assert submit_core.tested_repository_name(wt) == "blue"
