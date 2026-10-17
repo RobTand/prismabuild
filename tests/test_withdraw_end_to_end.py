@@ -242,7 +242,7 @@ raise SystemExit(wl.main())
         assert _await(lambda: not Path(control["cgroup_path"]).exists())
 
         # The submitter is told, rather than waiting out ``--wait-s``.
-        rc = pbrun.action_client.await_outcome(queue, key, wait_s=1.0)
+        rc = pbrun.action_client.report_pool_outcome(queue, key, wait_s=1.0)
         assert rc == pbrun.action_client.WITHDRAWN_EXIT
     finally:
         if worker.poll() is None:
