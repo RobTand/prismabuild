@@ -257,7 +257,7 @@ def test_pbstatus_carries_the_ceiling_from_the_offer_it_read(tmp_path):
     # the field ever leaves the offer.
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "old": None})
     nodes = {node["node"]: node
-             for node in fleet_census.rows(queue.root).value["nodes"]}
+             for node in fleet_census.action_rows(queue.root).value["nodes"]}
 
     assert nodes["dl380g10"]["timeout_ceiling_s"] == 7200.0
     assert nodes["old"]["timeout_ceiling_s"] is None

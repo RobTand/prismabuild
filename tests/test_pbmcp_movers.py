@@ -146,7 +146,7 @@ def test_a_mover_scan_that_does_not_answer_is_null_not_empty(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    monkeypatch.setattr(census, "_mover_live_rows", never)
+    monkeypatch.setattr(fleet_census, "_mover_live_rows", never)
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link, deadline_s=1.0)

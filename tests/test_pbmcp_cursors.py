@@ -177,7 +177,7 @@ def test_a_census_that_never_returns_is_null_not_an_empty_list(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    monkeypatch.setattr(census, "_cursor_census", never)
+    monkeypatch.setattr(fleet_census, "_cursor_census", never)
     bounded = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link,

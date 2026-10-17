@@ -32,6 +32,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 sys.path.insert(0, str(REPOSITORY / "tests"))
 
+from prismabuild import census as fleet_census
 from prismabuild import pool  # noqa: E402
 import pbmcp  # noqa: E402
 import pbmcp_fixture as fx  # noqa: E402
@@ -49,7 +50,7 @@ def test_a_census_that_never_returns_is_reported_not_awaited(
     def never(_queue_root, *, reader=None):
         time.sleep(600)
 
-    monkeypatch.setattr(fleet_census, "rows", never)
+    monkeypatch.setattr(fleet_census, "action_rows", never)
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root, repo_link=fleet.repo_link,
                             deadline_s=DEADLINE_S)

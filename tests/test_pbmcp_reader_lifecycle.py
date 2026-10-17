@@ -60,7 +60,7 @@ def test_retained_reader_blocks_new_shared_reads_across_calls(
     session = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link, deadline_s=0.1)
     if not during_startup:
-        monkeypatch.setattr(fleet_census, "rows", stall)
+        monkeypatch.setattr(fleet_census, "action_rows", stall)
         first = session.call("pb_status")
         assert first["complete"] is False
     assert len(retained) == 1
@@ -79,8 +79,8 @@ def test_late_exit_is_reaped_and_reading_recovers(tmp_path, monkeypatch, retaine
     fleet = fx.build(tmp_path)
     session = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link, deadline_s=0.1)
-    original = pbmcp.fleet_census.rows
-    monkeypatch.setattr(fleet_census, "rows", stall)
+    original = pbmcp.fleet_census.action_rows
+    monkeypatch.setattr(fleet_census, "action_rows", stall)
     body = session.call("pb_status")
     assert body["abandoned_readers"][0]["pid"] == retained[0]
     pid = retained[0]
@@ -90,7 +90,7 @@ def test_late_exit_is_reaped_and_reading_recovers(tmp_path, monkeypatch, retaine
     while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
         assert time.monotonic() < limit, "fixture child did not exit"
         time.sleep(0.01)
-    monkeypatch.setattr(fleet_census, "rows", original)
+    monkeypatch.setattr(fleet_census, "action_rows", original)
     session.deadline_s = 5
     healthy = session.call("pb_runtime")
     assert healthy["complete"] is True

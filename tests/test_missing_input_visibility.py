@@ -17,7 +17,7 @@ def test_ready_row_names_its_missing_prewarm_input(tmp_path):
     proof = fleet.queue.prewarm(key)
     assert proof["entries_warmed"] == 0
     assert "[Errno 2]" in proof["errors"][0]
-    row = next(row for row in fleet_census.rows(fleet.queue.root).value["jobs"]
+    row = next(row for row in fleet_census.action_rows(fleet.queue.root).value["jobs"]
                if row["action_key"] == key)
     assert "prewarm input errors" in row["reason"]
     assert "lost.pt" in row["reason"]
@@ -27,7 +27,7 @@ def test_ready_row_names_its_missing_prewarm_input(tmp_path):
     assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
     Path(path).write_bytes(b"x" * size)
     fleet.cycle(fleet.args(readers=1))
-    row = next(row for row in fleet_census.rows(fleet.queue.root).value["jobs"]
+    row = next(row for row in fleet_census.action_rows(fleet.queue.root).value["jobs"]
                if row["action_key"] == key)
     assert "prewarm input errors" not in row["reason"]
 
@@ -38,7 +38,7 @@ def test_unreadable_prewarm_is_unknown_not_missing(tmp_path):
     path = fleet.queue.records.prewarm_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not json")
-    report = fleet_census.rows(fleet.queue.root).value
+    report = fleet_census.action_rows(fleet.queue.root).value
     row = next(row for row in report["jobs"] if row["action_key"] == key)
     assert "prewarm evidence unreadable" in row["reason"]
     assert "missing input" not in row["reason"]
