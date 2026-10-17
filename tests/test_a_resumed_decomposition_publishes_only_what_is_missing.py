@@ -11,6 +11,7 @@ happen: a run that died between publishing some children and publishing the
 rest, and a source tree that moved on between two runs.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -25,6 +26,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue  # noqa: E402
@@ -34,7 +36,7 @@ EVIDENCE = "cas:sha256:" + "0" * 64
 
 @pytest.fixture()
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 
@@ -287,7 +289,7 @@ def test_a_plan_no_box_can_run_publishes_no_child(
     request = _request(work)
     request["common"]["demand"] = {"cpu": 99, "mem_gb": 4}
 
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(pbcampaign.ManifestError) as refusal:
         _decompose(request)
     assert "no recorded worker can run this action" in str(refusal.value)
 

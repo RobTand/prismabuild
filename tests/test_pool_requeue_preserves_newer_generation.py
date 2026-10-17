@@ -10,6 +10,7 @@ import pytest
 from prismabuild import endings
 from prismabuild import pool
 import pbrun
+from prismabuild import submission as submit_core
 
 
 KEY = "f" * 64
@@ -109,10 +110,10 @@ def test_requeue_preserves_newer_ready_publication(
     assert queue.attempt_outcomes(retired[0]) == old_outcomes
     assert not queue.records.attempt_path(claim, 2).exists()
     assert queue.ledger().held() == {}
-    landed, watched = pbrun.action_wait.outcome_poll(queue, KEY, newer["published_unix"])
+    landed, watched = submit_core.action_wait.outcome_poll(queue, KEY, newer["published_unix"])
     assert landed is not None and landed[1]["status"] == "executed"
     assert watched == newer["published_unix"]
-    superseded, watched = pbrun.action_wait.outcome_poll(queue, KEY, claim["published_unix"])
+    superseded, watched = submit_core.action_wait.outcome_poll(queue, KEY, claim["published_unix"])
     assert isinstance(superseded, endings.PublicationSupersession)
     assert watched == claim["published_unix"]
     assert superseded.successor_published_unix == newer["published_unix"]

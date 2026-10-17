@@ -29,6 +29,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+from prismabuild import submission
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
 
@@ -45,22 +46,19 @@ class _Recorder:
     """A stand-in ``pbrun.main`` that submits nothing and prints one key."""
 
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
+        self.calls = []
 
-    def __call__(self, *, report) -> int:
-        self.calls.append(list(sys.argv))
-        print(json.dumps({
-            "status": "submitted", "action_key": KEY, "transport": "slurm",
-            "published_unix": 100.0 + len(self.calls),
-        }))
-        return finish_submission(report, key=KEY, transport='slurm',
+    def __call__(self, request, *, report, **kwargs):
+        self.calls.append(request)
+        finish_submission(report, key=KEY, transport='slurm',
             generation=100.0 + len(self.calls))
+        return report
 
 
 def _campaign(argv, recorder, monkeypatch: pytest.MonkeyPatch):
     """Run ``main`` with ``pbrun`` replaced, and return what it printed."""
 
-    monkeypatch.setattr(pbrun, "main", recorder)
+    monkeypatch.setattr(submission, 'submit_request', recorder)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:

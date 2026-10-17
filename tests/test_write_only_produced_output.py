@@ -32,6 +32,7 @@ member devices); the export runs through ``PoolQueue.execute`` as in
 ``test_produced_spool``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -50,6 +51,7 @@ from prismabuild import core, pool, produced_output as po  # noqa: E402
 from prismabuild import produced_spool as ps, reader_lease  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import stage_move  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
@@ -396,8 +398,8 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -440,7 +442,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     _instance, path, _desc, committed = _direct_batch(queue, template, "wo-tamper")
     ref = committed["ref"]
     manifest = po.origin_batch_manifest(queue.root, [ref])
-    check = pbrun.require_declared_origin_batches
+    check = submit_core.require_declared_origin_batches
     assert check(manifest, transport="pool", queue_root=queue.root) is None
 
     def tampered(**changes):
@@ -450,21 +452,21 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
 
     entries = json.loads(json.dumps(manifest["entries"]))
     entries[0]["sha256"] = "0" * 64
-    with pytest.raises(SystemExit, match="entries is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="entries is not what"):
         check(tampered(entries=entries), transport="pool", queue_root=queue.root)
-    with pytest.raises(SystemExit, match="mount_prefix is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="mount_prefix is not what"):
         check(tampered(mount_prefix=str(tmp_path)), transport="pool",
               queue_root=queue.root)
     annotations = dict(manifest["annotations"])
     annotations[po.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
-    with pytest.raises(SystemExit, match="origin-batch-mismatch"):
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-mismatch"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
     annotations[po.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
-    with pytest.raises(SystemExit, match="names a batch twice"):
+    with pytest.raises(submit_core.SubmissionRefused, match="names a batch twice"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         check(manifest, transport="slurm", queue_root=queue.root)
 
     # Through the real submission: freeze reads the declared batches.
@@ -474,8 +476,8 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -487,7 +489,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     # The origin rewritten after its commit, same length: the batch no longer
     # names the file that is there.
     path.write_bytes(b"X" * len(path.read_bytes()))
-    with pytest.raises(SystemExit, match="origin-batch-changed"):
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-changed"):
         check(manifest, transport="pool", queue_root=queue.root)
 
 
@@ -534,5 +536,5 @@ def test_a_manifest_that_declares_no_batches_is_never_checked_against_the_queue(
     for manifest in ({}, {"annotations": None},
                      {"annotations": {"phases": [{"name": "p", "bytes": 1,
                                                   "cumulative_bytes": 1}]}}):
-        assert pbrun.require_declared_origin_batches(
+        assert submit_core.require_declared_origin_batches(
             manifest, transport="slurm", queue_root=tmp_path / "absent") is None

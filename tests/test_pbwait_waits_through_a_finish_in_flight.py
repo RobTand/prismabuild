@@ -28,6 +28,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
@@ -54,7 +55,7 @@ def test_a_wait_inside_the_finish_window_reports_the_archived_ending(
                 "claimed": claimed,
                 "done_exists": self.records.item_path(pool.record_store.DONE, key).exists(),
                 "receipt": cas.lookup(pbwait.recorded_action(cas, key)) is not None,
-                "found": pbrun.outstanding_submission(self, key),
+                "found": submit_core.outstanding_submission(self, key),
                 "rows": pbwait.wait_for_keys(self, [key], cas=cas, wait_s=0.0),
             })
         return real_release(self, action_key, **kwargs)
@@ -98,18 +99,16 @@ def test_a_late_finish_record_is_outstanding_pool_work(tmp_path: Path) -> None:
     record = {"action_key": key, "published_unix": 123.5}
     for suffix in (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX):
         path = queue.records.dir(pool.record_store.CLAIMED) / f"{key}.1.sparky.7.abcdef01{suffix}"
-        path.write_text(pbrun.json.dumps(record), encoding="utf-8")
-        found = pbrun.outstanding_submission(queue, key)
+        path.write_text(submit_core.json.dumps(record), encoding="utf-8")
+        found = submit_core.outstanding_submission(queue, key)
         assert found is not None and found[:2] == ("pool", 123.5), found
         path.unlink()
     # Another key's tombstone and a malformed one are not this key's work.
-    (queue.records.dir(
-        pool.record_store.CLAIMED,
-    ) / f"{'b' * 64}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
-        pbrun.json.dumps({"action_key": "b" * 64, "published_unix": 9.0}),
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{'b' * 64}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
+        submit_core.json.dumps({"action_key": "b" * 64, "published_unix": 9.0}),
         encoding="utf-8")
     (queue.records.dir(
         pool.record_store.CLAIMED,
     ) / f"{key}.2.h.1.y{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
         "not json", encoding="utf-8")
-    assert pbrun.outstanding_submission(queue, key) is None
+    assert submit_core.outstanding_submission(queue, key) is None

@@ -1,6 +1,7 @@
 """pbrun owns Docker payloads after they leave the process tree."""
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import os
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 def _submission_variables(argv, monkeypatch, tmp_path):
@@ -40,15 +42,13 @@ def _submission_variables(argv, monkeypatch, tmp_path):
         captured.append(body)
         raise Stop()
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", stop)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(submit_core.pb, "seal_action", stop)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=tmp_path / "fleet" / "repo" / "tools")
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", tmp_path / "fleet" / "repo" / "tools"
-    )
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
-    monkeypatch.setattr(
-        pbrun,
-        "build_git_checkout_snapshot",
+        submit_core,
+        'snapshot_checkout',
         lambda *_args, **_kwargs: {"input": {"id": "test"}},
     )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])

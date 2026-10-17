@@ -9,6 +9,7 @@ read back through the receipt that fixed its digest, and the group receipt
 appears only when the cover closes.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -24,6 +25,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 import pbwait  # noqa: E402
 
@@ -62,7 +64,7 @@ open(batch["result_manifest_path"], "w").write(json.dumps({
 
 @pytest.fixture()
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 

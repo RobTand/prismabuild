@@ -24,6 +24,7 @@ fresh broker control on the owner's claim (`fx._broker_control`), which is what
 a new attempt's claim carries.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import contextlib
 import io
@@ -41,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import pool, produced_output as po, storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
@@ -142,8 +144,8 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     work = _checkout(tmp_path)
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -608,22 +610,22 @@ def test_a_submission_without_declared_batches_files_nothing(
     queue = _queue(tmp_path)
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
         "--data-manifest", str(manifest_path),
         "--", "/bin/bash", "-lc", "true"])
     prepared: list[dict] = []
-    original = pbrun.prepare_submission
+    original = submit_core.prepare
 
-    def spy(args):
-        result = original(args)
+    def spy(args, **context):
+        result = original(args, **context)
         prepared.append(result)
         return result
 
-    monkeypatch.setattr(pbrun, "prepare_submission", spy)
+    monkeypatch.setattr(submit_core, 'prepare', spy)
     assert pbrun.main() == 0
     assert len(prepared) == 1
     assert "produced_output_batches" not in prepared[0]["template"], (

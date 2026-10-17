@@ -8,6 +8,7 @@ import pytest
 
 from prismabuild import core as pb, pool
 import pbrun
+from prismabuild import submission as submit_core
 import pbwait
 
 from test_pool_requeue_preserves_newer_generation import (
@@ -43,7 +44,7 @@ def _legacy_slot(queue, clock, damage):
 
 def _observe(queue, generation, consumer):
     if consumer == "pbrun":
-        return pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0, generation=generation), None
+        return submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0, generation=generation), None
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(queue.root / "cas"),
         deadline=time.monotonic(), generation=generation,
@@ -119,11 +120,11 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
         "outcome": outcome, "observed_generation": original["published_unix"],
         "action": None, "receipt_published": False,
     }
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", lambda *args, **kwargs: payload)
 
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable):
         if consumer == "pbrun":
-            pbrun.action_client.bounded_outcome_observation(
+            submit_core.action_client.bounded_outcome_observation(
                 queue, KEY, original["published_unix"], budget_s=5)
         else:
             pbwait.bounded_observation(queue, KEY, pb.PrismaBuildCAS(queue.root / "cas"),
@@ -138,11 +139,11 @@ def test_direct_execution_renderers_reject_a_publication_marker(queue, clock, re
     slot = queue.records.item_path(pool.record_store.DONE, KEY)
     record = json.loads(slot.read_bytes())
 
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable):
         if renderer == "summary":
-            pbrun.action_client.outcome_summary(queue, slot, record)
+            submit_core.action_client.outcome_summary(queue, slot, record)
         elif renderer == "bounded":
-            pbrun.action_client.bounded_outcome_render(queue, slot, record, budget_s=5)
+            submit_core.action_client.bounded_outcome_render(queue, slot, record, budget_s=5)
         else:
             pbwait._from_ending(queue, (slot, record))
 
@@ -154,9 +155,9 @@ def test_verification_ipc_cannot_report_a_publication_status_as_execution(
 ):
     executed, _, _, _ = _legacy_slot(queue, clock, None)
     path, record = queue.archived_generation_outcomes(KEY, generation=executed["published_unix"])[0]
-    summary = pbrun.action_client.outcome_summary(queue, path, record)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
     payload = {"summary": {**summary, "status": "superseded"}, "attempts": []}
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", lambda *args, **kwargs: payload)
 
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
-        pbrun.action_client.bounded_outcome_render(queue, path, record, budget_s=5)
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable):
+        submit_core.action_client.bounded_outcome_render(queue, path, record, budget_s=5)

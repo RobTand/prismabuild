@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
 from prismabuild import pool, resource_scope
 import pbrun
+from prismabuild import submission as submit_core
 from test_pool_resource_scope import scoped  # noqa: F401
 
 
@@ -47,7 +48,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     ), 'late caller failed the READY retry'
     assert result == original_outcome
     assert original_outcome.read_bytes() == original_bytes
-    assert pbrun.action_wait.await_ending(queue, key, wait_s=0.01,
+    assert submit_core.action_wait.await_ending(queue, key, wait_s=0.01,
                                generation=retry['published_unix']) is None
     successor = queue.claim(owner='successor', capacity={'cpu': 1})
     assert successor is not None and successor['attempts'] == (0 if republish else 1)
@@ -57,7 +58,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     assert [row['claimed_by'] for row in history] == (
         ['successor'] if republish else ['original', 'successor'])
     assert history[-1]['stdout'] == 'successor result'
-    assert pbrun.action_client.report_pool_outcome(queue, key, wait_s=1,
+    assert submit_core.action_client.report_pool_outcome(queue, key, wait_s=1,
                               generation=retry['published_unix']) == 0
     assert queue.ledger().held() == {}
 
@@ -93,7 +94,7 @@ def test_late_ready_cleanup_refusal_is_recoverable_without_ending_the_retry(scop
         assert not queue.records.item_path(pool.record_store.DONE, key).exists()
         assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
         assert all(nonce == first['resource_scope']['nonce'] for nonce, _ in observed)
-        assert pbrun.action_wait.await_ending(queue, key, wait_s=0.01,
+        assert submit_core.action_wait.await_ending(queue, key, wait_s=0.01,
                                    generation=first['published_unix']) is None
 
     recovered = pool.PoolQueue(queue.root)
@@ -104,6 +105,6 @@ def test_late_ready_cleanup_refusal_is_recoverable_without_ending_the_retry(scop
     assert successor is not None
     recovered.finish(key, status='executed', detail={'returncode': 0},
                      claim_snapshot=successor)
-    assert pbrun.action_client.report_pool_outcome(recovered, key, wait_s=1,
+    assert submit_core.action_client.report_pool_outcome(recovered, key, wait_s=1,
                               generation=first['published_unix']) == 0
     assert recovered.ledger().held() == {}

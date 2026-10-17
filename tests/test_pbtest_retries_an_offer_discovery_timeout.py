@@ -14,6 +14,7 @@ rc 1 with "NO PYTEST SUMMARY", and someone reran them by hand.
 drift from the text ``pbrun`` prints.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -36,7 +37,7 @@ SPEC = importlib.util.spec_from_file_location(
 )
 pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)  # type: ignore[union-attr]
-pbrun = pbtest.pbrun
+import pbrun
 
 REAL_POPEN = subprocess.Popen
 
@@ -58,12 +59,12 @@ def _pbrun_refusal(monkeypatch, result: dict, *, retained: bool = False) -> Clie
         return dict(result)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pbrun.pbstatus, "bounded", bounded)
-        with pytest.raises(SystemExit) as caught:
-            pbrun.bounded_offer_snapshot(pbrun.pool.PoolQueue(Path("/nonexistent")))
-    verdict = (client.ClientOfferTimeout() if isinstance(caught.value, pbrun.OfferDiscoveryTimedOut)
+        patch.setattr(submit_core._bounded_reader, "bounded", bounded)
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
+            submit_core.bounded_offer_snapshot(submit_core.pool.PoolQueue(Path("/nonexistent")))
+    verdict = (client.ClientOfferTimeout() if isinstance(caught.value, submit_core.OfferDiscoveryTimedOut)
                else client.ClientRefused(1))
-    return ClientReply(f"{caught.value.code}\n", verdict)
+    return ClientReply(f"{caught.value.reason}\n", verdict)
 
 
 def _timed_out(monkeypatch) -> ClientReply:
@@ -179,7 +180,7 @@ def test_a_shard_whose_offer_read_timed_out_once_is_submitted_again(
     assert record["ran"] is True
     assert record["summary"] == "1 passed in 0.01s"
     assert exit_code == 0
-    assert clock.sleeps == [pbrun.action_wait.POLL_S]         # the pace pbcampaign retries at
+    assert clock.sleeps == [submit_core.action_wait.POLL_S]         # the pace pbcampaign retries at
     # The retry is announced while it happens, and the shard's own line
     # carries it, so the receipt shows the run was not a first submission.
     assert any("worker-offer discovery timed out" in line and "attempt 2" in line

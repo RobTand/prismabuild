@@ -28,6 +28,7 @@ Everything runs against the fake scheduler in ``test_slurm_lane``: no
 controller is contacted, and no test writes outside ``tmp_path``.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 import os
@@ -45,6 +46,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import (  # noqa: E402
     JOB_ENTRY, WORKER, _runnable_action, fleet,  # noqa: F401
@@ -125,7 +127,7 @@ def test_a_job_that_ends_with_nobody_watching_is_filed_by_the_sweeper(
 
     # And a wait for the key now reads that record rather than resuming a job
     # or re-running the work.
-    landed = pbrun.action_wait.await_ending(
+    landed = submit_core.action_wait.await_ending(
         pool.PoolQueue(queue_root), key, wait_s=0.0,
         generation=record["published_unix"])
     assert landed is not None

@@ -28,6 +28,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WORKER = REPOSITORY / "tools" / "prismabuild_worker.py"
@@ -63,8 +64,8 @@ def test_an_older_waiter_does_not_replace_a_newer_generations_ending(
 
     record = json.loads(_failed(tmp_path).read_text(encoding="utf-8"))
     assert record["published_unix"] == 200.0
-    assert pbrun.action_wait.terminal_record(_failed(tmp_path), 200.0) is not None
-    assert pbrun.action_wait.terminal_record(_failed(tmp_path), 100.0) is None
+    assert submit_core.action_wait.terminal_record(_failed(tmp_path), 200.0) is not None
+    assert submit_core.action_wait.terminal_record(_failed(tmp_path), 100.0) is None
 
 
 def test_a_newer_ending_still_replaces_an_older_one(tmp_path: Path) -> None:
@@ -152,7 +153,7 @@ def test_a_delayed_resume_of_an_older_job_leaves_the_newer_ending(
     record = json.loads(_failed(queue).read_text(encoding="utf-8"))
     assert record["published_unix"] == 200.0
     assert record["claimed_by"] == "1002"
-    assert pbrun.action_wait.terminal_record(_failed(queue), 200.0) is not None
+    assert submit_core.action_wait.terminal_record(_failed(queue), 200.0) is not None
 
 
 def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(

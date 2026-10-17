@@ -5,6 +5,7 @@ import test_logical_task_data_manifests as logical
 import test_pbrun_residency_stage_submission as staging
 from prismabuild import pool, residency_plan
 import pbrun
+from prismabuild import submission as submit_core
 
 
 def test_one_receipt_observation_prices_all_children_and_replay_reads_none(tmp_path, monkeypatch):
@@ -47,7 +48,7 @@ def test_receipt_arriving_during_freeze_does_not_reprice_later_siblings(tmp_path
     fixture, request = logical.setup_request(tmp_path, monkeypatch)
     queue = fixture['queue']
     staging._price_receipt(queue, 'a' * 64, delivered_mb_s=20)
-    original = pbrun.residency_stage_rows
+    original = submit_core.residency_stage_rows
     calls = []
 
     def advancing_history(*args, **kwargs):
@@ -57,7 +58,7 @@ def test_receipt_arriving_during_freeze_does_not_reprice_later_siblings(tmp_path
             staging._price_receipt(queue, 'b' * 64, delivered_mb_s=300)
         return result
 
-    monkeypatch.setattr(pbrun, 'residency_stage_rows', advancing_history)
+    monkeypatch.setattr(submit_core, 'residency_stage_rows', advancing_history)
     _, group = logical.decompose(request)
     demands = [residency_plan.read(queue, child['action_key'])['phases'][0]
                ['mover_row']['resources'][staging.FILL_KIND] for child in group['children']]

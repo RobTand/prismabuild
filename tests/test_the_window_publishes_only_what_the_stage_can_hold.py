@@ -20,6 +20,8 @@ key is a content hash, so a second campaign over the same manifest seals the
 same key, and a leftover ``done`` record must not read as "already staged".
 """
 from __future__ import annotations
+from submission_support import refusal_value
+from prismabuild import submission as submit_core
 
 import json
 import os
@@ -394,9 +396,11 @@ def test_a_submission_cannot_stage_onto_a_tier_the_fleet_does_not_announce(
     """Discovered, never configured: the topology is Rob's to change."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    with pytest.raises(SystemExit, match="no box announces one"):
-        pbrun.resolve_stage_tier(queue, None)
+    with pytest.raises(submit_core.SubmissionRefused, match="no box announces one"):
+        submit_core.resolve_stage_tier(queue, None)
 
 
 def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> None:
@@ -408,10 +412,10 @@ def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> No
                              "host": host, "capacity_bytes": 1 << 40,
                              "mountpoint": str(tmp_path / "stage")})
 
-    with pytest.raises(SystemExit, match="--residency-tier"):
-        pbrun.resolve_stage_tier(queue, None)
+    with pytest.raises(submit_core.SubmissionRefused, match="--residency-tier"):
+        submit_core.resolve_stage_tier(queue, None)
 
-    named = pbrun.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
+    named = submit_core.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
     assert named["host"] == "elsewhere"
 
 
@@ -422,7 +426,7 @@ def test_one_announced_stage_tier_needs_no_flag(queue, tmp_path) -> None:
                          "tier_id": TIER, "tier": "stage", "host": "dl380g10",
                          "capacity_bytes": 1 << 40, "mountpoint": str(tmp_path / "stage")})
 
-    assert pbrun.resolve_stage_tier(queue, None)["tier_id"] == TIER
+    assert submit_core.resolve_stage_tier(queue, None)["tier_id"] == TIER
 
 
 def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
@@ -440,7 +444,7 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {"input": {"sha256": "b" * 64}},
@@ -449,10 +453,10 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     }
-    first = pbrun.seal_movement_action(
+    first = submit_core.seal_movement(
         template, command=["/bin/true", "--range-start-bytes", "0"],
         demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="a.log")
-    second = pbrun.seal_movement_action(
+    second = submit_core.seal_movement(
         template, command=["/bin/true", "--range-start-bytes", "2048"],
         demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="b.log")
 
@@ -514,7 +518,7 @@ def test_a_submitter_takes_the_interpreter_off_the_tier_not_off_itself() -> None
     tier = {"tier_id": TIER, "mover_python": "/opt/pb/bin/python3",
             "mover_tools_root": "/mnt/shared/prismabuild-fleet/gen-7/tools"}
 
-    python, mover, egress = pbrun.movement_tools(tier)
+    python, mover, egress = submit_core.movement_tools(tier)
 
     assert python == "/opt/pb/bin/python3" != sys.executable
     assert mover == "/mnt/shared/prismabuild-fleet/gen-7/tools/stage_move.py"
@@ -533,6 +537,6 @@ def test_a_tier_that_announces_neither_is_refused_rather_than_guessed(
             "mover_tools_root": "/gen/tools"}
     del tier[missing]
 
-    with pytest.raises(SystemExit) as excinfo:
-        pbrun.movement_tools(tier)
+    with pytest.raises(submit_core.SubmissionRefused) as excinfo:
+        submit_core.movement_tools(tier)
     assert missing in str(excinfo.value) and TIER in str(excinfo.value)

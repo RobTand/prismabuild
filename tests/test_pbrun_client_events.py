@@ -1,4 +1,6 @@
 """The real main emits facts matching its process exit and unchanged stdout."""
+from prismabuild import submission as submit_core
+import pbrun
 import json
 import os
 from pathlib import Path
@@ -13,37 +15,38 @@ from test_verified_action_result import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BOOTSTRAP = '''
+BOOTSTRAP = r"""
 import json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(os.environ['CLIENT_SOURCE']) / 'tools' / 'fleet'))
 import pbrun
+from prismabuild import submission as submit_core
 base = Path(os.environ['CLIENT_ROOT'])
-pbrun.SH = base
-cas = pbrun.pb.PrismaBuildCAS(base / 'cas')
+pbrun.configured_store = lambda: submit_core.FleetStore(Path(base), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+cas = submit_core.pb.PrismaBuildCAS(base / 'cas')
 action = cas.read_action_request(os.environ['CLIENT_KEY'])
 mode = os.environ['CLIENT_MODE']
-def prepare(args):
+def prepare(args, **_submission_context):
     if mode == 'refused':
-        raise SystemExit('controlled refusal')
+        raise submit_core.SubmissionRefused('controlled refusal')
     if mode == 'offer_timeout':
-        raise pbrun.OfferDiscoveryTimedOut('controlled offer timeout')
+        raise submit_core.OfferDiscoveryTimedOut('controlled offer timeout')
     if mode == 'interrupted':
         raise SystemExit(143)
     return dict(template=dict(cas=cas, params=dict(placement=dict(required_tags=[]),
         demand=dict(cpu=1, mem_gb=1))), cwd=base / 'checkout', portable_checkout=True,
-        offer_queue=lambda: pbrun.pool.PoolQueue(base / 'pb-queue'))
-pbrun.prepare_submission = prepare
-pbrun.seal_action_from_template = lambda *args, **kwargs: action
-pbrun.announce_placement = lambda *args, **kwargs: None
-pbrun.d38_gate.judge_publication = lambda *args, **kwargs: None
-pbrun.publish_consumer_row = lambda q, *args, **kwargs: (
+        offer_queue=lambda: submit_core.pool.PoolQueue(base / 'pb-queue'))
+submit_core.prepare = prepare
+submit_core.seal = lambda *args, **kwargs: action
+submit_core.announce_placement = lambda *args, **kwargs: None
+submit_core.d38_gate.judge_publication = lambda *args, **kwargs: None
+submit_core.publish_consumer_row = lambda q, *args, **kwargs: (
     q.records.item_path('ready', action['action_key']) if mode != 'attached' else None, None)
 fd = sys.argv[sys.argv.index('--client-events-fd') + 1]
 sys.argv = ['pbrun.py', '--client-events-fd', fd, '--wait-s', '0', '--transport', 'pool',
     *(['--detach'] if mode == 'cached' else []), '--', '/bin/echo', 'hello']
 raise SystemExit(pbrun.main())
-'''
+"""
 
 
 def _setup(tmp_path):
@@ -201,9 +204,9 @@ def test_slurm_reports_its_selected_client_exit_separately_from_scheduler_facts(
     monkeypatch.setattr(slurm_lane, 'run', run)
     monkeypatch.setattr(slurm_lane, 'job_was_cache_hit', lambda _job: False)
     report = client.ClientReport()
-    assert pbrun.slurm_outcome(action, cas=cas, request_path=request, tags=[], demand={},
+    assert submit_core.slurm_outcome(action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=1, wait_s=0, retry_safe=False, max_attempts=1,
-        lane_root=tmp_path / 'lane', queue_root=tmp_path / 'queue', report=report) == expected
+        lane_root=tmp_path / 'lane', queue_root=tmp_path / 'queue', report=report, store=pbrun.configured_store(), display=pbrun.render_submission) == expected
     ending = report.ending.verdict
     assert isinstance(ending, client.ClientExecution)
     assert ending.reported_returncode == expected

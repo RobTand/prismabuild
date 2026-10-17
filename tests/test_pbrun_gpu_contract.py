@@ -1,4 +1,5 @@
 """GPU sharing and VRAM intent are sealed, validated submission contracts."""
+from submission_support import patch_store
 from pathlib import Path
 import subprocess
 import sys
@@ -7,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
 import pbrun
+from prismabuild import submission as submit_core
 
 
 def params(argv, tmp_path, monkeypatch):
@@ -18,10 +20,10 @@ def params(argv, tmp_path, monkeypatch):
     def seal(body):
         captured.append(body['params'])
         raise Stop()
-    monkeypatch.setattr(pbrun.pb,'seal_action',seal)
-    monkeypatch.setattr(pbrun,'SH',tmp_path/'fleet')
-    monkeypatch.setattr(pbrun,'git_repository_root',lambda cwd:tmp_path)
-    monkeypatch.setattr(pbrun,'build_git_checkout_snapshot',lambda *a,**k:{'input':{'id':'test'}})
+    monkeypatch.setattr(submit_core.pb,'seal_action',seal)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path/'fleet')
+    monkeypatch.setattr(submit_core,'git_repository_root',lambda cwd, **_context: tmp_path)
+    monkeypatch.setattr(submit_core,'snapshot_checkout',lambda *a,**k:{'input':{'id':'test'}})
     monkeypatch.setattr(sys,'argv',['pbrun.py','--cwd',str(tmp_path),*argv,'--','true'])
     try: pbrun.main()
     except Stop: pass

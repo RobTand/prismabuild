@@ -15,6 +15,8 @@ that stays unreadable, and a reader that survives cleanup.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
+from submission_support import refusal_value
 
 import errno
 import os
@@ -30,10 +32,11 @@ from test_pbcampaign import fleet_paths, _manifest, _row  # noqa: F401
 from prismabuild import pool
 import pbcampaign
 import pbrun
+from prismabuild import submission as submit_core
 
 
 #: The production offer-read budget, before a test shortens it for a FIFO.
-PRODUCTION_OFFER_READ_TIMEOUT_S = pbrun.SUBMISSION_OFFER_READ_TIMEOUT_S
+PRODUCTION_OFFER_READ_TIMEOUT_S = submit_core.SUBMISSION_OFFER_READ_TIMEOUT_S
 
 X86 = {"tags": ["x86"], "needs_gpu": False, "resources": {"mem_gb": 4}}
 
@@ -96,7 +99,7 @@ PUBLISHED_RUNTIME = Path(
 
 
 def _submit(monkeypatch, work: Path, *tags: str) -> int:
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     # Zero is one observation with the full read budget, then 75 when
     # nothing has landed.  A positive wait caps the first forked reader's
     # budget at the time left, so 10 ms timed it out on a loaded box and the
@@ -132,7 +135,7 @@ def test_a_tag_no_worker_offers_still_refuses_at_once(
 
     with pytest.raises(SystemExit, match="no recorded worker can run this action") as caught:
         _submit(monkeypatch, work, "nosuchbox")
-    assert not isinstance(caught.value, getattr(pbrun, "OfferDiscoveryTimedOut", ()))
+    assert not isinstance(caught.value, submit_core.OfferDiscoveryTimedOut)
     assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
@@ -143,11 +146,11 @@ def test_a_reaped_offer_timeout_is_its_own_refusal(tmp_path, monkeypatch):
         time.sleep(30)
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
-    with pytest.raises(SystemExit, match="worker-offer discovery timed out") as caught:
-        pbrun.bounded_offer_snapshot(queue)
+    monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    with pytest.raises(submit_core.SubmissionRefused, match="worker-offer discovery timed out") as caught:
+        submit_core.bounded_offer_snapshot(queue)
     assert type(caught.value).__name__ == "OfferDiscoveryTimedOut"
-    assert isinstance(caught.value.code, str)          # plain pbrun still exits 1
+    assert isinstance(refusal_value(caught.value), str)          # plain pbrun still exits 1
 
 
 def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
@@ -164,12 +167,12 @@ def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
         time.sleep(30)
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
+    monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     try:
-        with pytest.raises(SystemExit, match="retained reader") as caught:
-            pbrun.bounded_offer_snapshot(queue)
-        assert type(caught.value) is SystemExit
+        with pytest.raises(submit_core.SubmissionRefused, match="retained reader") as caught:
+            submit_core.bounded_offer_snapshot(queue)
+        assert type(caught.value) is submit_core.SubmissionRefused
     finally:
         for pid in children:
             try:
@@ -193,7 +196,7 @@ def test_campaign_window_retries_an_offer_discovery_timeout(
     work, queue = fleet_paths
     fifo = queue.root / pool.record_store.WORKERS / "wedged.json"
     os.mkfifo(fifo, 0o600)
-    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     attempts = []
     real = pbcampaign._submit_record
 
@@ -206,7 +209,7 @@ def test_campaign_window_retries_an_offer_discovery_timeout(
             # The short budget exists to time out the FIFO. The retry's offer
             # read gets the production budget, so a loaded box cannot time it
             # out too (#1170).
-            monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S",
+            monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S",
                                 PRODUCTION_OFFER_READ_TIMEOUT_S)
 
     monkeypatch.setattr(pbcampaign, "_submit_record", once_wedged)
@@ -247,7 +250,7 @@ def test_offer_discovery_retries_end_at_the_campaign_deadline(monkeypatch):
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", poll)
     monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(pbcampaign.time, "sleep", sleep)
-    monkeypatch.setattr(pbcampaign.pbrun.action_wait, "POLL_S", 1.0)
+    monkeypatch.setattr(pbcampaign.action_wait, "POLL_S", 1.0)
 
     submissions, waited = pbcampaign.run_windowed(
         [{"index": 0}, {"index": 1}], transport="pool", max_inflight=2, wait_s=5,

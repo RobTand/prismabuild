@@ -385,10 +385,10 @@ def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
         "from test_core import _action\n"
         "def test_file_a_request(tmp_path):\n"
         "    # The default the per-test fixture did not reach.\n"
-        "    pbrun.SH = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    live_root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
         "    checkout = tmp_path / 'checkout'\n"
         "    checkout.mkdir()\n"
-        "    pb.PrismaBuildCAS(pbrun.SH / 'cas').publish_action_request(\n"
+        "    pb.PrismaBuildCAS(live_root / 'cas').publish_action_request(\n"
         "        _action(checkout))\n"
     ))
     output = result.stdout + result.stderr

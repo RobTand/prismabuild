@@ -1,5 +1,6 @@
 """Detached attachment discovery must not park its caller on a queue read."""
 from __future__ import annotations
+from prismabuild import submission
 
 from pathlib import Path
 import json
@@ -13,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import pool  # noqa: E402
 
 
@@ -29,7 +31,8 @@ def test_detached_fifo_attachment_read_refuses_before_publication(tmp_path: Path
 import contextlib, io, json, os, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / 'tests')!r}, {str(ROOT / 'tools' / 'fleet')!r}, {str(ROOT / 'src')!r}]
-import pytest, pbrun, d38_gate
+import pytest, pbrun
+from prismabuild import d38_gate, submission
 d38_gate.ENFORCE = False  # this test is about the attachment read, not D38
 from test_pbrun_detach import _checkout, _queue, _run_pbrun
 root = Path({str(tmp_path)!r})
@@ -53,8 +56,8 @@ def observed(path, *args, **kwargs):
 Path.read_text = observed
 def no_publish(*args, **kwargs):
     raise AssertionError("unavailable attachment must not publish")
-pbrun.publish_or_refuse = no_publish
-pbrun.ATTACHMENT_READ_TIMEOUT_S = 0.05
+submission.publish_or_refuse = no_publish
+submission.ATTACHMENT_READ_TIMEOUT_S = 0.05
 rc = _run_pbrun(root, patch, work, "--detach", "--transport", "pool")
 assert fifo.is_fifo()
 assert sorted(p.name for p in fifo.parent.iterdir()) == [fifo.name]
@@ -70,7 +73,7 @@ print(rc)
                     + str(marker.exists()))
     assert completed.returncode == 0, completed.stderr
     assert marker.read_text(encoding="utf-8") == "entered"
-    assert completed.stdout == f"{pbrun.action_client.RECORD_WRITE_FAILED_EXIT}\n"
+    assert completed.stdout == f"{submit_core.action_client.RECORD_WRITE_FAILED_EXIT}\n"
     assert "unavailable detached attachment" in completed.stderr
     assert "attachment discovery timed out" in completed.stderr
 
@@ -96,7 +99,7 @@ def test_pool_attachment_keeps_generation_and_liveness(
     if ended:
         queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps({
             **row, "status": "executed", "detail": {"returncode": 0}}))
-    result = pbrun.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
+    result = submit_core.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
     if attaches:
         assert result == {"transport": "pool", "generation": generation,
                           "submission": str(record), "job_id": ""}
@@ -126,17 +129,17 @@ def test_slurm_query_remains_in_parent_after_bounded_record_read(
         queries.append((job_id, kwargs))
         return None if state is None else (state, {})
 
-    monkeypatch.setattr(pbrun, "outstanding_submission", records)
-    monkeypatch.setattr(pbrun.action_wait, "await_ending", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(pbrun.slurm_lane, "query_state", query)
-    result = pbrun.bounded_attachment(
+    monkeypatch.setattr(submit_core, "outstanding_submission", records)
+    monkeypatch.setattr(submit_core.action_wait, "await_ending", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(submit_core.slurm_lane, "query_state", query)
+    result = submit_core.bounded_attachment(
         pool.PoolQueue(tmp_path / "queue"), "c" * 64, squeue="private-squeue")
     assert int(observed.read_text()) != parent
     assert queries == [("41", {"squeue": "private-squeue"})]
     if attaches:
         assert result["generation"] == 200.0
         assert result["job_id"] == "41"
-        assert result["submission"] == str(pbrun.slurm_lane.submission_record_path(
+        assert result["submission"] == str(submit_core.slurm_lane.submission_record_path(
             directory, published_unix=200.0, attempt=2))
     else:
         assert result is None
@@ -154,11 +157,11 @@ def test_retained_reader_refuses_before_scheduler_query(
         return {"status": "ok", "value": {"transport": "slurm",
                 "generation": 200.0, "job_id": "41", "submission": "unused"}}
 
-    monkeypatch.setattr(pbrun.action_wait._reader, "bounded", retained)
-    monkeypatch.setattr(pbrun.slurm_lane, "query_state", lambda *_args, **_kwargs:
+    monkeypatch.setattr(submit_core.action_wait._reader, "bounded", retained)
+    monkeypatch.setattr(submit_core.slurm_lane, "query_state", lambda *_args, **_kwargs:
                         pytest.fail("retained reader must stop discovery"))
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable, match='"starttime_ticks": 67890'):
-        pbrun.bounded_attachment(pool.PoolQueue(tmp_path / "queue"), "c" * 64)
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable, match='"starttime_ticks": 67890'):
+        submit_core.bounded_attachment(pool.PoolQueue(tmp_path / "queue"), "c" * 64)
 
 
 def test_claim_lease_read_is_inside_attachment_budget(
@@ -170,9 +173,9 @@ def test_claim_lease_read_is_inside_attachment_budget(
     queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps({
         "action_key": key, "published_unix": 123.0}))
     os.mkfifo(queue.records.lease_path(key))
-    monkeypatch.setattr(pbrun, "ATTACHMENT_READ_TIMEOUT_S", 0.05)
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable, match="attachment discovery timed out"):
-        pbrun.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
+    monkeypatch.setattr(submit_core, "ATTACHMENT_READ_TIMEOUT_S", 0.05)
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable, match="attachment discovery timed out"):
+        submit_core.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
 
 
 def test_attachment_setup_failure_returns_74_without_publishing(
@@ -186,8 +189,8 @@ def test_attachment_setup_failure_returns_74_without_publishing(
     def failed(*_args, **_kwargs):
         raise OSError("reader setup refused")
 
-    monkeypatch.setattr(pbrun, "bounded_attachment", failed)
-    monkeypatch.setattr(pbrun, "publish_or_refuse", lambda *_args, **_kwargs:
+    monkeypatch.setattr(submit_core, "bounded_attachment", failed)
+    monkeypatch.setattr(submit_core, "publish_or_refuse", lambda *_args, **_kwargs:
                         pytest.fail("failed attachment must not publish"))
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 74
     assert "reader setup refused" in capsys.readouterr().err

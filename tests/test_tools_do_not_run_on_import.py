@@ -39,7 +39,8 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = sorted([*(REPO / "tools" / "fleet").glob("*.py"),
                 *(REPO / "src" / "prismabuild" / (name + ".py")
-                  for name in ('prewarm_loop', 'stage_move', 'stage_release', 'ram_promote', 'stage_rounding'))])
+                  for name in ('prewarm_loop', 'stage_move', 'stage_release', 'ram_promote', 'stage_rounding')),
+                REPO / "src" / "prismabuild" / "d38_gate.py"])
 
 #: The bootstrap every tool runs before it can import ``prismabuild``: a tool
 #: is executed out of whichever runtime generation it was published into, so

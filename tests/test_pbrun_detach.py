@@ -14,6 +14,7 @@ occupied and a checkout materialized to learn what the submitting process
 already knew, and a re-run of a fifty-row campaign is fifty of them.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -29,6 +30,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import fleet, _submissions  # noqa: E402,F401
 
@@ -66,8 +68,8 @@ def _run_pbrun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path,
     *options: str, command=("/bin/bash", "-lc", "printf ok"),
 ) -> int:
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", *options,
@@ -100,7 +102,7 @@ def test_a_detached_pool_submission_queues_and_returns_without_waiting(
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
 
     line = _one_json_line(capsys.readouterr())
-    assert line["schema"] == pbrun.action_client.DETACH_SCHEMA_V1
+    assert line["schema"] == submit_core.action_client.DETACH_SCHEMA_V1
     assert line["transport"] == "pool"
     assert line["status"] == "submitted"
     assert line["job_id"] is None
@@ -246,7 +248,7 @@ def test_a_detached_submission_of_finished_work_submits_nothing(
     def _refuse(*_args, **_kwargs):
         raise AssertionError("a CAS hit must not reach sbatch")
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", _refuse)
+    monkeypatch.setattr(submit_core.slurm_lane, "run", _refuse)
     assert _run_pbrun(
         tmp_path, monkeypatch, work, "--detach", "--transport", "slurm",
         command=command,

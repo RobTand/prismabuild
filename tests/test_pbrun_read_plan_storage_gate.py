@@ -1,5 +1,6 @@
 """A source v2 submitter does not assume the storage role was upgraded."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 @pytest.mark.parametrize("use_defaults", [False, True])
@@ -23,8 +25,8 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
         tmp_path: Path, monkeypatch, use_defaults, changed_member) -> None:
     source = tmp_path / "source"
     published = tmp_path / "fleet" / "repo"
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", source)
-    monkeypatch.setattr(pbrun, "SH", published.parent)
+    patch_store(monkeypatch, client=pbrun, runtime_root=source)
+    patch_store(monkeypatch, client=pbrun, root=published.parent)
     roots = {} if use_defaults else {"source_root": source, "published_root": published}
     members = ("src/prismabuild/core.py", "tools/fleet/prewarm_loop.py",
                "src/prismabuild/manifest_layout.py")
@@ -38,24 +40,24 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
         deployed.write_bytes(original.read_bytes())
         files[member] = hashlib.sha256(original.read_bytes()).hexdigest()
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
-    pbrun.require_deployed_read_plan_storage(**roots)
+    submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
     (published / changed_member).write_text("old storage owner")
-    with pytest.raises(SystemExit, match="compatible published storage"):
-        pbrun.require_deployed_read_plan_storage(**roots)
+    with pytest.raises(submit_core.SubmissionRefused, match="compatible published storage"):
+        submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
     (published / changed_member).write_bytes((source / changed_member).read_bytes())
     files[changed_member] = "0" * 64
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
-    with pytest.raises(SystemExit, match="compatible published storage"):
-        pbrun.require_deployed_read_plan_storage(**roots)
+    with pytest.raises(submit_core.SubmissionRefused, match="compatible published storage"):
+        submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
 
 
 def test_v2_progress_phases_must_follow_the_read_timeline() -> None:
     manifest = {"read_plan": {"phases": [{"name": "a"}, {"name": "b"}]}}
     valid = {"phases": [{"name": "startup"}, {"name": "a"},
                         {"name": "compute"}, {"name": "b"}]}
-    pbrun.require_linear_read_plan_progress(manifest, valid)
+    submit_core.require_linear_read_plan_progress(manifest, valid)
     for wrong in (None, {**valid, "cycle": True},
                   {"phases": [{"name": "a"}]},
                   {"phases": [{"name": "b"}, {"name": "a"}]}):
-        with pytest.raises(SystemExit):
-            pbrun.require_linear_read_plan_progress(manifest, wrong)
+        with pytest.raises(submit_core.SubmissionRefused):
+            submit_core.require_linear_read_plan_progress(manifest, wrong)

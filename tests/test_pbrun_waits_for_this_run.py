@@ -32,6 +32,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "d" * 64
 
@@ -59,7 +60,7 @@ def _outcome(generation, *, status: str, returncode: int) -> dict:
 
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     made = pool.PoolQueue(tmp_path / "pb-queue")
     made.records.ensure_layout()
     return made
@@ -71,7 +72,7 @@ def test_an_earlier_runs_ending_does_not_answer_this_run(queue) -> None:
     _file(queue, pool.record_store.FAILED, _outcome(100.0, status="failed", returncode=3))
     # One immediate observation tests generation selection without racing a
     # subsecond caller deadline against bounded-reader startup and IPC.
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=0, generation=200.0
     ) == 75
 
@@ -79,7 +80,7 @@ def test_an_earlier_runs_ending_does_not_answer_this_run(queue) -> None:
     # The ending is already filed, so one immediate observation (the reader
     # keeps its production budget) is the whole check; a 0.05 s caller wait
     # gave the reader 0.05 s and read as 74 on a loaded box (#1170).
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=0, generation=200.0
     ) == 0
 
@@ -91,7 +92,7 @@ def test_a_caller_that_does_not_know_the_generation_takes_what_is_filed(
     say", which is what every reader had before generations were stamped."""
 
     _file(queue, pool.record_store.FAILED, _outcome(100.0, status="failed", returncode=3))
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0) == 3
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0) == 3
 
 
 def test_an_ending_with_no_generation_stands(queue) -> None:
@@ -102,7 +103,7 @@ def test_an_ending_with_no_generation_stands(queue) -> None:
     record = _outcome(100.0, status="failed", returncode=3)
     del record["published_unix"]
     _file(queue, pool.record_store.FAILED, record)
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=0, generation=200.0
     ) == 3
 
@@ -123,7 +124,7 @@ def test_this_runs_withdrawal_beats_an_old_unstamped_success(
         expected = queue.records.withdrawal_decision_path(current)
         queue.records.file_withdrawal_decision(current)
 
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0.05, generation=200.0)
 
     assert path == expected
@@ -146,7 +147,7 @@ def test_an_old_broken_decision_does_not_poison_this_runs_ending(queue) -> None:
     current = _outcome(200.0, status="executed", returncode=0)
     expected = _file(queue, pool.record_store.DONE, current)
 
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0.05, generation=200.0)
 
     assert path == expected
@@ -161,4 +162,4 @@ def test_a_broken_decision_for_this_run_still_refuses_a_verdict(queue) -> None:
           _outcome(200.0, status="executed", returncode=0))
 
     with pytest.raises(pool.PoolContractError, match="invalid withdrawal decision"):
-        pbrun.action_wait.await_ending(queue, KEY, wait_s=0.05, generation=200.0)
+        submit_core.action_wait.await_ending(queue, KEY, wait_s=0.05, generation=200.0)

@@ -11,6 +11,7 @@ import test_a_decomposed_campaign_closes_on_an_exact_cover as closing
 from prismabuild import core as pb, decomposition as dc, pool, residency_plan
 from prismabuild import data_manifest as manifest_codec
 import pbrun
+from prismabuild import submission as submit_core
 import pbcampaign
 
 
@@ -90,7 +91,7 @@ def test_replay_reuses_membership_and_graphs_without_replanning(tmp_path, monkey
     first, initial = decompose(request)
     def unexpected(*args, **kwargs):
         raise AssertionError('replay rebuilt an immutable graph')
-    monkeypatch.setattr(pbrun, 'residency_stage_rows', unexpected)
+    monkeypatch.setattr(submit_core, 'residency_stage_rows', unexpected)
     second, replay = decompose(request)
     assert [r['action_key'] for r in first] == [r['action_key'] for r in second]
     assert replay['plan'] == initial['plan']

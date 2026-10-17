@@ -1,6 +1,9 @@
 """Where an action may run is derived from the checkout, not asked of the caller."""
 
 from __future__ import annotations
+from submission_support import patch_store
+from submission_support import refusal_value
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -98,9 +101,9 @@ def _sealed_pbrun_action(checkout: Path, stamp_name: str) -> dict[str, object]:
 
 
 def _tags(cwd: str, **kw: object) -> list[str]:
-    return pbrun.placement_contract(
+    return submit_core.placement_contract(
         Path(cwd), explicit=kw.pop("explicit", []), here=bool(kw.pop("here", False)),
-        hostname=HOST)[0]
+        hostname=HOST, store=pbrun.configured_store(), display=pbrun.render_submission)[0]
 
 
 def test_a_shared_checkout_is_free_to_run_on_any_box() -> None:
@@ -139,14 +142,14 @@ def test_portable_snapshot_keeps_a_box_local_executable_host_pin(
     interpreter.write_bytes(b"ELF test executable")
     interpreter.chmod(0o755)
 
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=[],
     here=False,
     hostname=HOST,
     portable_checkout=True,
     command=[str(interpreter), "-V"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},)[0] == [HOST]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_explicit_tag_owns_a_missing_external_executable_path(
@@ -155,14 +158,14 @@ def test_explicit_tag_owns_a_missing_external_executable_path(
     """A caller may name the worker class that owns a box-absent interpreter."""
 
     checkout = _git_checkout(tmp_path)
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=["dl380g10"],
     here=False,
     hostname=HOST,
     portable_checkout=True,
     command=["/home/rob/venvs/pb-cpu/bin/python", "-V"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},)[0] == ["dl380g10"]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == ["dl380g10"]
 
 
 def test_portable_snapshot_refuses_an_unplaced_missing_executable(
@@ -170,15 +173,15 @@ def test_portable_snapshot_refuses_an_unplaced_missing_executable(
 ) -> None:
     checkout = _git_checkout(tmp_path)
 
-    with pytest.raises(SystemExit, match="--tag"):
-        pbrun.placement_contract(checkout,
+    with pytest.raises(submit_core.SubmissionRefused, match="--tag"):
+        submit_core.placement_contract(checkout,
         explicit=[],
         here=False,
         hostname=HOST,
         portable_checkout=True,
         command=["/home/rob/venvs/missing/bin/python", "-V"],
         repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},)[0]
+        environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0]
 
 
 def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
@@ -190,14 +193,14 @@ def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
 
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=[],
     here=False,
     hostname=HOST,
     portable_checkout=True,
     command=["python3", "-V"],
     repository_root=checkout,
-    environment={"PATH": str(binary.parent)},)[0] == [HOST]
+    environment={"PATH": str(binary.parent)},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
@@ -210,14 +213,14 @@ def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
     model.parent.mkdir()
     model.write_text("{}\n")
 
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=[],
     here=False,
     hostname=HOST,
     portable_checkout=True,
     command=["./task.py", f"--model={model}"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},)[0] == [HOST]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> None:
@@ -227,7 +230,7 @@ def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> N
     cache = tmp_path / "model-cache"
     cache.mkdir()
 
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=[],
     here=False,
     hostname=HOST,
@@ -235,13 +238,13 @@ def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> N
     command=["./task.py"],
     repository_root=checkout,
     environment={"PATH": "/usr/bin:/bin"},
-    caller_environment={"MODEL_CACHE": str(cache)},)[0] == [HOST]
+    caller_environment={"MODEL_CACHE": str(cache)},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) -> None:
     checkout = _git_checkout(tmp_path)
 
-    assert pbrun.placement_contract(checkout,
+    assert submit_core.placement_contract(checkout,
     explicit=[],
     here=False,
     hostname=HOST,
@@ -249,7 +252,7 @@ def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) 
     command=["/worker/owned/python", "--model=/worker/owned/model"],
     repository_root=checkout,
     environment={"PATH": "/usr/bin:/bin"},
-    anywhere=True,)[0] == []
+    anywhere=True,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == []
 
 
 def test_here_pins_a_shared_checkout_on_purpose() -> None:
@@ -296,11 +299,11 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
     def identity(_cwd, _seen=seen):
         return {"commit": _seen.pop(0)}
 
-    monkeypatch.setattr(pbrun, "_git_identity", identity)
+    monkeypatch.setattr(submit_core, '_git_identity', identity)
     names = []
     for commit in ("aaaa", "bbbb", "aaaa"):
         seen.append(commit)
-        names.append(pbrun.result_and_stamp_names(
+        names.append(submit_core.result_and_stamp_names(
             ["pytest", "-q"], tmp_path, {"cpu": 1}, {"LANG": "C.UTF-8"}))
     assert names[0] != names[1], "two commits shared one result path"
     assert names[0] == names[2], "the same commit must still dedup"
@@ -313,23 +316,23 @@ def test_portable_submission_identity_ignores_the_source_checkout_path() -> None
     command = ["python", "task.py"]
     demand = {"cpu": 1}
     variables = {"LANG": "C.UTF-8"}
-    first = pbrun.result_and_stamp_names(
+    first = submit_core.result_and_stamp_names(
         command, Path("/home/rob/tmp/first"), demand, variables,
         identity=identity, logical_cwd=".",
     )
-    second = pbrun.result_and_stamp_names(
+    second = submit_core.result_and_stamp_names(
         command, Path("/mnt/shared/second"), demand, variables,
         identity=identity, logical_cwd=".",
     )
 
     assert first == second
-    assert pbrun.container_owner(
+    assert submit_core.container_owner(
         command, Path("/home/rob/tmp/first"), demand, variables,
         determinism="stochastic",
         retry_policy={"max_attempts": 1, "retry_safe": False},
         marker_root="/mnt/shared/prismabuild-fleet/pb-queue/container-owners",
         identity=identity, logical_cwd=".",
-    ) == pbrun.container_owner(
+    ) == submit_core.container_owner(
         command, Path("/mnt/shared/second"), demand, variables,
         determinism="stochastic",
         retry_policy={"max_attempts": 1, "retry_safe": False},
@@ -355,12 +358,10 @@ def test_effective_placement_is_normalized_into_action_identity(
         sealed.append(real_seal(body))
         raise StopAfterSeal
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
-    )
+    monkeypatch.setattr(submit_core.pb, "seal_action", capture)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
 
     populations = [
         ["x86", "dl380g10", "x86"],
@@ -414,12 +415,10 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
         sealed.append(real_seal(body))
         raise StopAfterSeal
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
-    )
+    monkeypatch.setattr(submit_core.pb, "seal_action", capture)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
 
     policies = [
         [],
@@ -442,9 +441,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
     # Runtime publication changes the wrapper path sealed in both argv and
     # PATH. A still-running action from the prior runtime must keep a distinct
     # cleanup namespace during that overlap window.
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "next-runtime" / "tools"
-    )
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "next-runtime" / "tools")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -475,9 +472,9 @@ def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
     """
 
     checkout = _git_checkout(tmp_path)
-    stamp_name = f"{pbrun.STAMP_PREFIX}test.json"
+    stamp_name = f"{submit_core.STAMP_PREFIX}test.json"
     (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **pbrun._git_identity(checkout)})
+        json.dumps({"cwd": str(checkout), **submit_core._git_identity(checkout)})
     )
     action = _sealed_pbrun_action(checkout, stamp_name)
 
@@ -506,11 +503,11 @@ def test_pbrun_identity_includes_bytes_below_an_untracked_directory(tmp_path) ->
     helper = checkout / "experiments" / "campaign.py"
     helper.parent.mkdir()
     helper.write_text("print('first')\n")
-    before = pbrun._git_identity(checkout)
+    before = submit_core._git_identity(checkout)
 
     helper.write_text("print('second')\n")
 
-    assert pbrun._git_identity(checkout) != before
+    assert submit_core._git_identity(checkout) != before
 
 
 def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> None:
@@ -526,12 +523,12 @@ def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> 
     (tmp_path / "outside-b").mkdir()
     link = checkout / "helper-tree"
     link.symlink_to("../outside-a", target_is_directory=True)
-    before = pbrun._git_identity(checkout)
+    before = submit_core._git_identity(checkout)
 
     link.unlink()
     link.symlink_to("../outside-b", target_is_directory=True)
 
-    assert pbrun._git_identity(checkout) != before
+    assert submit_core._git_identity(checkout) != before
 
 
 def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> None:
@@ -542,12 +539,12 @@ def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> Non
     (tmp_path / "outside-b.py").write_text("print('same')\n")
     link = checkout / "helper.py"
     link.symlink_to("../outside-a.py")
-    before = pbrun._git_identity(checkout)
+    before = submit_core._git_identity(checkout)
 
     link.unlink()
     link.symlink_to("../outside-b.py")
 
-    assert pbrun._git_identity(checkout) != before
+    assert submit_core._git_identity(checkout) != before
 
 
 def test_pbrun_identity_refuses_an_untracked_fifo_without_opening_it(
@@ -589,8 +586,8 @@ def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
         raise core_module.ActionContractError("unsupported file type: 'socket'")
 
     monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
-    with pytest.raises(SystemExit, match="unsupported file type"):
-        pbrun._git_identity(checkout)
+    with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
+        submit_core._git_identity(checkout)
 
 
 def test_pbrun_identity_prunes_git_ignored_directories(
@@ -614,7 +611,7 @@ def test_pbrun_identity_prunes_git_ignored_directories(
         return real_scandir(path)
 
     monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
-    pbrun._git_identity(checkout)
+    submit_core._git_identity(checkout)
 
     assert checkout in visited
     assert ignored not in visited
@@ -626,26 +623,26 @@ def test_pbrun_identity_hashes_untracked_nul_delimited_paths(tmp_path: Path) -> 
     checkout = _git_checkout(tmp_path)
     unusual = checkout / 'line\nbreak\\quote".txt'
     unusual.write_text("first bytes\n")
-    before = pbrun._git_identity(checkout)
+    before = submit_core._git_identity(checkout)
 
     unusual.write_text("second bytes\n")
 
-    assert pbrun._git_identity(checkout) != before
+    assert submit_core._git_identity(checkout) != before
 
 
 def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) -> None:
     """Only generated basenames reserve pbrun's stamp/result namespaces."""
 
     checkout = _git_checkout(tmp_path)
-    pbrun.keep_droppings_out_of_git(checkout)
+    submit_core.keep_droppings_out_of_git(checkout)
     note = checkout / "notes" / "pbrun_result.notes.py"
     note.parent.mkdir()
     note.write_text("first bytes\n")
-    before = pbrun._git_identity(checkout)
+    before = submit_core._git_identity(checkout)
 
     note.write_text("second bytes\n")
 
-    assert pbrun._git_identity(checkout) != before
+    assert submit_core._git_identity(checkout) != before
 
 
 def test_pbrun_identity_scans_the_repository_above_requested_cwd(
@@ -658,8 +655,8 @@ def test_pbrun_identity_scans_the_repository_above_requested_cwd(
     requested.mkdir()
     os.mkfifo(checkout / "outside-requested-cwd.pipe")
 
-    with pytest.raises(SystemExit, match="unsupported file type"):
-        pbrun._git_identity(requested)
+    with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
+        submit_core._git_identity(requested)
 
 
 def test_pbrun_identity_refuses_an_unreadable_untracked_file(
@@ -678,8 +675,8 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
         return real_open(candidate, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", unreadable)
-    with pytest.raises(SystemExit, match="cannot hash untracked path"):
-        pbrun._git_identity(checkout)
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot hash untracked path"):
+        submit_core._git_identity(checkout)
 
 
 @pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff-index"])
@@ -704,8 +701,8 @@ def test_pbrun_identity_fails_closed_after_git_repository_detection(
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_one_git_read)
-    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
-        pbrun._git_identity(checkout)
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
+        submit_core._git_identity(checkout)
 
 
 def test_pbrun_identity_refuses_failed_initial_git_detection(
@@ -727,8 +724,8 @@ def test_pbrun_identity_refuses_failed_initial_git_detection(
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
-    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
-        pbrun._git_identity(checkout)
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
+        submit_core._git_identity(checkout)
 def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
     """The portable tree is the submitted dirty tree, not merely ``HEAD``."""
 
@@ -737,12 +734,12 @@ def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
     helper.parent.mkdir()
     helper.write_text("print('first')\n")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
-    first = pbrun.build_git_checkout_snapshot(
+    first = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
     helper.write_text("print('second')\n")
-    second = pbrun.build_git_checkout_snapshot(
+    second = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
@@ -764,7 +761,7 @@ def test_git_snapshot_keeps_a_tracked_file_that_now_matches_ignore(
     assert _git(checkout, "commit", "-qm", "track ignored input").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
     materialized = tmp_path / "materialized"
@@ -801,15 +798,15 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
     common_dir = Path(_git(linked, "rev-parse", "--git-common-dir").stdout.strip())
     assert common_dir.is_absolute()
     assert linked not in common_dir.parents
-    assert pbrun.placement_contract(linked,
+    assert submit_core.placement_contract(linked,
     explicit=[],
     here=False,
     hostname=HOST,
-    portable_checkout=True,)[0] == []
+    portable_checkout=True,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == []
 
     (linked / "linked-only.txt").write_text("sealed linked worktree bytes\n")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         linked, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
@@ -840,9 +837,9 @@ def test_git_snapshot_limits_logical_tree_bytes_after_indexing(
     (checkout / "mostly-zero.bin").write_bytes(b"\0" * (256 * 1024))
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_kw: 0)
-    with pytest.raises(SystemExit, match="logical checkout tree"):
-        pbrun.build_git_checkout_snapshot(
+    monkeypatch.setattr(submit_core, 'require_working_tree_size', lambda *_a, **_kw: 0)
+    with pytest.raises(submit_core.SubmissionRefused, match="logical checkout tree"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
         )
 
@@ -857,16 +854,16 @@ def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
     with oversized.open("wb") as handle:
         handle.truncate(256 * 1024)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
-    real_snapshot_git = pbrun._snapshot_git
+    real_snapshot_git = submit_core._snapshot_git
 
     def observed_snapshot_git(cwd, argv, **kwargs):
         if argv[:2] == ["add", "-A"]:
             pytest.fail("git add -A ran before the logical-size refusal")
         return real_snapshot_git(cwd, argv, **kwargs)
 
-    monkeypatch.setattr(pbrun, "_snapshot_git", observed_snapshot_git)
-    with pytest.raises(SystemExit, match="logical working tree"):
-        pbrun.build_git_checkout_snapshot(
+    monkeypatch.setattr(submit_core, '_snapshot_git', observed_snapshot_git)
+    with pytest.raises(submit_core.SubmissionRefused, match="logical working tree"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
         )
 
@@ -879,11 +876,11 @@ def test_git_snapshot_limit_cannot_exceed_the_hard_fleet_ceiling(
     checkout = _git_checkout(tmp_path)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="hard fleet ceiling"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="hard fleet ceiling"):
+        submit_core.snapshot_checkout(
             checkout,
             cas=cas,
-            max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES + 1,
+            max_bytes=submit_core.CHECKOUT_SNAPSHOT_MAX_BYTES + 1,
         )
 
 
@@ -897,8 +894,8 @@ def test_git_snapshot_refuses_a_symlink_that_escapes_the_repository(
     (checkout / "data").symlink_to(target, target_is_directory=True)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="symlink.*outside"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="symlink.*outside"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
@@ -911,7 +908,7 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
     (checkout / "data").symlink_to("assets")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
 
@@ -964,8 +961,8 @@ def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
     assert _git(checkout, "commit", "-qam", "add submodule").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="gitlink"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="gitlink"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
@@ -985,8 +982,8 @@ def test_git_snapshot_refuses_an_active_clean_filter(
     assert _git(checkout, "config", "filter.rewrite.required", "true").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="content transform"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="content transform"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
@@ -1023,7 +1020,7 @@ def test_git_snapshot_keeps_the_source_commit_as_its_parent(
     cas_root = tmp_path / "cas"
     cas = core_module.PrismaBuildCAS(cas_root)
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=16 * 1024 * 1024
     )
     assert snapshot["parent"] == source_head
@@ -1051,7 +1048,7 @@ def test_git_snapshot_advertises_a_requested_branch_by_name(
     cas_root = tmp_path / "cas"
     cas = core_module.PrismaBuildCAS(cas_root)
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout,
         cas=cas,
         max_bytes=16 * 1024 * 1024,
@@ -1080,8 +1077,8 @@ def test_an_unknown_snapshot_ref_refuses_before_anything_is_sealed(
     def unreachable(*_args: object, **_kwargs: object) -> None:
         pytest.fail("a refused --snapshot-ref reached the CAS")
 
-    monkeypatch.setattr(pbrun, "build_git_checkout_snapshot", unreachable)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(submit_core, 'snapshot_checkout', unreachable)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(
         sys, "argv",
         ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "no-such-branch",
@@ -1093,7 +1090,7 @@ def test_an_unknown_snapshot_ref_refuses_before_anything_is_sealed(
     message = str(raised.value)
     assert message.startswith("pbrun: ")
     assert "no-such-branch" in message
-    assert not list(checkout.glob(f"{pbrun.STAMP_PREFIX}*"))
+    assert not list(checkout.glob(f"{submit_core.STAMP_PREFIX}*"))
     assert not (tmp_path / "fleet").exists()
 
 
@@ -1103,7 +1100,7 @@ def test_a_malformed_snapshot_ref_refuses_by_name(
     """The name becomes a refspec on a worker; Git's own check owns it."""
 
     checkout = _git_checkout(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(
         sys, "argv",
         ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "bad name",
@@ -1135,12 +1132,12 @@ def test_git_snapshot_bounds_a_bundle_its_history_made_large(
 
     # Both tree-side bounds pass on this checkout; the bundle bound is the
     # only thing between a heavy history and CAS ingestion.
-    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_k: 0)
+    monkeypatch.setattr(submit_core, 'require_working_tree_size', lambda *_a, **_k: 0)
     monkeypatch.setattr(
-        pbrun, "require_supported_snapshot_tree", lambda *_a, **_k: None
+        submit_core, 'require_supported_snapshot_tree', lambda *_a, **_k: None
     )
-    with pytest.raises(SystemExit, match="above the .* safety limit"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="above the .* safety limit"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=64 * 1024
         )
 
@@ -1171,8 +1168,8 @@ def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
     ).returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="shallow clone"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="shallow clone"):
+        submit_core.snapshot_checkout(
             shallow, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
@@ -1196,9 +1193,9 @@ def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
     original = (checkout / ".git" / "config").read_bytes()
     def cannot_pack(*args, **kwargs):
         raise AssertionError("partial source must refuse before bundle packing")
-    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
-    with pytest.raises(SystemExit, match="partial clone") as refused:
-        pbrun.build_git_checkout_snapshot(
+    monkeypatch.setattr(submit_core, 'write_deterministic_bundle', cannot_pack)
+    with pytest.raises(submit_core.SubmissionRefused, match="partial clone") as refused:
+        submit_core.snapshot_checkout(
             checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
             max_bytes=16 * 1024 * 1024)
     message = str(refused.value)
@@ -1213,8 +1210,8 @@ def test_false_promisor_without_a_filter_keeps_a_complete_source_eligible(
 ) -> None:
     checkout = _git_checkout(tmp_path)
     assert _git(checkout, "config", "remote.origin.promisor", value).returncode == 0
-    pbrun.require_complete_history(checkout)
-    snapshot = pbrun.build_git_checkout_snapshot(
+    submit_core.require_complete_history(checkout)
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
         max_bytes=16 * 1024 * 1024)
     assert snapshot["parent"] == _git(checkout, "rev-parse", "HEAD").stdout.strip()
@@ -1236,9 +1233,9 @@ def test_real_modern_filtered_clone_without_legacy_extension_refuses_early(
     assert tuple((partial / ".git" / "objects" / "pack").glob("*.promisor"))
     def cannot_pack(*args, **kwargs):
         raise AssertionError("modern partial source must not reach pack-objects")
-    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
-    with pytest.raises(SystemExit, match="partial clone"):
-        pbrun.build_git_checkout_snapshot(
+    monkeypatch.setattr(submit_core, 'write_deterministic_bundle', cannot_pack)
+    with pytest.raises(submit_core.SubmissionRefused, match="partial clone"):
+        submit_core.snapshot_checkout(
             partial, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
             max_bytes=16 * 1024 * 1024)
 
@@ -1265,8 +1262,8 @@ def test_git_snapshot_refuses_a_repository_with_no_commits(
     ).returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="cannot identify checkout"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot identify checkout"):
+        submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
 
@@ -1276,8 +1273,8 @@ def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> N
 
     checkout = _git_checkout(tmp_path)
 
-    with pytest.raises(SystemExit, match="submitter checkout path"):
-        pbrun.require_relocatable_checkout(
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter checkout path"):
+        submit_core.require_relocatable_checkout(
             ["/bin/bash", "-lc", f"python {checkout}/task.py"],
             {"PYTHONPATH": str(checkout / "src")},
             checkout,
@@ -1293,7 +1290,7 @@ def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> N
 def test_portable_checkout_allows_sibling_path_prefixes(tmp_path, field, form, suffix):
     checkout = tmp_path / "repo"
     value = form.format(path=str(checkout) + suffix + "/result.json")
-    pbrun.require_relocatable_checkout(
+    submit_core.require_relocatable_checkout(
         ["true", value] if field == "argv" else ["true"],
         {"OUTPUT": value} if field == "environment" else {},
         checkout, repository_root=checkout,
@@ -1311,8 +1308,8 @@ def test_portable_checkout_refuses_embedded_exact_and_descendant_paths(
 ):
     checkout = tmp_path / "repo"
     value = form.format(path=str(checkout) + suffix)
-    with pytest.raises(SystemExit, match="submitter repository path"):
-        pbrun.require_relocatable_checkout(
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter repository path"):
+        submit_core.require_relocatable_checkout(
             ["true", value] if field == "argv" else ["true"],
             {"OUTPUT": value} if field == "environment" else {},
             checkout, repository_root=checkout,
@@ -1321,8 +1318,8 @@ def test_portable_checkout_refuses_embedded_exact_and_descendant_paths(
 
 def test_portable_checkout_checks_every_path_list_component(tmp_path):
     checkout = tmp_path / "repo"
-    with pytest.raises(SystemExit, match="environment PYTHONPATH"):
-        pbrun.require_relocatable_checkout(
+    with pytest.raises(submit_core.SubmissionRefused, match="environment PYTHONPATH"):
+        submit_core.require_relocatable_checkout(
             ["true"], {"PYTHONPATH": f"{checkout}-results:{checkout}/src"},
             checkout, repository_root=checkout,
         )
@@ -1340,8 +1337,8 @@ def test_portable_subdirectory_refuses_an_absolute_repository_sibling(
     sibling.parent.mkdir()
     sibling.write_text("print('helper')\n")
 
-    with pytest.raises(SystemExit, match="submitter repository path"):
-        pbrun.require_relocatable_checkout(
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter repository path"):
+        submit_core.require_relocatable_checkout(
             ["python", str(sibling)], {}, requested, repository_root=checkout
         )
 
@@ -1358,7 +1355,7 @@ def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
     sibling.parent.mkdir()
     sibling.write_text("print('helper')\n")
 
-    pbrun.require_checkout_owned_scripts(
+    submit_core.require_checkout_owned_scripts(
         ["python", "../tools/helper.py"],
         requested,
         repository_root=checkout,
@@ -1371,8 +1368,8 @@ def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
     outside = tmp_path / "outside" / "helper.py"
     outside.parent.mkdir()
     outside.write_text("print('helper')\n")
-    with pytest.raises(SystemExit, match="outside the snapshotted repository"):
-        pbrun.require_checkout_owned_scripts(
+    with pytest.raises(submit_core.SubmissionRefused, match="outside the snapshotted repository"):
+        submit_core.require_checkout_owned_scripts(
             ["python", "../../outside/helper.py"],
             requested,
             repository_root=checkout,
@@ -1389,7 +1386,7 @@ def test_a_non_git_checkout_cannot_fall_back_to_mutable_execution(
     work = tmp_path / "plain-directory"
     work.mkdir()
     fleet = tmp_path / "fleet"
-    with mock.patch.object(pbrun, "SH", fleet), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=fleet, queue_root=Path(fleet) / "pb-queue", cas_root=Path(fleet) / "cas")), \
          mock.patch.object(sys, "argv", [
              "pbrun.py", "--cwd", str(work), "--wait-s", "0", "--", "true",
         ]):
@@ -1412,8 +1409,8 @@ def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> N
     helper = tmp_path / "run-campaign.sh"
     helper.write_text("#!/bin/sh\nexit 0\n")
 
-    with pytest.raises(SystemExit) as caught:
-        pbrun.require_checkout_owned_scripts([str(helper)], checkout)
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core.require_checkout_owned_scripts([str(helper)], checkout)
 
     message = str(caught.value)
     assert str(helper) in message
@@ -1428,7 +1425,7 @@ def test_a_script_inside_the_checkout_is_bound_by_its_identity(tmp_path) -> None
 
     # No assertion: acceptance is the absence of the refusal, and the gate is
     # proved to look at this argv shape by the refusal test directly above.
-    pbrun.require_checkout_owned_scripts([str(helper)], checkout)
+    submit_core.require_checkout_owned_scripts([str(helper)], checkout)
 
 
 def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
@@ -1448,9 +1445,9 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60})
 
-    assert pbrun.exclusive_gpu_demand(queue, []) == 2
-    assert pbrun.exclusive_gpu_demand(queue, ["sparky"]) == 2
-    assert pbrun.exclusive_gpu_demand(queue, ["sparklina"]) == 1
+    assert submit_core.exclusive_gpu_demand(queue, []) == 2
+    assert submit_core.exclusive_gpu_demand(queue, ["sparky"]) == 2
+    assert submit_core.exclusive_gpu_demand(queue, ["sparklina"]) == 1
 
 
 @pytest.mark.parametrize("capability", [
@@ -1484,7 +1481,7 @@ def test_a_spool_producer_with_no_room_for_its_exports_is_refused(tmp_path, capa
         "dependency-digest-v1": {"requires_files": [{"path": "/secondary", "sha256": "a" * 64}]},
         "container-image-v1": {"container_images": ["sha256:" + "a" * 64]},
     }.get(capability, {}))
-    refusal = pbrun.producer_allowance_room_refusal(queue, action)
+    refusal = submit_core.producer_allowance_room_refusal(queue, action)
     assert refusal is not None and "104" in refusal, refusal
 
 
@@ -1501,7 +1498,7 @@ def test_a_spool_producer_with_room_for_its_exports_submits(tmp_path):
             cpu_admission.SPOOL_ROOT_ENV: "/spool",
             "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES": "256"}},
     }
-    assert pbrun.producer_allowance_room_refusal(queue, action) is None
+    assert submit_core.producer_allowance_room_refusal(queue, action) is None
 
 
 def test_an_ordinary_action_needs_no_export_room(tmp_path):
@@ -1514,7 +1511,7 @@ def test_an_ordinary_action_needs_no_export_room(tmp_path):
                    "placement": {"required_tags": ["sparky"]}},
         "environment": {"variables": {}},
     }
-    assert pbrun.producer_allowance_room_refusal(queue, action) is None
+    assert submit_core.producer_allowance_room_refusal(queue, action) is None
 
 
 def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
@@ -1522,8 +1519,8 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60})
-    with pytest.raises(SystemExit) as caught:
-        pbrun.exclusive_gpu_demand(queue, [])
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core.exclusive_gpu_demand(queue, [])
     assert "--gpu-capacity" in str(caught.value)
 
 
@@ -1535,10 +1532,10 @@ def test_bounded_offer_snapshot_keeps_healthy_placement_progress_and_exclusive(t
         timeout_ceiling_s=3600, progress_contracts=["prismabuild.action_progress.v1"],
     )
 
-    snapshot = pbrun.bounded_offer_snapshot(queue)
+    snapshot = submit_core.bounded_offer_snapshot(queue)
     intent = {"tags": ["gb10"], "needs_gpu": True,
               "resources": {"gpu": 1, "mem_gb": 16}}
-    assert pbrun.exclusive_gpu_demand(snapshot, ["gb10"]) == 2
+    assert submit_core.exclusive_gpu_demand(snapshot, ["gb10"]) == 2
     assert snapshot.placeable(intent) is True
     assert snapshot.placeable_hosts(intent) == ["sparky"]
     assert snapshot.placement_timeout_ceilings(intent) == {"sparky": 3600}
@@ -1553,8 +1550,8 @@ def test_bounded_offer_snapshot_refuses_a_reader_error(tmp_path, monkeypatch):
         raise OSError("offer mount unavailable")
 
     monkeypatch.setattr(queue, "_offer_records", broken)
-    with pytest.raises(SystemExit, match="worker-offer discovery failed"):
-        pbrun.bounded_offer_snapshot(queue)
+    with pytest.raises(submit_core.SubmissionRefused, match="worker-offer discovery failed"):
+        submit_core.bounded_offer_snapshot(queue)
 
 
 def test_offer_snapshot_rechecks_freshness_in_the_parent(tmp_path, monkeypatch):
@@ -1562,7 +1559,7 @@ def test_offer_snapshot_rechecks_freshness_in_the_parent(tmp_path, monkeypatch):
     monkeypatch.setattr(pool_module, "_now", lambda: 100.0)
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"gpu": 1})
-    snapshot = pbrun.bounded_offer_snapshot(queue)
+    snapshot = submit_core.bounded_offer_snapshot(queue)
 
     monkeypatch.setattr(pool_module, "_now", lambda: 300.0)
     assert snapshot.offers() == []
@@ -1582,7 +1579,7 @@ def test_offer_snapshot_does_not_repeat_worker_discovery(tmp_path, monkeypatch):
         return real()
 
     monkeypatch.setattr(queue, "_offer_records", counted)
-    snapshot = pbrun.bounded_offer_snapshot(queue)
+    snapshot = submit_core.bounded_offer_snapshot(queue)
     intent = {"tags": ["gb10"], "needs_gpu": True,
               "resources": {"gpu": 1}}
     snapshot.placeable(intent)
@@ -1595,7 +1592,7 @@ def test_offer_snapshot_does_not_repeat_worker_discovery(tmp_path, monkeypatch):
 def test_interrupted_offer_snapshot_reaps_its_owned_reader(tmp_path, monkeypatch):
     queue = pool_module.PoolQueue(tmp_path / "q")
     children = []
-    fork = pbrun.pbstatus.os.fork
+    fork = submit_core._bounded_reader.os.fork
 
     def tracked_fork():
         pid = fork()
@@ -1610,11 +1607,11 @@ def test_interrupted_offer_snapshot_reaps_its_owned_reader(tmp_path, monkeypatch
         raise KeyboardInterrupt
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus._reader.select, "select", interrupt)
+    monkeypatch.setattr(submit_core._bounded_reader.os, "fork", tracked_fork)
+    monkeypatch.setattr(submit_core._bounded_reader.select, "select", interrupt)
     try:
         with pytest.raises(KeyboardInterrupt):
-            pbrun.bounded_offer_snapshot(queue)
+            submit_core.bounded_offer_snapshot(queue)
         assert len(children) == 1
         with pytest.raises(ChildProcessError):
             os.waitpid(children[0], os.WNOHANG)
@@ -1641,19 +1638,19 @@ def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
     def retain(pid, section, started, abandoned):
         children.append(pid)
         abandoned.append({"pid": pid, "section": section,
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": submit_core._bounded_reader._starttime_ticks(pid)})
 
     def blocked_read():
         time.sleep(30)
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
+    monkeypatch.setattr(submit_core, 'SUBMISSION_OFFER_READ_TIMEOUT_S', 0.2)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
-        with pytest.raises(SystemExit) as refused:
-            pbrun.bounded_offer_snapshot(queue)
+        with pytest.raises(submit_core.SubmissionRefused) as refused:
+            submit_core.bounded_offer_snapshot(queue)
         assert len(children) == 1
         assert '"pid": ' + str(children[0]) in str(refused.value)
         assert '"starttime_ticks": ' in str(refused.value)
@@ -1693,17 +1690,19 @@ def test_blocked_worker_offer_read_does_not_publish_a_runnable_submission(
     workers = root / "pb-queue" / "workers"
     workers.mkdir(parents=True)
     os.mkfifo(workers / "wedged.json", 0o600)
-    program = """
+    program = r"""
 import socket, sys
 from pathlib import Path
 from unittest import mock
 sys.path.insert(0, 'tools/fleet')
 import pbrun
-pbrun.SH = Path(sys.argv[1])
+from prismabuild import submission as submit_core
+pbrun_store = submit_core.FleetStore(Path(sys.argv[1]), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun.configured_store = lambda: pbrun_store
 pbrun.RUNTIME_ROOT = Path(sys.argv[2])
-pbrun.SUBMISSION_OFFER_READ_TIMEOUT_S = 0.1
+submit_core.SUBMISSION_OFFER_READ_TIMEOUT_S = 0.1
 options = ['--exclusive'] if sys.argv[4] == 'exclusive' else []
-with mock.patch.object(socket, 'gethostname', return_value='sparky'), \\
+with mock.patch.object(socket, 'gethostname', return_value='sparky'), \
      mock.patch.object(sys, 'argv', ['pbrun.py', '--cwd', sys.argv[3], '--wait-s', '0.01', *options, '--', 'echo', 'hi']):
     raise SystemExit(pbrun.main())
 """
@@ -1749,8 +1748,8 @@ def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
     # reader budget.  A subsecond caller deadline races bounded-reader startup
     # and IPC under suite load, and the read timeout's exit (74) is not this
     # test's subject; the sealed action it reads is unaffected (#822).
-    with mock.patch.object(pbrun, "SH", root), \
-         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=root, queue_root=Path(root) / "pb-queue", cas_root=Path(root) / "cas")), \
+         mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--here",
@@ -1806,7 +1805,7 @@ def _fleet(tmp_path: Path):
 def _notice(queue, *, cwd: str, tags: list[str], demand: dict, here=False,
             needs_gpu=False) -> str:
     intent = {"tags": tags, "needs_gpu": needs_gpu, "resources": demand}
-    return pbrun.pin_notice(queue, intent, cwd=Path(cwd), hostname=HOST,
+    return submit_core.pin_notice(queue, intent, cwd=Path(cwd), hostname=HOST,
                             here=here)
 
 
@@ -1905,7 +1904,7 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
 
     own = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
                   demand={"cpu": 1})
-    alias = pbrun.pin_notice(
+    alias = submit_core.pin_notice(
         queue, {"tags": ["sparklina"], "needs_gpu": False, "resources": {"cpu": 1}},
         cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False)
 
@@ -1994,9 +1993,9 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     # ``--wait-s 0`` is one immediate observation with the standard bounded
     # reader budget; a subsecond deadline races reader startup under load and
     # the read timeout's 74 is not what this test asserts (#822).
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
-         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
+         mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
              mock.patch.object(socket, "gethostname", return_value=HOST), \
              mock.patch.object(sys, "argv",
                                ["pbrun.py", "--cwd", str(work), "--here",
@@ -2040,9 +2039,9 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
     # ``--wait-s 0``: one immediate observation with the standard bounded
     # reader budget, so a loaded box's reader startup cannot turn the
     # accepted-and-unclaimed 75 into the read timeout's 74 (#822).
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
-         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
+         mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--tag", "x86",
@@ -2080,8 +2079,8 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
     are fixed here: the pin lands, and the notice reads the tags.
     """
 
-    tags = pbrun.placement_contract(Path("/mnt/shared/tessera-x86"),
-                                explicit=["x86"], here=True, hostname=HOST)[0]
+    tags = submit_core.placement_contract(Path("/mnt/shared/tessera-x86"),
+                                explicit=["x86"], here=True, hostname=HOST, store=pbrun.configured_store(), display=pbrun.render_submission)[0]
     assert tags == ["x86", HOST]               # both, hostname last
 
     notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
@@ -2096,8 +2095,8 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
 def test_here_beside_the_host_tag_does_not_repeat_the_hostname(tmp_path) -> None:
     """The two spellings of one pin are one tag, and the tag matcher is exact."""
 
-    assert pbrun.placement_contract(Path("/mnt/shared/tessera-x86"),
-    explicit=[HOST, "x86"], here=True, hostname=HOST,)[0] == ["x86", HOST]
+    assert submit_core.placement_contract(Path("/mnt/shared/tessera-x86"),
+    explicit=[HOST, "x86"], here=True, hostname=HOST,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == ["x86", HOST]
 
 
 def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path) -> None:
@@ -2122,10 +2121,10 @@ def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
     from unittest import mock
 
     work = _git_checkout(tmp_path)
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
-         mock.patch.object(pbrun.action_wait, "POLL_S", 0.001), \
+         mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(sys, "argv",
                            ["pbrun.py", "--cwd", str(work), "--anywhere",
                             "--tag", "x86", "--wait-s", "0.01",
@@ -2171,10 +2170,10 @@ def class_submission(tmp_path, monkeypatch):
         "spark-a": {"args": ["--class", "gb10"]},
         "spark-old": {"_alias": "spark-b", "args": ["--class", "gb10"]},
     }}))
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools")
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
     sealed = []
     real_seal = core_module.seal_action
 
@@ -2185,7 +2184,7 @@ def class_submission(tmp_path, monkeypatch):
         sealed.append(real_seal(body))
         raise StopAfterSeal
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", capture)
+    monkeypatch.setattr(submit_core.pb, "seal_action", capture)
 
     def submit(command, *, host="spark-a", flags=(), answers=None, omit=(), stale=()):
         for member in ("spark-a", "spark-b"):
@@ -2333,9 +2332,9 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
         offer = json.loads(offer_path.read_text())
         offer["local_dependencies"] = {bash: "executable"}
         offer_path.write_text(json.dumps(offer))
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
     earlier = tmp_path / "earlier-path"
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
@@ -2489,7 +2488,7 @@ def test_bound_checkout_executable_remains_relative_when_snapshot_relocates(tmp_
     executable = checkout / "task"
     executable.write_text('#!/bin/sh\npwd\n')
     executable.chmod(0o755)
-    command, requirements, _ = pbrun.command_dependency_contract(
+    command, requirements, _ = submit_core.command_dependency_contract(
         checkout, ["task"], repository_root=checkout,
         environment={"PATH": ".:/usr/bin:/bin"}, caller_environment={})
     assert command == ["./task"] and requirements == {}
@@ -2508,7 +2507,7 @@ def test_default_cli_resolves_nominal_docker_through_capture_shim(class_submissi
     """Execute the real selected shim against a controlled CLI, not a Docker daemon."""
     submit, root = class_submission
     wrapper = Path(__file__).resolve().parents[1] / "tools" / "fleet"
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", wrapper)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=wrapper)
     backend = root / "controlled-docker"
     calls = root / "docker-call.json"
     calls.write_text("{}")
@@ -2595,7 +2594,7 @@ def test_relocated_capture_preserves_symlink_parent_traversal(tmp_path):
                             (checkout / "tool", "lexically-wrong-executable")):
         target.write_text("#!/bin/sh\nprintf " + payload + "\n")
         target.chmod(0o755)
-    command, _, _ = pbrun.command_dependency_contract(
+    command, _, _ = submit_core.command_dependency_contract(
         checkout, ["link/../tool"], repository_root=checkout,
         environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
     relocated = tmp_path / "relocated"
@@ -2632,8 +2631,8 @@ def test_symlink_parent_traversal_refuses_actual_missing_input(symlink_parent_in
                  else "../external-links/link/../input.bin")
     command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
     caller = {"INPUT": requested} if source == "environment" else {}
-    with pytest.raises(SystemExit):
-        pbrun.command_dependency_contract(
+    with pytest.raises(submit_core.SubmissionRefused):
+        submit_core.command_dependency_contract(
             checkout, command, repository_root=checkout,
             environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
 
@@ -2649,7 +2648,7 @@ def test_symlink_parent_traversal_guards_the_requested_input(symlink_parent_inpu
     command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
     caller = {"INPUT": requested} if source == "environment" else {}
     original_command, original_caller = list(command), dict(caller)
-    bound_command, requirements, bound_caller = pbrun.command_dependency_contract(
+    bound_command, requirements, bound_caller = submit_core.command_dependency_contract(
         checkout, command, repository_root=checkout,
         environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
     assert command == original_command and caller == original_caller
@@ -2685,7 +2684,7 @@ def retained_executable_alias(class_submission, monkeypatch, request):
     submit, root = class_submission
     shared = root / "shared"
     shared.mkdir()
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     target_root = root / "checkout" if request.param == "checkout" else shared
     target = target_root / "alias-target"
     target.write_bytes(Path("/bin/bash").read_bytes())
@@ -2783,7 +2782,7 @@ def input_submission(class_submission, monkeypatch, request):
     submit, root = class_submission
     shared = root / "shared"
     shared.mkdir()
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     target_root = root / "checkout" if request.param == "checkout" else shared
     target = target_root / "input-target.bin"
     target.write_text("input-target-ok\n")
@@ -2970,7 +2969,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "input.bin").write_text("shared-input\n")
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     fleet = tmp_path / "fleet"
     roster = tmp_path / "roster.json"
     roster.write_text(json.dumps({"boxes": {
@@ -2994,9 +2993,9 @@ def relocated_input_submission(tmp_path, monkeypatch):
                 ),
             ),
         )
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 
     def submit(case):
@@ -3100,8 +3099,8 @@ def test_raw_file_suffix_is_invalid_at_capture(tmp_path, source, suffix):
     command = ["/bin/cat", raw, invalid] if source == "argv" else ["/bin/cat"]
     caller = {"INPUTS": raw + ":" + invalid} if source == "environment" else {}
     before = dict(caller)
-    with pytest.raises(SystemExit):
-        pbrun.command_dependency_contract(work, command, repository_root=work,
+    with pytest.raises(submit_core.SubmissionRefused):
+        submit_core.command_dependency_contract(work, command, repository_root=work,
                                          environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
     assert caller == before
 
@@ -3114,8 +3113,8 @@ def test_explicit_executable_suffix_cannot_name_a_regular_file(tmp_path, suffix)
     executable.chmod(0o755)
     requested = str(executable) + suffix
     assert not os.path.isfile(requested)
-    with pytest.raises(SystemExit):
-        pbrun.command_dependency_contract(work, [requested], repository_root=work,
+    with pytest.raises(submit_core.SubmissionRefused):
+        submit_core.command_dependency_contract(work, [requested], repository_root=work,
                                          environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
 
 
@@ -3165,9 +3164,9 @@ def raw_copy_submission(tmp_path, monkeypatch):
                 ),
             ),
         )
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
-    monkeypatch.setattr(pbrun, "SH", fleet)
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
+    patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 
     def submit(mode):

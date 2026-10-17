@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import core as pb, pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 
@@ -46,7 +47,7 @@ def _outcome(status: str, returncode: int) -> dict:
 
 def _fast_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbwait.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
 
 
 @pytest.mark.parametrize(
@@ -66,7 +67,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_outcome(status, returncode)), encoding="utf-8")
     stops: list[str] = []
-    original_stop = pbrun.pbstatus._reader._stop_reader
+    original_stop = submit_core._bounded_reader._stop_reader
 
     def stop_then_land(pid, section, started, abandoned):
         original_stop(pid, section, started, abandoned)
@@ -77,10 +78,10 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
             # record's reads get the production budget, so a loaded box
             # cannot time them out too (#1170).
             monkeypatch.setattr(pbwait.action_wait, "OUTCOME_READ_TIMEOUT_S",
-                                pbrun.action_wait.OUTCOME_READ_TIMEOUT_S)
+                                submit_core.action_wait.OUTCOME_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", stop_then_land)
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
         deadline=time.monotonic() + 5, lane_root=tmp_path / "lane",
@@ -102,7 +103,7 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
         deadline=time.monotonic() + 0.3, lane_root=tmp_path / "lane",
     )
     assert row["status"] == "record_error"
-    assert pbwait.verdict([row]) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert pbwait.verdict([row]) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert "pbwait observation timed out" in row["note"]
     assert "still unavailable when the wait ended" in row["note"]
     assert "may already have landed" in row["note"]

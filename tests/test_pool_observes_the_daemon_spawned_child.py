@@ -21,6 +21,7 @@ a liveness it invented.
 """
 
 from __future__ import annotations
+import pbstatus
 
 import subprocess
 import sys

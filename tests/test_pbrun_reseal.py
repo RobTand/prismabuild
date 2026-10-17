@@ -1,5 +1,6 @@
 """Receipting work across a publication must not schedule a second action."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -11,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools/fleet"))
 import pbrun
+from prismabuild import submission as submit_core
 import pbcampaign
 from prismabuild import core as pb, pool
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line
@@ -38,13 +40,13 @@ def original(tmp_path, monkeypatch, capsys):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
     old = _generation(tmp_path, "old")
     new = _generation(tmp_path, "new")
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", old)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=old)
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
     first = _one_json_line(capsys.readouterr())
     key = first["action_key"]
     request = tmp_path / "cas/requests" / key[:2] / f"{key}.json"
     action = pb.validate_action(json.loads(request.read_text()))
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", new)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=new)
     return work, queue, action, old, new
 
 
@@ -68,7 +70,7 @@ def test_request_bound_reseal_attaches_without_a_second_key(
     assert repeated["status"] == "attached"
     assert repeated["action_key"] == action["action_key"]
     assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
-    assert pbrun.CONTAINER_WRAPPER_DIR == new
+    assert pbrun.configured_store().wrapper_dir == new
 
 
 def test_receipted_action_is_a_real_cache_hit_after_publication(
@@ -171,7 +173,7 @@ def test_mixed_generation_campaign_reuses_each_rows_own_key(
                                    timeout_s=60)
         assert outcome["status"] == "executed", outcome
     third = _generation(tmp_path, "third")
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", third)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=third)
     keys = [action["action_key"], second["action_key"]]
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([
@@ -184,7 +186,7 @@ def test_mixed_generation_campaign_reuses_each_rows_own_key(
     assert [row["action_key"] for row in rows] == keys
     assert [row["status"] for row in rows] == ["cache_hit", "cache_hit"]
     assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
-    assert pbrun.CONTAINER_WRAPPER_DIR == third
+    assert pbrun.configured_store().wrapper_dir == third
     # Receipt collection normally asks for the final table rather than detach.
     assert pbcampaign.main(["--transport", "pool", "--wait-s", "0", str(manifest)]) == 0
     table = capsys.readouterr().out
@@ -207,10 +209,10 @@ def test_bad_campaign_key_refuses_the_whole_manifest(tmp_path, key):
 def test_reseal_preserves_the_callers_path_contract(tmp_path, monkeypatch, capsys, options):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
     old, new = _generation(tmp_path, "old"), _generation(tmp_path, "new")
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", old)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=old)
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", *options) == 0
     first = _one_json_line(capsys.readouterr())
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", new)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=new)
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", *options,
                       "--as-sealed-by", first["action_key"]) == 0
     assert _one_json_line(capsys.readouterr())["action_key"] == first["action_key"]

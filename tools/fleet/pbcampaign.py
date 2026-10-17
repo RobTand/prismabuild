@@ -9,14 +9,11 @@ Rows are independent.  There is no DAG here and there is not meant to be: what
 the fleet needs is fan-out, and a dependency is expressible as a later
 manifest.
 
-**Every row goes through ``pbrun``'s own seal path.**  ``pbrun`` is the only
-sealer of shell-command actions, so this builds the command line ``pbrun``
-would have been typed and calls ``pbrun.main`` with it.  The action key a row
-produces is therefore the key a hand-typed ``pbrun`` produces for the same row,
-byte for byte -- re-submitting is a CAS hit that runs nothing, and a row can be
-reproduced at the terminal from the manifest alone.  (In process rather than as
-a subprocess: it is the same ``main`` with the same argv either way, and the
-in-process form does not pay N interpreter starts.)
+Every row uses the package's shared sealing and publication path, as ``pbrun``
+does. A row becomes a typed request, and its action key is the key a hand-typed
+``pbrun`` produces for the same row. Re-submitting is a CAS hit that runs
+nothing. The recorded reproduction flags let an operator repeat the row at
+the terminal from the manifest alone.
 
 Nothing here knows what the commands are for.  A row is argv, a working tree,
 a demand and some tags; the tool that reads it must stay usable by any producer
@@ -228,6 +225,7 @@ import io
 import json
 import math
 import os
+from dataclasses import replace
 from pathlib import Path
 import posixpath
 import re
@@ -246,56 +244,22 @@ from prismabuild import (  # noqa: E402
 )
 
 import fleet_submit  # noqa: E402
-import pbrun  # noqa: E402
+from prismabuild import submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused, FleetStore
+from submission_frontend import store_for, render_submission
+
+
 import pbwait  # noqa: E402
 
 #: Row field to ``pbrun`` flag, and how the value is spelled.  A table rather
 #: than a chain of ifs, because the property that matters is that the mapping
 #: is mechanical: a row is a ``pbrun`` command line and nothing else.
-_VALUE_FIELDS = (
-    ("cwd", "--cwd"),
-    ("as_sealed_by", "--as-sealed-by"),
-    ("timeout_s", "--timeout-s"),
-    ("gpu_capacity", "--gpu-capacity"),
-    ("gpu_memory_gb", "--gpu-memory-gb"),
-    ("priority", "--priority"),
-    ("priority_reason", "--priority-reason"),
-    ("profile", "--profile"),
-    ("host_class", "--host-class"),
-    ("max_attempts", "--max-attempts"),
-    ("data_manifest", "--data-manifest"),
-    ("produced_output_template", "--produced-output-template"),
-    # The staged read path and the core count (#1082).  Residency is a
-    # publication choice rather than part of the key, so a row that could
-    # not carry it reproduced the action but not the IO path it reads by.
-    ("residency", "--residency"),
-    ("residency_ram", "--residency-ram"),
-    ("residency_prefetch_depth_gib", "--residency-prefetch-depth-gib"),
-    ("residency_read_mb_s", "--residency-read-mb-s"),
-    ("cpus", "--cpus"),
-)
-_SWITCH_FIELDS = (
-    ("deterministic", "--deterministic"),
-    ("anywhere", "--anywhere"),
-    ("here", "--here"),
-    ("no_default_env", "--no-default-env"),
-    ("exclusive", "--exclusive"),
-    ("measurement", "--measurement"),
-    ("retry_safe", "--retry-safe"),
-    ("progress_cycle", "--progress-cycle"),
-)
-_REPEATED_FIELDS = (
-    ("tags", "--tag"),
-    ("snapshot_ref", "--snapshot-ref"),
-    ("progress_phases", "--progress-phase"),
-    ("container_images", "--container-image"),
-)
-KNOWN_FIELDS = frozenset(
-    {"argv", "demand", "env"}
-    | {name for name, _ in _VALUE_FIELDS}
-    | {name for name, _ in _SWITCH_FIELDS}
-    | {name for name, _ in _REPEATED_FIELDS}
-)
+from prismabuild.submission_types import option_fields, row_fields
+_VALUE_FIELDS = option_fields("value")
+_SWITCH_FIELDS = option_fields("switch")
+_REPEATED_FIELDS = option_fields("repeat")
+KNOWN_FIELDS = row_fields()
+
 
 
 class ManifestError(Exception):
@@ -318,8 +282,8 @@ _INTEGER_FIELDS = (
 
 #: Fields ``pbrun`` parses against a closed vocabulary, and that vocabulary.
 _CHOICE_FIELDS = (
-    ("residency", pbrun.RESIDENCY_MODES),
-    ("residency_ram", pbrun.RESIDENCY_RAM_MODES),
+    ("residency", submission.RESIDENCY_MODES),
+    ("residency_ram", submission.RESIDENCY_RAM_MODES),
 )
 
 #: Fields whose value reaches ``pbrun`` as text.
@@ -338,7 +302,7 @@ _ABSOLUTE_PATH_MENTION = re.compile(
 def _names_a_shared_path(text: str) -> bool:
     """Whether one declared string mentions a path on the shared mount."""
 
-    root = str(pbrun.SHARED_ROOT).rstrip("/")
+    root = str(submission.SHARED_ROOT).rstrip("/")
     if not root:
         return False
     for mention in _ABSOLUTE_PATH_MENTION.findall(text):
@@ -487,12 +451,12 @@ def _require_row_shape(row, *, index: int) -> None:
             raise _refuse(index, field, f"must be one of {', '.join(choices)}", value)
     if "priority_reason" in row:
         try:
-            pbrun.pool.normalize_priority_reason(row["priority_reason"])
+            submission.pool.normalize_priority_reason(row["priority_reason"])
         except ValueError as exc:
             raise _refuse(index, "priority_reason", str(exc), row["priority_reason"]) from None
     if "as_sealed_by" in row:
         try:
-            pbrun.require_reseal_key(row["as_sealed_by"])
+            submission.require_reseal_key(row["as_sealed_by"])
         except ValueError as exc:
             raise _refuse(index, "as_sealed_by", str(exc), row["as_sealed_by"]) from None
     for field, minimum in _INTEGER_FIELDS:
@@ -510,7 +474,7 @@ def _require_row_shape(row, *, index: int) -> None:
         try:
             if isinstance(budget, bool) or not isinstance(budget, (int, float, str)):
                 raise ValueError("must be a number of GiB")
-            pbrun.adaptive_gpu.memory_budget_bytes(float(budget))
+            submission.adaptive_gpu.memory_budget_bytes(float(budget))
         except (ValueError, OverflowError) as exc:
             raise _refuse(index, "gpu_memory_gb", str(exc), budget) from None
     for field, _flag in _SWITCH_FIELDS:
@@ -580,24 +544,24 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # own API.
         demand = row.get("demand") or {}
         normalized_demand = {name.strip(): count for name, count in demand.items()}
-        pbrun.validate_fleet_demand(normalized_demand)
-    except SystemExit as exc:
+        submission.validate_fleet_demand(normalized_demand)
+    except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
-        pbrun.require_disk_metadata_scope(normalized_demand, transport=transport)
-    except SystemExit as exc:
+        submission.require_disk_metadata_scope(normalized_demand, transport=transport)
+    except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
-        pbrun.require_host_class_scope(
+        submission.require_host_class_scope(
             measurement=bool(row.get("measurement")),
             host_class=row.get("host_class"),
             transport=transport, anywhere=bool(row.get("anywhere")),
         )
-    except SystemExit as exc:
+    except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
         demand = row.get("demand") or {}
-        pbrun.require_gpu_memory_scope(
+        submission.require_gpu_memory_scope(
             gpu_memory_gb=row.get("gpu_memory_gb"),
             gpu=bool(row.get("exclusive") or int(demand.get("gpu", 0))),
             transport=transport,
@@ -608,34 +572,34 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # Parsed here rather than trusted, so a row whose phases pbrun would
         # refuse is refused at load time with the rest of the manifest -- and
         # so the transport rule is asked of pbrun in pbrun's own words.
-        pbrun.require_progress_scope(
-            progress=pbrun.parse_progress_phases(
+        submission.require_progress_scope(
+            progress=submission.parse_progress_phases(
                 row.get("progress_phases"), cycle=row.get("progress_cycle", False)),
             transport=transport,
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
-    except SystemExit as exc:
+    except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
         # ``pbrun`` reads these into the residency plan's reader block with
         # this function and refuses there; asked here, a bad value refuses the
         # manifest instead of one row after the rows before it were published.
         # The shape is already an integer (``_require_row_shape``).
-        pbrun.reader_declaration(argparse.Namespace(**{
+        submission.reader_declaration(SubmissionRequest(**{
             field: int(row[field]) if row.get(field) is not None else None
             for field in ("residency_prefetch_depth_gib", "residency_read_mb_s")}))
-    except SystemExit as exc:
+    except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     images = row.get("container_images") or []
-    refusal = pbrun.container_image_refusal(images)
+    refusal = submission.container_image_refusal(images)
     if refusal is not None:
         raise _refuse(index, "container_images", refusal, images)
     try:
         # The same closed vocabulary pbrun applies at submit time: the image
         # check is a pull-queue claim decision, and a SLURM row would carry a
         # requirement nothing verifies.
-        pbrun.require_container_image_scope(images=images, transport=transport)
+        submission.require_container_image_scope(images=images, transport=transport)
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     attempts = row.get("max_attempts")
@@ -649,7 +613,7 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # Every row goes out detached, so this is pbrun's own refusal reached
         # by a route the row's author cannot see.
         raise ManifestError(
-            f"row {index}: {pbrun.detached_attempts_refusal(attempts)}.\n"
+            f"row {index}: {submission.detached_attempts_refusal(attempts)}.\n"
             f"A campaign submits every row detached, which is what lets one "
             f"command hold N actions open."
         )
@@ -758,6 +722,9 @@ def pbrun_argv(row) -> list[str]:
                 flags.append(f"{flag}={row[field]}")
             else:
                 flags += [flag, str(row[field])]
+    for field, flag in option_fields("json"):
+        if row.get(field) is not None:
+            flags += [flag, row[field] if isinstance(row[field], str) else json.dumps(row[field])]
     demand = row.get("demand") or {}
     if not isinstance(demand, dict):
         raise ManifestError("demand must be an object of name to count")
@@ -807,26 +774,20 @@ def submit_row(row, *, transport: str = "") -> dict:
                 "error": f"this row cannot be turned into a pbrun command "
                          f"line: {type(exc).__name__}: {exc}",
                 "flags": flags}
-    saved = sys.argv
     report = action_client.ClientReport()
-    sys.argv = ["pbrun.py", *flags]
     code, refusal = 0, ""
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = pbrun.main(report=report)
-    except SystemExit as exc:
-        # ``pbrun`` refuses by raising ``SystemExit`` with the explanation as
-        # its argument, so the text IS the diagnosis -- which tag no box
-        # offers, which checkout is not there.  Reporting the exit status
-        # instead would hand the operator a number for a message somebody
-        # wrote for them.
-        code = exc.code if isinstance(exc.code, int) else 2
-        refusal = "" if isinstance(exc.code, (int, type(None))) else str(exc.code)
-    except Exception as exc:                                     # noqa: BLE001
-        return {"status": "refused", "error": f"{type(exc).__name__}: {exc}",
-                "flags": flags}
-    finally:
-        sys.argv = saved
+        request = submission.request_from_mapping(row, detach=True,
+            transport=transport or fleet_submit.default_transport())
+        result = submission.submit_request(request, store=store_for(__file__),
+            display=lambda event: render_submission(event) if event.channel == "stderr" else None,
+            report=report)
+        if isinstance(result, SubmissionRefused):
+            code, refusal = result.returncode, result.reason
+        else:
+            code = report.ending.exit_code
+    except Exception as exc:
+        return {"status": "refused", "error": f"{type(exc).__name__}: {exc}", "flags": flags}
     if report.ending is not None and isinstance(report.ending.verdict, action_client.ClientOfferTimeout):
         return {"status": "refused", "retryable": OFFER_DISCOVERY_TIMED_OUT,
                 "error": refusal or f"pbrun exited {code}", "flags": flags}
@@ -898,8 +859,8 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
     within the same budget instead of stopping the window.
     """
 
-    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
-    cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     submissions, pending, observed = [], {}, {}
     cached = set()
     deadline = None
@@ -1098,74 +1059,21 @@ def _stored_document(path: Path) -> object | None:
         ) from None
 
 
-def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
-    """Publish one child, or attach to what is already answering for it.
-
-    The same three answers a detached ``pbrun`` gives, in the same shape, so
-    the campaign's table and ``pbwait`` read a decomposed child exactly as
-    they read a hand-written row: already in the CAS, already running, or
-    published now.
-    """
-
-    key = str(child["action_key"])
-    cas.publish_action_request(child)
-    if cas.lookup(child) is not None:
-        return action_client.detached_submission_record(
-            key, transport=args.transport, status="cache_hit",
-            queue_root=queue.root,
-        )
-    try:
-        live = pbrun.bounded_attachment(queue, key)
-    except (action_wait.OutcomeReadUnavailable, OSError) as exc:
-        raise SystemExit(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}")
-    if live is not None:
-        return action_client.detached_submission_record(
-            key, transport=live["transport"], status="attached",
-            queue_root=queue.root, published_unix=live["generation"],
-            submission=live["submission"],
-        )
-    # The attachment read above answers before the publication, which is what
-    # ``--detach`` needs, but the queue can take the key between the two.  The
-    # publication's own refusal is the exact answer, so a child that lost that
-    # race reports the same attachment rather than a second copy (#812).
-    if staged_plan is None:
-        queued, generation = pbrun.publish_or_attach(
-            queue, pbrun.publication_row(child, args=args, queue=queue), key=key)
-    else:
-        # The same consumer ownership transaction as pbrun's staged lane.
-        # Every graph was sealed/frozen in the parent before this first row;
-        # only registry installation and publication happen here.
-        with queue._transition_locked(key):
-            if residency_plan.superseded(queue, staged_plan) is not None:
-                raise SystemExit("decomposed child's immutable data plan was superseded; refusing automatic revival")
-            # Filed, then renewed on the same boundary as pbrun's lane: a
-            # dead consumer's cleanup cannot cancel a mover this plan names
-            # once it is filed, and a cancellation it filed before is
-            # retired here or refused by name (#1114).
-            try:
-                residency_plan.seal_window(queue, staged_plan)
-            except residency_plan.ResidencyPlanError as exc:
-                raise SystemExit(f"pbrun: {exc}") from None
-            row = pbrun.publication_row(child, args=args, queue=queue)
-            row["residency"] = {
-                "schema": pool.RESIDENCY_SCHEMA_V1,
-                "manifest_sha256": staged_plan["manifest_sha256"],
-                "manifest_bytes": staged_plan["manifest_bytes"],
-                "tier_id": staged_plan["tier_id"],
-                "leads": residency_plan.leads_for(staged_plan)}
-            queued = pbrun.publish_or_refuse(queue, row)
-            generation = pbrun.published_generation(queue, key, queued)
-    if queued is None:
-        return action_client.detached_submission_record(
-            key, transport="pool", status="attached", queue_root=queue.root,
-            published_unix=generation,
-            submission=queue.records.attachment_item_address(key),
-        )
-    return action_client.detached_submission_record(
-        key, transport="pool", status="submitted", queue_root=queue.root,
-        published_unix=generation,
-        submission=queued,
-    )
+def child_record(child, *, args: SubmissionRequest, queue, cas, staged_plan=None,
+                 template=None) -> dict:
+    store = store_for(__file__)
+    store = FleetStore(store.root, store.runtime_root, store.roster_path,
+                       queue_root=queue.root, cas_root=cas.root, d38_config_path=store.d38_config_path)
+    template = template if template is not None else {**child, "cas": cas,
+        "tested_repository": submission.tested_repository_name(Path(args.cwd))}
+    report = action_client.ClientReport()
+    result = submission.submit_action(child, template=template, request=args,
+        store=store, staged_plan=staged_plan, placement_announced=True,
+        display=lambda event: render_submission(event) if event.channel == "stderr" else None,
+        report=report)
+    if isinstance(result, SubmissionRefused):
+        raise result
+    return action_client.reported_submission(report)
 
 
 def frozen_child_data_plans(request, plan, children, *, template, args, queue, cas):
@@ -1179,14 +1087,12 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
     stored = _stored_document(path)
     if stored is None:
         policy = request["task_data_manifest"]
-        stage_args = argparse.Namespace(**{
-            **vars(args), "residency": "stage",
-            "residency_tier": policy["residency_tier"],
-            "residency_ram": policy["residency_ram"],
-            "residency_mover_readers": policy["mover_readers"],
-            "residency_mover_mem_gb": policy["mover_mem_gb"],
-            "residency_prefetch_depth_gib": policy.get("prefetch_depth_gib"),
-            "residency_read_mb_s": policy.get("read_mb_s")})
+        stage_args = replace(args, residency="stage",
+            residency_tier=policy["residency_tier"], residency_ram=policy["residency_ram"],
+            residency_mover_readers=policy["mover_readers"],
+            residency_mover_mem_gb=policy["mover_mem_gb"],
+            residency_prefetch_depth_gib=policy.get("prefetch_depth_gib"),
+            residency_read_mb_s=policy.get("read_mb_s"))
         tier = None
         movement_receipts = None
         rows = []
@@ -1194,7 +1100,7 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
             child_plan = None
             if child["params"].get("data_manifest") is not None:
                 if tier is None:
-                    tier = pbrun.resolve_stage_tier(queue, stage_args.residency_tier)
+                    tier = submission.resolve_stage_tier(queue, stage_args.residency_tier)
                 if movement_receipts is None:
                     # Egress receipts too, in the same one read: the stage
                     # egresses are priced off them (#1021).
@@ -1202,10 +1108,10 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
                         pool.POOL_MOVE_SCHEMA_V1, pool.POOL_EGRESS_SCHEMA_V1)))
                 child_template = {**template, "inputs": child["inputs"],
                                   "params": child["params"], "environment": child["environment"]}
-                staged = pbrun.residency_stage_rows(
+                staged = submission.residency_stage_rows(
                     child_template, consumer_action_key=child["action_key"],
                     tier=tier, args=stage_args, queue=queue, cas=cas,
-                    movement_receipts=movement_receipts)
+                    movement_receipts=movement_receipts, store=store_for(__file__))
                 child_plan = staged["plan"]
             rows.append({"action_key": child["action_key"], "plan": child_plan})
         proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
@@ -1271,91 +1177,91 @@ def decompose(
     flags = ["--detach", "--transport", transport, "--priority", str(priority)]
     flags += pbrun_argv(request["common"])
     try:
-        args = pbrun.parse_args(flags)
-        prepared = pbrun.prepare_submission(args)
-    except SystemExit as exc:
+        args = submission.request_from_mapping(request["common"], detach=True, transport=transport, priority=priority)
+        with submission.preparation(args, store=store_for(__file__), display=render_submission) as prepared:
+            template = prepared["template"]
+            cas = template["cas"]
+            if "task_data_manifest" in request:
+                template = {**template, "params": {
+                    **template["params"], dc.TASK_DATA_POLICY_PARAM: request["task_data_manifest"]}}
+
+            frozen = dc.freeze_common(
+                request["common"],
+                action_common=submission.template_action_common(template),
+            )
+            try:
+                plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
+            except dc.RecordError as exc:
+                raise ManifestError(str(exc)) from None
+            roster_input, _ = cas.ingest_bytes(
+                dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
+
+            children, digests = [], []
+            prepared_batches = dc.PreparedBatches(request, plan)
+            for ordinal in range(len(plan["partitions"])):
+                envelope = prepared_batches.envelope(ordinal)
+                batch_input, _ = cas.ingest_bytes(
+                    dc.document_bytes(envelope),
+                    input_id=dc.TASK_BATCH_INPUT_ID,
+                )
+                children.append(submission.seal_child(
+                    template,
+                    request=request,
+                    plan=plan,
+                    child_ordinal=ordinal,
+                    roster_input=roster_input,
+                    batch_input=batch_input,
+                    cas=cas,
+                    prepared_batches=prepared_batches,
+                    **({"data_manifest": dc.task_data_manifest(request["task_data_manifest"], envelope)}
+                       if "task_data_manifest" in request else {}),
+                ))
+                digests.append(str(batch_input["sha256"]))
+
+            queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+            data_plans = (frozen_child_data_plans(
+                request, plan, children, template=template, args=args, queue=queue, cas=cas)
+                if "task_data_manifest" in request else [None] * len(children))
+            # Once, not once per child.  Every child of one plan carries the same
+            # placement and the same demand, so the census answers them all the same
+            # way, and printing that answer N times would bury it.
+            submission.announce_placement(
+                prepared["offer_queue"](), children[0], args=args, cwd=prepared["cwd"],
+                portable_checkout=prepared["portable_checkout"],
+            display=render_submission)
+
+            try:
+                dc.publish_children(
+                    plan, cas_root=cas.root, batch_input_digests=digests,
+                    child_action_keys=[str(child["action_key"]) for child in children])
+            except dc.RecordError as exc:
+                raise ManifestError(str(exc)) from None
+            print(f"pbcampaign: parent {plan['parent_key'][:pbwait.KEY_WIDTH]} "
+                  f"cut into {len(children)} children", file=sys.stderr, flush=True)
+
+    except SubmissionRefused as exc:
         # ``pbrun`` refuses with the explanation as the exception's argument,
         # and the text is the diagnosis.  Prefixed, because from here it is
         # the campaign that refused: there are no other rows to go on with.
         raise ManifestError(
             f"pbrun refused this request's common half: "
-            f"{exc.code if not isinstance(exc.code, int) else f'exit {exc.code}'}"
+            f"{exc.reason or f'exit {exc.returncode}'}"
             f"\n  pbrun {' '.join(flags)}"
         ) from None
-    template = prepared["template"]
-    cas = template["cas"]
-    if "task_data_manifest" in request:
-        template = {**template, "params": {
-            **template["params"], dc.TASK_DATA_POLICY_PARAM: request["task_data_manifest"]}}
-
-    frozen = dc.freeze_common(
-        request["common"],
-        action_common=pbrun.template_action_common(template),
-    )
-    try:
-        plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
-    except dc.RecordError as exc:
-        raise ManifestError(str(exc)) from None
-    roster_input, _ = cas.ingest_bytes(
-        dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
-
-    children, digests = [], []
-    prepared_batches = dc.PreparedBatches(request, plan)
-    for ordinal in range(len(plan["partitions"])):
-        envelope = prepared_batches.envelope(ordinal)
-        batch_input, _ = cas.ingest_bytes(
-            dc.document_bytes(envelope),
-            input_id=dc.TASK_BATCH_INPUT_ID,
-        )
-        children.append(pbrun.seal_decomposed_child(
-            template,
-            request=request,
-            plan=plan,
-            child_ordinal=ordinal,
-            roster_input=roster_input,
-            batch_input=batch_input,
-            cas=cas,
-            prepared_batches=prepared_batches,
-            **({"data_manifest": dc.task_data_manifest(request["task_data_manifest"], envelope)}
-               if "task_data_manifest" in request else {}),
-        ))
-        digests.append(str(batch_input["sha256"]))
-
-    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
-    data_plans = (frozen_child_data_plans(
-        request, plan, children, template=template, args=args, queue=queue, cas=cas)
-        if "task_data_manifest" in request else [None] * len(children))
-    # Once, not once per child.  Every child of one plan carries the same
-    # placement and the same demand, so the census answers them all the same
-    # way, and printing that answer N times would bury it.
-    pbrun.announce_placement(
-        prepared["offer_queue"](), children[0], args=args, cwd=prepared["cwd"],
-        portable_checkout=prepared["portable_checkout"],
-    )
-
-    try:
-        dc.publish_children(
-            plan, cas_root=cas.root, batch_input_digests=digests,
-            child_action_keys=[str(child["action_key"]) for child in children])
-    except dc.RecordError as exc:
-        raise ManifestError(str(exc)) from None
-    print(f"pbcampaign: parent {plan['parent_key'][:pbwait.KEY_WIDTH]} "
-          f"cut into {len(children)} children", file=sys.stderr, flush=True)
-
     records = []
     for ordinal, child in enumerate(children):
         try:
-            published = child_record(child, args=args, queue=queue, cas=cas,
+            published = child_record(child, args=args, queue=queue, cas=cas, template=template,
                                      **({"staged_plan": data_plans[ordinal]}
                                         if data_plans[ordinal] is not None else {}))
-        except SystemExit as exc:
+        except SubmissionRefused as exc:
             # One child's refusal, reported like one row's.  The children
             # already published are in ``records`` and are the whole of what a
             # detached campaign hands back; raising out of here would strand
             # every one of their keys.
             published = {"status": "refused", "flags": [],
                          "action_key": str(child["action_key"]),
-                         "error": str(exc.code)}
+                         "error": str(exc.returncode)}
         print(f"pbcampaign: child {ordinal} {published['status']} "
               f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
               file=sys.stderr, flush=True)
@@ -1401,7 +1307,7 @@ def main(argv=None) -> int:
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="how long to wait for ALL the rows, not for each")
     ap.add_argument(
-        "--transport", choices=pbrun.TRANSPORTS,
+        "--transport", choices=submission.TRANSPORTS,
         default=fleet_submit.default_transport(),
         help="which dispatcher carries every row (env PRISMABUILD_TRANSPORT, "
              "else the published runtime generation's default_transport); "
@@ -1498,8 +1404,8 @@ def main(argv=None) -> int:
         for one in submitted
         if isinstance(one.get("published_unix"), (int, float))
     }
-    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
-    cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     waited = pbwait.wait_for_keys(
         queue, keys, cas=cas, wait_s=args.wait_s, generations=generations)
     table = rows_for(submissions, waited)

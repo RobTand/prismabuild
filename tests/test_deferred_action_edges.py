@@ -24,6 +24,7 @@ through the real ``PoolQueue``, and commit through ``commit_origin_batch``
 without running a worker; consumers go through the real ``pbrun.main``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import contextlib
 import hashlib
@@ -47,6 +48,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan, storage_tiers  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
@@ -88,8 +90,8 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue = _queue(tmp_path)
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     (tmp_path / "repo").symlink_to(pbrun.RUNTIME_ROOT)
     return queue, _checkout(tmp_path)
@@ -345,7 +347,7 @@ def test_a_failed_producer_never_releases_its_consumer(
     assert _without_summary(dr.release_tick(queue)) == [], "once per change"
     assert ae.read_release(queue.root, pending) is None
     assert ae.read_published(queue.root, pending) is None
-    assert pbrun.await_release(queue, pending, wait_s=0.01) == pbrun.action_client.GAVE_UP_EXIT
+    assert submit_core.await_release(queue, pending, wait_s=0.01, store=pbrun.configured_store(), display=pbrun.render_submission) == submit_core.action_client.GAVE_UP_EXIT
     # The failed producer's batch is an orphan: nothing unreleased will read
     # a failed key, so #914 sweeps it.
     assert ae.held_producer_batches(queue) == set()
@@ -378,12 +380,11 @@ def test_an_edge_to_an_unknown_key_is_refused_at_submission(
         command=("/bin/cat", PLACEHOLDER, DIGEST, DIGEST))
     # A pbrun outside the generation store (a development checkout) freezes
     # a template no release could seal: refused now, not held for ever.
-    current = pbrun.CONTAINER_WRAPPER_DIR
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR",
-                        _retained_generation(tmp_path / "dev", "g-dev"))
+    current = pbrun.configured_store().wrapper_dir
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=_retained_generation(tmp_path / "dev", "g-dev"))
     assert "no release could seal" in refused(
         "--after", f"{producer}:{template['template_id']}")
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", current)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=current)
     assert not (queue.root / ae.DEFERRED_SUBDIR).exists(), (
         "a refused submission files nothing")
     with pytest.raises(SystemExit):
@@ -440,7 +441,7 @@ def test_a_chain_resolves_a_deferred_producer_through_its_release(
     claimed = queue.claim(owner="w-consumer", tags=list(TAGS))
     assert claimed["action_key"] == b_key
     queue.finish(b_key, status="executed")
-    assert pbrun.await_release(queue, b, wait_s=1.0) == 0
+    assert submit_core.await_release(queue, b, wait_s=1.0, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
 
 def test_a_superseded_producer_releases_its_consumer_under_the_new_key(
@@ -595,12 +596,12 @@ def test_a_pinned_release_resumes_as_pinned_after_a_crash(
     _path, committed = _commit(queue, template, instance, "b1", b"pinned")
     queue.finish(producer, status="executed")
 
-    publish = pbrun.publish_consumer_row
+    publish = submit_core.publish_consumer_row
 
     def crash(*_args, **_kwargs):
         raise OSError("the tier host lost power")
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", crash)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", crash)
     [refusal] = _without_summary(dr.release_tick(queue))
     assert refusal["event"] == dr.REFUSED_EVENT and "lost power" in refusal["reason"]
     pinned = ae.read_release(queue.root, pending)
@@ -611,7 +612,7 @@ def test_a_pinned_release_resumes_as_pinned_after_a_crash(
     _publish_producer(queue, template, producer)
     queue.claim(owner="w-producer")
     queue.finish(producer, status="failed")
-    monkeypatch.setattr(pbrun, "publish_consumer_row", publish)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", publish)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["resumed"] is True
     assert resumed["action_key"] == pinned["action_key"]
@@ -679,13 +680,13 @@ def test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it(
     old = _retained_generation(store, "g-old")
     bad = _retained_generation(store, "g-bad")
     edge = f"{producer}:{template['template_id']}"
-    current = pbrun.CONTAINER_WRAPPER_DIR
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", old)
+    current = pbrun.configured_store().wrapper_dir
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=old)
     kept = _submit(work, monkeypatch, capsys, "--after", edge)["pending_id"]
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", bad)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=bad)
     tampered = _submit(work, monkeypatch, capsys, "--after", edge,
                        command=("/bin/cat", PLACEHOLDER, "b"))["pending_id"]
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", current)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=current)
     # Tampered after its submission: its wrapper no longer matches its receipt.
     receipt = bad.parent / "RUNTIME_VERSION.json"
     receipt.chmod(0o644)
@@ -735,8 +736,8 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     queue = _queue(tmp_path)
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     work = _checkout(tmp_path)
     mirror = tmp_path / "repo"
@@ -763,7 +764,7 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     template = _template(tmp_path / "canonical")
     producer = _producer_key(tmp_path, template, "across-a-publish")
     _publish_producer(queue, template, producer)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", first / "tools")
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=first / "tools")
     pending = _submit(work, monkeypatch, capsys, "--after",
                       f"{producer}:{template['template_id']}")["pending_id"]
 
@@ -771,8 +772,8 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     assert second != first and second.parent == first.parent
     assert (first / "RUNTIME_VERSION.json").is_file()
     # The loop restarted on the new generation, as the supervisor does.
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", second)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", second / "tools")
+    patch_store(monkeypatch, client=pbrun, runtime_root=second)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=second / "tools")
     instance = _start(queue, template, producer)
     _commit(queue, template, instance, "b1", b"across a publish")
     queue.finish(producer, status="executed")

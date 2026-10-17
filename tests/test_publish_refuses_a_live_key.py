@@ -41,6 +41,7 @@ from prismabuild import produced_output  # noqa: E402
 from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_pbrun_detach import _checkout, _queue, _run_pbrun  # noqa: E402,F401
 
@@ -234,7 +235,7 @@ def test_a_duplicate_submission_keeps_the_first_generation(
     assert queue.claim(capacity={"cpu": 4}) is not None
     queue.finish(KEY, status="executed")
 
-    landed, _ = pbrun.action_wait.outcome_poll(queue, KEY, first)
+    landed, _ = submit_core.action_wait.outcome_poll(queue, KEY, first)
     assert landed is not None, (
         "the duplicate restamped the row, so the first waiter's generation "
         "no longer matches any terminal record")
@@ -253,7 +254,7 @@ def test_pbrun_attaches_a_duplicate_pool_submission_instead_of_restamping(
 
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    unfinished = {pbrun.action_client.GAVE_UP_EXIT, pbrun.action_client.RECORD_WRITE_FAILED_EXIT}
+    unfinished = {submit_core.action_client.GAVE_UP_EXIT, submit_core.action_client.RECORD_WRITE_FAILED_EXIT}
 
     assert _run_pbrun(tmp_path, monkeypatch, work) in unfinished
     capsys.readouterr()

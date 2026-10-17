@@ -24,6 +24,7 @@ sys.path.insert(
 )
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_pbrun_detach import _queue, _run_pbrun
 
 
@@ -45,7 +46,7 @@ def readonly_checkout(tmp_path: Path):
     _git(cwd, "commit", "-q", "-m", "one")
     # The excludes are already in place, as they are on any checkout that has
     # submitted before; no new source-side file should be needed.
-    pbrun.keep_droppings_out_of_git(cwd)
+    submit_core.keep_droppings_out_of_git(cwd)
     made_readonly: list[Path] = []
     for directory in [cwd, *[p for p in cwd.rglob("*") if p.is_dir()]]:
         directory.chmod(stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP)
@@ -66,4 +67,4 @@ def test_a_read_only_checkout_can_submit_a_snapshot(
     assert _run_pbrun(tmp_path, monkeypatch, readonly_checkout, "--detach") == 0
     assert len(queue.ready_items()) == 1
     # Nothing of ours is left behind in a tree we could not write to.
-    assert not list(readonly_checkout.glob(f"{pbrun.STAMP_PREFIX}*"))
+    assert not list(readonly_checkout.glob(f"{submit_core.STAMP_PREFIX}*"))

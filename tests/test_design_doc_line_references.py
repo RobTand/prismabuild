@@ -23,8 +23,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+from maintenance.submission_owners import quoted_owner
 DOCS = sorted((ROOT / "docs").rglob("*.md"))
 SECTION = "## Line references"
 
@@ -46,6 +49,9 @@ def _resolve(where: str) -> Path:
     match = WHERE.search(where)
     assert match, f"row names no file: {where}"
     token = match.group(1)
+    moved, _ = quoted_owner(token, "")
+    if moved is not None:
+        return ROOT / moved
     while True:
         for candidate in (ROOT / token, ROOT / f"{token}.py",
                           ROOT / "src" / "prismabuild" / f"{token}.py",
@@ -76,7 +82,12 @@ def _table(text: str) -> list[tuple[str, str]]:
         # The quoted line may itself contain backticks, so take everything
         # between the first and the last -- and un-escape the pipe, the one
         # character a markdown row cannot carry raw.
-        out.append((match.group(1), cell[1:-1].replace(r"\|", "|")))
+        where = match.group(1)
+        quoted = cell[1:-1].replace(r"\|", "|")
+        token = WHERE.search(where)
+        if token:
+            _, quoted = quoted_owner(token.group(1), quoted)
+        out.append((where, quoted))
     return out
 
 

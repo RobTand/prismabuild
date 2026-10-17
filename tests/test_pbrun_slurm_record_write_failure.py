@@ -23,6 +23,7 @@ and say which command files the ending. The exit code is 74, which is neither
 not a withdrawal.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import _runnable_action, fleet  # noqa: E402,F401
 
@@ -90,15 +92,15 @@ def test_a_queue_it_cannot_write_is_reported_rather_than_raised(
     queue = tmp_path / "queue"
     done = unwritable(queue / pool.record_store.DONE)
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=queue,
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
-    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
-    assert code not in (pbrun.action_client.GAVE_UP_EXIT, pbrun.action_client.WITHDRAWN_EXIT, 0)
+    assert code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
+    assert code not in (submit_core.action_client.GAVE_UP_EXIT, submit_core.action_client.WITHDRAWN_EXIT, 0)
     err = capsys.readouterr().err
     assert str(done) in err
     assert "Permission denied" in err
@@ -125,12 +127,12 @@ def test_the_report_names_the_job_slurm_accepted(
     queue = tmp_path / "queue"
     unwritable(queue / pool.record_store.DONE)
 
-    pbrun.slurm_outcome(
+    submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=queue,
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     err = capsys.readouterr().err
     submitted = [line for line in err.splitlines() if "submitted" in line]
@@ -187,14 +189,14 @@ def test_a_failure_after_sbatch_accepted_is_not_reported_as_a_bad_tag(
 
     monkeypatch.setattr(sl, "_publish_record", refuse)
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=tmp_path / "queue",
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
-    assert code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert "Fix the --tag" not in err
     assert "already recorded" in err
@@ -212,12 +214,12 @@ def test_a_refusal_before_sbatch_still_says_to_fix_the_tag(
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
 
-    with pytest.raises(SystemExit) as caught:
-        pbrun.slurm_outcome(
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core.slurm_outcome(
             action, cas=cas, request_path=request, tags=["x86"],
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
             runtime_root=REPOSITORY, poll_s=0.0, queue_root=tmp_path / "queue",
-        )
+        store=pbrun.configured_store(), display=pbrun.render_submission)
 
     assert "Fix the --tag" in str(caught.value)

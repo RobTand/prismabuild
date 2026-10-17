@@ -37,6 +37,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "ef" * 32
 GENERATION = 1757000000.0
@@ -128,7 +129,7 @@ def test_an_ending_the_client_has_not_revalidated_still_stops_the_withdrawal(
     _ending(queue_root, pool.record_store.DONE)
     _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.DONE)
 
-    marker = pbrun._file_slurm_withdrawal(
+    marker = submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
         scancel_command="scancel",
     )
@@ -146,7 +147,7 @@ def test_a_failed_ending_is_read_through_the_same_revalidation(
     _ending(queue_root, pool.record_store.FAILED)
     _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.FAILED)
 
-    assert pbrun._file_slurm_withdrawal(
+    assert submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
         scancel_command="scancel",
     ) is None
@@ -157,7 +158,7 @@ def test_an_action_still_running_is_withdrawn_as_before(tmp_path: Path) -> None:
 
     queue_root = tmp_path / "pb-queue"
 
-    marker = pbrun._file_slurm_withdrawal(
+    marker = submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="superseded", by="rob",
         scancel_command="scancel",
     )

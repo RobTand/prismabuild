@@ -26,6 +26,7 @@ from test_slurm_lane import (  # noqa: E402,F401
 )
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 class FakeClock:
@@ -480,13 +481,13 @@ def test_pbrun_reports_a_stall_on_stderr_and_cancels_nothing(
                 record.write_text("COMPLETED|0:0\n")
     clock.hooks.append(finish)
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[],
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=None, wait_s=None, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
         **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if "has shown no progress" in line]
@@ -518,10 +519,10 @@ def test_a_withdrawal_carries_the_last_liveness_sample(
     queue = tmp_path / "queue"
     root = Path(str(sl.lane_root()))
 
-    rc = pbrun.withdraw_slurm_main(
+    rc = submit_core.withdraw_slurm_main(
         [job.action_key[:12]], reason="dead", by="tester",
         lane_root=root, queue_root=queue,
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
 
     assert rc == 0
     record = json.loads((queue / "withdrawn" / f"{job.action_key}.json").read_text())

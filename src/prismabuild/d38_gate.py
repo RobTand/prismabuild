@@ -16,6 +16,8 @@ import sys
 import uuid
 from typing import Mapping, Sequence
 
+import functools
+from .submission_types import FleetStore, SubmissionRefused, DisplaySink, discard_display, notice as emit_display
 from prismabuild import action_result, container_images, core as pb, digest_primitives, fleet_roster
 
 RECEIPT_SCHEMA = "fleet.d38.preflight.v1"
@@ -110,14 +112,14 @@ def _aware(text: object, where: str) -> datetime.datetime:
     return value
 
 
-def enforcement_enabled() -> bool:
+def enforcement_enabled(*, store: FleetStore) -> bool:
     """Read the reviewed setting beside this resolved gate module."""
 
-    path = fleet_roster.Roster.beside(__file__)
+    path = store.d38_config_path
     try:
         return fleet_roster.Roster.read(path).d38_enforce
     except (OSError, ValueError) as exc:
-        raise SystemExit(f"pbrun: D38 configuration error in {path}: {exc}") from None
+        raise SubmissionRefused(f"pbrun: D38 configuration error in {path}: {exc}") from None
 
 
 def load_namespace(path: str | Path) -> tuple[dict, str]:
@@ -126,16 +128,16 @@ def load_namespace(path: str | Path) -> tuple[dict, str]:
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
-        raise SystemExit(f"pbrun: cannot read --d38-namespace: {exc}") from None
+        raise SubmissionRefused(f"pbrun: cannot read --d38-namespace: {exc}") from None
     if len(raw) > MAX_NAMESPACE_BYTES:
-        raise SystemExit("pbrun: --d38-namespace is larger than 64 KiB")
+        raise SubmissionRefused("pbrun: --d38-namespace is larger than 64 KiB")
     try:
         descriptor = _json_without_duplicates(raw)
     except (ValueError, UnicodeDecodeError) as exc:
-        raise SystemExit(f"pbrun: --d38-namespace is not valid JSON: {exc}") \
+        raise SubmissionRefused(f"pbrun: --d38-namespace is not valid JSON: {exc}") \
             from None
     if not isinstance(descriptor, dict) or not descriptor:
-        raise SystemExit("pbrun: --d38-namespace must be a non-empty JSON object")
+        raise SubmissionRefused("pbrun: --d38-namespace must be a non-empty JSON object")
     return descriptor, "sha256:" + pb.canonical_sha256(descriptor)
 
 
@@ -509,16 +511,16 @@ def write_audit(queue_root: str | Path, event: Mapping[str, object]) -> Path:
 # --------------------------------------------------------------------- gate
 
 def _exit_refused(reason: str, *, job: str, images: Sequence[str],
-            namespace: str | None) -> "SystemExit":
-    print(f"pbrun: D38 refuses GPU publication: {reason}.\n"
+            namespace: str | None, display: DisplaySink = discard_display) -> SubmissionRefused:
+    emit_display(display, f"pbrun: D38 refuses GPU publication: {reason}.\n"
           f"job={job} images={json.dumps(list(images))} "
           f"namespace={namespace or 'none'}\n"
           "Run the same entry point on CPU through PrismaBuild. "
           "Supply --d38-receipt <action key>.\n"
           "Use --d38-exception <decision id> only for an explicit CEO "
           "exception. No runnable submission was published.",
-          file=sys.stderr, flush=True)
-    return SystemExit(2)
+          channel="stderr", flush=True)
+    return SubmissionRefused(2)
 
 
 def authorize(args, action: Mapping[str, object], *, cas,
@@ -558,7 +560,8 @@ def evaluate(args, action: Mapping[str, object], *, cas,
 
 
 def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
-           transport: str) -> tuple[str, str | None] | None:
+           transport: str, store: FleetStore, display: DisplaySink = discard_display,
+           demand: Mapping[str, object] | None = None, required_tags: Sequence[str] | None = None) -> tuple[str, str | None] | None:
     """Evaluate GPU evidence and audit it under the reviewed enforcement policy.
 
     Return ``(reason, namespace)`` only when enforcement refuses publication.
@@ -567,12 +570,12 @@ def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: st
     """
 
     params = action["params"]
-    demand = params.get("demand") or {}  # type: ignore[union-attr]
-    tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
+    demand = (params.get("demand") or {}) if demand is None else demand
+    tags = ((params.get("placement") or {}).get("required_tags") or []) if required_tags is None else required_tags
     if not requires_receipt(demand, tags,
                             host_class=getattr(args, "host_class", None)):
         return None
-    enforce = enforcement_enabled()
+    enforce = enforcement_enabled(store=store)
     job = str(action["action_key"])
     images = target_images(action)
     namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
@@ -593,34 +596,34 @@ def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: st
         reason = f"the audit event cannot be written: {exc}"
         if enforce:
             return (reason, checked_namespace)
-        print(f"pbrun: D38 record_only: {reason}; publication permitted",
-              file=sys.stderr, flush=True)
+        emit_display(display, f"pbrun: D38 record_only: {reason}; publication permitted",
+              channel="stderr", flush=True)
     if check.get("authorization") == "exception":
-        print(f"pbrun: D38 exception {check['decision_id']} authorizes job "
-              f"{job}", file=sys.stderr, flush=True)
+        emit_display(display, f"pbrun: D38 exception {check['decision_id']} authorizes job "
+              f"{job}", channel="stderr", flush=True)
     return None
 
 
 def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
-            ) -> SystemExit:
+            , *, display: DisplaySink = discard_display) -> SubmissionRefused:
     """The exit-2 refusal for a publication verdict."""
 
     reason, namespace = verdict
     return _exit_refused(reason, job=str(action["action_key"]),
-                   images=target_images(action), namespace=namespace)
+                   images=target_images(action), namespace=namespace, display=display)
 
 
 def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
-            transport: str) -> None:
+            transport: str, store: FleetStore, display: DisplaySink = discard_display) -> None:
     """Apply the reviewed D38 policy to a new publication."""
 
     verdict = judge_publication(args, action, cas=cas, queue_root=queue_root,
-                     transport=transport)
+                     transport=transport, store=store, display=display)
     if verdict is not None:
-        raise refusal_exit(verdict, action)
+        raise refusal_exit(verdict, action, display=display)
 
 
-def refuse_deferred(args, params: Mapping[str, object]) -> None:
+def refuse_deferred(args, params: Mapping[str, object], *, store: FleetStore, display: DisplaySink = discard_display) -> None:
     """Enforced GPU intent cannot register before a sealed identity exists.
 
     Record-only registration defers evaluation and auditing to release.
@@ -630,7 +633,7 @@ def refuse_deferred(args, params: Mapping[str, object]) -> None:
     if not requires_receipt(demand, tags,  # type: ignore[arg-type]
                             host_class=getattr(args, "host_class", None)):
         return
-    if not enforcement_enabled():
+    if not enforcement_enabled(store=store):
         return
     images = list(container_images.normalize_refs(
         params.get("container_images") or []))
@@ -639,7 +642,7 @@ def refuse_deferred(args, params: Mapping[str, object]) -> None:
         "a deferred --after submission has no job identity until its producer "
         "ends, so no receipt or grant can bind it; submit it after the "
         "producer succeeds", job="none (deferred)", images=images,
-        namespace=namespace if isinstance(namespace, str) else None)
+        namespace=namespace if isinstance(namespace, str) else None, display=display)
 
 
 def _user() -> str:

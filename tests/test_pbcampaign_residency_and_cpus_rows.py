@@ -11,6 +11,7 @@ and bounds, and omitted fields pass nothing, as every row field does.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 from pbtest_shard_output import finish_submission
 
@@ -26,8 +27,10 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import submission
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
@@ -100,26 +103,24 @@ def test_the_argv_pbrun_is_given_is_the_hand_typed_submission(
 ) -> None:
     """``submit_row`` hands ``pbrun.main`` this row's command line, byte for byte."""
 
-    seen: list[list[str]] = []
+    seen = []
 
-    def fake_main(*, report) -> int:
-        seen.append(list(sys.argv))
+    def fake_submit(request, *, report, **kwargs):
+        seen.append(request)
         print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return finish_submission(report)
+        finish_submission(report)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submission, 'submit_request', fake_submit)
     row = {"argv": ["./reader.sh"], "cwd": "/home/rob/tree",
            "data_manifest": "/home/rob/manifest.json",
            **{field: value for field, (value, _) in FIELDS.items()}}
 
     assert pbcampaign.submit_row(row, transport="pool")["status"] == "submitted"
-    assert seen == [[
-        "pbrun.py", "--detach", "--transport", "pool",
-        "--cwd", "/home/rob/tree", "--data-manifest", "/home/rob/manifest.json",
-        "--residency", "stage", "--residency-ram", "off",
-        "--residency-prefetch-depth-gib", "8", "--residency-read-mb-s", "400",
-        "--cpus", "4", "--", "./reader.sh",
-    ]]
+    assert seen == [submission.SubmissionRequest(detach=True, transport="pool",
+        cwd="/home/rob/tree", data_manifest="/home/rob/manifest.json", residency="stage",
+        residency_ram="off", residency_prefetch_depth_gib=8, residency_read_mb_s=400,
+        cpus=4, command=["./reader.sh"])]
 
 
 # -- the staged read path, end to end ----------------------------------------
@@ -132,8 +133,8 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
     the default, a submission seals a ram leg onto the plan.
     """
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,

@@ -36,6 +36,7 @@ from prismabuild import pool, slurm_lane  # noqa: E402
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 from test_slurm_lane import fleet, _runnable_action  # noqa: E402,F401
@@ -81,7 +82,7 @@ def _submits_on_the_first_lookup(
 def _wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str):
     """One wait started before the submission, and the rows it returned."""
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.0)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.0)
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", verdict)
     monkeypatch.setenv(
         "PRISMABUILD_LOCAL_CHECKOUT_ROOT", str(tmp_path / "checkouts"))
@@ -164,7 +165,7 @@ def test_a_key_nothing_ever_records_still_gives_up_as_waiting(
     work is still out there".
     """
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.0)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.0)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")

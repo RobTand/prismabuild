@@ -8,6 +8,7 @@ with the submission template's identity. No second sealing scheme lives
 here; this module IS the one construction, moved verbatim.
 """
 from __future__ import annotations
+from .submission_types import SubmissionRefused
 
 import hashlib
 import json
@@ -688,7 +689,7 @@ def movement_tools(tier: Mapping[str, object], *,
     python = str(tier.get("mover_python") or "")
     root = str(tier.get("mover_tools_root") or "")
     if not python.startswith("/") or not root.startswith("/"):
-        raise SystemExit(
+        raise SubmissionRefused(
             f"stage tier {tier_id} announces no interpreter or tool "
             f"root for its movement nodes (mover_python={python!r}, "
             f"mover_tools_root={root!r}). tier_loop.py discovers both on the "
@@ -865,4 +866,4 @@ def seal_movement_action(
     try:
         return pb.seal_action(body)
     except pb.ActionContractError as exc:
-        raise SystemExit(f"refusing to seal a movement action: {exc}") from None
+        raise SubmissionRefused(f"refusing to seal a movement action: {exc}") from None

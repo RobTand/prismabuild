@@ -1,5 +1,6 @@
 """A conflicting queue summary is an inspectable refusal, never a success."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import core as pb, pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -75,7 +77,7 @@ def test_conflicting_detail_is_a_read_only_structured_refusal(tmp_path, status):
     # The existing synchronous launcher still refuses, rather than adopting
     # a diagnostic snapshot as a successful terminal outcome.
     with pytest.raises(pool.PoolContractError, match="adopted immutable"):
-        pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0)
+        submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0)
 
 
 def test_conflict_does_not_abort_other_keys_and_json_is_supported(tmp_path, monkeypatch, capsys):
@@ -83,7 +85,7 @@ def test_conflict_does_not_abort_other_keys_and_json_is_supported(tmp_path, monk
     record["detail"]["returncode"] = 99
     path.write_text(json.dumps(record), encoding="utf-8")
     _ending(tmp_path, OTHER, status="executed")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(pbwait.pool, "PoolQueue", lambda _root: queue)
     assert pbwait.main(["--json", "--wait-s", "0", KEY, OTHER]) == 74
     rows = json.loads(capsys.readouterr().out)

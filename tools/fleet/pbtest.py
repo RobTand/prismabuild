@@ -58,18 +58,22 @@ from runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
+from submission_frontend import store_for, render_submission, request_arguments
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
 from prismabuild import dependency_digest  # noqa: E402
-from pbrun import require_gpu_memory_scope  # noqa: E402
+from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
 #: drift apart.
 import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
-import pbrun  # noqa: E402
+from prismabuild import submission
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -131,8 +135,8 @@ def start_shard(index: int, command: list[str], *, result: dict,
         inherited = environment.get('PYTHONPATH')
         environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
             os.pathsep + inherited if inherited else '')
-    return client_channel.ClientProcess.launch(command, queue_root=pbrun.SH / 'pb-queue',
-        cas_root=pbrun.SH / 'cas', env=environment, expected_identity=expected_identity,
+    return client_channel.ClientProcess.launch(command, queue_root=store_for(__file__).root / 'pb-queue',
+        cas_root=store_for(__file__).root / 'cas', env=environment, expected_identity=expected_identity,
         on_identity=submitted)
 
 
@@ -262,7 +266,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(pbrun.SH / "pb-queue")
+    return pool.PoolQueue(store_for(__file__).root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -284,7 +288,7 @@ def interpreter_refusal(queue, python: str, *, tags, resources,
         "needs_gpu": bool(needs_gpu),
     }
     verdict = queue.interpreter_placement_verdict(
-        probe, python, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S)
+        probe, python, max_age_s=submission.RECORDED_OFFER_MAX_AGE_S)
     if verdict == "absent":
         return ("refusal",
                 "pbtest: every recorded worker that could take these shards "
@@ -348,7 +352,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(store_for(__file__).root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:
@@ -1158,10 +1162,11 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
-def shard_command(flags, *, environment, python_entry, arguments):
-    """Bind a shard's child environment and entry at the pbrun boundary."""
-    env_flags = [word for entry in environment for word in ("--env", entry)]
-    return [*flags, *env_flags, "--", *python_entry, *arguments]
+def shard_command(request: SubmissionRequest, *, environment, python_entry, arguments):
+    """Send a typed request across the existing C06 client process boundary."""
+    from dataclasses import replace
+    request = replace(request, env=tuple(environment), command=(*python_entry, *arguments))
+    return ["/usr/bin/python3", str(PBRUN), *request_arguments(request)]
 
 
 def _client_environment():
@@ -1391,7 +1396,7 @@ def main() -> int:
         return 2
 
     try:
-        if pbrun.interpreter_of([args.python]) != args.python:
+        if submission.interpreter_of([args.python]) != args.python:
             raise ValueError("--python must name an absolute python* executable "
                              "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
@@ -1810,81 +1815,18 @@ def main() -> int:
         for raw in args.paths or ["tests"]]
     for index, bucket in enumerate(buckets):
         plan = plan_of[index]
-        # Built in order rather than spliced into.  The repeatable --tag used
-        # to be inserted at a fixed index, which once landed between --demand
-        # and its argument and killed every shard on "expected one argument";
-        # appending each flag where it belongs cannot reach inside a pair.
-        flags = [
-            "/usr/bin/python3", str(PBRUN),
-            "--cwd", str(checkout),
-            "--transport", args.transport,
-        ]
-        # The known child sources/paths are sealed. In the shared runtime,
-        # an untagged CPU shard asserts that portability through pbrun's
-        # existing flag; otherwise its box-local venv path would retain a
-        # source-host pin. Explicit constraints and local runtimes keep
-        # their existing placement rules; never combine --anywhere and tags.
-        for tag in tags:
-            flags += ["--tag", tag]
-        if not tags and not pool.is_box_local_path(RUNTIME_ROOT):
-            flags += ["--anywhere"]
-        # A fenced shard requires its cohort's capability tags (#1495):
-        # explicit tags, which by design constrain placement beyond the
-        # base run's portability.
-        for tag in plan["capability_tags"]:
-            flags += ["--tag", tag]
-        # One --demand token per reserved kind, comma-joined: pbrun parses
-        # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
-        demand_terms = [f"{kind}={value}" for kind, value in shard_resources.items()
-                        if kind not in {"cpu", "gpu"}]
-        flags += [
-            "--demand", ",".join(demand_terms),
-            # pbrun fills the cpu demand from --cpus, and its default is 1.
-            # Naming it here is what makes the reservation match the thread
-            # ceiling above; it is sealed into the action's params, so a suite
-            # re-run at a different width is a different action rather than a
-            # cache hit.
-            "--cpus", str(shard_resources["cpu"]),
-        ]
-        if args.gpu:
-            flags += ["--gpu"]
-        if args.gpu_memory_gb is not None:
-            flags += ["--gpu-memory-gb", str(args.gpu_memory_gb)]
-        if plan["sealed_s"] is not None:
-            # ``str`` of the float, the spelling an explicit ``--timeout-s``
-            # was always forwarded in, so a request inside every announced
-            # ceiling reaches ``pbrun`` byte for byte as before (#939).
-            flags += ["--timeout-s", str(plan["sealed_s"])]
-        flags += ["--wait-s", str(args.wait_s)]
-        if args.priority != 0:
-            # Zero is pbrun's own default; forwarding only a non-zero hint
-            # leaves every existing shard argv byte-identical.
-            flags += ["--priority", str(args.priority)]
-        if args.profile is not None:
-            # Same rule, and it matters more here: --profile enters the shard's
-            # action key, so forwarding it unasked would re-key every suite run
-            # on the fleet.  pbrun owns which modes are legal and refuses the
-            # rest, so this passes the word through rather than listing them.
-            flags += ["--profile", str(args.profile)]
-        if args.data_manifest:
-            # Forwarded only when given: the manifest enters the action key,
-            # so an unasked flag would re-key every suite run (#915).
-            flags += ["--data-manifest", str(Path(args.data_manifest).resolve())]
-        if plan["selection"] is not None:
-            # The claim-relevant projection (#1495): the exact-file entries
-            # the claim gate hashes.  The full sealed selection travels in
-            # the shard's own selection JSON below, which is action
-            # identity, so a changed declaration re-keys the shard.  A
-            # tags-only fence has no exact-file entries: pbrun refuses an
-            # empty --requires-files by contract, so the flag is omitted
-            # entirely and the shard is submitted as an ordinary tagged
-            # row (#1495).
-            pins = [entry for entry in plan["selection"]["dependencies"]
-                    if "kind" not in entry]
-            if pins:
-                flags += ["--requires-files", json.dumps(pins)]
-        if args.residency != "none":
-            flags += ["--residency", args.residency]
+        pins = ([entry for entry in plan["selection"]["dependencies"] if "kind" not in entry]
+                if plan["selection"] is not None else [])
+        request = SubmissionRequest(cwd=str(checkout), transport=args.transport,
+            tag=(*tags, *plan["capability_tags"]),
+            anywhere=not tags and not plan["capability_tags"] and not pool.is_box_local_path(RUNTIME_ROOT),
+            demand=",".join(f"{kind}={value}" for kind, value in shard_resources.items()
+                            if kind not in {"cpu", "gpu"}),
+            cpus=shard_resources["cpu"], gpu=args.gpu, gpu_memory_gb=args.gpu_memory_gb,
+            timeout_s=plan["sealed_s"], wait_s=args.wait_s, priority=args.priority,
+            profile=args.profile,
+            data_manifest=str(Path(args.data_manifest).resolve()) if args.data_manifest else None,
+            requires_files=json.dumps(pins) if pins else None, residency=args.residency)
         # Explicit forwarding replaces addopts from both environment and
         # project config: either can hide -n auto or --dist each. Only an
         # explicit forwarding request seals the empty addopts override.
@@ -1902,7 +1844,7 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
-        command = shard_command(flags, environment=environment,
+        command = shard_command(request, environment=environment,
                                 python_entry=python_entry, arguments=arguments)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
         # starts when one exits.  Its wait budget starts here, at its own

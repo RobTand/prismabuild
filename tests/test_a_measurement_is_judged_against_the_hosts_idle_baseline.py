@@ -20,6 +20,7 @@ into a real CAS and claimed through the real adaptive path on a Spark-sized
 host.  Only the CPU sample is stated.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 from pathlib import Path
 import sys
@@ -48,11 +49,13 @@ def _sample(busy: float, psi: float):
 
 def _measurement(tmp_path: Path):
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    action = pbrun.seal_action_from_template(
+    action = submit_core.seal(
         fx._template(measurement=True, command=["python", "stage_a.py"]))
     key = fx._publish(queue, cas, action, fx.MEASUREMENT_DEMAND)
     return queue, key

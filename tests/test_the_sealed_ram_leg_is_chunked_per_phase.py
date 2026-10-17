@@ -10,6 +10,8 @@ node kind.  A phase that fits in one chunk seals today's whole-phase pair,
 and a plan sealed before this change keeps the leg it was frozen with.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -77,6 +79,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -88,7 +92,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                   "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -129,16 +133,16 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = submit_core.resolve_stage_tier(queue, None)
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+        cas=cas, store=pbrun.configured_store())
     staged["cas"] = cas
     return staged
 

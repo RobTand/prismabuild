@@ -28,6 +28,7 @@ re-stage fixture is the prepaid writer integration's real mover run through
 row is outside what is under test.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 import os
@@ -168,6 +169,8 @@ def test_a_movement_node_without_a_policy_never_takes_its_consumers() -> None:
     """The shared construction's default is a mover's, for every lane."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     template = {
         "marker_root": Path("/home/rob/tmp/markers"),
@@ -177,7 +180,7 @@ def test_a_movement_node_without_a_policy_never_takes_its_consumers() -> None:
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "working_directory": "."},
         "inputs": [],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"cwd": "/home/rob",
                    "retry_policy": {"max_attempts": 1, "retry_safe": False}},
         "environment": {"variables": {"PATH": "/usr/bin"}, "toolchain": {}},

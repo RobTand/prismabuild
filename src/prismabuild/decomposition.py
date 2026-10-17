@@ -48,6 +48,7 @@ from typing import Any, NamedTuple
 from . import core as pb
 from . import data_manifest as manifest_codec
 from . import immutable_files
+from .submission_types import common_fields, request_options
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the
 # frozen half a parent is keyed on can refuse to contain them: ownership is a
@@ -159,16 +160,8 @@ _POLICY_KEYS = frozenset(
 _REQUIRED_COMMON_KEYS = frozenset({
     "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
 })
-_COMMON_KEYS = frozenset({
-    "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
-    # Policies every child shares. Submission priority and --as-sealed-by are
-    # excluded: the former is a queue hint and the latter names one complete
-    # action, whereas a logical parent deliberately becomes many children.
-    "timeout_s", "progress_phases", "progress_cycle", "profile",
-    "retry_safe", "max_attempts", "tags", "snapshot_ref",
-    "deterministic", "no_default_env", "exclusive", "gpu_capacity",
-    "measurement", "host_class", "anywhere", "here",
-})
+_COMMON_KEYS = common_fields()
+
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
 _FROZEN_COMMON_KEYS = frozenset({"schema", "argv", "action_common"})
 #: The half of a sealed action that a decomposition does not vary.  Exactly
@@ -366,11 +359,10 @@ def _validate_batch_argv(value: object, *, where: str) -> list[str]:
     return argv
 
 
-_COMMON_BOOLEAN_POLICY_KEYS = frozenset({
-    "progress_cycle", "retry_safe", "deterministic", "no_default_env",
-    "exclusive", "measurement", "anywhere", "here",
-})
-_COMMON_LIST_POLICY_KEYS = frozenset({"progress_phases", "tags", "snapshot_ref"})
+_COMMON_BOOLEAN_POLICY_KEYS = frozenset(option.name for option in request_options()
+    if option.kind == "switch" and option.name in _COMMON_KEYS)
+_COMMON_LIST_POLICY_KEYS = frozenset(option.name for option in request_options()
+    if option.kind == "repeat" and option.name in _COMMON_KEYS)
 
 
 def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
@@ -416,6 +408,8 @@ def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
             policies[key] = pb._nonnegative_integer(
                 common[key], where=f"common spec {key}"
             )
+    for key in common.keys() - _REQUIRED_COMMON_KEYS - policies.keys():
+        policies[key] = pb._normalize_json_value(common[key], where=f"common spec {key}")
     return policies
 
 

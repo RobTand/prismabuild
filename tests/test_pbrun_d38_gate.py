@@ -10,6 +10,7 @@ The producer that makes receipts (``--d38-plan``, ``--d38-preflight-for``) is a
 later change; these tests fabricate the preflight action it will declare.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import datetime
 import hashlib
@@ -20,6 +21,9 @@ import sys
 
 import pytest
 
+# The preflight fixture seals live evidence and declares an x86 receipt.
+pytestmark = pytest.mark.pbtest_capability("d38_x86_receipt_fixture")
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
@@ -27,8 +31,9 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions, pool  # noqa: E402
-import d38_gate  # noqa: E402
+from prismabuild import d38_gate  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_pbrun_detach import (  # noqa: E402,F401
     _checkout, _one_json_line, fleet)
@@ -92,8 +97,8 @@ def _argv(work: Path, *options: str, command=COMMAND) -> list[str]:
 
 
 def _prepare(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
 
 
@@ -137,8 +142,8 @@ def _seal(tmp_path, monkeypatch, work, *options, command=COMMAND):
 
     _prepare(tmp_path, monkeypatch)
     args = pbrun.parse_args(_argv(work, *options, command=command)[1:])
-    prepared = pbrun.prepare_submission(args)
-    action = pbrun.seal_action_from_template(prepared["template"])
+    prepared = submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)
+    action = submit_core.seal(prepared["template"])
     _register(monkeypatch, action)
     return action, prepared["template"]["cas"]
 
@@ -834,11 +839,11 @@ def test_the_shipped_gate_is_off_and_no_caller_input_can_turn_it_on() -> None:
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "import d38_gate; print(d38_gate.enforcement_enabled())"],
+         "import pbrun; from prismabuild import d38_gate; print(d38_gate.enforcement_enabled(store=pbrun.configured_store()))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.returncode == 0, shipped.stderr
     assert shipped.stdout.strip() == "False", shipped.stderr
-    source = (REPOSITORY / "tools" / "fleet" / "d38_gate.py").read_text(
+    source = (REPOSITORY / "src" / "prismabuild" / "d38_gate.py").read_text(
         encoding="utf-8")
     assert "os.environ" not in source and "getenv" not in source
     parsed = pbrun.parse_args(["--cwd", ".", "--", "/bin/true"])
@@ -998,7 +1003,7 @@ def test_a_generation_that_ends_before_publication_cannot_publish_without_eviden
     def liveness(_queue, _key, **_kw):
         return live            # stale: nothing is really running
 
-    monkeypatch.setattr(pbrun, "bounded_attachment", liveness)
+    monkeypatch.setattr(submit_core, "bounded_attachment", liveness)
     _run(tmp_path, monkeypatch, work, "--gpu", "--d38-namespace", str(ns))
     assert _ready(tmp_path) == []
     assert _audit(tmp_path, target["action_key"]) == []
@@ -1078,6 +1083,6 @@ def test_the_shipped_registry_is_empty() -> None:
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "import d38_gate; print(len(d38_gate.INVOCATIONS))"],
+         "import pbrun; from prismabuild import d38_gate; print(len(d38_gate.INVOCATIONS))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.stdout.strip() == "0", shipped.stderr

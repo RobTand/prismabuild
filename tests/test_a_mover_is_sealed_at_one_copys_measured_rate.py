@@ -19,6 +19,8 @@ over one copy the minimum bounds nothing.
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
 
 import argparse
 import hashlib
@@ -235,6 +237,8 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
     """Seal one window through ``pbrun.residency_stage_rows`` at a stated offer."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(_manifest()))
@@ -248,7 +252,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = dict(pbrun.resolve_stage_tier(queue, None))
+    tier = dict(submit_core.resolve_stage_tier(queue, None))
     tier["tokens"] = ({} if offer is None
                       else {**dict(tier.get("tokens") or {}),
                             storage_tiers.FILL_KIND: offer})
@@ -259,10 +263,10 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
     for record in receipts:
         record["manifest_sha256"] = (digest if record["manifest_sha256"] == MANIFEST
                                      else record["manifest_sha256"])
-    return pbrun.residency_stage_rows(
+    return submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=_Cas(manifest_path), movement_receipts=receipts)
+        cas=_Cas(manifest_path), movement_receipts=receipts, store=pbrun.configured_store())
 
 
 def _fills(staged: dict[str, object]) -> set[int]:
@@ -343,18 +347,18 @@ def test_the_submitters_declaration_reaches_the_plan(tmp_path: Path) -> None:
     assert "reader" not in staged["plan"]           # undeclared: byte-identical
     args = argparse.Namespace(residency_prefetch_depth_gib=22,
                               residency_read_mb_s=21)
-    assert pbrun.reader_declaration(args) == {
+    assert submit_core.reader_declaration(args) == {
         "prefetch_depth_bytes": 22 * storage_tiers.GIB, "read_mb_s": 21}
     # A deferred record filed before #909 restores a Namespace without them.
-    assert pbrun.reader_declaration(argparse.Namespace()) == {}
+    assert submit_core.reader_declaration(argparse.Namespace()) == {}
 
 
 @pytest.mark.parametrize("depth,rate", [(-1, None), (None, 0), (True, None)])
 def test_a_malformed_declaration_is_refused_at_submission(depth, rate) -> None:
     import pbrun
 
-    with pytest.raises(SystemExit):
-        pbrun.reader_declaration(argparse.Namespace(
+    with pytest.raises(submit_core.SubmissionRefused):
+        submit_core.reader_declaration(argparse.Namespace(
             residency_prefetch_depth_gib=depth, residency_read_mb_s=rate))
 
 

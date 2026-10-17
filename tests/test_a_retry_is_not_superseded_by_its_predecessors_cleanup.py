@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
@@ -137,7 +138,7 @@ def test_a_pass_between_the_retrys_seal_and_its_row_does_not_supersede_it(
     queue, failed, lead = _failed_attempt(tmp_path, monkeypatch, capsys)
     _retry_argv(monkeypatch)
 
-    real_publish = pbrun.publish_or_refuse
+    real_publish = submit_core.publish_or_refuse
     ran: list[list[dict[str, object]]] = []
 
     def pass_then_publish(q, publication):
@@ -152,7 +153,7 @@ def test_a_pass_between_the_retrys_seal_and_its_row_does_not_supersede_it(
         assert not worker.is_alive(), "the pass never finished"
         return real_publish(q, publication)
 
-    monkeypatch.setattr(pbrun, "publish_or_refuse", pass_then_publish)
+    monkeypatch.setattr(submit_core, "publish_or_refuse", pass_then_publish)
     assert pbrun.main() == 0
     retry = submission._detach_key(capsys)
     assert retry != failed, "precondition: the retry is a new consumer key"

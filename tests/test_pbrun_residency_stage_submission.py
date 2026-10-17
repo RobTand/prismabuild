@@ -33,6 +33,7 @@ supersedes the fresh plan.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import contextlib
 import hashlib
@@ -51,6 +52,7 @@ from prismabuild import (  # noqa: E402
     pool, reader_lease, residency_map, residency_plan, storage_tiers,
 )
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
@@ -116,8 +118,8 @@ def _prepare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, objec
     )
     _announce_tier(queue, mountpoint=tmp_path / "stage")
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01",

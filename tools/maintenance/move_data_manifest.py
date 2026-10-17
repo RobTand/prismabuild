@@ -49,12 +49,12 @@ def bounds(node, lines, starts):
 def owner_import(node):
     if isinstance(node, ast.ImportFrom):
         if node.module == 'prismabuild' or node.module is None and node.level == 1:
-            return {alias.asname or alias.name: 'core' for alias in node.names
-                    if alias.name == 'core'}
+            return {alias.asname or alias.name: ('core' if alias.name == 'core' else 'pbrun')
+                    for alias in node.names if alias.name in {'core', 'submission'}}
     if isinstance(node, ast.Import):
         return {alias.asname or alias.name: ('core' if alias.name == 'prismabuild.core'
                                           else 'pbrun')
-                for alias in node.names if alias.name in ('prismabuild.core', 'pbrun')}
+                for alias in node.names if alias.name in ('prismabuild.core', 'pbrun', 'prismabuild.submission')}
     return {}
 
 

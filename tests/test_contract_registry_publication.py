@@ -1,5 +1,8 @@
 """A publisher cannot expose sealed work to a worker that ignores its contract."""
 from __future__ import annotations
+from submission_support import refusal_value
+import pbrun
+from prismabuild import submission as submit_core
 
 import json
 from dataclasses import replace
@@ -150,6 +153,8 @@ def test_unknown_sealed_declaration_never_authorizes_a_progress_tag(tmp_path, da
 
 def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypatch):
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     queue, action, _cas, checkout = _sealed_request(tmp_path, {
         "gang": {"group": "c" * 32, "size": 2, "index": 0},
@@ -162,8 +167,8 @@ def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypat
         for row in contracts.CONTRACTS))
     args = SimpleNamespace(progress_policy=None, here=False, awaited_batch=None,
                            timeout_s=None, wait_s=0.01)
-    with pytest.raises(SystemExit) as exc:
-        pbrun.announce_placement(queue, action, args=args, cwd=checkout,
-                                 portable_checkout=True)
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
+        submit_core.announce_placement(queue, action, args=args, cwd=checkout,
+                                 portable_checkout=True, display=pbrun.render_submission)
     assert remedy in str(exc.value)
     assert queue.ready_items() == []

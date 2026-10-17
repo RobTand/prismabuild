@@ -1,4 +1,7 @@
+from submission_support import patch_store
+from prismabuild import submission
 """Retry failed publication dispatch without rewriting the immutable set."""
+import pbrun
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -66,11 +69,11 @@ def test_failed_publication_dispatch_can_retry_without_republishing(tmp_path, mo
 
 def test_repeated_movement_dispatch_attaches_to_the_live_generation(tmp_path, monkeypatch):
     store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
-    first = local_resident.publish_actions(template, store, record["set_id"], [tier], policy_path="/policy.json")
+    first = submission.dispatch_resident(template, store, record["set_id"], [tier], policy_path="/policy.json", store=pbrun.configured_store())
     key = first["test-host"]["copy"]["action_key"]
     path = queue.records.item_path(pool.record_store.READY, key)
     before = json.loads(path.read_text())
-    second = local_resident.publish_actions(template, store, record["set_id"], [tier], policy_path="/policy.json")
+    second = submission.dispatch_resident(template, store, record["set_id"], [tier], policy_path="/policy.json", store=pbrun.configured_store())
     assert second == first
     assert json.loads(path.read_text())["published_unix"] == before["published_unix"]
     assert len(list(queue.root.joinpath(pool.record_store.READY).glob("*.json"))) == 1
@@ -82,7 +85,7 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
     import pbresident
     store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
     set_id = record["set_id"]
-    first = local_resident.publish_actions(template, store, set_id, [tier], policy_path="/policy.json")
+    first = submission.dispatch_resident(template, store, set_id, [tier], policy_path="/policy.json", store=pbrun.configured_store())
     movements = store.set_path(set_id).parent / "movements" / "test-host.json"
     before = movements.read_bytes()
     requests = set(template["cas"].root.rglob("*.json"))
@@ -111,7 +114,7 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
         assert "resident lease expired" in capsys.readouterr().err
     else:
         with pytest.raises(ValueError, match="resident lease expired"):
-            local_resident.publish_actions(template, store, set_id, [tier], policy_path="/changed-policy.json")
+            submission.dispatch_resident(template, store, set_id, [tier], policy_path="/changed-policy.json", store=pbrun.configured_store())
     assert movements.read_bytes() == before
     assert store.read_movements(set_id, "test-host") == first["test-host"]
     assert set(template["cas"].root.rglob("*.json")) == requests
@@ -204,6 +207,8 @@ def test_renew_command_uses_the_policy_and_keeps_the_body_immutable(tmp_path, ca
 def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_path, monkeypatch, capsys):
     import pbresident
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     store, record, spec = world(tmp_path)
     monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     checkout = tmp_path / "checkout"
@@ -213,7 +218,7 @@ def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_pat
                       ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "fixture"]):
         subprocess.run(["git", "-C", str(checkout), *arguments], check=True, capture_output=True)
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SH", shared)
+    patch_store(monkeypatch, client=pbrun, root=shared)
     queue = pool.PoolQueue(store.queue_root)
     queue.announce_tier({"tier_id": "local:test-host", "host": "test-host", "mountpoint": spec["root"],
         "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"})

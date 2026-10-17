@@ -1,3 +1,6 @@
+import pbstatus
+import pbrun
+from prismabuild import submission as submit_core
 import argparse
 import json
 
@@ -49,16 +52,18 @@ def test_new_claim_and_immutable_attempt_record_canonical_serving(tmp_path):
 
 def test_explicit_resident_declaration_is_sealed_and_projected_not_a_gate(tmp_path):
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
     set_id = "b" * 64
     args = pbrun.parse_args(["--resident-set", set_id, "--", "/usr/bin/true"])
     assert args.resident_set == set_id
     template = fixture._template("c" * 64, 7)
     template["params"]["resident_set"] = set_id
-    action = pbrun.seal_action_from_template(template)
+    action = submit_core.seal(template)
     options = argparse.Namespace(priority=0, max_attempts=1, retry_safe=False)
     queue = pool.PoolQueue(tmp_path / "queue")
-    row = pbrun.publication_row(action, args=options, queue=queue)
+    row = submit_core.publication_row(action, args=options, queue=queue, store=pbrun.configured_store())
     assert row["resident_set"] == set_id
     queue.publish(**row)
     # An absent set cannot turn the optional accelerator into admission gating.

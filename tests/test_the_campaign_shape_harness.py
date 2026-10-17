@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import shape_gate  # noqa: E402
 import tier_loop  # noqa: E402
 
@@ -103,7 +104,7 @@ def small_units(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run(tmp_path: Path, table: dict) -> dict:
     return shape_gate.run_gate(table, root=tmp_path / "gate",
-                               shared_root=Path(pbrun.SH), scale=SMALL_SCALE)
+                               shared_root=Path(pbrun.configured_store().root), scale=SMALL_SCALE)
 
 
 def test_a_campaign_shaped_window_stages_and_reads_back_strictly(

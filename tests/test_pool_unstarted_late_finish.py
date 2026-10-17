@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
 from prismabuild import pool, resource_scope
 from test_pool_resource_scope import scoped  # noqa: F401
 import pbrun
+from prismabuild import submission as submit_core
 
 
 @pytest.mark.parametrize('late_status', ['failed', 'executed'])
@@ -74,7 +75,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert history[0]['claimed_by'] == 'successor', (
         'an unstarted original claim supplied the successor execution outcome')
     assert history[0]['stdout'] == 'successor output'
-    assert pbrun.action_client.report_pool_outcome(queue, key, wait_s=1,
+    assert submit_core.action_client.report_pool_outcome(queue, key, wait_s=1,
                               generation=first['published_unix']) == 0
     assert queue.ledger().held() == {}
 

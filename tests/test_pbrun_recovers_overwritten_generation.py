@@ -31,6 +31,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -40,7 +41,7 @@ KEY = "f" * 64
 
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
@@ -81,13 +82,13 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
         queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
     assert ending["status"] == "executed"
     assert ending["attempts"] == 1
-    summary = pbrun.action_client.outcome_summary(queue, path, ending)
+    summary = submit_core.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "executed"
     assert summary["detail"]["stdout"] == "first run\n"
     assert path == queue.records.attempt_path(ending, ending["attempts"])
@@ -102,14 +103,14 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
 def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> None:
     """The CLI's own bounded wait selects the archive for the pinned run."""
 
-    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", 30.0)
     first = _publish(queue)
     _run(queue, status="executed", returncode=0, stdout="first run\n")
     second = _publish(queue)
     _run(queue, status="executed", returncode=0, stdout="later run\n")
     assert second != first
 
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=30.0, generation=first) == 0
 
 
@@ -126,11 +127,11 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
         queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
-    summary = pbrun.action_client.outcome_summary(queue, path, ending)
+    summary = submit_core.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "failed"
     assert summary["returncode"] == 7
     assert summary["detail"]["stdout"] == "first failed\n"
@@ -158,7 +159,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
         queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8"))
     assert float(terminal["published_unix"]) == second
 
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first)
     assert ending is not None
     assert float(ending["published_unix"]) == first
@@ -168,7 +169,7 @@ def test_a_retried_generation_recovers_its_terminal_attempt_and_history(
     assert attempts[0]["stdout"] == "first attempt\n"
     assert attempts[-1]["stdout"] == "causal retry\n"
     assert path == queue.records.attempt_path(ending, 2)
-    summary = pbrun.action_client.outcome_summary(queue, path, ending)
+    summary = submit_core.action_client.outcome_summary(queue, path, ending)
     assert summary["status"] == "failed"
     assert summary["returncode"] == 9
     assert summary["detail"]["stdout"] == "causal retry\n"
@@ -182,10 +183,10 @@ def test_a_newer_generations_failure_is_never_the_waited_verdict(queue) -> None:
     assert second != first
     _run(queue, status="failed", returncode=3, stdout="later run\n")
 
-    landed, generation = pbrun.action_wait.outcome_poll(queue, KEY, first)
+    landed, generation = submit_core.action_wait.outcome_poll(queue, KEY, first)
     assert landed is None
     assert generation == first
-    assert pbrun.action_wait.await_ending(
+    assert submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=first) is None
 
 
@@ -259,7 +260,7 @@ def test_tampered_attempt_evidence_is_refused(queue, damage) -> None:
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)
     with pytest.raises(pool.PoolContractError):
-        pbrun.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)
+        submit_core.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)
 
 
 @pytest.mark.parametrize("absent", ["first", "middle"])
@@ -300,4 +301,4 @@ def test_an_attempt_beyond_its_recorded_budget_is_refused(queue) -> None:
     with pytest.raises(pool.PoolContractError):
         queue.archived_generation_outcomes(KEY, generation=generation)
     with pytest.raises(pool.PoolContractError):
-        pbrun.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)
+        submit_core.action_wait.await_ending(queue, KEY, wait_s=0, generation=generation)

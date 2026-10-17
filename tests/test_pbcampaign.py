@@ -8,6 +8,7 @@ order, ``--cpus`` where the row says ``demand.cpu``, tags the other way round
 -- because those are the differences a person actually types.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 from pbtest_shard_output import finish_submission
 
@@ -25,6 +26,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue, _one_json_line  # noqa: E402
@@ -36,8 +38,8 @@ CAPACITY = {"cpu": 8, "mem_gb": 16, "gpu": 1}
 def fleet_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point every tool at one private fleet, as the boxes share one for real."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 
@@ -363,12 +365,12 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_main(*, report) -> int:
-        seen["argv"] = list(sys.argv)
-        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return finish_submission(report)
+    def fake_submit(request, *, report, **kwargs):
+        seen["request"] = request
+        finish_submission(report)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submit_core, 'submit_request', fake_submit)
     published = pbcampaign.submit_row(
         {
             "argv": ["/bin/bash", "-lc", "./probe.sh"],
@@ -382,10 +384,10 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
     )
 
     assert published["status"] == "submitted"
-    argv = seen["argv"]
-    assert argv[argv.index("--host-class") + 1] == "gb10"
-    assert argv[argv.index("--max-attempts") + 1] == "1"
-    assert "--measurement" in argv and "--retry-safe" in argv
+    request = seen["request"]
+    assert request.host_class == "gb10"
+    assert request.max_attempts == 1
+    assert request.measurement and request.retry_safe
 
 
 def test_the_four_fields_are_one_pbrun_command_line_and_nothing_else() -> None:

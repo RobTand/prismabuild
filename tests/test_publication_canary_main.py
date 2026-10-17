@@ -1,4 +1,5 @@
 """Real pbrun parsing/preparation/sealing/publication, wholly in a tmp store."""
+from submission_support import patch_store
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
@@ -12,6 +13,7 @@ import pbcanary
 import pbcanary_submission as handoff
 import pytest
 import pbrun
+from prismabuild import submission as submit_core
 from prismabuild import capability_eligibility
 from prismabuild import contracts, pool, publication_canary as slots
 from test_pbrun_detach import _checkout
@@ -26,7 +28,7 @@ def _private_submission(tmp_path, monkeypatch):
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.announce(host=host, tags=tags, has_gpu=True,
                capacity={"cpu": 4, "gpu": 1, "mem_gb": 16})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(checkout), "--detach", "--transport", "pool",
         "--demand", "cpu=1,gpu=1,mem_gb=8", "--gpu-capacity", "1",
@@ -125,7 +127,7 @@ def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatc
             ),
         ),
     )
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
 
     # Exercise the driver's argv and real pbrun publication in this process.
     # The independent handoff tests cover the child IPC/authorization protocol.

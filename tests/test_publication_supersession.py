@@ -9,6 +9,7 @@ import pytest
 from prismabuild import core as pb, pool
 import pbcampaign
 import pbrun
+from prismabuild import submission as submit_core
 import pbwait
 
 from test_pool_requeue_preserves_newer_generation import (
@@ -23,7 +24,7 @@ def _ready(queue: pool.PoolQueue) -> dict:
 def _assert_superseded(
     queue: pool.PoolQueue, generation: float, successor: float,
 ) -> None:
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=0, generation=generation,
     ) == 76
     row = pbwait.wait_one(
@@ -40,12 +41,12 @@ def _assert_superseded(
     assert row["action_signal"] is None
     assert row["receipt_published"] is None
     assert pbwait.verdict([row]) == 76
-    landed, watched = pbrun.action_client.bounded_outcome_observation(
+    landed, watched = submit_core.action_client.bounded_outcome_observation(
         queue, KEY, generation, budget_s=5,
     )
     assert landed is not None
     assert watched == generation
-    assert pbrun.action_wait.await_ending(queue, KEY, wait_s=0,
+    assert submit_core.action_wait.await_ending(queue, KEY, wait_s=0,
                                 generation=generation) is not None
 
 
@@ -83,15 +84,15 @@ def test_old_wait_ends_before_and_after_exact_successor_execution(
     assert pbcampaign._pool_slot_occupied(queue, KEY) is False
     _assert_superseded(queue, original_generation, successor_generation)
     assert "successor-only" not in capsys.readouterr().out
-    landed, watched = pbrun.action_wait.outcome_poll(queue, KEY, successor_generation)
+    landed, watched = submit_core.action_wait.outcome_poll(queue, KEY, successor_generation)
     assert landed is not None
     assert watched == successor_generation
     assert landed[1]["published_unix"] == successor_generation
     assert landed[1]["status"] == "executed"
-    unpinned, _ = pbrun.action_wait.outcome_poll(queue, KEY, None)
+    unpinned, _ = submit_core.action_wait.outcome_poll(queue, KEY, None)
     assert unpinned is not None
     assert unpinned[1]["published_unix"] == successor_generation
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=successor_generation) == 0
 
 
@@ -108,11 +109,11 @@ def test_same_generation_retry_remains_the_original_wait(
 
     assert not _decision_path(queue, generation).exists()
     assert _ready(queue)["published_unix"] == generation
-    assert pbrun.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
+    assert submit_core.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
     retry = queue.claim(owner="retry", capacity=DEMAND)
     assert retry is not None
     queue.finish(KEY, status="executed", claim_snapshot=retry)
-    landed, watched = pbrun.action_wait.outcome_poll(queue, KEY, generation)
+    landed, watched = submit_core.action_wait.outcome_poll(queue, KEY, generation)
     assert landed is not None
     assert watched == generation
     assert landed[1]["published_unix"] == generation
@@ -134,12 +135,12 @@ def test_an_original_execution_ending_remains_its_own_exact_answer(
     queue.finish(KEY, status="executed", detail={"stdout": "successor-only\n"},
                  claim_snapshot=successor)
 
-    landed, watched = pbrun.action_wait.outcome_poll(queue, KEY, original["published_unix"])
+    landed, watched = submit_core.action_wait.outcome_poll(queue, KEY, original["published_unix"])
 
     assert landed is not None
     assert watched == original["published_unix"]
     assert landed[1]["published_unix"] == original["published_unix"]
-    summary = pbrun.action_client.outcome_summary(queue, *landed)
+    summary = submit_core.action_client.outcome_summary(queue, *landed)
     assert summary["detail"]["stdout"] == "original-only\n"
     assert not _decision_path(queue, original["published_unix"]).exists()
 
@@ -155,7 +156,7 @@ def test_exact_withdrawal_still_ends_the_original_wait_after_republication(
     _publish(queue)
     _end_claim(queue, original, "finish_retry", clock)
 
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 143
     assert not _decision_path(queue, original["published_unix"]).exists()
     assert pbcampaign._pool_slot_occupied(queue, KEY) is True
@@ -177,7 +178,7 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
         "attempts", "detail",
     )}
     path.write_text(json.dumps(legacy_record))
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=legacy["published_unix"] + 100) == 0
     clock[0] += 1
     _publish(queue)
@@ -246,7 +247,7 @@ def test_uncertain_successor_does_not_make_an_exact_wait_follow_another_row(
     except (OSError, pool.PoolContractError, pb.PrismaBuildError):
         pass
 
-    assert pbrun.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
+    assert submit_core.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
     assert not _decision_path(queue, generation).exists()
     assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == raw
     if damage != "same_generation":
@@ -271,6 +272,6 @@ def test_launcher_exit_seventy_six_cannot_impersonate_publication_supersession(
     queue.finish(KEY, status="failed", detail={"returncode": 76},
                  claim_snapshot=retry)
 
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 1
     assert "which is one of pbrun's own exit codes" in capsys.readouterr().err

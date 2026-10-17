@@ -27,6 +27,7 @@ and the ``chmod`` tests need no privilege because the directory is the test's
 own.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import json
 import os
@@ -45,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_install_scripts import (  # noqa: E402
     FAKE_BOX,
@@ -484,8 +486,8 @@ def test_pbrun_surfaces_the_refusal_as_a_line_not_a_traceback(
         encoding="utf-8")
     (queue.root / pool.record_store.READY).chmod(0o2555)
 
-    with pytest.raises(SystemExit) as exit_status:
-        pbrun.publish_or_refuse(queue, _publication(tmp_path))
+    with pytest.raises(submit_core.SubmissionRefused) as exit_status:
+        submit_core.publish_or_refuse(queue, _publication(tmp_path))
 
     message = str(exit_status.value)
     assert message.startswith("pbrun: ")

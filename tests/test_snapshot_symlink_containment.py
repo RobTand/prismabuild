@@ -14,6 +14,7 @@ an older ``pbrun`` carries whatever that version accepted.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -63,8 +64,8 @@ def test_seal_refuses_links_that_compose_into_an_escape(tmp_path: Path) -> None:
     (source / "b").symlink_to("a/../outside.txt")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="symlink.*outside"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="symlink.*outside"):
+        submit_core.snapshot_checkout(
             source, cas=cas, max_bytes=MAX_BYTES
         )
 
@@ -80,8 +81,8 @@ def test_seal_refuses_an_escape_composed_through_a_subdirectory_link(
     (source / "nested" / "reach").symlink_to("up/../../outside.txt")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="symlink.*outside"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="symlink.*outside"):
+        submit_core.snapshot_checkout(
             source, cas=cas, max_bytes=MAX_BYTES
         )
 
@@ -94,8 +95,8 @@ def test_seal_refuses_a_symlink_cycle(tmp_path: Path) -> None:
     (source / "loop-b").symlink_to("loop-a")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="cycles through"):
-        pbrun.build_git_checkout_snapshot(
+    with pytest.raises(submit_core.SubmissionRefused, match="cycles through"):
+        submit_core.snapshot_checkout(
             source, cas=cas, max_bytes=MAX_BYTES
         )
 
@@ -111,7 +112,7 @@ def test_seal_still_accepts_links_that_stay_in_the_tree(tmp_path: Path) -> None:
     (source / "missing").symlink_to("assets/absent.txt")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         source, cas=cas, max_bytes=MAX_BYTES
     )
 

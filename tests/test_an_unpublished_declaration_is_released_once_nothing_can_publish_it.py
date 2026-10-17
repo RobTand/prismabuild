@@ -32,6 +32,7 @@ operator who races a submitter is a separate Python process, so the lock it
 meets is the submitter's ``fcntl`` lock, not this process's thread mutex.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -49,6 +50,7 @@ from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_consumed_origin_retirement import (  # noqa: E402
     _charged, _commit, _publish_consumer, _queue, _run_consumer, _template,
 )
@@ -94,7 +96,7 @@ def _dies_after_declaring(tmp_path: Path, queue, monkeypatch, *argv: str) -> str
         raise SystemExit("submitter died between its declaration and its row")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pbrun, "publish_consumer_row", died)
+        patch.setattr(submit_core, "publish_consumer_row", died)
         assert "submitter died" in _refused(monkeypatch, *argv)
     [key] = seen
     assert isinstance(RecordStore(queue.root).standing(key), Absent)
@@ -200,19 +202,19 @@ def test_a_pinned_deferred_release_still_lands_so_its_key_is_refused(
     edges._publish_producer(queue, template, producer)
     old = edges._retained_generation(tmp_path / "runtime-generations", "g-old")
     edge = f"{producer}:{template['template_id']}"
-    current = pbrun.CONTAINER_WRAPPER_DIR
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", old)
+    current = pbrun.configured_store().wrapper_dir
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=old)
     pending = edges._submit(work, monkeypatch, capsys, "--after", edge)["pending_id"]
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", current)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=current)
     instance = edges._start(queue, template, producer)
     _path, committed = edges._commit(queue, template, instance, "b1", b"handoff")
     queue.finish(producer, status="executed")
 
     def died(q, action, template, *, key, **_kwargs):
-        raise SystemExit("the tier loop died between the declaration and the row")
+        raise submit_core.SubmissionRefused("the tier loop died between the declaration and the row")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pbrun, "publish_consumer_row", died)
+        patch.setattr(submit_core, "publish_consumer_row", died)
         events = edges._without_summary(dr.release_tick(queue))
     assert [event["event"] for event in events] == [dr.REFUSED_EVENT]
     key = str(ae.read_release(queue.root, pending)["action_key"])
@@ -245,7 +247,7 @@ def test_a_submitter_between_its_declaration_and_its_row_holds_off_the_release(
     work = _pbrun_env(tmp_path, queue, monkeypatch)
     live = _publish(tmp_path, "g-next")
     manifest = _manifest(tmp_path, queue, committed)
-    real = pbrun.publish_consumer_row
+    real = submit_core.publish_consumer_row
     seen: dict[str, object] = {}
 
     def racing(q, action, template, *, key, **kwargs):
@@ -256,7 +258,7 @@ def test_a_submitter_between_its_declaration_and_its_row_holds_off_the_release(
             queue, committed, key, live=live, cas=tmp_path / "cas")
         return real(q, action, template, key=key, **kwargs)
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", racing)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", racing)
     _pbrun(monkeypatch, capsys, *_consumer_argv(work, manifest, "true"))
     key = str(seen["key"])
     operator = seen["operator"]

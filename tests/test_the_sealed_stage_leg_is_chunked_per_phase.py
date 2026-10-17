@@ -10,6 +10,8 @@ no new node kind.  A phase that fits in one chunk seals today's whole-phase
 pair, and a tier that announces no sizing seals it too.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -74,6 +76,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -85,7 +89,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -130,7 +134,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = submit_core.resolve_stage_tier(queue, None)
     if tier_override is not None:
         tier = tier_override(dict(tier))
     args = types.SimpleNamespace(
@@ -138,10 +142,10 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+        cas=cas, store=pbrun.configured_store())
     staged["cas"] = cas
     staged["tier"] = tier
     return staged
@@ -204,8 +208,8 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
     assert body["params"]["command"] == [
         str(tier["mover_python"]),
         str(Path(str(tier["mover_tools_root"])) / "stage_move.py"),
-        "--pool-root", str(pbrun.SH / "pb-queue"),
-        "--cas-root", str(pbrun.SH / "cas"),
+        "--pool-root", str(pbrun.configured_store().root / "pb-queue"),
+        "--cas-root", str(pbrun.configured_store().root / "cas"),
         "--consumer-action-key", residency_plan.share_namespace(
             digest, STAGE_TIER, 40 * GIB, 80 * GIB),
         "--tier-id", STAGE_TIER,
@@ -221,7 +225,7 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
     assert egress["params"]["command"][:6] == [
         str(tier["mover_python"]),
         str(Path(str(tier["mover_tools_root"])) / "stage_release.py"),
-        "--pool-root", str(pbrun.SH / "pb-queue"),
+        "--pool-root", str(pbrun.configured_store().root / "pb-queue"),
         "--mover-action-key", chunk["mover_row"]["action_key"]]
 
 

@@ -6,6 +6,7 @@ the same pbrun row vocabulary as an ordinary campaign row. Submission-level
 priority and a single-action reseal handle deliberately remain outside it.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbcampaign, pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_a_decomposed_campaign_closes_on_an_exact_cover import _request  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
@@ -118,7 +120,7 @@ def test_decomposition_seals_shared_policies_on_every_child(
 ) -> None:
     """The logical path must seal policies, not merely turn them into flags."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     work = _checkout(tmp_path)
     _progress_queue(tmp_path)
@@ -136,7 +138,7 @@ def test_decomposition_seals_shared_policies_on_every_child(
         dc.validate_logical_request(request), transport="pool", priority=0,
     )
     assert {record["status"] for record in records} == {"submitted"}
-    progress = pbrun.parse_progress_phases(request["common"]["progress_phases"])
+    progress = submit_core.parse_progress_phases(request["common"]["progress_phases"])
     for child in group["children"]:
         params = child["params"]
         assert params["execution_timeout_s"] == 600.0

@@ -27,6 +27,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 
 
@@ -74,7 +75,7 @@ def test_a_waiter_follows_the_preemption_to_the_generation_it_requeued(
     q, holder, stopped = preempted
 
     # Nothing has ended: the retry is waiting to run.
-    assert pbrun.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
+    assert submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                 generation=stopped) is None
 
     # The holder concludes the stop; the foreground item it yielded to runs.
@@ -92,7 +93,7 @@ def test_a_waiter_follows_the_preemption_to_the_generation_it_requeued(
     q.finish(BACKGROUND, status="executed", detail={"returncode": 0},
              claim_snapshot=retry)
 
-    landed = pbrun.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
+    landed = submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                   generation=stopped)
     assert landed is not None
     assert landed[1]["status"] == "executed"
@@ -111,7 +112,7 @@ def test_an_operator_withdrawal_still_ends_the_wait(tmp_path: Path) -> None:
     q.withdraw(BACKGROUND, reason="an operator changed their mind",
                by="an operator")
 
-    landed = pbrun.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
+    landed = submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                   generation=generation)
     assert landed is not None
     assert landed[1]["status"] == "withdrawn"
@@ -167,7 +168,7 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
     def wait_for_outcome():
         reader_ident.append(threading.get_ident())
         try:
-            return pbrun.action_wait.await_ending(q, bg, wait_s=0,
+            return submit_core.action_wait.await_ending(q, bg, wait_s=0,
                                        generation=holder['published_unix'])
         finally:
             reader_checkpoint.set()
@@ -202,7 +203,7 @@ def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
     unrelated = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(bg, status='executed', claim_snapshot=unrelated)
-    landed = pbrun.action_wait.await_ending(q, bg, wait_s=0, generation=holder['published_unix'])
+    landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=holder['published_unix'])
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
     assert landed[1]['status'] == 'failed'
@@ -240,10 +241,10 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
         bg,
     )
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
-    landed = pbrun.action_wait.await_ending(q, bg, wait_s=0, generation=original_generation)
+    landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=original_generation)
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
-    summary = pbrun.action_client.outcome_summary(q, *landed)
+    summary = submit_core.action_client.outcome_summary(q, *landed)
     assert summary['status'] == status
     assert summary['returncode'] == retry_code
     assert summary['detail']['stdout'] == 'causal retry'

@@ -9,6 +9,7 @@ import pytest
 from prismabuild import endings
 from prismabuild import core as pb, pool
 import pbrun
+from prismabuild import submission as submit_core
 
 from test_pool_requeue_preserves_newer_generation import (
     DEMAND, KEY, _end_claim, _publish, clock, queue,
@@ -77,7 +78,7 @@ def test_structurally_unusable_successor_demand_cannot_end_old_publication(
 
     assert ready.read_bytes() == raw
     assert queue.publication_ending(KEY, generation=original["published_unix"]) is None
-    assert pbrun.action_wait.outcome_poll(queue, KEY, original["published_unix"]) == (
+    assert submit_core.action_wait.outcome_poll(queue, KEY, original["published_unix"]) == (
         None, original["published_unix"])
     _assert_old_authority_retained(queue, original["published_unix"])
 

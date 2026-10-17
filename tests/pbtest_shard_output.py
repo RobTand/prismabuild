@@ -80,7 +80,8 @@ def shard_environment(command):
 
 def admitted_child(command, *, environment=None):
     """Execute a generated child inside a test's admitted action, with env."""
-    return command[command.index("--") + 1:], {
+    child = command[command.index("--") + 1:]
+    return child, {
         **(os.environ if environment is None else environment), **shard_environment(command)}
 
 

@@ -44,6 +44,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 import pbcampaign  # noqa: E402
 
@@ -1173,7 +1174,7 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
 
 
 def test_pbrun_prints_the_blob_for_a_profiled_ending():
-    line = pbrun.action_client.outcome_headline({
+    line = submit_core.action_client.outcome_headline({
         "status": "executed", "finished_host": "dl380g10",
         "detail": {"elapsed_s": 61.0, "profile": _profile_record()},
     })

@@ -10,6 +10,7 @@ payload is still using.
 """
 
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 from pathlib import Path
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -173,11 +175,11 @@ def test_pbrun_says_the_release_is_pending_on_the_holder(
     with mock.patch.object(pool.socket, "gethostname", return_value=OPERATOR), \
             mock.patch.object(pool, "find_launcher_pids", return_value=[]), \
             mock.patch.object(pool, "launcher_owns_action", return_value=False), \
-            mock.patch.object(pbrun, "published_commit", return_value=""), \
+            mock.patch.object(submission, "published_commit", return_value=""), \
             mock.patch.object(
                 pool, "terminate_action",
                 side_effect=AssertionError("must not signal")):
-        assert pbrun.withdraw_main(queue, [KEY_A[:12]], reason="stale") == 0
+        assert submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
     said = capsys.readouterr().err
     assert "released 0 token(s)" in said

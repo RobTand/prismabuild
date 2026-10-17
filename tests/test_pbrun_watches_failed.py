@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun
+from prismabuild import submission as submit_core
 
 
 class _Queue:
@@ -47,8 +48,8 @@ OUTCOME = {
 
 def _wait(monkeypatch, capsys, queue: _Queue, key: str, wait_s: float = 5.0):
     """Drive only pbrun's terminal-outcome half, with the queue already filed."""
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    return pbrun.action_client.report_pool_outcome(queue, key, wait_s=wait_s)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    return submit_core.action_client.report_pool_outcome(queue, key, wait_s=wait_s)
 
 
 def test_a_failed_action_is_reported_not_waited_out(monkeypatch, capsys, tmp_path):

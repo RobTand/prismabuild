@@ -9,6 +9,7 @@ one rather than guessing -- the wrong guess here kills somebody else's work.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -26,6 +27,7 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -52,8 +54,8 @@ class _Queue:
 
 
 def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    return pbrun.action_client.report_pool_outcome(queue, key, wait_s=wait_s)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    return submit_core.action_client.report_pool_outcome(queue, key, wait_s=wait_s)
 
 
 @pytest.fixture()
@@ -82,7 +84,7 @@ def test_a_withdrawn_action_is_reported_not_waited_out(
         "reason": "ten merges stale", "withdrawn_host": "sparky"}))
     rc = _wait(monkeypatch, q, "abc")
     err = capsys.readouterr().err
-    assert rc == pbrun.action_client.WITHDRAWN_EXIT, "the command did not run; do not exit 0"
+    assert rc == submit_core.action_client.WITHDRAWN_EXIT, "the command did not run; do not exit 0"
     assert rc != 0
     assert "withdrawn by rob@sparky" in err and "ten merges stale" in err
     assert "gave up waiting" not in err
@@ -107,7 +109,7 @@ def test_withdrawing_by_prefix_reports_what_it_did(
     queue: pool.PoolQueue, capsys
 ) -> None:
     _publish(queue, KEY_A)
-    rc = pbrun.withdraw_main(queue, [KEY_A[:12]], reason="stale", by="rob@sparky")
+    rc = submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", by="rob@sparky", store=pbrun.configured_store(), display=pbrun.render_submission)
     assert rc == 0
     assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
     err = capsys.readouterr().err
@@ -125,7 +127,7 @@ def test_one_bad_name_does_not_stop_the_others(
     absent = (uuid.uuid4().hex + uuid.uuid4().hex)[:12]
     for key in keys:
         _publish(queue, key)
-    rc = pbrun.withdraw_main(queue, [k[:12] for k in keys] + [absent])
+    rc = submit_core.withdraw_main(queue, [k[:12] for k in keys] + [absent], store=pbrun.configured_store(), display=pbrun.render_submission)
     assert rc == 2, "the unknown name is still reported as a failure"
     for key in keys:
         assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
@@ -137,7 +139,7 @@ def test_an_ambiguous_prefix_withdraws_nothing(
 ) -> None:
     _publish(queue, "ab" + "c" * 62)
     _publish(queue, "ab" + "d" * 62)
-    assert pbrun.withdraw_main(queue, ["ab"]) == 2
+    assert submit_core.withdraw_main(queue, ["ab"], store=pbrun.configured_store(), display=pbrun.render_submission) == 2
     assert list(queue.records.dir(pool.record_store.WITHDRAWN).glob("*.json")) == []
     assert "say more of the key" in capsys.readouterr().err
 
@@ -152,7 +154,7 @@ def test_a_claimed_action_on_another_box_says_the_signal_did_not_land(
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(record))
-    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     err = capsys.readouterr().err
     assert "stop requested through the generation marker" in err
     assert "checks it at the next heartbeat" in err
@@ -176,9 +178,9 @@ def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(record))
     queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="a" * 40)
-    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
-    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     err = capsys.readouterr().err
     assert f"WARNING {ELSEWHERE} is running runtime " + "a" * 12 in err
     assert "not the published " + "b" * 12 in err
@@ -194,9 +196,9 @@ def test_a_holder_that_never_announced_is_reported_as_unknown(
     record["claimed_host"] = ELSEWHERE
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(record))
-    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
-    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert f"no live offer from {ELSEWHERE}" in capsys.readouterr().err
 
 
@@ -210,9 +212,9 @@ def test_a_worker_on_the_published_bytes_draws_no_warning(
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(record))
     queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="b" * 40)
-    monkeypatch.setattr(pbrun, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
-    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert "WARNING" not in capsys.readouterr().err
 
 
@@ -238,8 +240,8 @@ def test_the_wait_loop_does_not_answer_a_new_run_with_an_old_withdrawal(
     q.claim()
     q.finish(KEY_A, status="executed", detail={"returncode": 0})
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    assert pbrun.action_client.report_pool_outcome(q, KEY_A, wait_s=5.0) == 0
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    assert submit_core.action_client.report_pool_outcome(q, KEY_A, wait_s=5.0) == 0
     err = capsys.readouterr().err
     assert "withdrawn by" not in err and "four suites" not in err
 
@@ -250,7 +252,7 @@ def test_an_already_finished_action_is_reported_not_refiled(
     _publish(queue, KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="executed")
-    assert pbrun.withdraw_main(queue, [KEY_A[:12]]) == 0
+    assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
     assert "had already finished" in capsys.readouterr().err
 
@@ -271,7 +273,7 @@ def test_the_command_line_withdraws_without_a_submission(
     """The whole path an operator actually types, argparse included."""
 
     _publish(queue, KEY_A)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(sys, "argv",
                         ["pbrun", "--withdraw", KEY_A[:12],
                          "--reason", "load average 371"])

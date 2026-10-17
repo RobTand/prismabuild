@@ -15,6 +15,7 @@ of no other, because an action key is a content hash and asking for the same
 work again is not an attempt to defeat somebody's cancellation.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -158,10 +159,7 @@ def test_a_reset_reads_the_cutover_out_of_the_published_generation(
     """
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     where = ["--queue-root", str(fleet["queue_root"]),
              "--cas-root", str(fleet["cas_root"])]
 
@@ -184,10 +182,7 @@ def test_the_transport_flag_is_spelled_the_way_every_producer_spells_it(
     """
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     assert pool_reset.build_parser().parse_args([]).transport == "slurm"
     assert pool_reset.build_parser().parse_args(
         ["--transport", "pool"]).transport == "pool"

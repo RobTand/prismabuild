@@ -38,6 +38,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "c" * 64
 #: A claiming box that is never the reaping box. Derived rather than named:
@@ -124,11 +125,11 @@ def test_the_headline_names_the_holder_and_the_reaper(
     """The box that held the claim leads; the reaper is named as the reaper."""
 
     path, record = _lose_a_claim(queue)
-    summary = pbrun.action_client.outcome_summary(queue, path, record)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
 
     assert summary["claimed_host"] == HELD_BY
     assert summary["finished_host"] == socket.gethostname()
-    headline = pbrun.action_client.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert f"held by {HELD_BY}" in headline
     assert f"reaped by {socket.gethostname()}" in headline
     # And never the shape that sent people to the wrong box.
@@ -150,8 +151,8 @@ def test_a_claim_lost_before_its_record_still_names_its_box(
     assert record["claimed_host"] == HELD_BY, (
         "a claim was lost more anonymously than it was taken"
     )
-    summary = pbrun.action_client.outcome_summary(queue, path, record)
-    assert f"held by {HELD_BY}" in pbrun.action_client.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
+    assert f"held by {HELD_BY}" in submit_core.action_client.outcome_headline(summary)
 
 
 def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
@@ -166,8 +167,8 @@ def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
     path, record = _lose_a_claim(
         queue, forget_claimed_host=True, forget_intent=True)
 
-    summary = pbrun.action_client.outcome_summary(queue, path, record)
-    headline = pbrun.action_client.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert "held by (not recorded)" in headline
     assert f"reaped by {socket.gethostname()}" in headline
 
@@ -176,10 +177,10 @@ def test_a_claim_lost_before_any_lease_says_so(queue: pool.PoolQueue) -> None:
     """``lease_age_s: null`` is not "the lease was old"; it is "there was none"."""
 
     path, record = _lose_a_claim(queue, never_leased=True)
-    summary = pbrun.action_client.outcome_summary(queue, path, record)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
 
     assert summary["detail"]["lease_age_s"] is None
-    headline = pbrun.action_client.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert "no lease was ever written" in headline
     assert "None" not in headline
 
@@ -193,7 +194,7 @@ def test_a_stale_lease_reports_its_age(queue: pool.PoolQueue) -> None:
         "finished_host": "sparky",
         "detail": {"lease_age_s": 312.52},
     }
-    headline = pbrun.action_client.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert headline == (
         "lease_lost_max_attempts -- held by dl380g10, reaped by sparky, "
         "lease 312.5s stale"
@@ -209,4 +210,4 @@ def test_an_ordinary_outcome_is_rendered_as_before(queue: pool.PoolQueue) -> Non
         "finished_host": "sparky",
         "detail": {"elapsed_s": 12.4, "returncode": 0},
     }
-    assert pbrun.action_client.outcome_headline(summary) == "executed on sparky in 12s"
+    assert submit_core.action_client.outcome_headline(summary) == "executed on sparky in 12s"

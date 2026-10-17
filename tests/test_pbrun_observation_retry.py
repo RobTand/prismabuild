@@ -17,10 +17,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 #: The production reader budget, before a test shortens it for a FIFO.
-PRODUCTION_READ_TIMEOUT_S = pbrun.action_wait.OUTCOME_READ_TIMEOUT_S
+PRODUCTION_READ_TIMEOUT_S = submit_core.action_wait.OUTCOME_READ_TIMEOUT_S
 
 KEY = "c" * 64
 
@@ -44,8 +45,8 @@ def _ending(status: str, returncode: int) -> dict:
 
 
 def _fast_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
 
 
 def _reap_exact(children: list[int]) -> None:
@@ -80,7 +81,7 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_ending(status, returncode)), encoding="utf-8")
     stops: list[str] = []
-    original_stop = pbrun.pbstatus._reader._stop_reader
+    original_stop = submit_core._bounded_reader._stop_reader
 
     def stop_then_land(pid, section, started, abandoned):
         # Kill and reap the blocked reader first, exactly as production does,
@@ -92,13 +93,13 @@ def test_patient_wait_returns_the_verdict_of_a_record_that_becomes_readable(
             # The short budget exists to time out the FIFO. The readable
             # record's reads get the production budget, so a loaded box
             # cannot time them out too (#1170).
-            monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S",
+            monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S",
                                 PRODUCTION_READ_TIMEOUT_S)
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", stop_then_land)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", stop_then_land)
     started = time.monotonic()
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=5) == expected
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=5) == expected
     assert stops == ["pool outcome observation"]
     assert time.monotonic() - started < 5
 
@@ -112,7 +113,7 @@ def test_patient_wait_starts_each_reader_only_after_the_last_was_reaped(
     os.mkfifo(queue.records.item_path("done", KEY))
     children: list[int] = []
     unreaped_at_fork: list[int] = []
-    fork = pbrun.pbstatus.os.fork
+    fork = submit_core._bounded_reader.os.fork
 
     def tracked_fork():
         for pid in children:
@@ -127,10 +128,10 @@ def test_patient_wait_starts_each_reader_only_after_the_last_was_reaped(
         return pid
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
+    monkeypatch.setattr(submit_core._bounded_reader.os, "fork", tracked_fork)
     try:
-        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.5) == \
-            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+        assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.5) == \
+            submit_core.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(children) >= 2
         assert unreaped_at_fork == []
         for pid in children:
@@ -147,8 +148,8 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.records.item_path("done", KEY))
     _fast_reads(monkeypatch)
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.3) == \
-        pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.3) == \
+        submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert f"pbrun: unavailable pool outcome for {KEY[:12]} when the wait ended" in err
     assert "may already have landed" in err
@@ -174,7 +175,7 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     os.mkfifo(queue.records.item_path("done", KEY))
     retained: list[int] = []
     forks: list[int] = []
-    fork = pbrun.pbstatus.os.fork
+    fork = submit_core._bounded_reader.os.fork
 
     def tracked_fork():
         pid = fork()
@@ -185,16 +186,16 @@ def test_patient_wait_spends_no_terminal_reread_beside_a_retained_reader(
     def retain(pid, section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": section,
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "starttime_ticks": submit_core._bounded_reader._starttime_ticks(pid),
                           "since_unix": time.time()})
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(submit_core._bounded_reader.os, "fork", tracked_fork)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
     started = time.monotonic()
     try:
-        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.5) == \
-            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+        assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.5) == \
+            submit_core.action_client.RECORD_WRITE_FAILED_EXIT
         assert 0.5 <= time.monotonic() - started < 5
         assert len(forks) == 1 and retained == forks
         err = capsys.readouterr().err
@@ -221,7 +222,7 @@ def test_zero_patience_keeps_two_bounded_reads_and_exit_74(
     queue = Queue(tmp_path / "queue")
     os.mkfifo(queue.records.item_path("done", KEY))
     forks: list[int] = []
-    fork = pbrun.pbstatus.os.fork
+    fork = submit_core._bounded_reader.os.fork
 
     def tracked_fork():
         pid = fork()
@@ -230,10 +231,10 @@ def test_zero_patience_keeps_two_bounded_reads_and_exit_74(
         return pid
 
     _fast_reads(monkeypatch)
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
+    monkeypatch.setattr(submit_core._bounded_reader.os, "fork", tracked_fork)
     try:
-        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0) == \
-            pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+        assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0) == \
+            submit_core.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(forks) == 2
         err = capsys.readouterr().err
         assert f"pbrun: unavailable pool outcome for {KEY[:12]}: " \

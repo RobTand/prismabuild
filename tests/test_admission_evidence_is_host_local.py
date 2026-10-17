@@ -15,6 +15,7 @@ dead holder's tokens from whatever box sweeps; that is cross-host evidence and
 stays on the mount. The ownership tests for it are elsewhere
 (``test_pool_ambiguous_holder_recovery``, ``test_pool_holder_contradiction``).
 """
+import pbstatus
 import json
 from pathlib import Path
 import socket

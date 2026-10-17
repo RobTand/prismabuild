@@ -22,6 +22,8 @@ main is recorded.  Everything runs on ``tmp_path`` queues and stage roots
 (#628).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
 
 import hashlib
 import inspect
@@ -244,6 +246,8 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
     """
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     from test_the_sealed_stage_leg_is_chunked_per_phase import (
         READERS, STAGE_TIER, _Cas, _manifest, _template)
 
@@ -254,17 +258,17 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
 
     if announce:
         _announce(tmp_path, queue)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = submit_core.resolve_stage_tier(queue, None)
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3,
         residency_share=share)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=consumer, tier=tier, args=args, queue=queue,
-        cas=cas)
+        cas=cas, store=pbrun.configured_store())
     return staged, cas, digest, STAGE_TIER
 
 

@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -84,7 +85,7 @@ def test_a_reaper_that_already_concluded_the_claim_keeps_the_terminal(
     assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
     assert landed == queue.records.item_path(pool.record_store.FAILED, KEY)
 
-    found = pbrun.action_wait.await_ending(queue, KEY, wait_s=0.1)
+    found = submit_core.action_wait.await_ending(queue, KEY, wait_s=0.1)
     assert found is not None
     path, record = found
     assert Path(path).parent.name == pool.record_store.FAILED
@@ -122,8 +123,8 @@ def test_an_uncovered_lost_race_files_a_generation_stamped_record(
     assert "attempt_history" not in record
     assert "attempt_history_missing_before" not in record
 
-    found = pbrun.action_wait.await_ending(queue, KEY, wait_s=0.1, generation=generation)
+    found = submit_core.action_wait.await_ending(queue, KEY, wait_s=0.1, generation=generation)
     assert found is not None
-    assert pbrun.action_client.outcome_summary(queue, found[0], found[1])["status"] == (
+    assert submit_core.action_client.outcome_summary(queue, found[0], found[1])["status"] == (
         "finish_lost_race"
     )

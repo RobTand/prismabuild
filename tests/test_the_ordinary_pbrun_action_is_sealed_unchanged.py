@@ -40,6 +40,7 @@ that they are a function of the tree alone is
 ``test_pbrun_bundle_determinism.py``'s subject, not this file's.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -57,6 +58,7 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
+from prismabuild import submission as submit_core
 
 #: Fixed so the fixture's commit object, and every digest downstream of it, is
 #: the same bytes wherever this runs.
@@ -152,18 +154,18 @@ def _seal(
     # seals, which is why the plain row's golden does not move with it.
     queue.announce(
         host="sparky",
-        tags=["sparky", "gb10", pbrun.contracts.PROGRESS_TAG,
-              pbrun.contracts.PROGRESS_HELPER_TAG],
+        tags=["sparky", "gb10", submit_core.contracts.PROGRESS_TAG,
+              submit_core.contracts.PROGRESS_HELPER_TAG],
         has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         timeout_ceiling_s=7200,
-        progress_contracts=[pbrun.pb.PROGRESS_RECORD_SCHEMA_V1],
+        progress_contracts=[submit_core.pb.PROGRESS_RECORD_SCHEMA_V1],
     )
     extra = list(ROWS[row])
     if row == "rich":
         extra += ["--data-manifest", str(_data_manifest(root))]
-    monkeypatch.setattr(pbrun, "SH", root)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=root)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -185,20 +187,20 @@ def _masked(body: dict[str, Any], root: Path) -> dict[str, Any]:
     text = json.dumps(body, sort_keys=True)
     for literal, token in (
         (str(root), "/PB517"),
-        (str(pbrun.CONTAINER_WRAPPER_DIR), "/PB517/wrapper"),
+        (str(pbrun.configured_store().wrapper_dir), "/PB517/wrapper"),
         (fingerprint, "<stamp-fingerprint>"),
     ):
         text = text.replace(literal, token)
     masked = json.loads(text)
     variables = masked["environment"]["variables"]
-    variables[pbrun.CONTAINER_OWNER_ENV] = MASK
-    variables[pbrun.CONTAINER_MARKER_ENV] = MASK
+    variables[submit_core.CONTAINER_OWNER_ENV] = MASK
+    variables[submit_core.CONTAINER_MARKER_ENV] = MASK
     masked["code_closure"]["closure_sha256"] = MASK
     masked["action_key"] = MASK
     snapshot = masked["params"]["checkout_snapshot"]
     snapshot["commit"] = MASK
     for entry in [*masked["inputs"], snapshot["input"]]:
-        if entry["id"] == pbrun.pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID:
+        if entry["id"] == submit_core.pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID:
             entry["sha256"] = MASK
             entry["bytes"] = MASK
     return masked
@@ -242,20 +244,20 @@ def test_every_masked_value_is_re_derived_from_the_body(
     """
 
     seen: dict[str, object] = {}
-    identify = pbrun._git_identity
+    identify = submit_core._git_identity
     monkeypatch.setattr(
-        pbrun, "_git_identity",
-        lambda cwd: seen.setdefault("identity", identify(cwd)),
+        submit_core, "_git_identity",
+        lambda cwd, **_context: seen.setdefault('identity', identify(cwd)),
     )
     body = _seal(tmp_path, monkeypatch, row)
     work = tmp_path / "work"
     params = body["params"]
 
     variables = dict(body["environment"]["variables"])
-    owner = variables.pop(pbrun.CONTAINER_OWNER_ENV)
-    marker = variables.pop(pbrun.CONTAINER_MARKER_ENV)
+    owner = variables.pop(submit_core.CONTAINER_OWNER_ENV)
+    marker = variables.pop(submit_core.CONTAINER_MARKER_ENV)
     marker_root = tmp_path / "pb-queue" / pool.CONTAINER_OWNERS
-    assert owner == pbrun.container_owner(
+    assert owner == submit_core.container_owner(
         params["command"], work, params["demand"], variables,
         determinism=body["task"]["determinism"],
         retry_policy=params["retry_policy"],
@@ -266,7 +268,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     ), "the container owner is not the hash of the environment that was sealed"
     assert marker == str(marker_root / f"{owner}.used")
 
-    log_name, stamp_name = pbrun.result_and_stamp_names(
+    log_name, stamp_name = submit_core.result_and_stamp_names(
         params["command"], work, params["demand"],
         body["environment"]["variables"],
         identity=seen["identity"],
@@ -291,4 +293,4 @@ def test_the_key_is_the_hash_of_that_body(
 
     body = _seal(tmp_path, monkeypatch, row)
     key = body.pop("action_key")
-    assert pbrun.pb.seal_action(body)["action_key"] == key
+    assert submit_core.pb.seal_action(body)["action_key"] == key

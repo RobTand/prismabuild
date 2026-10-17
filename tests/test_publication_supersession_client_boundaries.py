@@ -8,6 +8,7 @@ import pytest
 from prismabuild import core as pb, pool
 import pbcanary
 import pbrun
+from prismabuild import submission as submit_core
 import pbwait
 
 from test_pool_requeue_preserves_newer_generation import (
@@ -57,11 +58,11 @@ def test_malformed_ipc_refuses_without_following_or_changing_queue_state(
         "outcome": wire, "observed_generation": generation,
         "action": None, "receipt_published": False,
     }
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", lambda *args, **kwargs: payload)
 
-    with pytest.raises(pbrun.action_wait.OutcomeReadUnavailable):
+    with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable):
         if consumer == "pbrun":
-            pbrun.action_client.bounded_outcome_observation(queue, KEY, generation, budget_s=5)
+            submit_core.action_client.bounded_outcome_observation(queue, KEY, generation, budget_s=5)
         else:
             pbwait.bounded_observation(
                 queue, KEY, pb.PrismaBuildCAS(queue.root / "cas"), generation,
@@ -75,7 +76,7 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
     queue, clock, monkeypatch,
 ):
     original, _, _ = _ended(queue, clock)
-    read = pbrun.action_wait.read_observation
+    read = submit_core.action_wait.read_observation
     observations = 0
 
     def unavailable_once(section, *args, **kwargs):
@@ -84,12 +85,12 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
             pytest.fail("a publication ending entered execution verification")
         observations += 1
         if observations == 1:
-            raise pbrun.action_wait.OutcomeReadUnavailable("initial reader unavailable")
+            raise submit_core.action_wait.OutcomeReadUnavailable("initial reader unavailable")
         return read(section, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", unavailable_once)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", unavailable_once)
 
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 76
     assert observations == 2
 
@@ -102,7 +103,7 @@ def test_staging_canary_uses_no_execution_evidence_from_publication_ending(
     def unexpected_render(*args, **kwargs):
         pytest.fail("canary tried to render a superseded publication as an attempt")
 
-    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_render", unexpected_render)
+    monkeypatch.setattr(submit_core.action_client, "bounded_outcome_render", unexpected_render)
 
     assert pbcanary.staging_wait_evidence(
         {"queue_root": str(queue.root)}, KEY, original["published_unix"],

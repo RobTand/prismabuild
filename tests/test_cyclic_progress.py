@@ -1,4 +1,6 @@
 """Repeated long phases retain their allowance without granting endless quiet."""
+from prismabuild import submission
+from prismabuild import submission as submit_core
 import itertools
 import json
 from pathlib import Path
@@ -10,7 +12,7 @@ from prismabuild import contracts
 
 
 def _policy(cycle=True):
-    return pbrun.parse_progress_phases(["encode=200", "publish=5"], cycle=cycle)
+    return submit_core.parse_progress_phases(["encode=200", "publish=5"], cycle=cycle)
 
 
 def _watch(tmp_path, *, cycle=True, phases=None):
@@ -111,8 +113,8 @@ def test_cycle_false_preserves_linear_policy_bytes():
 
 
 def test_cycle_without_phases_is_refused_before_submission():
-    with pytest.raises(SystemExit, match="requires --progress-phase"):
-        pbrun.parse_progress_phases(None, cycle=True)
+    with pytest.raises(submit_core.SubmissionRefused, match="requires --progress-phase"):
+        submit_core.parse_progress_phases(None, cycle=True)
 
 
 def _announce(queue, host, *, cycle, ceiling=7200):
@@ -130,15 +132,15 @@ def test_cyclic_submission_requires_known_capable_workers(tmp_path, old_offer):
     queue = pool.PoolQueue(tmp_path / "queue")
     if old_offer:
         _announce(queue, "old", cycle=False)
-    with pytest.raises(SystemExit, match="no eligible worker offers progress-cycle-v1"):
-        pbrun.progress_contract_notice(queue, {"tags": ["x86"]}, policy=_policy())
+    with pytest.raises(submit_core.SubmissionRefused, match="no eligible worker offers progress-cycle-v1"):
+        submit_core.progress_contract_notice(queue, {"tags": ["x86"]}, policy=_policy())
 
 
 def test_cyclic_notice_excludes_old_worker_ceiling(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     _announce(queue, "old", cycle=False, ceiling=1)
     _announce(queue, "new", cycle=True, ceiling=100)
-    notice = pbrun.progress_contract_notice(queue, {"tags": ["x86"]}, policy=_policy())
+    notice = submit_core.progress_contract_notice(queue, {"tags": ["x86"]}, policy=_policy())
     assert "old do not offer progress-cycle-v1" in notice
     assert "limits encode grace to 100s" in notice
     assert "limits encode grace to 1s" not in notice
@@ -234,7 +236,7 @@ while True:
 
 @pytest.mark.parametrize("cycle,deadline", [(True, None), (False, None), (True, 2.5)])
 def test_claimed_cyclic_action_completes_and_still_honours_deadline(tmp_path, cycle, deadline):
-    policy = pbrun.parse_progress_phases(
+    policy = submit_core.parse_progress_phases(
         # Final result ingestion/receipt publication follows the last commit.
         # Under the full suite it exceeded the deliberately short publish
         # grace (all four durable units were present when the control died).
@@ -274,7 +276,7 @@ def test_the_parked_finalize_ends_on_its_allowance_without_a_deadline(tmp_path):
     or complete.  This is the bound the deadline arm rests on.
     """
 
-    policy = pbrun.parse_progress_phases(
+    policy = submit_core.parse_progress_phases(
         ["startup=3", "encode=3", "publish=0.3", "finalize=3"], cycle=True)
     queue, item = _claimed(tmp_path, mode="report", seconds=4, policy=policy,
                            source=CYCLIC_REPORTER_PARKED)
@@ -302,7 +304,7 @@ for i in range(200):
     print("still alive, no committed work", flush=True)
     time.sleep(0.1)
 '''
-    policy = pbrun.parse_progress_phases(
+    policy = submit_core.parse_progress_phases(
         ["startup=3", "encode=0.8", "publish=0.3"], cycle=True)
     queue, item = _claimed(tmp_path, mode="report", seconds=20, policy=policy, source=source)
     outcome = queue.execute(item, timeout_s=3, heartbeat_s=0.05, timeout_grace_s=0.2)

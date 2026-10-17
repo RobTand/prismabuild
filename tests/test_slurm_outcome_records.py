@@ -12,6 +12,7 @@ second writer may overwrite it, and the withdrawal marker that stops
 ``pool_reset`` from re-submitting a cancellation.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 import os
@@ -31,6 +32,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import (  # noqa: E402
     JOB_ENTRY,
@@ -179,10 +181,10 @@ def test_a_withdrawal_files_the_marker_pool_reset_reads(
         retry_safe=False, max_attempts=1,
     )
 
-    assert pbrun.withdraw_slurm_main(
+    assert submit_core.withdraw_slurm_main(
         [key[:12]], reason="changed my mind", by="rob@sparky",
         queue_root=queue_root,
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
     marker = _record(queue_root, pool.record_store.WITHDRAWN, key)
     assert marker["status"] == "withdrawn"
@@ -283,14 +285,14 @@ def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
                     queue_root=queue_root, scancel=str(flaky))
 
     monkeypatch.setenv("FAKE_SCANCEL_REFUSE", "1")
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 2
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 2
     assert not (fleet / "cancelled").exists()
     assert "scancel refused" in capsys.readouterr().err
     # The decision is on disk either way; the scheduler just has not honoured it.
     assert _record(queue_root, pool.record_store.WITHDRAWN, key)["withdrawn_by"] == "rob@sparky"
 
     monkeypatch.delenv("FAKE_SCANCEL_REFUSE")
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     err = capsys.readouterr().err
     assert "already has an outcome filed" not in err
@@ -303,7 +305,7 @@ def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
 
     # Once scancel has taken the job, asking a third time is the
     # already-finished case: no second scancel, exit 0.
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     assert "already has an outcome filed" in capsys.readouterr().err
 
@@ -719,20 +721,20 @@ def test_withdraw_without_a_named_transport_still_finds_the_slurm_job(
         retry_safe=False, max_attempts=1,
     )
 
-    assert pbrun.withdraw_routed(
+    assert submit_core.withdraw_routed(
         [key[:12]], transport="pool", reason="routed", by="rob@sparky",
         queue_root=queue_root,
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     cancelled = (Path(os.environ["FAKE_SLURM_STATE"]) / "cancelled").read_text()
     assert job.job_id in cancelled.split()
     assert _record(queue_root, pool.record_store.WITHDRAWN, key)["status"] == "withdrawn"
 
     # A prefix nobody recorded on the lane still goes to the pull queue, which
     # says so in its own words.
-    assert pbrun.withdraw_routed(
+    assert submit_core.withdraw_routed(
         ["deadbeef0000"], transport="pool", reason="", by="rob@sparky",
         queue=pool.PoolQueue(queue_root),
-    ) == 2
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 2
 
 
 def _withdraw_mid_flight(queue_root: Path, job) -> None:
