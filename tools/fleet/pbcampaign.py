@@ -273,7 +273,7 @@ _INTEGER_FIELDS = (
     ("gpu_capacity", 0),
     ("priority", None),
     # ``pbrun`` refuses ``--cpus`` below 1 (#1082); the two residency reader
-    # fields' bounds are ``pbrun.reader_declaration``'s, asked in
+    # fields' bounds are ``residency_plan.reader_declaration``'s, asked in
     # ``_require_submittable_row`` in its own words.
     ("cpus", 1),
     ("residency_prefetch_depth_gib", None),
@@ -586,9 +586,11 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         # this function and refuses there; asked here, a bad value refuses the
         # manifest instead of one row after the rows before it were published.
         # The shape is already an integer (``_require_row_shape``).
-        submission.reader_declaration(SubmissionRequest(**{
-            field: int(row[field]) if row.get(field) is not None else None
-            for field in ("residency_prefetch_depth_gib", "residency_read_mb_s")}))
+        residency_plan.reader_declaration(residency_plan.FilingOptions(
+            prefetch_depth_gib=int(row["residency_prefetch_depth_gib"])
+                if row.get("residency_prefetch_depth_gib") is not None else None,
+            read_mb_s=int(row["residency_read_mb_s"])
+                if row.get("residency_read_mb_s") is not None else None))
     except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     images = row.get("container_images") or []
@@ -1100,7 +1102,7 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
             child_plan = None
             if child["params"].get("data_manifest") is not None:
                 if tier is None:
-                    tier = submission.resolve_stage_tier(queue, stage_args.residency_tier)
+                    tier = residency_plan.resolve_stage_tier(queue, stage_args.residency_tier)
                 if movement_receipts is None:
                     # Egress receipts too, in the same one read: the stage
                     # egresses are priced off them (#1021).
@@ -1108,10 +1110,11 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
                         pool.POOL_MOVE_SCHEMA_V1, pool.POOL_EGRESS_SCHEMA_V1)))
                 child_template = {**template, "inputs": child["inputs"],
                                   "params": child["params"], "environment": child["environment"]}
-                staged = submission.residency_stage_rows(
+                staged = residency_plan.prepare_window(
                     child_template, consumer_action_key=child["action_key"],
-                    tier=tier, args=stage_args, queue=queue, cas=cas,
-                    movement_receipts=movement_receipts, store=store_for(__file__))
+                    tier=tier, options=submission.filing_options(stage_args), queue=queue, cas=cas,
+                    movement_receipts=movement_receipts,
+                    publication=submission.row_publication(stage_args, store_for(__file__)))
                 child_plan = staged["plan"]
             rows.append({"action_key": child["action_key"], "plan": child_plan})
         proposed = {"schema": "prismabuild.decomposed_data_plans.v1",

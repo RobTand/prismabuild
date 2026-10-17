@@ -9,6 +9,7 @@ could not read, review, or change.
 
 from __future__ import annotations
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 import importlib.util
 from pathlib import Path
@@ -100,4 +101,4 @@ def test_an_ordinary_dense_checkout_still_seals(tmp_path: Path) -> None:
 
     snapshot = _seal(checkout, tmp_path / "cas")
 
-    assert snapshot["parent"] == submit_core._git_identity(checkout)["head"]
+    assert snapshot["parent"] == movement_actions.checkout_identity(checkout)["head"]

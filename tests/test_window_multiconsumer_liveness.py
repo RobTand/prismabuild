@@ -123,8 +123,8 @@ def test_two_windows_each_fit_alone_but_jointly_exceed_free(tmp_path) -> None:
     plan_a = _plan(queue, CONSUMER_A, seed="moverA")
     plan_b = _plan(queue, CONSUMER_B, seed="moverB")
 
-    dec_a = residency_plan.window(plan_a, accepted_phase=None, free_gib=5)
-    dec_b = residency_plan.window(plan_b, accepted_phase=None, free_gib=5)
+    dec_a = residency_plan.ConsumerWindow(plan_a, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
+    dec_b = residency_plan.ConsumerWindow(plan_b, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
 
     assert [e["phase"] for e in dec_a["publish"]] == ["phase-0", "phase-1"]
     assert [e["phase"] for e in dec_b["publish"]] == ["phase-0", "phase-1"]

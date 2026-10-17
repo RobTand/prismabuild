@@ -48,7 +48,7 @@ def test_receipt_arriving_during_freeze_does_not_reprice_later_siblings(tmp_path
     fixture, request = logical.setup_request(tmp_path, monkeypatch)
     queue = fixture['queue']
     staging._price_receipt(queue, 'a' * 64, delivered_mb_s=20)
-    original = submit_core.residency_stage_rows
+    original = residency_plan.prepare_window
     calls = []
 
     def advancing_history(*args, **kwargs):
@@ -58,7 +58,7 @@ def test_receipt_arriving_during_freeze_does_not_reprice_later_siblings(tmp_path
             staging._price_receipt(queue, 'b' * 64, delivered_mb_s=300)
         return result
 
-    monkeypatch.setattr(submit_core, 'residency_stage_rows', advancing_history)
+    monkeypatch.setattr(residency_plan, "prepare_window", advancing_history)
     _, group = logical.decompose(request)
     demands = [residency_plan.read(queue, child['action_key'])['phases'][0]
                ['mover_row']['resources'][staging.FILL_KIND] for child in group['children']]

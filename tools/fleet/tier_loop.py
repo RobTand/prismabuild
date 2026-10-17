@@ -139,7 +139,6 @@ _STAGED_WAITS: list[dict[tuple[str, str], dict[str, object] | None] | None] = [N
 #: The shared movers' index (#1026), listed once per cycle: ``{queue root:
 #: the mover keys filed under residency-plans/shared/movers/}``, or ``None``
 #: outside a cycle, where every ask lists.
-_SHARED_MOVERS: list[dict[str, frozenset[str] | None] | None] = [None]
 
 #: What :func:`fan_out_shared_ranges` last copied per ``(queue root,
 #: consumer, mover)``: the share namespace's fragment and material versions.
@@ -950,11 +949,8 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
         prefix = holder[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
         if len(prefix) != 16 or any(c not in "0123456789abcdef" for c in prefix):
             return "none", "malformed blind-grant name"
-        candidates = [p.stem for p in pb.immutable_files.scan_optional(
-            queue.root / pool.record_store.RESIDENCY_PLANS,
-        )
-                      if p.suffix == ".json" and len(p.stem) == 64
-                      and p.stem.startswith(prefix)]
+        candidates = [key for key in residency_plan.filed_consumer_candidates(queue)
+                      if key.startswith(prefix)]
         if len(candidates) > 1:
             return "unknown", "ambiguous blind-grant consumer"
         if not candidates:
@@ -1013,9 +1009,16 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                          queue.records.item_presence(pool.record_store.READY, key),
                      ),
                  )]
-        needs = residency_plan.advance_needs(
-            plan, accepted, published=sorted(already), staged=sorted(held),
-            rowed=rowed, mover_role="ram_mover_row")
+        needs = residency_plan.ConsumerWindow(
+            plan,
+            accepted,
+            residency_plan.LegObservation(
+                published=sorted(already),
+                staged=sorted(held),
+                rowed=rowed,
+                mover_role='ram_mover_row',
+            ),
+        ).advance
         target = needs.get("fence_target")
         if target is None or holder != window_credit.grant_key(
                 consumer, tier_id, "ram_mover_row", target["phase"], target["chunk_index"]):
@@ -1361,103 +1364,7 @@ def release_incomplete_ram_promotions(
     return events
 
 
-def _stage_leg_rows(phase: Mapping[str, object],
-                     chunk_index: object) -> tuple[object, object]:
-    """The ``(mover_row, egress_row)`` one window entry's stage leg sealed.
 
-    The stage mirror of :func:`_ram_leg_rows`: ``(None, None)`` when the
-    entry and the phase disagree about the shape -- a chunk entry for a
-    whole-phase leg, or the reverse.  Publishing a row the plan never sealed
-    would put an unsealed key in the queue, so a mismatch publishes nothing
-    rather than guessing which leg was meant.
-    """
-
-    if chunk_index is not None:
-        chunks = phase.get("stage_chunks")
-        if not isinstance(chunks, list):
-            return None, None
-        matches = [chunk for chunk in chunks
-                   if isinstance(chunk, Mapping)
-                   and chunk.get("chunk_index") == chunk_index
-                   and isinstance(chunk.get("mover_row"), Mapping)
-                   and isinstance(chunk.get("egress_row"), Mapping)]
-        if len(matches) != 1:
-            return None, None
-        return matches[0]["mover_row"], matches[0]["egress_row"]
-    mover = phase.get("mover_row")
-    egress = phase.get("egress_row")
-    return (mover if isinstance(mover, Mapping) else None,
-            egress if isinstance(egress, Mapping) else None)
-
-
-def _stage_source_staged(phase: Mapping[str, object], start: int, end: int,
-                         stage_staged: set[str]) -> bool:
-    """Whether the stage already holds the bytes one promotion copies.
-
-    ``stage_staged`` is publication state -- :func:`_resident_movers`, never
-    bare token holdings.  The distinction is the whole of #759: a booking
-    exists from claim, while the evidence that predicate reads exists only
-    once a copy has landed and vouched for itself.
-
-    A promotion's source is the stage and nothing else: with a whole-phase
-    stage leg that is the phase's mover, and with a chunked one (#675) it is
-    every stage chunk the promoted range overlaps -- a later chunk the
-    promotion does not touch is not its precondition, so the current phase's
-    promotions stage as their turn comes while the stage slides behind them.
-    """
-
-    chunks = phase.get("stage_chunks")
-    if not isinstance(chunks, list):
-        mover = phase.get("mover_row")
-        return (isinstance(mover, Mapping)
-                and str(mover.get("action_key")) in stage_staged)
-    overlapped = []
-    for chunk in chunks:
-        if not isinstance(chunk, Mapping):
-            continue
-        cstart, cend = chunk.get("start_bytes"), chunk.get("end_bytes")
-        if (isinstance(cstart, bool) or not isinstance(cstart, int)
-                or isinstance(cend, bool) or not isinstance(cend, int)):
-            continue
-        if cstart < end and cend > start:
-            overlapped.append(chunk)
-    if not overlapped:
-        return False
-    return all(
-        isinstance(chunk.get("mover_row"), Mapping)
-        and str(chunk["mover_row"]["action_key"]) in stage_staged  # type: ignore[index]
-        for chunk in overlapped)
-
-
-def _ram_leg_rows(phase: Mapping[str, object],
-                   chunk_index: object) -> tuple[object, object]:
-    """The ``(mover_row, egress_row)`` one window entry's leg sealed.
-
-    ``(None, None)`` when the entry and the phase disagree about the shape --
-    a chunk entry for a whole-phase leg, or the reverse.  Publishing a row
-    the plan never sealed would put an unsealed key in the queue, so a
-    mismatch publishes nothing rather than guessing which leg was meant.
-    """
-
-    if chunk_index is not None:
-        chunks = phase.get("ram_chunks")
-        if not isinstance(chunks, list):
-            return None, None
-        matches = [chunk for chunk in chunks
-                   if isinstance(chunk, Mapping)
-                   and chunk.get("chunk_index") == chunk_index
-                   and isinstance(chunk.get("ram_mover_row"), Mapping)
-                   and isinstance(chunk.get("ram_egress_row"), Mapping)]
-        if len(matches) != 1:
-            return None, None
-        return matches[0]["ram_mover_row"], matches[0]["ram_egress_row"]
-    # A promotion leg with no egress row still promotes: the plan validator
-    # refuses an egress without a mover, not a mover without an egress, so
-    # the publish side asks for the mover and the evict side asks for both.
-    mover = phase.get("ram_mover_row")
-    egress = phase.get("ram_egress_row")
-    return (mover if isinstance(mover, Mapping) else None,
-            egress if isinstance(egress, Mapping) else None)
 
 
 def _ram_window_state(
@@ -1512,32 +1419,25 @@ def _ram_window_state(
     # still honoured as a declared ceiling; ``None`` for either changes
     # nothing.
     horizon_end = _horizon_end(_ram_horizon(queue, consumer, plan, tiers))
-    decision = residency_plan.window(
-        plan, accepted_phase=consumer["accepted_phase"],
-        free_gib=free, capacity_gib=capacity,
-        published=sorted(already), staged=sorted(staged),
-        runahead_cap_gib=prefill_depth,
-        # The two sets name promotion keys, so the decision must test
-        # promotion keys: against stage keys its evict side would never fire
-        # and its already-published skip would never skip (#640).
-        mover_role="ram_mover_row", withdrawn=withdrawn,
-        horizon_end_bytes=horizon_end)
-    phases = {str(phase["name"]): phase for phase in plan["phases"]}
-    publishable = []
-    for entry in decision["publish"]:
-        phase = phases.get(str(entry["phase"]))
-        if phase is None:
-            continue
-        mover_row, _egress_row = _ram_leg_rows(phase, entry.get("chunk_index"))
-        if mover_row is None:
-            continue
-        if not _stage_source_staged(
-                phase, int(entry["start_bytes"]), int(entry["end_bytes"]),
-                stage_resident):
-            continue
-        publishable.append((mover_row, entry))
-    return {"ram_tier_id": ram_tier_id, "decision": decision,
-            "phases": phases, "publishable": publishable,
+    window = residency_plan.ConsumerWindow(
+        plan,
+        consumer['accepted_phase'],
+        residency_plan.LegObservation(
+            published=sorted(already),
+            staged=sorted(staged),
+            mover_role='ram_mover_row',
+            horizon_end_bytes=horizon_end,
+        ),
+        residency_plan.WindowBudget(
+            free_gib=free,
+            capacity_gib=capacity,
+            runahead_cap_gib=prefill_depth,
+            withdrawn=withdrawn,
+        ),
+    )
+
+    return {"ram_tier_id": ram_tier_id, "window": window,
+            "phases": {str(phase["name"]): phase for phase in plan["phases"]},
             "already": already, "staged": staged,
             "stage_resident": stage_resident,
             "stage_resident_known": stage_known, "free_gib": free,
@@ -1632,7 +1532,7 @@ def ram_residency_window(
                 "event": "ram-window-unknown", "consumer": key,
                 "tier_id": ram_tier_id,
                 "reason": "stage publication evidence unreadable"})
-        decision = state["decision"]
+        decision = state["window"].decision
         superseded = residency_plan.superseded(queue, plan)
         stall = decision["stall"]
         # A superseded window promotes nothing -- at any price -- while its
@@ -1654,7 +1554,7 @@ def ram_residency_window(
                               or (key, "") in ram_unknown_consumers
                               or ("", "") in ram_unknown_consumers
                               or (key, ram_tier_id) not in ram_permitted)
-                         else state["publishable"])
+                         else state["window"].ram_publications(state["stage_resident"]))
         gate = ram_gated.get((key, ram_tier_id))
         if gate is not None and superseded is None:
             assert isinstance(gate, dict)
@@ -1680,7 +1580,7 @@ def ram_residency_window(
                          or (key, "") in ram_unknown_consumers
                          or ("", "") in ram_unknown_consumers)
                 and (key, ram_tier_id) not in ram_permitted
-                and state["publishable"]):
+                and state["window"].ram_publications(state["stage_resident"])):
             # Required advance unproved and ungated (should not happen:
             # protection denies every such path) -- fail closed loudly.
             events.append({
@@ -1771,7 +1671,7 @@ def ram_residency_window(
         for entry in decision["evict"]:
             phase = state["phases"].get(str(entry["phase"]))
             mover_row, egress_row = (
-                _ram_leg_rows(phase, entry.get("chunk_index"))
+                residency_plan.ram_leg_rows(phase, entry.get("chunk_index"))
                 if isinstance(phase, Mapping) else (None, None))
             if egress_row is None or mover_row is None:
                 continue
@@ -2049,31 +1949,6 @@ def _descriptor(manifest_sha256: str, tier_id: str, start: int, end: int) -> tup
     return (str(manifest_sha256), str(tier_id), int(start), int(end))
 
 
-def _shared_movers(queue: pool.PoolQueue) -> frozenset[str] | None:
-    """The movers registered as shared (#1026), or ``None`` if unreadable.
-
-    One listing of ``residency-plans/shared/movers/`` per cycle.  An absent
-    directory is the ordinary answer before any range was shared: none.
-    """
-
-    memo = _SHARED_MOVERS[0]
-    root = str(queue.root)
-    if memo is not None and root in memo:
-        return memo[root]
-    directory = residency_plan.shared_mover_path(queue, "0" * 64).parent
-    try:
-        with os.scandir(directory) as entries:
-            found: frozenset[str] | None = frozenset(
-                entry.name[:-len(".json")] for entry in entries
-                if entry.name.endswith(".json"))
-    except FileNotFoundError:
-        found = frozenset()
-    except OSError:
-        found = None
-    if memo is not None:
-        memo[root] = found
-    return found
-
 
 def _shared_readers(queue: pool.PoolQueue, consumers: list,
                     ) -> dict[str, tuple[str, list[str]]]:
@@ -2085,7 +1960,7 @@ def _shared_readers(queue: pool.PoolQueue, consumers: list,
     the queue.  Only movers the shared index names appear.
     """
 
-    shared = _shared_movers(queue)
+    shared = residency_plan.shared_movers(queue)
     out: dict[str, tuple[str, list[str]]] = {}
     if not shared:
         return out
@@ -2279,7 +2154,7 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue, *, store=None) -> list[
     # The marker snapshot is not a decision: every check the sweep made
     # before is still made under the consumer's lock when a marker can cover
     # the plan, and unknown is never read as "no marker".
-    marker_keys = store.residency_supersession_keys()
+    marker_keys = residency_plan.active_supersessions(queue, store=store)
     # Only a filed plan can attribute work to a dead consumer. Discover these
     # positive candidates before inspecting terminal history: live_state's
     # safe absence check lists the live queue, so doing it for every historical
@@ -2288,10 +2163,7 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue, *, store=None) -> list[
     # under the consumer lock before withdrawing or reaping anything. A plan
     # filed after this observation is conservatively deferred to the next pass.
     try:
-        filed_keys = {path.stem for path in pb.immutable_files.scan_optional(
-            queue.root / pool.record_store.RESIDENCY_PLANS,
-        )
-                      if path.suffix == ".json" and len(path.stem) == 64}
+        filed_keys = set(residency_plan.filed_consumer_candidates(queue))
     except OSError:
         return events
     if not filed_keys:
@@ -4046,9 +3918,14 @@ def _commitment_census(queue: pool.PoolQueue,
                     continue
                 accepted = consumer.get("accepted_phase")
                 already, staged = _mover_state(queue, plan, tier_id)
-                needs = residency_plan.advance_needs(
-                    plan, accepted, published=sorted(already),   # type: ignore[arg-type]
-                    staged=sorted(staged))
+                needs = residency_plan.ConsumerWindow(
+                    plan,
+                    accepted,
+                    residency_plan.LegObservation(
+                        published=sorted(already),
+                        staged=sorted(staged),
+                    ),
+                ).advance
                 horizon = _stage_horizon(queue, consumer, plan, record)
                 beyond = ({str(row["mover_action_key"])      # type: ignore[index]
                            for row in horizon["beyond"]}     # type: ignore[union-attr]
@@ -5746,9 +5623,13 @@ def window_pressure(
         # the tier's room (#1011) on the need this walk already asks.
         ranked = (tier_id in over_committed and _key not in cancelled
                   and consumer.get("state") == pool.record_store.CLAIMED)
-        stage_needs = residency_plan.advance_needs(
-            plan, accepted, published=sorted(already), staged=sorted(staged),
-            horizon_end_bytes=horizon_end)
+        stage_probe = residency_plan.ConsumerWindow(
+            plan, accepted,
+            residency_plan.LegObservation(published=sorted(already), staged=sorted(staged),
+                horizon_end_bytes=horizon_end),
+            residency_plan.WindowBudget(free_gib=sum(leg[1] for leg in legs),
+                capacity_gib=int(capacity), withdrawn=sorted(cancelled)))
+        stage_needs = stage_probe.advance
         stage_newcomer = _is_newcomer(consumer, stage_needs, already)
         if stage_newcomer:
             if admissions is None:
@@ -5783,12 +5664,7 @@ def window_pressure(
                     leg=first, published=True,
                     blocked_since=_blocked_since(queue, _key, consumer)))
             continue
-        unbounded = sum(gib for _key, gib, _phase, _start, _end in legs)
-        decision = residency_plan.window(
-            plan, accepted_phase=accepted,                       # type: ignore[arg-type]
-            free_gib=unbounded, capacity_gib=int(capacity),
-            published=sorted(already), staged=sorted(staged),
-            withdrawn=sorted(cancelled), horizon_end_bytes=horizon_end)
+        decision = stage_probe.decision
         wanted = decision["publish"]
         assert isinstance(wanted, list)
         if ranked:
@@ -5855,32 +5731,25 @@ def window_pressure(
                     for chunk in chunks if isinstance(chunk, Mapping))
             else:
                 ram_room += int(phase.get("stage_gib", 0))
-        ram_decision = residency_plan.window(
-            plan, accepted_phase=accepted,                       # type: ignore[arg-type]
-            free_gib=ram_room,
-            capacity_gib=ram_capacity,
-            published=sorted(state["already"]),                  # type: ignore[arg-type]
-            staged=sorted(state["staged"]),                      # type: ignore[arg-type]
-            runahead_cap_gib=depth, mover_role="ram_mover_row",
-            withdrawn=sorted(cancelled),
-            horizon_end_bytes=state["horizon_end_bytes"])        # type: ignore[arg-type]
+        ram_probe = residency_plan.ConsumerWindow(
+            plan, accepted, state["window"].leg,
+            residency_plan.WindowBudget(free_gib=ram_room, capacity_gib=ram_capacity,
+                runahead_cap_gib=depth, withdrawn=sorted(cancelled)))
+        ram_decision = ram_probe.decision
         ram_published = ram_decision["publish"]
         assert isinstance(ram_published, list)
         ram_phases = {str(phase["name"]): phase for phase in plan["phases"]}  # type: ignore[union-attr]
         ram_wanted = [
             entry for entry in ram_published
             if str(entry["phase"]) in ram_phases
-            and _stage_source_staged(
+            and residency_plan.stage_source_resident(
                 ram_phases[str(entry["phase"])],
                 int(entry["start_bytes"]), int(entry["end_bytes"]),
                 state["stage_resident"])]
         if ram_wanted:
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
-            ram_needs = residency_plan.advance_needs(
-                plan, accepted, published=sorted(state["already"]),
-                staged=sorted(state["staged"]), mover_role="ram_mover_row",
-                horizon_end_bytes=state["horizon_end_bytes"])    # type: ignore[arg-type]
+            ram_needs = ram_probe.advance
             if _is_newcomer(consumer, ram_needs, set(state["already"])):
                 newcomers.setdefault(ram_tier_id, []).append(
                     {**ram_needs, "consumer": str(_key),
@@ -6165,7 +6034,7 @@ def reclaim_failed_mover_partials(
 
     events: list[dict[str, object]] = []
     root = queue.records.residency_fragment_root()
-    shared = _shared_movers(queue) or frozenset()
+    shared = residency_plan.shared_movers(queue) or frozenset()
     asked: set[str] = set()
     # Over every consumer, not only the ones this cycle's budget reads: a
     # shared range is protected by any sharer that can still read it.
@@ -6388,12 +6257,17 @@ def _advance_wants(
                 "error": f"ready census unreadable: {exc!r}"})
             continue
         try:
-            needs = residency_plan.advance_needs(
-                plan, consumer["accepted_phase"],  # type: ignore[arg-type]
-                published=sorted(already), rowed=rowed, staged=sorted(staged),
-                mover_role=mover_role,
-                horizon_end_bytes=(None if horizon_of is None
-                                   else horizon_of(consumer, plan, tier_id)))
+            needs = residency_plan.ConsumerWindow(
+                plan,
+                consumer['accepted_phase'],
+                residency_plan.LegObservation(
+                    published=sorted(already),
+                    rowed=rowed,
+                    staged=sorted(staged),
+                    mover_role=mover_role,
+                    horizon_end_bytes=None if horizon_of is None else horizon_of(consumer, plan, tier_id),
+                ),
+            ).advance
         except residency_plan.ResidencyPlanError as exc:
             unknown.append({
                 "consumer": key, "tier_id": tier_id, "leg": mover_role,
@@ -6518,7 +6392,7 @@ def _shared_advance_fences(queue: pool.PoolQueue, tier_wants: list, *,
     when no range is shared.
     """
 
-    shared = _shared_movers(queue) or frozenset()
+    shared = residency_plan.shared_movers(queue) or frozenset()
     out: dict[str, str] = {}
     if not shared:
         return out
@@ -9315,22 +9189,37 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                     and decline_reason_now is None and not began_now):
                 decline_reason_now = prelaunch_group.latest_decline_reason(
                     queue, prelaunch_unit.unit, tier_id)
-            decision = residency_plan.window(
-                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-                free_gib=int(free), capacity_gib=int(capacity),
-                published=sorted(already), staged=sorted(staged),
-                withdrawn=sorted(cancelled),
-                horizon_end_bytes=horizon_of(consumer, plan, tier_id),
-                prelaunch_held=bool(
-                    prelaunch_authority.get(prelaunch_unit.unit)),
-                prelaunch_need_gib=need_now)
+            decision = residency_plan.ConsumerWindow(
+                plan,
+                consumer['accepted_phase'],
+                residency_plan.LegObservation(
+                    published=sorted(already),
+                    staged=sorted(staged),
+                    horizon_end_bytes=horizon_of(consumer, plan, tier_id),
+                ),
+                residency_plan.WindowBudget(
+                    free_gib=int(free),
+                    capacity_gib=int(capacity),
+                    withdrawn=sorted(cancelled),
+                    prelaunch_held=bool(prelaunch_authority.get(prelaunch_unit.unit)),
+                    prelaunch_need_gib=need_now,
+                ),
+            ).decision
         else:
-            decision = residency_plan.window(
-                plan, accepted_phase=consumer["accepted_phase"],  # type: ignore[arg-type]
-                free_gib=int(free), capacity_gib=int(capacity),
-                published=sorted(already), staged=sorted(staged),
-                withdrawn=sorted(cancelled),
-                horizon_end_bytes=horizon_of(consumer, plan, tier_id))
+            decision = residency_plan.ConsumerWindow(
+                plan,
+                consumer['accepted_phase'],
+                residency_plan.LegObservation(
+                    published=sorted(already),
+                    staged=sorted(staged),
+                    horizon_end_bytes=horizon_of(consumer, plan, tier_id),
+                ),
+                residency_plan.WindowBudget(
+                    free_gib=int(free),
+                    capacity_gib=int(capacity),
+                    withdrawn=sorted(cancelled),
+                ),
+            ).decision
         stall = decision["stall"]
         if isinstance(stall, Mapping) and superseded is None:
             # Said here rather than nowhere: the incident this bound exists to
@@ -9441,7 +9330,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             # The leg's own egress row, resolved off the plan rather than
             # the entry: publish entries carry their mover, evict entries
             # their egress, and a chunked phase's egress lives on its chunk.
-            _mover, egress_row = _stage_leg_rows(
+            _mover, egress_row = residency_plan.stage_leg_rows(
                 by_name.get(str(entry["phase"]), {}),
                 entry.get("chunk_index"))
             if isinstance(egress_row, Mapping):
@@ -10863,13 +10752,11 @@ def cycle(
         return ledger.names(directory, select=lambda _name: True, missing_ok=False)
 
     _STAGED_WAITS[0] = {}
-    _SHARED_MOVERS[0] = {}
     _CYCLE_COMMITMENTS.clear()
     # Each shared mover's index read once per cycle, not once per plan leg
     # that names it (#1026).
-    residency_plan._SHARE_NAMESPACE_MEMO[0] = {}
     try:
-        with pool.transition_locks_never_wait(refused), pool.tier_ledger_names_from(
+        with residency_plan.registry_cycle(), pool.transition_locks_never_wait(refused), pool.tier_ledger_names_from(
                 ledger_names if isinstance(ledger, kept_reads.DirectoryRecords)
                 else None):
             store = (pool.record_store.RecordStore.kept(queue.root, records=records)
@@ -10885,8 +10772,6 @@ def cycle(
     finally:
         global LAST_CYCLE
         _STAGED_WAITS[0] = None
-        _SHARED_MOVERS[0] = None
-        residency_plan._SHARE_NAMESPACE_MEMO[0] = None
         if isinstance(ledger, kept_reads.DirectoryRecords):
             ledger.retain(ledger_directories)
         after = _read_counts(receipts)

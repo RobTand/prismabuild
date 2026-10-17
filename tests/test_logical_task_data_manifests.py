@@ -91,7 +91,7 @@ def test_replay_reuses_membership_and_graphs_without_replanning(tmp_path, monkey
     first, initial = decompose(request)
     def unexpected(*args, **kwargs):
         raise AssertionError('replay rebuilt an immutable graph')
-    monkeypatch.setattr(submit_core, 'residency_stage_rows', unexpected)
+    monkeypatch.setattr(residency_plan, "prepare_window", unexpected)
     second, replay = decompose(request)
     assert [r['action_key'] for r in first] == [r['action_key'] for r in second]
     assert replay['plan'] == initial['plan']

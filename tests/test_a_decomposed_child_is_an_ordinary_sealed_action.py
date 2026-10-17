@@ -32,6 +32,7 @@ from prismabuild import decomposition as dc  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 EVIDENCE = "cas:sha256:" + "0" * 64
 COMMIT_DATE = "2026-09-11T00:00:00+00:00"
@@ -314,7 +315,7 @@ def test_each_child_owns_its_own_container_lifecycle(decomposed) -> None:
         assert variables.pop(submit_core.CONTAINER_MARKER_ENV).endswith(
             f"{owner}.used")
         assert variables.pop(submit_core.CONTAINER_OWNER_ENV) == owner
-        assert owner == submit_core.container_owner(
+        assert owner == movement_actions.submission_container_owner(
             child["params"]["command"],
             child["params"]["cwd"],
             child["params"]["demand"],

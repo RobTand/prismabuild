@@ -120,13 +120,14 @@ def test_undeclared_window_calls_window_without_held_flag(
     plan = _declared_plan(queue, consumer, specs, tag="plain")
     _live(queue, plan, consumer, specs)
     calls: list[dict] = []
-    real_window = residency_plan.window
+    real_window = residency_plan.ConsumerWindow.decision.func
 
-    def spy(plan, *args, **kwargs):
-        calls.append(dict(kwargs))
-        return real_window(plan, *args, **kwargs)
+    def spy(self):
+        calls.append({} if self.budget.prelaunch_held is None else
+                     {"prelaunch_held": self.budget.prelaunch_held})
+        return real_window(self)
 
-    monkeypatch.setattr(residency_plan, "window", spy)
+    monkeypatch.setattr(residency_plan.ConsumerWindow, "decision", property(spy))
     events = tier_loop.residency_window(queue, tiers=tiers)
     assert calls
     assert all("prelaunch_held" not in kwargs for kwargs in calls)

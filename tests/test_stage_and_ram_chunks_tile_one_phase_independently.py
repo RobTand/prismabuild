@@ -115,12 +115,8 @@ def test_each_leg_decides_from_its_own_table() -> None:
 
     plan = _build(_phases())
 
-    stage = residency_plan.window(
-        plan, accepted_phase=None, free_gib=6, capacity_gib=6,
-        published=[], staged=[])
-    ram = residency_plan.window(
-        plan, accepted_phase=None, free_gib=6, capacity_gib=6,
-        published=[], staged=[], mover_role="ram_mover_row")
+    stage = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=6, capacity_gib=6)).decision
+    ram = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[], staged=[], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=6, capacity_gib=6)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in stage["publish"]] == [

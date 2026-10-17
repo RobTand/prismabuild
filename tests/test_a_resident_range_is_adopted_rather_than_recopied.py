@@ -457,9 +457,7 @@ def test_an_adopted_lead_whose_bytes_went_is_refused_again(queue, stage) -> None
     assert verdict["pending"] == [
         {"lead": _hexkey("secondmover0"), "status": "absent"}]
     # ...and the window does stage it again rather than waiting for ever.
-    decision = residency_plan.window(
-        residency_plan.read(queue, SECOND), accepted_phase=None,
-        free_gib=STAGE_GIB, published=[], staged=[])
+    decision = residency_plan.ConsumerWindow(residency_plan.read(queue, SECOND), None, residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=STAGE_GIB)).decision
     assert decision["publish"][0]["phase"] == "phase-0"
 
 

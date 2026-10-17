@@ -231,9 +231,7 @@ def test_the_window_never_publishes_a_withdrawn_key(queue: pool.PoolQueue) -> No
 
     plan = _plan(queue, FIRST, label="first")
 
-    decision = residency_plan.window(
-        plan, accepted_phase=None, free_gib=8,
-        withdrawn=[_hexkey("firstmover0")])
+    decision = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=8, withdrawn=[_hexkey('firstmover0')])).decision
 
     assert [entry["phase"] for entry in decision["publish"]] == ["phase-1"]
 

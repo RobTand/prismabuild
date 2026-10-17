@@ -207,7 +207,7 @@ class ScratchFleet:
     def publish(self, **options):
         args, self.action, self.declaration = self.build(**options)
         self.cas.publish_action_request(self.action)
-        row = submit_core.publication_row(self.action, args=pbrun.request_from_args(args), queue=self.queue, store=pbrun.configured_store())
+        row = submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(self.action, queue=self.queue)
         self.publication = deepcopy(row)
         self.queue.publish(**row)
         self.key = self.action["action_key"]
@@ -974,7 +974,7 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
         "--", "/bin/bash", "-c", f"true # {label}"])
     action = submit_core.seal(submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"])
     fleet.cas.publish_action_request(action)
-    fleet.queue.publish(**submit_core.publication_row(action, args=pbrun.request_from_args(args), queue=fleet.queue, store=pbrun.configured_store()))
+    fleet.queue.publish(**submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(action, queue=fleet.queue))
     return str(action["action_key"])
 
 

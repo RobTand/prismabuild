@@ -615,9 +615,8 @@ def test_r12s_ram_window_is_unchanged_by_its_ram_horizon(
             capacity_gib=capacity, published=held, staged=held,
             runahead_cap_gib=R12_RAM["ram"]["prefill_depth"],
             mover_role="ram_mover_row")
-        before = residency_plan.window(plan, **arguments)
-        after = residency_plan.window(
-            plan, **arguments, horizon_end_bytes=horizon["horizon_end_bytes"])
+        before = residency_plan.ConsumerWindow(plan, arguments['accepted_phase'], residency_plan.LegObservation(published=arguments["published"], staged=arguments["staged"], mover_role=arguments["mover_role"]), residency_plan.WindowBudget(free_gib=arguments['free_gib'], capacity_gib=arguments['capacity_gib'], runahead_cap_gib=arguments['runahead_cap_gib'])).decision
+        after = residency_plan.ConsumerWindow(plan, arguments['accepted_phase'], residency_plan.LegObservation(published=arguments["published"], staged=arguments["staged"], mover_role=arguments["mover_role"], horizon_end_bytes=horizon['horizon_end_bytes']), residency_plan.WindowBudget(free_gib=arguments['free_gib'], capacity_gib=arguments['capacity_gib'], runahead_cap_gib=arguments['runahead_cap_gib'])).decision
         assert after == before, free
         stall = before["stall"]
         assert isinstance(stall, dict) and stall["reason"] == "runahead_budget"

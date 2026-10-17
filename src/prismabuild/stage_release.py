@@ -3690,9 +3690,7 @@ def _evict_uncharged_owner(
                 queue.records.retirement_presence_at(queue.records.lease_path(consumer)),
             ))
                     or not (not pool.record_store.value_or_raise(
-                        queue.records.retirement_presence_at(
-                            queue.records.residency_plan_path(consumer),
-                        ),
+                        residency_plan.retirement_presence(queue, consumer),
                     ))):
                 return None
             with queue.mover_transition_lock(mover):
@@ -3975,9 +3973,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                 queue.records.retirement_presence_at(queue.records.lease_path(consumer)),
             ))
                     or not (not pool.record_store.value_or_raise(
-                        queue.records.retirement_presence_at(
-                            queue.records.residency_plan_path(consumer),
-                        ),
+                        residency_plan.retirement_presence(queue, consumer),
                     ))):
                 return
             if consumer_failed:

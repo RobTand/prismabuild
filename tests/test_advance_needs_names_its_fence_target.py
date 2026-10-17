@@ -114,7 +114,7 @@ def test_nonfinal_result_names_the_frontier_advance(mover_role: str) -> None:
     """The lead plus its protected next, on either leg."""
 
     plan = _whole_plan()
-    needs = residency_plan.advance_needs(plan, None, mover_role=mover_role)
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role=mover_role)).advance
 
     assert needs["final"] is False
     assert needs["current_min_gib"] == 2
@@ -133,8 +133,7 @@ def test_frontier_advance_moves_past_landed_ranges() -> None:
     the safe-retire prior."""
 
     plan = _whole_plan()
-    needs = residency_plan.advance_needs(
-        plan, None, staged=[_hexkey("mover0")])
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(staged=[_hexkey('mover0')])).advance
 
     assert needs["final"] is False
     target = needs["fence_target"]
@@ -150,7 +149,7 @@ def test_final_leg_needs_no_advance() -> None:
     leg. This guards the fix against overcorrection."""
 
     plan = _whole_plan(phases=1)
-    needs = residency_plan.advance_needs(plan, None)
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation()).advance
 
     assert needs["final"] is True
     assert needs["next_min_gib"] is None
@@ -162,15 +161,14 @@ def test_chunked_leg_targets_the_next_chunk() -> None:
     never the next phase."""
 
     plan = _chunked_plan()
-    fresh = residency_plan.advance_needs(plan, None, mover_role="mover_row")
+    fresh = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role='mover_row')).advance
 
     target = fresh["fence_target"]
     assert isinstance(target, dict)
     assert (target["phase"], target["chunk_index"]) == ("phase-0000", 1)
     assert target["stage_gib"] == 1
 
-    advanced = residency_plan.advance_needs(
-        plan, None, mover_role="mover_row", staged=[_hexkey("mover0c0")])
+    advanced = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role='mover_row', staged=[_hexkey('mover0c0')])).advance
     following = advanced["fence_target"]
     assert isinstance(following, dict)
     assert (following["phase"], following["chunk_index"]) == ("phase-0001", 0)

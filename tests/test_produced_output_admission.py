@@ -401,7 +401,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     # The sealed row publishes and claims against the real ledgers.
     queue = _queue(tmp_path / "q2")
     args = pbrun_mod.parse_args(["--cpus", "1", "--", "true"])
-    row = submit_core.publication_row(sealed, args=args, queue=queue, store=pbrun.configured_store())
+    row = submit_core.row_publication(args, pbrun.configured_store()).row(sealed, queue=queue)
     row["produced_output_template"] = frozen["produced_output_template"]
     queue.publish(**row)
     assert queue.claim(owner="w-seal") is not None

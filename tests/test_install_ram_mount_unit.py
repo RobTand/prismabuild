@@ -730,10 +730,12 @@ def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
     monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
     monkeypatch.setattr(pool, "_now", lambda: clock[0])
     for name in ("LAST_CYCLE", "_VERDICT_CYCLE", "_VERDICT_SINCE", "_EVENT_LINES",
-                 "_LOCK_BUSY_COUNT", "_STAGED_WAITS", "_SHARED_MOVERS",
+                 "_LOCK_BUSY_COUNT", "_STAGED_WAITS",
                  "_CYCLE_COMMITMENTS", "_CENSUS_COST", "_JOINT_COMMITTED",
                  "_FASTEST_CONSUMPTION", "_MANIFEST_SUMMARY_LAST"):
         monkeypatch.setattr(tier_loop, name, copy.deepcopy(getattr(tier_loop, name)))
+    monkeypatch.setattr(tier_loop.residency_plan, "_SHARED_MOVER_NAMES",
+                        copy.deepcopy(tier_loop.residency_plan._SHARED_MOVER_NAMES))
     monkeypatch.setattr(tier_loop.residency_plan, "_SHARE_NAMESPACE_MEMO",
                         copy.deepcopy(tier_loop.residency_plan._SHARE_NAMESPACE_MEMO))
     real_statvfs = os.statvfs
