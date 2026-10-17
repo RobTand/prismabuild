@@ -196,7 +196,7 @@ class ScratchFleet:
             *(["--max-attempts", "2", "--retry-safe"] if retry else []),
             "--", "/bin/bash", "-c", "true"])
         # prepare_submission calls the real freeze_action_template.
-        template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+        template = submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
         action = submit_core.seal(template)
         assert action["params"]["demand"] == {"cpu": 1, "mem_gb": 4, "gpu": 1, "spool_gb": 186}
         assert -(-ISSUE_BYTES // GIB) == 186
@@ -637,13 +637,13 @@ def test_traffic_requires_pool_one_pair_and_exact_version_at_prepare(fleet, faul
                              "--transport", "slurm" if fault == "slurm" else "pool", *extra,
                              "--", "/bin/bash", "-c", "true"])
     with pytest.raises(submit_core.SubmissionRefused, match=IO_ENV):
-        submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
+        submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)
     assert fleet.queue.ready_items() == []
 
 
 def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
     with pytest.raises(submit_core.SubmissionRefused, match=CAPABILITY):
-        submit_core.freeze(
+        submit_core.freeze_template(
             command=["/bin/bash", "-c", "true"], cwd=fleet.work, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 4, "spool_gb": 186},
             placement={"required_tags": ["gb10"]}, variables=_variables(fleet),
@@ -721,7 +721,7 @@ def _recorder_action(fleet, *, changed_source=False, extra_env=None):
         "--", sys.executable, "-I", "-S", ls.RECORDER, "--root", fleet.scratch,
         "--bytes", "1024", "--block-bytes", "256", "--repetitions", "1",
         "--result", ls.PROFILE_RESULT])
-    template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    template = submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
     action = submit_core.seal(template)
     fleet.cas.publish_action_request(action)
     return action
@@ -972,7 +972,7 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
         "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
         "--timeout-s", "30", *(["--max-attempts", "2", "--retry-safe"] if retry else []),
         "--", "/bin/bash", "-c", f"true # {label}"])
-    action = submit_core.seal(submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"])
+    action = submit_core.seal(submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"])
     fleet.cas.publish_action_request(action)
     fleet.queue.publish(**submit_core.publication_row(action, args=args, queue=fleet.queue, store=pbrun.configured_store()))
     return str(action["action_key"])

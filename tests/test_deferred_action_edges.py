@@ -344,7 +344,7 @@ def test_a_failed_producer_never_releases_its_consumer(
     assert _without_summary(dr.release_tick(queue)) == [], "once per change"
     assert ae.read_release(queue.root, pending) is None
     assert ae.read_published(queue.root, pending) is None
-    assert submit_core.await_release(queue, pending, wait_s=0.01, store=pbrun.configured_store(), display=pbrun.render) == submit_core.action_client.GAVE_UP_EXIT
+    assert submit_core.await_release(queue, pending, wait_s=0.01, store=pbrun.configured_store(), display=submit_core.render_submission) == submit_core.action_client.GAVE_UP_EXIT
     # The failed producer's batch is an orphan: nothing unreleased will read
     # a failed key, so #914 sweeps it.
     assert ae.held_producer_batches(queue) == set()
@@ -438,7 +438,7 @@ def test_a_chain_resolves_a_deferred_producer_through_its_release(
     claimed = queue.claim(owner="w-consumer", tags=list(TAGS))
     assert claimed["action_key"] == b_key
     queue.finish(b_key, status="executed")
-    assert submit_core.await_release(queue, b, wait_s=1.0, store=pbrun.configured_store(), display=pbrun.render) == 0
+    assert submit_core.await_release(queue, b, wait_s=1.0, store=pbrun.configured_store(), display=submit_core.render_submission) == 0
 
 
 def test_a_superseded_producer_releases_its_consumer_under_the_new_key(

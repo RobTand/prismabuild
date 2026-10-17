@@ -67,7 +67,7 @@ def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
         "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    return submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
 
 
 # -- off: nothing declared ----------------------------------------------------
@@ -166,7 +166,7 @@ def test_slurm_refuses_declared_scratch(tmp_path, monkeypatch):
 
 def _freeze(tmp_path, *, demand, variables, transport="pool"):
     repo = _checkout(tmp_path)
-    return submit_core.freeze(
+    return submit_core.freeze_template(
         command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin", **variables}, determinism="stochastic",

@@ -181,7 +181,7 @@ class _Producer:
         patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
         demand = {"cpu": 1, "mem_gb": 1,
                   **po.owner_demand_terms(self.template)}
-        frozen = submit_core.freeze(
+        frozen = submit_core.freeze_template(
             command=["/bin/true"], cwd=cwd, logical_cwd=subdirectory,
             demand=demand, placement={"required_tags": []},
             variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
