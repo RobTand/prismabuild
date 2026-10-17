@@ -259,9 +259,10 @@ class TierLedger:
             try:
                 occupancy = sum(name.rsplit("-", 1)[0] == storage_tiers.RAM_CAPACITY_KIND
                                 for name in actual)
-                self._host_ledgers(self._ram_host()).transfer_count(
-                    storage_tiers.RAM_HOST_MEMORY_PREFIX + source,
-                    storage_tiers.RAM_HOST_MEMORY_PREFIX + target, occupancy)
+                if occupancy:
+                    self._host_ledgers(self._ram_host()).transfer_count(
+                        storage_tiers.RAM_HOST_MEMORY_PREFIX + source,
+                        storage_tiers.RAM_HOST_MEMORY_PREFIX + target, occupancy)
             except (OSError, PoolContractError, ValueError) as exc:
                 if faults is not None:
                     faults.append({"reason": "ram_host_transfer_failed",
