@@ -159,7 +159,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     world.run_mover(mover0, "w-fwd")
     staged = world.stage_path("p1.bin")
     assert staged.read_bytes() == payload
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 1
 
     with _OwnersView(world.stage_root):
         deferred = world.retire("b1")
@@ -170,7 +170,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
 
         # Nothing was deleted from here, and nothing was filed as retired.
         assert staged.read_bytes() == payload
-        assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+        assert world.ledger.holdings(mover0).get(KIND, 0) == 1
         entry = world.entry("b1")
         assert not entry.get("retired")
         # The staged paths are on file BEFORE the egress can drop the fragment.
@@ -200,7 +200,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     assert outcome.get("returncode") == 0, outcome
     world.q.finish(egress0, status="executed")
     assert not staged.exists()
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
     assert map_mod.read_fragments(world.out_base, ns) == []
 
     with _OwnersView(world.stage_root):
@@ -247,7 +247,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         materialization = world.entry("b1")["materializations"][0]
         assert materialization["retired"] is True
         assert materialization["staged_paths"] == [str(staged)]
-    assert world.ledger.holder_tokens(mover1).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover1).get(KIND, 0) == 0
 
 
 def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
@@ -332,7 +332,7 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
 
 
 def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
@@ -383,7 +383,7 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
 
 
 def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(

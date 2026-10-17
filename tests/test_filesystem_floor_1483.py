@@ -449,10 +449,10 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
     owner = str(world.inst["owner_action_key"])
     # Empty the owner's window, as a retire returning its tokens would, so
     # the refill has room to take.
-    world.ledger.release(owner)
+    world.ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED)
     refill = po.refill_window(world.q, world.inst, world.template, tier=restage.TIER)
     assert refill.get("acquired", 0) == 0, refill
-    assert world.ledger.holder_tokens(owner) == {}
+    assert world.ledger.holdings(owner) == {}
     ff.refresh_binding(world.q.root, binding)
     refill = po.refill_window(world.q, world.inst, world.template, tier=restage.TIER)
     assert refill.get("ok") is True and refill.get("acquired", 0) >= 1, refill
