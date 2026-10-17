@@ -142,8 +142,8 @@ def run(root: Path) -> dict:
         subprocess.run(['git', '-C', str(replay), 'checkout', '--detach', BASE],
                        check=True, capture_output=True)
         first = migrate(replay)
-        expected_paths = set(git(root, 'diff', '--name-only', BASE, 'HEAD').splitlines())
-        expected_paths = {p for p in expected_paths if not p.startswith(('docs/', 'refactor/')) and p != 'tests/test_movement_package.py'}
+        expected_paths = set(git(root, 'diff', '--name-only', '--no-renames', BASE, 'HEAD').splitlines())
+        expected_paths = {p for p in expected_paths if not p.startswith(('docs/', 'refactor/', '.pbrun-closure.')) and p != 'tests/test_movement_package.py'}
         assert set(first) == expected_paths, (set(first) - expected_paths, expected_paths - set(first))
         for path in expected_paths:
             left, right = replay / path, root / path
