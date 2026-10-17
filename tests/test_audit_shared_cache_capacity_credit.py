@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
@@ -76,7 +77,7 @@ def _manifest_bytes(pool_dir: Path) -> tuple[dict, Path]:
          "sha256": hashlib.sha256(other).hexdigest()},
     ]
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "audit-r2"},
         "mount_prefix": str(pool_dir),
         "entries": entries, "entry_count": 2, "total_bytes": 2 * MIB,
@@ -644,7 +645,7 @@ def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> No
     ]
     total = sum(e["bytes"] for e in entries)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "audit-r3-fractional"},
         "mount_prefix": str(pool_dir),
         "entries": entries, "entry_count": 2, "total_bytes": total,

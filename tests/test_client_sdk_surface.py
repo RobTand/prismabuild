@@ -42,6 +42,7 @@ from prismabuild import (
     storage_tiers,
 )
 from prismabuild import core as pb
+from prismabuild import data_manifest as manifest_codec
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -184,7 +185,7 @@ REEXPORTS = {
     "leases_root": reader_lease.leases_root,
     "live_for": reader_lease.live_for,
     "containment_certificate_ok": reader_lease.containment_certificate_ok,
-    "read_data_manifest": pb.read_data_manifest,
+    "read_data_manifest": manifest_codec.read_data_manifest,
     "manifest_read_entries": manifest_layout.manifest_read_entries,
     "PoolQueue": pool.PoolQueue,
     "CLAIMED": pool.CLAIMED,
