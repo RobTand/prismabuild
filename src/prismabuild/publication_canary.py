@@ -17,7 +17,6 @@ import re
 from collections.abc import Callable, Mapping
 
 from . import contracts, core as pb, posix_lock
-from .materialize import _write_json_atomic
 
 CAPABILITY = contracts.PUBLICATION_CANARY_TAG
 SCHEMA = "prismabuild.publication_canary_slot.v1"
@@ -123,7 +122,7 @@ def bind(root: Path, value: Mapping[str, str], key: str, published_unix: float) 
         grant = load(root, value, key)
         if grant["published_unix"] is not None:
             raise ValueError("publication canary slot already spent/published")
-        _write_json_atomic(path, {**grant, "published_unix": published_unix})
+        immutable_files.write_json_atomic(path, {**grant, "published_unix": published_unix})
 
 
 def verified(root: Path, item: Mapping[str, object]) -> bool:

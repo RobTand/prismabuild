@@ -18158,6 +18158,14 @@ transition. Distinct first-writer, immutable-conflict, sorted-LF, fsync,
 PID-temporary and missing-parent retry profiles remain distinct operations.
 Store owns names and framing. The caller still owns its transition lock,
 validated generation, publication order, ring limits and retention decision.
+
+`immutable_files.write_json_atomic` and `write_bytes_atomic` own the shared
+rename recipes below Store and checkout materialization. Store selects fixed
+profiles; materialization and lane callers use the same implementations. JSON
+text and temporary-name options are checked before any parent is created.
+The original materialization error classes remain the same exported class
+objects. Bytes retain their distinct failed-rename cleanup policy.
+
 The reader-release diagnostic keeps stderr before path creation, append
 before readback, and the original domain-selected tail replacement.
 

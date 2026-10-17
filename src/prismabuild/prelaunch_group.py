@@ -28,7 +28,7 @@ from . import pool
 from . import storage_tiers
 from ._gang import _link_new
 from .digest_primitives import raw_sha256
-from .materialize import _write_json_atomic
+from . import immutable_files
 
 __all__ = [
     "GROUP_DIR", "TURN_DIR", "HOLDER_PREFIX",
@@ -284,7 +284,7 @@ def record_decline(queue: pool.PoolQueue, unit: str, tier_id: str,
                "tier_id": str(tier_id), "need_gib": int(need_gib),
                "reason": str(reason), "declined_unix": time.time()}
     try:
-        _write_json_atomic(group_dir(queue, unit, tier_id) / "declined.json",
+        immutable_files.write_json_atomic(group_dir(queue, unit, tier_id) / "declined.json",
                            payload)
     except (OSError, pool.PoolContractError, ValueError):
         return
@@ -1475,7 +1475,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                "holder_released": holder_part, "chunks": merged,
                "released_unix": time.time()}
     try:
-        _write_json_atomic(directory / "released.json", payload)
+        immutable_files.write_json_atomic(directory / "released.json", payload)
     except OSError:
         events.append("prelaunch-unknown-evidence")
         return events
