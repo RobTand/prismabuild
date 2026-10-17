@@ -183,7 +183,7 @@ def test_a_withdrawal_the_holder_cannot_see_is_said_out_loud(
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="a" * 40)
-    monkeypatch.setattr(submit_core, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
     assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render) == 0
     err = capsys.readouterr().err
@@ -201,7 +201,7 @@ def test_a_holder_that_never_announced_is_reported_as_unknown(
     record["claimed_host"] = ELSEWHERE
     queue.item_path(pool.READY, KEY_A).unlink()
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
-    monkeypatch.setattr(submit_core, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
     assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render) == 0
     assert f"no live offer from {ELSEWHERE}" in capsys.readouterr().err
@@ -217,7 +217,7 @@ def test_a_worker_on_the_published_bytes_draws_no_warning(
     queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
     queue.announce(host=ELSEWHERE, tags=["x86"], has_gpu=False,
                    runtime_commit="b" * 40)
-    monkeypatch.setattr(submit_core, "published_commit", lambda: "b" * 40)
+    monkeypatch.setattr(submit_core, "published_commit", lambda **_context: 'b' * 40)
 
     assert submit_core.withdraw_main(queue, [KEY_A[:12]], store=pbrun.configured_store(), display=pbrun.render) == 0
     assert "WARNING" not in capsys.readouterr().err

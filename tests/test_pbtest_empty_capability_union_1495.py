@@ -221,9 +221,8 @@ def test_a_nonempty_union_still_forwards_the_flag(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_a_standalone_empty_requires_files_is_still_refused(capsys):
-    args = pbrun.parse_args(["--requires-files", "[]", "--", "true"])
-    with pytest.raises(submit_core.SubmissionRefused) as excinfo:
-        submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
-    assert refusal_value(excinfo.value) == 2
+    with pytest.raises(SystemExit) as excinfo:
+        pbrun.main(["--requires-files", "[]", "--", "true"])
+    assert excinfo.value.code == 2
     err = capsys.readouterr().err
     assert "--requires-files" in err and "nonempty" in err

@@ -22,7 +22,7 @@ def params(argv, tmp_path, monkeypatch):
         raise Stop()
     monkeypatch.setattr(submit_core.pb,'seal_action',seal)
     patch_store(monkeypatch, client=pbrun, root=tmp_path/'fleet')
-    monkeypatch.setattr(submit_core,'git_repository_root',lambda cwd:tmp_path)
+    monkeypatch.setattr(submit_core,'git_repository_root',lambda cwd, **_context: tmp_path)
     monkeypatch.setattr(submit_core,'snapshot_checkout',lambda *a,**k:{'input':{'id':'test'}})
     monkeypatch.setattr(sys,'argv',['pbrun.py','--cwd',str(tmp_path),*argv,'--','true'])
     try: pbrun.main()
