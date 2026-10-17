@@ -44,8 +44,8 @@ class ActionRows:
     def __init__(self, queue: pool.PoolQueue) -> None:
         self.queue = queue
 
-    def publish(self, key: str, **kw: object) -> None:
-        self.queue.publish(
+    def publish(self, key: str, **kw: object) -> Path:
+        return self.queue.publish(
             action_key=key,
             cas_root=kw.pop("cas_root", "/cas"),
             checkout_root=kw.pop("checkout_root", "/co"),

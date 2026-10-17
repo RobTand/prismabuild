@@ -294,7 +294,9 @@ def fixture_migrate(path, source, sources):
                         if len(body) == 3:
                             statements.append(ast.unparse(FixtureSubstitute(bindings).visit(deepcopy(body[0]))))
                         statements.append(fixture_publish(publishing, call))
-                        if not isinstance(parent, ast.Expr):
+                        if isinstance(parent, ast.Expr):
+                            statements.append(ast.unparse(FixtureSubstitute(bindings).visit(deepcopy(body[-1].value))))
+                        else:
                             assignment = deepcopy(parent)
                             assignment.value = FixtureSubstitute(bindings).visit(deepcopy(body[-1].value))
                             statements.append(ast.unparse(assignment))

@@ -59,6 +59,7 @@ def _receipt_path(queue: pool.PoolQueue, key: str) -> Path:
 def test_a_live_key_always_keeps_its_receipt(queue: pool.PoolQueue) -> None:
     key = _key()
     ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key)
     verdict = queue.prune_prewarm_receipt(key, live=True)
     assert verdict == {"action_key": key, "pruned": False, "reason": "live"}
@@ -68,6 +69,7 @@ def test_a_live_key_always_keeps_its_receipt(queue: pool.PoolQueue) -> None:
 def test_a_terminal_key_is_pruned(queue: pool.PoolQueue) -> None:
     key = _key()
     ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key)
     claimed = queue.claim()
     queue.finish(key, status="executed", detail={"status": "executed"},
@@ -81,6 +83,7 @@ def test_a_withdrawn_key_keeps_an_unreleased_stage_band(
         queue: pool.PoolQueue) -> None:
     key = _key()
     ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key, stage={"staged_through_bytes": 8})
     queue.withdraw(key, reason="test")
     verdict = queue.prune_prewarm_receipt(key, live=False)
@@ -93,6 +96,7 @@ def test_a_withdrawn_key_is_pruned_once_its_band_is_released(
         queue: pool.PoolQueue) -> None:
     key = _key()
     ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key, stage={"staged_through_bytes": 8, "swept": True})
     queue.withdraw(key, reason="test")
     verdict = queue.prune_prewarm_receipt(key, live=False)
@@ -137,9 +141,11 @@ def test_the_sweep_pass_prunes_only_non_live_receipts(
         queue: pool.PoolQueue) -> None:
     live_key = _key()
     ActionRows(queue).publish(live_key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, live_key))
     _receipt(queue, live_key)
     dead_key = _key()
     ActionRows(queue).publish(dead_key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, dead_key))
     _receipt(queue, dead_key)
     claimed = queue.claim()
     if claimed["action_key"] == live_key:
@@ -229,6 +235,7 @@ def test_a_key_nowhere_is_unknown_not_terminal(
 def test_an_unscoped_watch_is_unknown(queue: pool.PoolQueue) -> None:
     key = _key()
     ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert queue.selection_live(key, published_unix=None) == "unknown"
 
 
