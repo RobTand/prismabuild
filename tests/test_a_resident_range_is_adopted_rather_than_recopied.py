@@ -159,20 +159,17 @@ def _stage_range(queue: pool.PoolQueue, *, mover: str, consumer: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": manifest,
-        "entries": entries})
-    if material is not None:
-        reader_lease.write_material(
-            queue.records.residency_fragment_root(), consumer_action_key=consumer,
-            mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
-            manifest_sha256=manifest, generation="a" * 32,
-            entries={key: {**dict(mention),  # type: ignore[dict-item]
-                           "file_id": reader_lease.stat_identity(
-                               str(mention["stage_path"]))}  # type: ignore[index]
-                     for key, mention in list(entries.items())[:material]})
+        "entries": entries}, generation="a" * 32,
+        # None and partial dates are deliberate inputs to the donor-refusal
+        # cases. Complete setups use the same concrete pair publisher.
+        material_entries=({key: {**dict(mention),
+            "file_id": reader_lease.stat_identity(str(mention["stage_path"]))}
+            for key, mention in list(entries.items())[:material]}
+            if material is not None else None))
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": manifest,

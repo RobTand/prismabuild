@@ -196,7 +196,6 @@ def fleet(tmp_path: Path):
                           command=_egress_command(stage, mover=head),
                           digest=digest, mount=originals)
     _file_receipts(queue, stage, digest, head=head, egress=egress)
-    staged_path._manifest_layout_cache.clear()
     return queue, stage, cas_root, digest, originals, checkout, head, egress
 
 
@@ -247,7 +246,6 @@ def _reseal(fleet, *, seal_digest: str | None = None,
                               digest=seal_digest, mount=mount)
     _file_receipts(queue, stage, receipt_digest, head=head_key,
                    egress=egress_key, entries=entries, end=end)
-    staged_path._manifest_layout_cache.clear()
     return head_key, egress_key
 
 
