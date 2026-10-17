@@ -818,7 +818,6 @@ MAX_CONTROLLER_JOURNAL_LINE_BYTES = 4096
 #: are returned the moment a copy ends even when its bytes stay on the device.
 #: Occupancy kinds are absent on purpose -- see
 #: :meth:`PoolQueue.release_tier_rate_reservations` (#636).
-TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
@@ -2621,6 +2620,8 @@ def held_names_visible(ledger, key: str) -> set[str]:
     ``EACCES`` as an empty listing, which is the trap this exists for).
     """
 
+    if isinstance(ledger, tier_holdings.TierLedger):
+        return ledger.holder_state(key)
     try:
         paths = (ledger._glob_names(ledger.held_dir / key, "*-*", strict=True)
                  if isinstance(ledger, ResourceLedger)
@@ -6931,7 +6932,7 @@ class PoolQueue:
         occupancy_demand = {
             tier_id: kinds for tier_id, needs in tier_demand.items()
             if (kinds := {kind: need for kind, need in needs.items()
-                          if kind not in TIER_RATE_KINDS})}
+                          if kind not in tier_holdings.RATE_KINDS})}
         if occupancy_demand and residency is None and produced_ref is None:
             # Derived, never typed (#595): every tier demand the fleet's own
             # submitters seal travels beside the residency block whose
@@ -16370,7 +16371,7 @@ class PoolQueue:
         # and nothing may name another tier.
         tier_needs = {
             k: v for k, v in declared_grouped.get(str(tier_id), {}).items()
-            if k not in TIER_RATE_KINDS}
+            if k not in tier_holdings.RATE_KINDS}
         if (set(tier_needs) != {kind} or int(tier_needs[kind]) != int(floor)
                 or len(declared_grouped) != 1):
             raise PoolContractError(

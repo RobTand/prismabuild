@@ -98,9 +98,13 @@ class CallerMove(ast.NodeTransformer):
         self.need_import = False
 
     def visit(self, node):
+        previous = self.scoped
         if node in self.scopes:
             self.scoped = self.aliases[self.scopes[node]]
-        return super().visit(node)
+        try:
+            return super().visit(node)
+        finally:
+            self.scoped = previous
 
     def is_tier(self, node):
         return tier_call(node) or isinstance(node, ast.Name) and node.id in self.scoped

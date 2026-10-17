@@ -92,6 +92,28 @@ class TierLedger:
     def mint_census(self):
         return self._ledger.capacity_census()
 
+    @property
+    def census_report(self) -> Path:
+        return self._ledger.census_report_path
+
+    def grow_supply(self, wanted: Mapping[str, int]):
+        return self._ledger.ensure_capacity(wanted)
+
+    def trim_supply(self, wanted: Mapping[str, int]):
+        return self._ledger.retire_free_capacity(wanted)
+
+    def retire_duplicate(self, holder: str, counts: Mapping[str, int]):
+        return self._ledger.retire_held(holder, counts)
+
+    def holder_observations(self):
+        return self._ledger.holder_census()
+
+    def token_paths(self, directory: Path, pattern: str):
+        return self._ledger._census_glob(directory, pattern)
+
+    def entry_paths(self, directory: Path, *, optional: bool = False):
+        return self._ledger._census_scan(directory, optional=optional)
+
     def free_supply(self) -> dict[str, int]:
         return self._ledger.available()
 

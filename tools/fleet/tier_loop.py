@@ -9666,25 +9666,9 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
     for tier_id in tier_holdings.ids(queue.records):
         try:
             ledger = queue.tier(tier_id)
-            keys = ledger.holders()
         except (OSError, pool.PoolContractError):
             continue
-        for key in sorted(keys):
-            try:
-                if bool(
-                    pool.record_store.value_or_raise(
-                        queue.records.item_presence(pool.record_store.CLAIMED, key),
-                    ),
-                ):
-                    continue
-                rates = {kind: count for kind, count in ledger.holdings(key).items() if kind in tier_holdings.RATE_KINDS}
-                if not rates:
-                    continue
-                released = ledger.release_rates(key)
-            except (OSError, pool.PoolContractError):
-                continue
-            events.append({"event": "tier-rate-reclaimed", "tier_id": tier_id,
-                           "holder": key, "released": released, "rates": rates})
+        events.extend(ledger.reclaim_idle_rates())
     return events
 
 
