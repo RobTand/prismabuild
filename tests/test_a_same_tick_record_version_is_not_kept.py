@@ -29,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
+from prismabuild import census as fleet_census
+
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
@@ -223,7 +225,7 @@ def test_a_kept_history_entry_changed_in_the_fence_tick_is_derived_again(
     # the directory's own stamp is trusted while the entry is in its tick.
     os.chmod(record, 0o640)
     directory_before(monkeypatch, directory, os.stat(record).st_ctime_ns)
-    reader = pbmetrics.KeptReads()
+    reader = fleet_census.KeptReads()
 
     def scrape() -> list:
         reader.begin()

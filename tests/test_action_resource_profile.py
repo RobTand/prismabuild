@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 
 from prismabuild import box_window, core as pb, pool, resource_scope  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -681,7 +682,7 @@ PROFILE = {
 
 def test_pbstatus_endings_report_peak_memory_io_and_gpu_power(tmp_path):
     _profile_ending(tmp_path / "queue", "a" * 64, profile=PROFILE)
-    row = pbstatus.read_endings(tmp_path / "queue")[0]
+    row = fleet_census.endings(tmp_path / "queue")[0]
     assert row["memory_peak_bytes"] == 3 * 1024 ** 3
     assert row["io_write_bytes"] == 64 * MIB
     assert row["io_read_bytes"] == 1024
@@ -699,7 +700,7 @@ def test_pbstatus_endings_report_peak_memory_io_and_gpu_power(tmp_path):
 
 def test_an_ending_from_before_the_profile_renders_absent_not_zero(tmp_path):
     _profile_ending(tmp_path / "queue", "b" * 64, profile=None)
-    row = pbstatus.read_endings(tmp_path / "queue")[0]
+    row = fleet_census.endings(tmp_path / "queue")[0]
     assert row["memory_peak_bytes"] is None
     assert row["io_write_bytes"] is None
     assert row["gpu_power_peak_w"] is None

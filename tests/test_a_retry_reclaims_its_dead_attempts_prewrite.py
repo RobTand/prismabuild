@@ -42,6 +42,7 @@ import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild.record_store import RecordStore  # noqa: E402
 import pbmcp  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     WORKER, _charged, _cycle_lines, _entry,
@@ -111,7 +112,7 @@ def _nonce(instance: dict) -> str:
 
 
 def _listed(queue: pool.PoolQueue) -> list[dict]:
-    blob = pbstatus.read_blocked_origins(queue.root)
+    blob = fleet_census.blocked_origins(queue.root).value
     assert blob["complete"] is True and blob["blocked"] == []
     return blob["orphaned_prewrites"]
 
@@ -206,7 +207,7 @@ def test_files_no_attempt_committed_are_reported_until_removed(
     orphan = {"prewrite": key, "class_bytes": _class_bytes(len(v1)),
               "paths": [str(path)], "superseded": [], "held": []}
     assert _listed(queue) == [{**orphan,
-                               "remedy": pbstatus.ORPHANED_PREWRITE_REMEDY}]
+                               "remedy": fleet_census.ORPHANED_PREWRITE_REMEDY}]
     session = pbmcp.Session(queue_root=queue.root, cas_root=tmp_path / "cas",
                             repo_link=tmp_path / "repo")
     body = session.call("pb_blocked_origins")
@@ -430,7 +431,7 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
     assert (sorted(reads), scans) == (sorted([owner, running]), [_nonce(first)])
     reads.clear()
     scans.clear()
-    listed = pbstatus.read_blocked_origins(queue.root)
+    listed = fleet_census.blocked_origins(queue.root).value
     assert listed["complete"] is True
     assert sorted(item["prewrite"].rsplit("/", 1)[1]
                   for item in listed["orphaned_prewrites"]) == ["b1", "b2"]
