@@ -4925,10 +4925,6 @@ class ResourceLedger:
             return True
 
     @_guarded_mutation(blocking=True)
-    def sweep_finish_tombstones(self, *, grace_s: float = LEASE_TIMEOUT_S) -> list[str]:
-        """Recover interrupted conclusions without taking successor ownership."""
-        return lifecycle.conclude(self, lifecycle.FinishRecovery(grace_s))
-
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
     ) -> list[str]:
@@ -22515,7 +22511,7 @@ class PoolQueue:
         pending = self._saved_finish(key, record)
         if pending is None:
             return None
-        return lifecycle.finish(self, key, status=str(pending["status"]),
+        return self.finish(key, status=str(pending["status"]),
                            detail=pending["detail"], claim_snapshot=record)
 
     def retry_own_pending_finishes(self) -> list[str]:
@@ -22772,14 +22768,18 @@ class PoolQueue:
                     key, record, read_claim, holder, age, terminal_keys))
                 if result is not None:
                     requeued.append(key)
-        lifecycle.sweep_widowed_leases(self, timeout_s=timeout_s)
+        self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
-        lifecycle.sweep_finish_tombstones(self, )
-        lifecycle.sweep_ready_transitions(self, )
-        lifecycle.quarantine_orphans(self, )
+        self.sweep_finish_tombstones()
+        self.sweep_ready_transitions()
+        self.quarantine_orphans()
         return requeued
 
 
+
+    def sweep_finish_tombstones(self, *, grace_s: float = LEASE_TIMEOUT_S) -> list[str]:
+        """Recover interrupted conclusions without taking successor ownership."""
+        return lifecycle.conclude(self, lifecycle.FinishRecovery(grace_s))
 
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
@@ -23765,98 +23765,8 @@ class PoolQueue:
     @_serialized_key
     def reclaim_terminal_reservation(self, action_key: str, *,
                                      unpin: bool = False) -> dict[str, object]:
-        """Return an orphaned reservation only when terminal state proves it.
-
-        This is the bounded repair for a worker that finished on bytes which
-        predate ``claim_snapshot``.  It refuses a live or queued action, a
-        missing/failed terminal result, a surviving lease, multiple holders,
-        a holder that differs from the host which filed the successful
-        outcome, and a container that still lives under the terminal record's
-        owner -- that last one on the tier-only path too, where no host holds
-        the key but a container still ran.  Those are ambiguous generations,
-        not cleanup opportunities.
-        """
-
-        key = str(action_key)
-        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-            raise PoolContractError("action_key must be a 64-character hex digest")
-        for state in (READY, CLAIMED):
-            try:
-                present = record_store.value_or_raise(self.records.item_presence(state, key))
-            except OSError as exc:
-                raise PoolContractError(
-                    f"refusing to reclaim {key}: its {state} record is unreadable: {exc}") from exc
-            if present:
-                raise PoolContractError(
-                    f"refusing to reclaim {key}: action is still {state}")
-        try:
-            leased = record_store.value_or_raise(self.records.lease_presence(key))
-        except OSError as exc:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: its lease is unreadable: {exc}") from exc
-        if leased:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: action still has a lease")
-
-        terminals = [
-            (state, record)
-            for state in (DONE, FAILED, WITHDRAWN)
-            if (record := record_store.value_or_raise(self.records.item(state, key))) is not None
-        ]
-        if len(terminals) != 1:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: expected exactly one terminal "
-                f"record, found {len(terminals)}")
-        state, terminal = terminals[0]
-        if state != DONE or terminal.get("status") not in {"executed", "cache_hit"}:
-            raise PoolContractError(
-                f"refusing to reclaim {key}: terminal status is "
-                f"{state}/{terminal.get('status')}")
-
-        if not unpin and self.pin_holds_tier_tokens(terminal, key):
-            # A concluded mover whose bytes are still on the stage holds its
-            # tier tokens on purpose: they are the stage's occupancy, and
-            # returning them here would let the ledger admit a mover onto bytes
-            # this one has not released.  Repairing an orphan is the egress
-            # node's job, or ``--unpin`` when an operator knows the files are
-            # gone.
-            raise PoolContractError(
-                f"refusing to reclaim {key}: it still holds tier tokens for "
-                f"{terminal['residency']['range_end_bytes'] - terminal['residency']['range_start_bytes']}"
-                " bytes it staged; run its egress, or pass unpin=True if the "
-                "files are known to be gone")
-
-        hosts = self.claim_reservation_hosts(key)
-        if hosts:
-            if len(hosts) != 1:
-                raise PoolContractError(
-                    f"refusing to reclaim {key}: reservation is held on {hosts}")
-            finished_host = terminal.get("finished_host")
-            if finished_host != hosts[0]:
-                raise PoolContractError(
-                    f"refusing to reclaim {key}: successful outcome was filed on "
-                    f"{finished_host!r}, reservation is held on {hosts[0]!r}")
-        # The container lifecycle is verified on both paths, not only when a
-        # host holds the key.  A tier-only item -- no host demand, so
-        # ``claimed["reserved_on"]`` is ``None`` and no ledger names a box --
-        # still ran in a container, and returning its tier tokens while that
-        # container lives is the same unverified release the check below
-        # refuses.  The holder check above is vacuous with no holder, which
-        # is why it stays scoped to one; this one is not.
-        terminal_owner = terminal.get("container_owner")
-        if terminal_owner and self.container_marker(str(terminal_owner)).exists():
-            raise PoolContractError(
-                f"refusing to reclaim {key}: container lifecycle verification "
-                "is required")
-        if not hosts:
-            # No box holds it; a tier still may (a mover's stage tokens), and
-            # an operator asking for a terminal key's reservation back means
-            # those too.
-            return {"action_key": key, "released": self.release_tier_reservations(key),
-                    "hosts": []}
-
-        released = self._release_reservation(key, host=hosts[0])
-        return {"action_key": key, "released": released, "hosts": hosts}
+        """Repair only the positively verified terminal reservation."""
+        return lifecycle.conclude(self, lifecycle.TerminalReclaim(action_key, unpin))
 
     # -- operator decisions ---------------------------------------------
 
@@ -25646,30 +25556,8 @@ class PoolQueue:
 
     @_serialized_key
     def _defer_unstarted_claim(self, item: Mapping[str, object]) -> None:
-        """Return a broker-refused launch without recording an execution attempt."""
-        key = str(item["action_key"])
-        record = record_store.value_or_raise(self.records.item(CLAIMED, key))
-        if record is None or not claim_identity.same_claim(record, item):
-            return
-        if record.get("resource_scope") is not None:
-            raise PoolContractError("cannot defer an attempt that already owns a resource scope")
-        read_claim = dict(record)
-        host = self.resolve_claim_holder(key, record)
-        if host is not None:
-            record["claimed_host"] = host
-        tombstone, mine = self._entomb_claim(key, expect=read_claim)
-        if tombstone is None or not mine:
-            return
-        self.records.lease_path(key).unlink(missing_ok=True)
-        self._release_reservation(key, host=host)
-        self._shape_as_ready_item(record, action_key=key)
-        record["maintenance_deferred_unix"] = _now()
-        self._publish_requeued_claim(
-            record, action_key=key, tombstone=tombstone,
-            superseded_kind="maintenance-deferred",
-            superseded_reason="a newer publication already owns ready after maintenance deferral",
-        )
-        tombstone.unlink(missing_ok=True)
+        """Release a broker-refused launch through the unstarted policy."""
+        lifecycle.conclude(self, lifecycle.DeferredLaunch(item))
 
     def serve_once(
         self,
@@ -25731,15 +25619,13 @@ class PoolQueue:
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as
             # a terminal state, not left for the reaper 300 s later.
-            lifecycle.finish(self, 
-                key,
+            self.finish(key,
                 status="failed",
                 detail={"exception": repr(exc)},
                 claim_snapshot=item,
             )
             raise
-        lifecycle.finish(self, 
-            key,
+        self.finish(key,
             status=str(outcome["status"]),
             detail=outcome,
             claim_snapshot=item,

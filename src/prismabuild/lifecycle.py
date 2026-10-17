@@ -776,6 +776,10 @@ def conclude(queue, policy: WorkerFinish | ExpiredClaim) -> Path | None:
         return _sweep_ready_transitions(queue, grace_s=policy.grace_s)
     if isinstance(policy, WidowedLeaseRecovery):
         return _sweep_widowed_leases(queue, timeout_s=policy.timeout_s)
+    if isinstance(policy, DeferredLaunch):
+        return _defer_launch(queue, policy.item)
+    if isinstance(policy, TerminalReclaim):
+        return _reclaim_terminal(queue, policy.action_key, unpin=policy.unpin)
     raise TypeError(f"unsupported conclusion policy: {type(policy).__name__}")
 
 
@@ -1683,3 +1687,129 @@ class ReadyRecovery:
 @dataclass(frozen=True)
 class WidowedLeaseRecovery:
     timeout_s: float
+
+
+def _defer_launch(queue, item: Mapping[str, object]) -> None:
+    """Return a broker-refused launch without recording an execution attempt."""
+    key = str(item["action_key"])
+    record = record_store.value_or_raise(queue.records.item(CLAIMED, key))
+    if record is None or not claim_identity.same_claim(record, item):
+        return
+    if record.get("resource_scope") is not None:
+        raise PoolContractError("cannot defer an attempt that already owns a resource scope")
+    read_claim = dict(record)
+    host = queue.resolve_claim_holder(key, record)
+    if host is not None:
+        record["claimed_host"] = host
+    _commit_claim(queue, ClaimCommit(
+        Transition.DEFER, key, record, read_claim, host,
+        queue.records.item_path(READY, key), "requeued"))
+
+
+
+def _reclaim_terminal(queue, action_key: str, *,
+                                 unpin: bool = False) -> dict[str, object]:
+    """Return an orphaned reservation only when terminal state proves it.
+
+    This is the bounded repair for a worker that finished on bytes which
+    predate ``claim_snapshot``.  It refuses a live or queued action, a
+    missing/failed terminal result, a surviving lease, multiple holders,
+    a holder that differs from the host which filed the successful
+    outcome, and a container that still lives under the terminal record's
+    owner -- that last one on the tier-only path too, where no host holds
+    the key but a container still ran.  Those are ambiguous generations,
+    not cleanup opportunities.
+    """
+
+    key = str(action_key)
+    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+        raise PoolContractError("action_key must be a 64-character hex digest")
+    for state in (READY, CLAIMED):
+        try:
+            present = record_store.value_or_raise(queue.records.item_presence(state, key))
+        except OSError as exc:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: its {state} record is unreadable: {exc}") from exc
+        if present:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: action is still {state}")
+    try:
+        leased = record_store.value_or_raise(queue.records.lease_presence(key))
+    except OSError as exc:
+        raise PoolContractError(
+            f"refusing to reclaim {key}: its lease is unreadable: {exc}") from exc
+    if leased:
+        raise PoolContractError(
+            f"refusing to reclaim {key}: action still has a lease")
+
+    terminals = [
+        (state, record)
+        for state in (DONE, FAILED, WITHDRAWN)
+        if (record := record_store.value_or_raise(queue.records.item(state, key))) is not None
+    ]
+    if len(terminals) != 1:
+        raise PoolContractError(
+            f"refusing to reclaim {key}: expected exactly one terminal "
+            f"record, found {len(terminals)}")
+    state, terminal = terminals[0]
+    if state != DONE or terminal.get("status") not in {"executed", "cache_hit"}:
+        raise PoolContractError(
+            f"refusing to reclaim {key}: terminal status is "
+            f"{state}/{terminal.get('status')}")
+
+    if not unpin and queue.pin_holds_tier_tokens(terminal, key):
+        # A concluded mover whose bytes are still on the stage holds its
+        # tier tokens on purpose: they are the stage's occupancy, and
+        # returning them here would let the ledger admit a mover onto bytes
+        # this one has not released.  Repairing an orphan is the egress
+        # node's job, or ``--unpin`` when an operator knows the files are
+        # gone.
+        raise PoolContractError(
+            f"refusing to reclaim {key}: it still holds tier tokens for "
+            f"{terminal['residency']['range_end_bytes'] - terminal['residency']['range_start_bytes']}"
+            " bytes it staged; run its egress, or pass unpin=True if the "
+            "files are known to be gone")
+
+    hosts = queue.claim_reservation_hosts(key)
+    if hosts:
+        if len(hosts) != 1:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: reservation is held on {hosts}")
+        finished_host = terminal.get("finished_host")
+        if finished_host != hosts[0]:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: successful outcome was filed on "
+                f"{finished_host!r}, reservation is held on {hosts[0]!r}")
+    # The container lifecycle is verified on both paths, not only when a
+    # host holds the key.  A tier-only item -- no host demand, so
+    # ``claimed["reserved_on"]`` is ``None`` and no ledger names a box --
+    # still ran in a container, and returning its tier tokens while that
+    # container lives is the same unverified release the check below
+    # refuses.  The holder check above is vacuous with no holder, which
+    # is why it stays scoped to one; this one is not.
+    terminal_owner = terminal.get("container_owner")
+    if terminal_owner and queue.container_marker(str(terminal_owner)).exists():
+        raise PoolContractError(
+            f"refusing to reclaim {key}: container lifecycle verification "
+            "is required")
+    if not hosts:
+        # No box holds it; a tier still may (a mover's stage tokens), and
+        # an operator asking for a terminal key's reservation back means
+        # those too.
+        return {"action_key": key, "released": queue.release_tier_reservations(key),
+                "hosts": []}
+
+    released = queue._release_reservation(key, host=hosts[0])
+    return {"action_key": key, "released": released, "hosts": hosts}
+
+
+
+@dataclass(frozen=True)
+class DeferredLaunch:
+    item: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class TerminalReclaim:
+    action_key: str
+    unpin: bool = False
