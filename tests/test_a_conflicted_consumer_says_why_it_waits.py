@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_a_divergent_staged_copy_never_loops_its_mover as loop  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import adaptive_cpu, pool, residency_plan  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
@@ -52,7 +53,7 @@ def _census(world) -> dict:
     claimed = {path.stem for path in queue.records.dir(pool.record_store.CLAIMED).glob("*.json")}
     notes: list[str] = []
     unreadable: list[str] = []
-    entry = pbstatus._starvation_plan_entry(
+    entry = fleet_census._starvation_plan_entry(
         queue, world.successor,
         residency_plan.read(queue, world.successor),
         ready=ready, claimed=claimed, notes=notes, unreadable=unreadable,

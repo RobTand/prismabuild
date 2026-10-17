@@ -370,7 +370,10 @@ def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
         queue: pool.PoolQueue) -> None:
     """pbmcp's tier rows and pbmetrics both expose ``announced_unix``'s age."""
 
+    from prismabuild import census as fleet_census
+
     import pbmcp
+    from prismabuild import census as fleet_census
     import pbmetrics
 
     now = 2_000_000.0
@@ -389,6 +392,6 @@ def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
             f'{int(stuck_for)}' in text), [
         line for line in text.splitlines() if "announce_age" in line]
 
-    row = pbmcp._tier_row(json.loads(queue.records.tier_record_path(TIER).read_text()))
+    row = fleet_census._tier_row(json.loads(queue.records.tier_record_path(TIER).read_text()))
     assert row["announced_age_s"] > pool.OFFER_TIMEOUT_S
     assert row["liveness_refresh"]["after"] == "sweep_orphans"
