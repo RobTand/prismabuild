@@ -46,7 +46,7 @@ from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 NAMES = red.NAMES
