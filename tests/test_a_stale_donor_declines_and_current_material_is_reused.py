@@ -190,7 +190,7 @@ def _publish_donor_record(queue: pool.PoolQueue, *, mover: str, consumer: str,
         generation=reader_lease.mint_generation(),
         entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
                            "sha256": DIGEST, "file_id": identity}})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
+    assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
     start = ordinal * SIZE
     end = (ordinal + 1) * SIZE
     queue.record_move(mover, {
@@ -218,10 +218,8 @@ def _cycle(queue: pool.PoolQueue, stage: Path) -> None:
 def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     """Held tier tokens equal the ranges the stage's fragments account for."""
 
-    ledger = queue.tier_ledger(TIER)
-    held = {key: gib for key, gib in
-            ((key, ledger.holder_tokens(key).get("stage_gib", 0))
-             for key in ledger.held_keys()) if gib}
+    ledger = queue.tier(TIER)
+    held = {key: gib for key, gib in ((key, ledger.holdings(key).get('stage_gib', 0)) for key in ledger.holders()) if gib}
     root = queue.records.residency_fragment_root()
     accounted: dict[str, int] = {}
     hexdigits = set("0123456789abcdef")
@@ -273,7 +271,7 @@ def _read_like_the_consumer(queue: pool.PoolQueue, *, consumer: str,
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": STAGE_GIB})
+    q.tier(TIER).mint({'stage_gib': STAGE_GIB})
     return q
 
 
@@ -330,12 +328,12 @@ def test_the_current_incarnation_is_adopted_and_read(
     _cycle(queue, stage)
 
     assert_ledger_matches_the_stage(queue)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     # Credit moved through the existing transfer, from the current donor.
-    assert ledger.holder_tokens(third_mover) == {"stage_gib": PHASE_GIB}
-    assert ledger.holder_tokens(DONOR_B) == {}
+    assert ledger.holdings(third_mover) == {'stage_gib': PHASE_GIB}
+    assert ledger.holdings(DONOR_B) == {}
     # The stale donor was not touched: it still vouches and still holds.
-    assert ledger.holder_tokens(DONOR_A) == {"stage_gib": PHASE_GIB}
+    assert ledger.holdings(DONOR_A) == {'stage_gib': PHASE_GIB}
     receipt = queue.move_record(third_mover)
     assert receipt is not None
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == DONOR_B
@@ -378,9 +376,9 @@ def test_a_donor_whose_file_went_stale_publishes_no_successor(
     _cycle(queue, stage)
 
     assert_ledger_matches_the_stage(queue)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(DONOR_A) == {"stage_gib": PHASE_GIB}
-    assert ledger.holder_tokens(third_mover) == {}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(DONOR_A) == {'stage_gib': PHASE_GIB}
+    assert ledger.holdings(third_mover) == {}
     assert not residency_map.fragment_path(root, THIRD, third_mover).exists(), (
         "a declined adoption must publish no successor fragment")
     assert not reader_lease.material_path(

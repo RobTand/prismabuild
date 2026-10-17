@@ -248,9 +248,8 @@ def test_a_steady_cycle_does_not_list_ledger_directories(
 
     loop.cycle()
     loop.cycle()
-    ledger = loop.queue.tier_ledger(bench.TIER)
-    directories = [ledger.free_dir, ledger.held_dir, ledger.minted_dir,
-                   ledger.minted_dir / "dead", *pool.immutable_files.scan_optional(ledger.held_dir)]
+    ledger = loop.queue.tier(bench.TIER)
+    directories = [ledger.paths.free, ledger.paths.held, ledger.paths.minted, ledger.paths.minted / 'dead', *pool.immutable_files.scan_optional(ledger.paths.held)]
     listings = _listings(monkeypatch, directories)
     loop.cycle()
     reads = tier_loop.LAST_CYCLE["reads"]

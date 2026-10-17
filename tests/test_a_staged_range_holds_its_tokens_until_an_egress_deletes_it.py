@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
 import stage_release  # noqa: E402
+from prismabuild import tier_holdings
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -41,7 +42,7 @@ DIGEST = "1" * 64
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 
@@ -89,7 +90,7 @@ def _receipt(q: pool.PoolQueue, *, staged: int = 2 * storage_tiers.GIB,
 
 
 def _held(q: pool.PoolQueue) -> dict[str, int]:
-    return q.tier_ledger(TIER).holder_tokens(MOVER)
+    return q.tier(TIER).holdings(MOVER)
 
 
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
@@ -161,7 +162,7 @@ def test_an_ordinary_action_is_unaffected(queue) -> None:
     assert claimed is not None
     queue.finish(CONSUMER, status="executed")
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
-    assert queue.tier_ledger(TIER).holder_tokens(CONSUMER) == {}
+    assert queue.tier(TIER).holdings(CONSUMER) == {}
 
 
 # ------------------------------------------------------------- the gate
@@ -340,7 +341,7 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
                         "leads": [MOVER]})
-    queue.release_tier_reservations(MOVER)
+    tier_holdings.release_unspent_all(queue, MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
     # Terminal too: the bytes are gone and only a republished mover brings
@@ -354,7 +355,7 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
     _claim_mover(queue)
     _receipt(queue)
     queue.finish(MOVER, status="executed")
-    queue.release_tier_reservations(MOVER)
+    tier_holdings.release_unspent_all(queue, MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
     _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
              residency={"schema": pool.RESIDENCY_SCHEMA_V1,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
