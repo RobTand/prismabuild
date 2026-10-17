@@ -39,8 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
-import stage_release  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -603,7 +603,7 @@ def _ram_tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
 
 def _promote_args(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
                   digest: str, mover: str, consumer: str, start: int, end: int):
-    import ram_promote
+    from prismabuild import ram_promote
     return ram_promote.build_parser().parse_args([
         "--pool-root", str(queue.root),
         "--action-key", mover,
@@ -621,7 +621,7 @@ def _promote_args(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
 
 def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     """SSD lands, RAM promotes real bytes under epoch; joint gate stalls next."""
-    import ram_promote
+    from prismabuild import ram_promote
     ctx = _ram_setup(tmp_path, stage_gib=3, ram_gib=1)
     queue = ctx["queue"]
     tiers = _ram_tiers(tmp_path)

@@ -751,7 +751,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]
                            / "tools" / "fleet"))
-    import stage_release
+    from prismabuild import stage_release
     from prismabuild import residency_map
     queue = _queue(tmp_path, stage_gib=3)
     ledger = queue.tier_ledger(TIER)
