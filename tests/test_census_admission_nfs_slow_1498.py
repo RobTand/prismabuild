@@ -124,7 +124,7 @@ def test_sweep_keeps_every_sidecar_that_could_be_authority(fleet):
     holding, release = threading.Event(), threading.Event()
 
     def hold():
-        with queue._transition_locked(locked):
+        with queue.action_transition_lock(locked):
             holding.set()
             release.wait(timeout=60)
 
