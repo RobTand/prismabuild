@@ -48,7 +48,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_a_consumer_stages_only_to_its_refill_horizon as hz  # noqa: E402
 from prismabuild import staged_path
