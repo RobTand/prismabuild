@@ -54,14 +54,14 @@ def test_reason_survives_claim_and_is_visible_in_status(tmp_path):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas", worker_script="/worker.py",
                   checkout_root="/checkout", priority=1, priority_reason=REASON)
-    ready = fleet_census.rows(queue.root).value
+    ready = fleet_census.action_rows(queue.root).value
     assert ready["jobs"][0]["priority"] == 1
     assert ready["jobs"][0]["priority_reason"] == REASON
     assert REASON in "\n".join(pbstatus.pool_job_lines(ready["jobs"], ready["queue"]))
     assert queue.claim(owner="worker:1") is not None
     claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert claimed["priority_reason"] == REASON
-    observed = fleet_census.rows(queue.root).value
+    observed = fleet_census.action_rows(queue.root).value
     assert observed["jobs"][0]["priority_reason"] == REASON
 
 

@@ -52,7 +52,7 @@ def test_status_reports_future_skew_without_granting_admission(tmp_path, monkeyp
     directory = queue.ledger("dl380g10").base / "adaptive"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": 1007.0}))
-    result = fleet_census.rows(queue.root).value
+    result = fleet_census.action_rows(queue.root).value
     node = next(node for node in result["nodes"] if node["node"] == "dl380g10")
     assert node["state"] == expected_state
     assert node["offer_clock_skew_s"] == ahead_s

@@ -240,7 +240,7 @@ def test_repository_visible_in_status_reads(tmp_path):
                   worker_script="/worker.py", checkout_root="/co",
                   tested_repository="atlas")
     assert queue.claim() is not None
-    live = fleet_census.rows(queue.root).value
+    live = fleet_census.action_rows(queue.root).value
     assert live["jobs"][0]["tested_repository"] == "atlas"
     claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text(
         encoding="utf-8"))

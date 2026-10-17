@@ -134,7 +134,7 @@ def test_pbstatus_names_the_preemption_on_the_ending_and_on_the_requeue(
     assert f"preempted by {FOREGROUND[:12]}" in "\n".join(
         pbstatus.ending_lines(endings))
 
-    pool_state = fleet_census.rows(q.root).value
+    pool_state = fleet_census.action_rows(q.root).value
     rows = [row for row in pool_state["jobs"]
             if row["action_key"] == BACKGROUND and row["state"] == "READY"]
     assert len(rows) == 1
