@@ -14,7 +14,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     ff, pool = load("prismabuild.filesystem_floor"), load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     root = store / "data"
     root.mkdir()
     # These are external sensor inputs, not evidence about the fleet's disk
@@ -75,8 +75,8 @@ def operate(request, store, load):
             if variant == "grown":
                 ff.register(queue.root, root, members=[("reservations", HOST, "spool_gb")], now=101.0)
             if variant == "charged":
-                queue.tier_ledger("compat-stage").ensure_capacity({"stage_gib": 1})
-                assert queue.tier_ledger("compat-stage").acquire("compat-holder", {"stage_gib": 1})
+                queue.tier("compat-stage").mint({"stage_gib": 1})
+                assert queue.tier("compat-stage").take("compat-holder", {"stage_gib": 1})
                 ff.refresh_binding(queue.root, binding, now=100.0)
             raw = path.read_bytes()
         else:

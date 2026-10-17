@@ -12,7 +12,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     pg, pool = load("prismabuild.prelaunch_group"), load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     holder = pg.holder_name(UNIT, TIER, [])
     group = pg.group_dir(queue, UNIT, TIER)
     ticket = {"unit": UNIT, "priority": 1, "published_unix": 99.0, "tier_demands": {TIER: 1}}
@@ -22,9 +22,9 @@ def operate(request, store, load):
         pg.file_intent(queue, UNIT, holder, TIER, demand, [])
 
     def acquire(count):
-        handle = queue.tier_ledger(TIER).begin_acquire(holder, {"stage_gib": count})
+        handle = queue.tier(TIER).begin_take(holder, {"stage_gib": count})
         assert handle
-        queue.tier_ledger(TIER).commit_acquire(holder, handle)
+        queue.tier(TIER).commit_take(holder, handle)
 
     def committed():
         intent()
@@ -39,7 +39,7 @@ def operate(request, store, load):
             return 1
         return 0
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({"stage_gib": 2})
     demand = 2 if family == "pg-rollback" else 1
     epoch = 0
     if family == "pg-intent":
@@ -77,7 +77,7 @@ def operate(request, store, load):
                 for _ in range(2 if variant == "repeated" else 1):
                     assert "prelaunch-group-released" in pg.release_unit(queue, TIER, UNIT, holder, [], terminal=True)
             else:
-                queue.tier_ledger(TIER).release(holder)
+                queue.tier(TIER).release_unspent(holder, authority=load("prismabuild.tier_holdings").Unspent.NEVER_STARTED)
     elif family == "pg-ticket":
         unit = UNIT if variant == "plain" else "compat/escaped-unit"
         path = pg._ticket_file(queue, unit)
