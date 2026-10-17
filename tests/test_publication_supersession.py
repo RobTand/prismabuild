@@ -251,7 +251,9 @@ def test_uncertain_successor_does_not_make_an_exact_wait_follow_another_row(
     assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == raw
     if damage != "same_generation":
         retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
-                    *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
+                    *queue.records.dir(pool.record_store.CLAIMED).glob(
+                        f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+                    )]
         assert len(retained) == 1
         assert json.loads(retained[0].read_bytes())["published_unix"] == generation
 

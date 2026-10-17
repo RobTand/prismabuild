@@ -27,7 +27,9 @@ def _collision(queue: pool.PoolQueue, clock: list[float]):
 
 def _assert_old_authority_retained(queue: pool.PoolQueue, generation: float):
     retained = [*queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.json"),
-                *queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}")]
+                *queue.records.dir(pool.record_store.CLAIMED).glob(
+                    f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+                )]
     assert len(retained) == 1
     assert json.loads(retained[0].read_bytes())["published_unix"] == generation
 

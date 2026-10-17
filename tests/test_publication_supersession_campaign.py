@@ -39,7 +39,11 @@ def _campaign(tmp_path, monkeypatch, clock, successor_state):
                 patch.setattr(queue, "_release_reservation", unavailable_release)
                 with pytest.raises(OSError, match="release interrupted"):
                     queue.finish(KEY, status="executed", claim_snapshot=successor)
-            assert list(queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"))
+            assert list(
+                queue.records.dir(pool.record_store.CLAIMED).glob(
+                    f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+                ),
+            )
         elif successor_state == "drained":
             queue.finish(KEY, status="executed", claim_snapshot=successor)
     submitted = []

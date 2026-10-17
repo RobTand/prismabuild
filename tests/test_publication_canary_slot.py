@@ -127,7 +127,9 @@ def test_same_action_cannot_spend_the_slot_again_after_terminalization(q, tmp_pa
     key = action["action_key"]
     queued = json.loads(q.records.item_path(pool.record_store.READY, key).read_text())
     # A private terminal fixture; no process, signal or actual GPU execution.
-    q.records.item_path(pool.record_store.READY, key).rename(q.records.item_path(pool.record_store.DONE, key))
+    q.records.item_path(pool.record_store.READY, key).rename(
+        q.records.item_path(pool.record_store.DONE, key),
+    )
     terminal = q.records.item_path(pool.record_store.DONE, key).read_bytes()
     with pytest.raises(pool.PoolContractError, match="canary.*(spent|used|published)"):
         _publish(q, action, cas, checkout)

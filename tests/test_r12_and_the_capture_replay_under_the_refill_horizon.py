@@ -449,7 +449,10 @@ def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
     finished = _mover("threec", "chain-042")
     row = next(phase["mover_row"] for phase in plan["phases"]  # type: ignore[union-attr]
                if phase["name"] == "chain-042")
-    queue.records.item_path(pool.record_store.DONE, finished).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.item_path(pool.record_store.DONE, finished).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     queue.records.item_path(pool.record_store.DONE, finished).write_text(json.dumps(
         {**dict(row), "status": "done"}))
     if holds:

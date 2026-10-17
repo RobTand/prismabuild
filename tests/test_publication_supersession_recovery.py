@@ -85,7 +85,9 @@ def test_death_converges_without_losing_original_or_successor_authority(
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 91
     tombstones = list(
-        queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
     )
     assert len(tombstones) == 1
     assert json.loads(tombstones[0].read_bytes())["published_unix"] == generation
@@ -102,7 +104,9 @@ def test_death_converges_without_losing_original_or_successor_authority(
     _assert_superseded(queue, generation, successor_generation)
     assert ready.read_bytes() == ready_bytes
     assert not list(
-        queue.records.dir(pool.record_store.CLAIMED).glob(f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{KEY}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
     )
     assert attempt.read_bytes() == attempt_bytes
     assert not queue.records.attempt_path(original, 2).exists()
