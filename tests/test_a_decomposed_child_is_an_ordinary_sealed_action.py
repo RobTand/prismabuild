@@ -376,7 +376,7 @@ def test_the_declared_result_is_the_manifest_and_the_log_is_still_teed(
 def test_a_child_may_not_restate_what_the_template_froze(decomposed) -> None:
     """Otherwise a child could wear a template's identity and run elsewhere."""
 
-    with pytest.raises(SystemExit, match="restate the frozen template's: cwd"):
+    with pytest.raises(submit_core.SubmissionRefused, match="restate the frozen template's: cwd"):
         submit_core.seal(
             decomposed.template, extra_params={"cwd": "/somewhere-else"},
         )

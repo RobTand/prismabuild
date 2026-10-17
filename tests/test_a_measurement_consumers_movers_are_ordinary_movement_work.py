@@ -22,6 +22,7 @@ sealed bytes.  Only the CPU sample is stated: eight CPUs, one of them busy
 with load the pool does not own.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

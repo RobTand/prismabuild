@@ -22,6 +22,7 @@ Nothing here touches the live queue, a real pool, a stage or a tmpfs: every
 root is under ``tmp_path``.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

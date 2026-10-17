@@ -21,6 +21,7 @@ the rows are sealed by the real ``pbrun.residency_stage_rows``, exactly as
 sealed requests are captured rather than published to a CAS.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

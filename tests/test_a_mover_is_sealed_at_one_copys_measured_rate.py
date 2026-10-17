@@ -19,6 +19,7 @@ over one copy the minimum bounds nothing.
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import argparse
@@ -356,7 +357,7 @@ def test_the_submitters_declaration_reaches_the_plan(tmp_path: Path) -> None:
 def test_a_malformed_declaration_is_refused_at_submission(depth, rate) -> None:
     import pbrun
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(submit_core.SubmissionRefused):
         submit_core.reader_declaration(argparse.Namespace(
             residency_prefetch_depth_gib=depth, residency_read_mb_s=rate))
 
