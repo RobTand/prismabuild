@@ -103,7 +103,7 @@ def _sealed_pbrun_action(checkout: Path, stamp_name: str) -> dict[str, object]:
 def _tags(cwd: str, **kw: object) -> list[str]:
     return submit_core.placement_contract(
         Path(cwd), explicit=kw.pop("explicit", []), here=bool(kw.pop("here", False)),
-        hostname=HOST, store=pbrun.configured_store(), display=submit_core.render_submission)[0]
+        hostname=HOST, store=pbrun.configured_store(), display=pbrun.render_submission)[0]
 
 
 def test_a_shared_checkout_is_free_to_run_on_any_box() -> None:
@@ -149,7 +149,7 @@ def test_portable_snapshot_keeps_a_box_local_executable_host_pin(
     portable_checkout=True,
     command=[str(interpreter), "-V"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=submit_core.render_submission)[0] == [HOST]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_explicit_tag_owns_a_missing_external_executable_path(
@@ -165,7 +165,7 @@ def test_explicit_tag_owns_a_missing_external_executable_path(
     portable_checkout=True,
     command=["/home/rob/venvs/pb-cpu/bin/python", "-V"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=submit_core.render_submission)[0] == ["dl380g10"]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == ["dl380g10"]
 
 
 def test_portable_snapshot_refuses_an_unplaced_missing_executable(
@@ -181,7 +181,7 @@ def test_portable_snapshot_refuses_an_unplaced_missing_executable(
         portable_checkout=True,
         command=["/home/rob/venvs/missing/bin/python", "-V"],
         repository_root=checkout,
-        environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=submit_core.render_submission)[0]
+        environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0]
 
 
 def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
@@ -200,7 +200,7 @@ def test_portable_snapshot_resolves_a_bare_executable_through_declared_path(
     portable_checkout=True,
     command=["python3", "-V"],
     repository_root=checkout,
-    environment={"PATH": str(binary.parent)},store=pbrun.configured_store(), display=submit_core.render_submission)[0] == [HOST]
+    environment={"PATH": str(binary.parent)},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
@@ -220,7 +220,7 @@ def test_portable_snapshot_pins_a_direct_flag_value_outside_the_snapshot(
     portable_checkout=True,
     command=["./task.py", f"--model={model}"],
     repository_root=checkout,
-    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=submit_core.render_submission)[0] == [HOST]
+    environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> None:
@@ -238,7 +238,7 @@ def test_portable_snapshot_screens_caller_environment_paths(tmp_path: Path) -> N
     command=["./task.py"],
     repository_root=checkout,
     environment={"PATH": "/usr/bin:/bin"},
-    caller_environment={"MODEL_CACHE": str(cache)},store=pbrun.configured_store(), display=submit_core.render_submission)[0] == [HOST]
+    caller_environment={"MODEL_CACHE": str(cache)},store=pbrun.configured_store(), display=pbrun.render_submission)[0] == [HOST]
 
 
 def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_anywhere_is_an_explicit_external_portability_assertion(tmp_path: Path) 
     command=["/worker/owned/python", "--model=/worker/owned/model"],
     repository_root=checkout,
     environment={"PATH": "/usr/bin:/bin"},
-    anywhere=True,store=pbrun.configured_store(), display=submit_core.render_submission)[0] == []
+    anywhere=True,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == []
 
 
 def test_here_pins_a_shared_checkout_on_purpose() -> None:
@@ -802,7 +802,7 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
     explicit=[],
     here=False,
     hostname=HOST,
-    portable_checkout=True,store=pbrun.configured_store(), display=submit_core.render_submission)[0] == []
+    portable_checkout=True,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == []
 
     (linked / "linked-only.txt").write_text("sealed linked worktree bytes\n")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
@@ -2080,7 +2080,7 @@ def test_a_tag_and_here_are_both_constraints_the_submitter_asked_for(
     """
 
     tags = submit_core.placement_contract(Path("/mnt/shared/tessera-x86"),
-                                explicit=["x86"], here=True, hostname=HOST, store=pbrun.configured_store(), display=submit_core.render_submission)[0]
+                                explicit=["x86"], here=True, hostname=HOST, store=pbrun.configured_store(), display=pbrun.render_submission)[0]
     assert tags == ["x86", HOST]               # both, hostname last
 
     notice = _notice(_fleet(tmp_path), cwd="/mnt/shared/tessera-x86", tags=tags,
@@ -2096,7 +2096,7 @@ def test_here_beside_the_host_tag_does_not_repeat_the_hostname(tmp_path) -> None
     """The two spellings of one pin are one tag, and the tag matcher is exact."""
 
     assert submit_core.placement_contract(Path("/mnt/shared/tessera-x86"),
-    explicit=[HOST, "x86"], here=True, hostname=HOST,store=pbrun.configured_store(), display=submit_core.render_submission)[0] == ["x86", HOST]
+    explicit=[HOST, "x86"], here=True, hostname=HOST,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == ["x86", HOST]
 
 
 def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path) -> None:

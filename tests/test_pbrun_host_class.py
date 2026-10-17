@@ -185,7 +185,7 @@ def test_the_slurm_lane_receives_the_class_as_placement(monkeypatch):
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=["gb10"], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=60.0, retry_safe=False, max_attempts=1,
-        store=pbrun.configured_store(), display=submit_core.render_submission)
+        store=pbrun.configured_store(), display=pbrun.render_submission)
     assert raised.value.kwargs["placement"] == ["gb10"]
     # Partition stays the resource axis: no GPU demand and a tag means the
     # default partition, where the constraint picks the node.

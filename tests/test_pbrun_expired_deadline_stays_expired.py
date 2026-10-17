@@ -134,7 +134,7 @@ def test_a_release_read_after_the_deadline_is_not_turned_into_a_probe(
     clock = FakeClock(jumps={1: 3.0})
     waits = _released(monkeypatch, clock)
 
-    assert submit_core.await_release(_Queue(), PENDING, wait_s=2.0, store=pbrun.configured_store(), display=submit_core.render_submission) == submit_core.action_client.GAVE_UP_EXIT
+    assert submit_core.await_release(_Queue(), PENDING, wait_s=2.0, store=pbrun.configured_store(), display=pbrun.render_submission) == submit_core.action_client.GAVE_UP_EXIT
     assert waits == []
     err = capsys.readouterr().err
     assert f"was released as {KEY[:12]}" in err
@@ -150,5 +150,5 @@ def test_a_release_inside_the_deadline_waits_for_what_is_left(
     clock = FakeClock(jumps={1: late_s})
     waits = _released(monkeypatch, clock)
 
-    assert submit_core.await_release(_Queue(), PENDING, wait_s=wait_s, store=pbrun.configured_store(), display=submit_core.render_submission) == 0
+    assert submit_core.await_release(_Queue(), PENDING, wait_s=wait_s, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert waits == [{"key": KEY, "wait_s": pytest.approx(expected)}]
