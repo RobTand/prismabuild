@@ -1,6 +1,7 @@
 """Interruption after donor withdrawal must leave a completed, clean adoption."""
 from pathlib import Path
 import hashlib
+import json
 import sys
 
 import pytest
@@ -95,11 +96,12 @@ def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
         queue.records.move_path(SUCCESSOR).write_bytes(b'{unknown')
     elif successor_state == 'different-receipt':
         receipt = queue.move_record(SUCCESSOR, fresh=True)
-        queue.record_move(SUCCESSOR, {**receipt, 'adopted_from_consumer': 'f' * 64})
+        queue.records.move_path(SUCCESSOR).write_text(json.dumps(
+            {**receipt, 'adopted_from_consumer': 'f' * 64}) + '\n')
     elif successor_state in ('float-receipt', 'boolean-receipt'):
         receipt = queue.move_record(SUCCESSOR, fresh=True)
-        queue.record_move(SUCCESSOR, {**receipt,
-            'range_start_bytes': 0.0 if successor_state == 'float-receipt' else False})
+        queue.records.move_path(SUCCESSOR).write_text(json.dumps({**receipt,
+            'range_start_bytes': 0.0 if successor_state == 'float-receipt' else False}) + '\n')
     elif successor_state == 'wrong-schema-receipt':
         queue.records.move_path(SUCCESSOR).write_text('{"schema":"unknown"}\n')
     elif successor_state == 'empty-receipt':
