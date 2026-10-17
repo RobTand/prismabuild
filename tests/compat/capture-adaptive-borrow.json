@@ -1,0 +1,27 @@
+{
+  "capture_name": "state-cpu-borrow-capture-02",
+  "capture_report_sha256": "80f4cfab85293284a9de2d1cd927e492f70ac43c5e9a64f4f6d9227f051d86b7",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-borrow.jsonl": "e6b8a4d007ca88d1d1f5773522507c74cb4c5c96edfea5cda1bfb3e296d8cadd",
+    "historical-adaptive-borrow.jsonl": "0eb40c1a21307cf23748fd256d0d12fa6219e41489f9134123f5bce9aaa5719c"
+  },
+  "finished_at": "2026-10-17T00:21:29.510267+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-cpu-borrow/admitted",
+    "state-cpu-borrow/returned"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "77b0eb8e85d629c9206e7e13a1fbae059e704818",
+    "tree": "cc48beb2411697babaeef620597b299b5b9c5c93"
+  },
+  "started_at": "2026-10-17T00:21:01.444157+00:00"
+}
