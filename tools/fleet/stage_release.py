@@ -3689,7 +3689,7 @@ def _evict_uncharged_owner(
     store = queue.records if store is None else store
 
     try:
-        with queue._transition_locked(consumer):
+        with queue.action_transition_lock(consumer):
             for key in (consumer, mover):
                 live, why = residency_plan.live_state(queue, key)
                 if live or why:
@@ -3956,7 +3956,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
     store = queue.records if store is None else store
 
     try:
-        with queue._transition_locked(consumer):
+        with queue.action_transition_lock(consumer):
             live, why = residency_plan.live_state(queue, consumer)
             if why:
                 refuse(f"ownership uncertain: {why}", consumer)

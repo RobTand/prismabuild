@@ -1,6 +1,6 @@
 """Pin lifecycle source effects and preserve native test definitions using only stdlib.
 
-Run ``python3 tools/maintenance/audit_lifecycle.py --out DIRECTORY`` before
+Run ``python3 tests/lifecycle_source_audit.py --out DIRECTORY`` before
 and after the move. The exact base is a Git object, never a mutable checkout.
 Runtime collection and physical outcomes require a separate admitted PB run.
 """
@@ -20,7 +20,7 @@ import tarfile
 import tokenize
 
 LIFECYCLE_AUDIT_BASE = "578e54d0788c0f3b138f5dcf217e980322bb7726"
-LIFECYCLE_AUDIT_ROOT = Path(__file__).resolve().parents[2]
+LIFECYCLE_AUDIT_ROOT = Path(__file__).resolve().parents[1]
 LIFECYCLE_AUDIT_RENAMES = {
     "_same_claim": "same_claim", "_check_claim_lease_identity": "check_lease_identity",
     "_CLAIM_IDENTITY": "CLAIM_IDENTITY_FIELDS",
