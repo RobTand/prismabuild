@@ -8,21 +8,40 @@ from test_commit_requires_existing_funding import _world, _commit
 from test_produced_output_scope import STAGE_TIER, STAGE_BARE
 
 
-def test_zero_token_commit_keeps_its_original_success(tmp_path):
+def test_zero_total_keeps_its_original_outer_refusal(tmp_path):
     world = _world(tmp_path)
     queue, template, instance, descriptor, _, namespace, funding = world
-    # The existing descriptor contract requires positive bytes. An empty
-    # batch reconciles a ceiling whose planned output was omitted and absent.
+    # Descriptors and the total-stage quantizer both require positive bytes.
     from pathlib import Path
     Path(descriptor['path']).unlink()
     ledger = queue.tier(STAGE_TIER)
     free = ledger.free_supply()
-    result = produced_output.commit_batch(
-        queue, instance, template, [], batch_id='batch',
-        tier=STAGE_TIER, mover_key='a' * 64)
-    assert result['ok'] is True, result
-    assert result['funding'] == 'legacy'
-    assert result['class_bytes'] == {'payload': 0, 'checkpoint': 0, 'temp': 0}
+    with pytest.raises(ValueError, match='^a residency range must be a positive number of bytes$'):
+        produced_output.commit_batch(
+            queue, instance, template, [], batch_id='batch',
+            tier=STAGE_TIER, mover_key='a' * 64)
+    assert ledger.free_supply() == free
+    assert ledger.holdings(namespace) == {}
+    assert ledger.holdings('a' * 64) == {}
+    assert not funding.exists()
+
+
+def test_the_owned_zero_credit_branch_does_not_acquire(tmp_path):
+    from prismabuild import batch_ledger, output_contract
+    world = _world(tmp_path)
+    queue, template, instance, _, _, _, funding = world
+    ledger = queue.tier(STAGE_TIER)
+    free = ledger.free_supply()
+    manifest = output_contract.output_manifest_sha256([])
+    namespace = output_contract.batch_namespace(instance, 'batch', manifest)
+    with batch_ledger.path_locks(queue, instance):
+        result = queue.funding.commit_stage(
+            instance, template, batch_id='batch', manifest_digest=manifest,
+            batch_ns=namespace, tier=STAGE_TIER, mover='a' * 64,
+            kind=STAGE_BARE, batch_total=0, batch_gib=0)
+    assert result.refusal is None
+    assert result.prepaid is None
+    assert result.path == funding
     assert ledger.free_supply() == free
     assert ledger.holdings(namespace) == {}
     assert ledger.holdings('a' * 64) == {}
