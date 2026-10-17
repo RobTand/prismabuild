@@ -821,15 +821,13 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
             if (instance["template_id"] != template_id
                     or bl.scope_dir(queue_root, instance) != scope):
                 continue
-            batches = bl.BatchLedger(scope / "commitments.json").capture()["batches"]
+            batches = bl.BatchLedger(scope / 'commitments.json').entries()['batches']
         except FileNotFoundError:
             continue
         except (OSError, ValueError) as exc:
             raise ActionEdgeUnreadable(
                 f"producer instance {name} unreadable: {exc}") from None
-        if any(isinstance(entry, Mapping) and bl.BatchFacets(entry).kind == "origin"
-               and not bl.BatchFacets(entry).origin_reclaimed
-               for entry in batches.values()):
+        if any((isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (not entry.origin_reclaimed) for entry in batches.values())):
             attempt = instance["owner_attempt"]
             assert isinstance(attempt, dict)
             found.append(str(attempt["nonce"]))
@@ -925,16 +923,14 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     except (OSError, ValueError) as exc:
         raise ActionEdgeError(f"producer instance unreadable: {exc}") from None
     try:
-        commitments = bl.BatchLedger.for_instance(queue_root, instance).capture()
+        commitments = bl.BatchLedger.for_instance(queue_root, instance).entries()
     except oc.ProducedOutputError as exc:
         raise ActionEdgeError(f"producer commitments unreadable: {exc}") from None
     refs: list[dict[str, object]] = []
-    for batch_id, entry in sorted(commitments["batches"].items()):
-        if not isinstance(entry, Mapping) or bl.BatchFacets(entry).kind != "origin":
+    for batch_id, entry in sorted(commitments.items()):
+        if not isinstance(entry, bl.BatchFacets) or entry.kind != 'origin':
             continue
-        refs.append(oc.origin_batch_ref(
-            instance, batch_id=batch_id,
-            manifest_digest=str(entry.get("manifest_digest"))))
+        refs.append(oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.manifest)))
     try:
         # One commitments write for every re-pin these checks make (#1111).
         po.load_origin_batches(queue_root, refs)

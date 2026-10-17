@@ -13490,67 +13490,10 @@ class PoolQueue:
             return False
         if oc.template_sha256(checked_template) != template_sha:
             return False
-        # Commitments entry (existing helper; small file per instance).
-        try:
-            commitments = bl.BatchLedger.for_instance(self.root, instance).capture()
-        except oc.ProducedOutputError:
-            return False
-        batches = commitments.get("batches")
-        if not isinstance(batches, dict):
-            return False
-        entry = batches.get(batch_id)
-        if not isinstance(entry, dict):
-            return False
-        if (str(entry.get("manifest_digest")) != manifest
-                or str(entry.get("tier")) != tier_id):
-            return False
-        # WHICH mover this committed batch authorizes. The batch's own first
-        # publication always does. A RE-materialization of the same batch
-        # (`produced_output.ensure_batch_materialized`) stages the identical
-        # manifest over the identical origins under a successor mover whose
-        # key PB sealed and filed on the batch's materialization list, so the
-        # committed batch authorizes that key too -- and ONLY while it is the
-        # single live row on that list, with the batch's own tier. A
-        # malformed list is unknown and authorizes nothing (no credit), never
-        # a downgrade to the prewrite path.
-        if str(entry.get("mover_key")) != mover_key:
-            try:
-                live = bl.BatchFacets(entry).pending_copy
-            except oc.ProducedOutputError:
-                return False
-            except (OSError, ValueError):
-                return False
-            if (live is None
-                    or str(live.get("mover_key")) != mover_key
-                    or str(live.get("tier")) != tier_id):
-                return False
-        # Strict loader (R4): bounded, exact binding, re-validated entries,
-        # recomputed manifest. Missing/empty entries refuse inside (never
-        # vacuously True); corrupt/mismatched commitments never fall through
-        # to prewrite (no downgrade).
-        try:
-            filed, _ = bl.BatchLedger.open(
-                self.root, instance, checked_template, entry, batch_id)
-        except oc.ProducedOutputError:
-            return False
-        except (OSError, ValueError):
-            return False
-        if (str(filed.get("manifest_digest")) != manifest
-                or str(filed.get("tier")) != tier_id
-                or int(filed.get("total_bytes", -1)) != total):
-            return False
-        # The immutable record names the FIRST mover; a successor is
-        # authorized only through the filed materialization list checked
-        # above, and the record's own mover must still agree with the entry
-        # (a changed mover in commitments authorizes nothing).
-        if (str(filed.get("mover_key")) != str(entry.get("mover_key"))
-                or (str(filed.get("mover_key")) != mover_key
-                    and not any(
-                        str(item.get("mover_key")) == mover_key
-                        for item in (entry.get("materializations") or [])
-                        if isinstance(item, Mapping)))):
-            return False
-        return True
+        return bl.BatchLedger.authorizes_mover(
+            self.root, instance, checked_template, batch_id=batch_id,
+            manifest=manifest, tier_id=tier_id, mover_key=mover_key,
+            total=total)
 
     def _output_precommit_authority(self, record: Mapping[str, object]) -> bool:
         """Durable-prewrite authority for drive/fund recovery (R2).

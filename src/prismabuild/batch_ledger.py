@@ -598,6 +598,11 @@ class LedgerReads:
             self._commitments[str(path)] = (keepable, batches)
         return dict(batches)
 
+    def entries(self, scope: Path):
+        """The tick's captured batch answers, with the same version fence."""
+        return BatchCapture(BatchLedger.at_scope(scope),
+                            {"batches": self.batches(scope)})
+
     def forget(self, scope: Path) -> None:
         """Drop this scope's commitments before its record is written.
 
@@ -2208,7 +2213,7 @@ class BatchFacets:
     """Independent batch facts derived from one captured commitment."""
 
     def __init__(self, entry: Mapping[str, object]):
-        self.entry = entry
+        self._entry = entry
 
     @property
     def kind(self) -> str:
@@ -2247,7 +2252,7 @@ class BatchFacets:
         and corruption fails RETAIN.
         """
 
-        entry = self.entry
+        entry = self._entry
         raw = entry.get("materializations")
         if raw is None:
             return []
@@ -2290,7 +2295,7 @@ class BatchFacets:
         corrupt state and raises rather than guessing which one owns the material.
         """
 
-        entry = self.entry
+        entry = self._entry
         live = [item for item in BatchFacets(entry).copies
                 if not item.get("retired")]
         if len(live) > 1:
@@ -2313,7 +2318,7 @@ class BatchFacets:
         a malformed list (unknown retains).
         """
 
-        entry = self.entry
+        entry = self._entry
         if entry.get("origin_only") is True:
             # An origin-only batch (#912) never had a stage copy, so every reader
             # that asks "is a copy live?" hears no.  Path ownership is the one
@@ -2340,7 +2345,7 @@ class BatchFacets:
     def movers(self) -> list[str]:
         """Every mover key that has ever owned this batch's material, in order."""
 
-        entry = self.entry
+        entry = self._entry
         keys = [str(entry.get("mover_key") or "")]
         keys += [str(item.get("mover_key")) for item in BatchFacets(entry).copies]
         return [key for key in keys if len(key) == 64]
@@ -2357,7 +2362,7 @@ class BatchFacets:
         list, so unknown retains instead of reading as retired.
         """
 
-        entry = self.entry
+        entry = self._entry
         return bool(BatchFacets(entry).active_copy.get("retired"))
 
 
@@ -2365,18 +2370,117 @@ class BatchFacets:
     def lifetime(self) -> str:
         """A commitments entry's origin lifetime; an entry without one retains."""
 
-        entry = self.entry
+        entry = self._entry
         return str(entry.get("lifetime") or oc.ORIGIN_LIFETIME_RETAIN)
 
 
     @property
     def state(self) -> str:
-        entry = self.entry
+        entry = self._entry
         if entry.get("origin_reclaimed"):
             return oc.BATCH_STATE_RECLAIMED
         if entry.get("retiring"):
             return oc.BATCH_STATE_RETIRING
         return oc.BATCH_STATE_COMMITTED
+
+
+    @property
+    def manifest(self):
+        return self._entry.get("manifest_digest")
+
+    @property
+    def required_manifest(self):
+        return self._entry["manifest_digest"]
+
+    @property
+    def namespace(self):
+        return self._entry.get("batch_namespace")
+
+    @property
+    def first_mover(self):
+        return self._entry.get("mover_key")
+
+    @property
+    def tier(self):
+        return self._entry.get("tier")
+
+    @property
+    def class_bytes(self):
+        return self._entry.get("class_bytes")
+
+    @property
+    def paths(self):
+        return self._entry.get("paths")
+
+    @property
+    def staged_paths(self):
+        return self._entry.get("staged_paths")
+
+    @property
+    def retiring(self):
+        return self._entry.get("retiring")
+
+    @property
+    def has_retirement_report(self):
+        return "retirement_report" in self._entry
+
+    @property
+    def active(self):
+        return StageCopy(self.active_copy)
+
+    @property
+    def history(self):
+        return [StageCopy(item) for item in self.copies]
+
+    def open(self, queue_root, instance, template, batch_id):
+        return BatchLedger.open(queue_root, instance, template, self._entry,
+                                batch_id)
+
+    def effective_origins(self, filed, sealed):
+        return effective_origin_identity(filed, sealed, self._entry)
+
+
+class StageCopy:
+    """One named copy answer; construction performs no validation or reads."""
+
+    def __init__(self, row):
+        self._row = row
+
+    @property
+    def mover_key(self):
+        return self._row.get("mover_key")
+
+    @property
+    def tier(self):
+        return self._row.get("tier")
+
+    @property
+    def generation(self):
+        return self._row.get("generation")
+
+    @property
+    def retired(self):
+        return self._row.get("retired")
+
+    @property
+    def state(self):
+        return self._row.get("state")
+
+    @property
+    def source(self):
+        return self._row.get("source")
+
+    @property
+    def staged_paths(self):
+        return self._row.get("staged_paths")
+
+    @property
+    def host(self):
+        return self._row.get("host")
+
+    @property
+    def fill_mb_s_pool_side(self):
+        return self._row.get("fill_mb_s_pool_side")
 
 
 class BatchLedger:
@@ -2392,6 +2496,15 @@ class BatchLedger:
     @classmethod
     def for_instance(cls, queue_root, instance):
         return cls(scope_dir(queue_root, instance) / "commitments.json")
+
+    @classmethod
+    def at_scope(cls, scope: Path):
+        """Address an already selected scope without reading its bindings."""
+        return cls(scope / "commitments.json")
+
+    def entries(self):
+        """Capture one generation of entries; no entry history is read eagerly."""
+        return BatchCapture(self, self.capture())
 
     @staticmethod
     def precommit(
@@ -2553,6 +2666,77 @@ class BatchLedger:
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
+
+
+    @staticmethod
+    def authorizes_mover(queue_root, instance, checked_template, *, batch_id,
+                         manifest, tier_id, mover_key, total) -> bool:
+        """The captured batch's immutable and selected-history authority.
+
+        Pool supplies its already checked funding tuple and bindings. This owner
+        answers the batch question at the existing conditional read point.
+        """
+        # Commitments entry (existing helper; small file per instance).
+        try:
+            commitments = BatchLedger.for_instance(queue_root, instance).capture()
+        except oc.ProducedOutputError:
+            return False
+        batches = commitments.get("batches")
+        if not isinstance(batches, dict):
+            return False
+        entry = batches.get(batch_id)
+        if not isinstance(entry, dict):
+            return False
+        if (str(entry.get("manifest_digest")) != manifest
+                or str(entry.get("tier")) != tier_id):
+            return False
+        # WHICH mover this committed batch authorizes. The batch's own first
+        # publication always does. A RE-materialization of the same batch
+        # (`produced_output.ensure_batch_materialized`) stages the identical
+        # manifest over the identical origins under a successor mover whose
+        # key PB sealed and filed on the batch's materialization list, so the
+        # committed batch authorizes that key too -- and ONLY while it is the
+        # single live row on that list, with the batch's own tier. A
+        # malformed list is unknown and authorizes nothing (no credit), never
+        # a downgrade to the prewrite path.
+        if str(entry.get("mover_key")) != mover_key:
+            try:
+                live = BatchFacets(entry).pending_copy
+            except oc.ProducedOutputError:
+                return False
+            except (OSError, ValueError):
+                return False
+            if (live is None
+                    or str(live.get("mover_key")) != mover_key
+                    or str(live.get("tier")) != tier_id):
+                return False
+        # Strict loader (R4): bounded, exact binding, re-validated entries,
+        # recomputed manifest. Missing/empty entries refuse inside (never
+        # vacuously True); corrupt/mismatched commitments never fall through
+        # to prewrite (no downgrade).
+        try:
+            filed, _ = BatchLedger.open(
+                queue_root, instance, checked_template, entry, batch_id)
+        except oc.ProducedOutputError:
+            return False
+        except (OSError, ValueError):
+            return False
+        if (str(filed.get("manifest_digest")) != manifest
+                or str(filed.get("tier")) != tier_id
+                or int(filed.get("total_bytes", -1)) != total):
+            return False
+        # The immutable record names the FIRST mover; a successor is
+        # authorized only through the filed materialization list checked
+        # above, and the record's own mover must still agree with the entry
+        # (a changed mover in commitments authorizes nothing).
+        if (str(filed.get("mover_key")) != str(entry.get("mover_key"))
+                or (str(filed.get("mover_key")) != mover_key
+                    and not any(
+                        str(item.get("mover_key")) == mover_key
+                        for item in (entry.get("materializations") or [])
+                        if isinstance(item, Mapping)))):
+            return False
+        return True
 
 
     @staticmethod
@@ -2742,53 +2926,6 @@ class BatchLedger:
             raise oc.ProducedOutputError(f"unknown-retain: {exc}") from None
 
 
-    @staticmethod
-    def retire_materialization(
-            batches: dict, batch_id: str, *, mover_key: str,
-            receipt: Mapping[str, object], canonical_ns: str,
-            staged_paths: list[str]) -> bool:
-        """Mark one materialization's stage retirement in ``batches``.
-
-        ``batches`` is the commitments document the caller read under its
-        ownership lock, and the caller writes it back under the same lock: this
-        marks, it does not read or write (#1072).  Returns whether it changed
-        anything.
-
-        Proof-checked exactly like the primary retirement: the egress receipt must
-        be complete, error-free, and name THIS materialization's mover with the
-        batch's canonical namespace. The namespace is digest-derived and shared by
-        every materialization of one batch, so the reader contract is unchanged.
-        The durable charge is NOT touched -- retiring a materialization returns
-        window credit only, and the origin charge stays constant across forward
-        and reverse staging.
-        """
-
-        if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
-            raise oc.ProducedOutputError("retire needs a complete egress receipt")
-        if receipt.get("errors"):
-            raise oc.ProducedOutputError("retire needs an error-free egress receipt")
-        if (str(receipt.get("action_key") or "") != str(mover_key)
-                or str(receipt.get("consumer_action_key") or "") != canonical_ns):
-            raise oc.ProducedOutputError("retire receipt names another materialization")
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
-            raise oc.ProducedOutputError("unknown batch_id for this instance")
-        items = BatchFacets(entry).copies
-        for index, item in enumerate(items):
-            if str(item.get("mover_key")) == str(mover_key):
-                if item.get("retired"):
-                    return False
-                item = dict(item)
-                item["retired"] = True
-                item["staged_paths"] = sorted(set(staged_paths))
-                items[index] = item
-                break
-        else:
-            raise oc.ProducedOutputError("unknown-retain: materializations")
-        updated = dict(entry)
-        updated["materializations"] = items
-        batches[batch_id] = updated
-        return True
 
 
     @staticmethod
@@ -3477,35 +3614,6 @@ class BatchLedger:
         return state
 
 
-    @staticmethod
-    def origin_gate(commitments_path: Path,
-                            commitments: Mapping[str, object], batch_id: str,
-                            entry: Mapping[str, object],
-                            filed: Mapping[str, object],
-                            sealed: list[dict[str, object]],
-                            verified: Sequence[Mapping[str, object]] | None
-                            ) -> dict[str, object]:
-        """The origin check a caller holding the prefix lock makes (#1111).
-
-        Without a read. When only re-pins are missing and ``verified`` carries
-        them (hashed by the caller before it took the lock), they are checked
-        against a fresh stat, appended to the entry and written, and the check
-        is made again. Returns `_check_origin_identity`'s answer.
-        """
-
-        verdict = check_origin_identity(filed, sealed, entry)
-        if (verdict["ok"] or verdict.get("refusal") != "restage-origin-unverified"
-                or not verified):
-            return verdict
-        updated, refusal = apply_origin_repins(entry, filed, sealed, verified)
-        if updated is None:
-            return {"ok": False, **(refusal or {})}
-        if updated != entry:
-            batches = commitments["batches"]
-            assert isinstance(batches, dict)
-            batches[batch_id] = updated
-            BatchLedger(commitments_path).file(commitments)
-        return check_origin_identity(filed, sealed, updated)
 
 
     @staticmethod
@@ -3599,147 +3707,10 @@ class BatchLedger:
         return dict(filed), sealed
 
 
-    @staticmethod
-    def retire_first_copy(queue, checked_instance: Mapping[str, object],
-                                   checked_template: Mapping[str, object],
-                                   batches: dict, batch_id: str,
-                                   receipt: Mapping[str, object],
-                                   staged_paths: list[str]) -> bool:
-        """Mark stage retirement in ``batches``, under the caller's ownership lock.
-
-        ``batches`` is the commitments document the caller read under that lock,
-        and the caller writes it back under the same lock: this marks, it does
-        not read or write the document (#1072).  Returns whether it changed
-        anything.
-
-        Proof-checked, never a bare flag: the receipt must be a complete
-        egress for this exact batch (mover + namespace match, no errors),
-        and the batch must still be unretired. Records the staged paths the
-        egress vouched so later census attribution can name them.
-        """
-
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
-            raise oc.ProducedOutputError("unknown batch_id for this instance")
-        if entry.get("retired"):
-            return False
-        # Owner/attempt/manifest proof comes from the filed immutable batch
-        # record through the single loader: exact schema/id/binding plus
-        # re-validated entries whose canonical digest matches the seal.
-        # Neither a caller dict nor a bare commitments flag can retire
-        # another attempt's batch or a damaged record.
-        try:
-            BatchLedger.open(queue.root, checked_instance, checked_template,
-                                entry, batch_id)
-        except oc.ProducedOutputError as exc:
-            raise oc.ProducedOutputError(str(exc)) from None
-        if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
-            raise oc.ProducedOutputError("retire needs a complete egress receipt")
-        if receipt.get("errors"):
-            raise oc.ProducedOutputError("retire needs an error-free egress receipt")
-        if (str(receipt.get("action_key") or "") != str(entry.get("mover_key") or "")
-                or str(receipt.get("consumer_action_key") or "")
-                != str(entry.get("batch_namespace") or "")):
-            raise oc.ProducedOutputError("retire receipt names another batch")
-        entry = dict(entry)
-        entry["retired"] = True
-        entry["staged_paths"] = sorted(set(staged_paths))
-        batches[batch_id] = entry
-        return True
 
 
-    @staticmethod
-    def record_staged_paths(queue, checked_instance: Mapping[str, object],
-                             batches: dict, batch_id: str,
-                             entry: Mapping[str, object], source: str,
-                             mover_key: str, staged_paths: list[str]) -> None:
-        """File the staged paths BEFORE a tier-host egress can drop the fragment.
-
-        Caller holds the output-prefix ownership lock. The in-process egress reads
-        the fragment and deletes in one call, so the paths it vouched are in hand
-        when the retirement is filed. A tier-host egress ends between two calls,
-        and the call that files the retirement finds the fragment already gone:
-        without this, a retired batch would record NO staged paths, and a live pin
-        over one of them could never be attributed to it again. `retired` is not
-        touched -- the same field, written early, on a copy that is still live.
-        """
-
-        paths = sorted(set(staged_paths))
-        updated = dict(entry)
-        if source == "materialization":
-            items = BatchFacets(entry).copies
-            for index, item in enumerate(items):
-                if str(item.get("mover_key")) == str(mover_key):
-                    item = dict(item)
-                    item["staged_paths"] = paths
-                    items[index] = item
-                    break
-            else:
-                raise oc.ProducedOutputError("unknown-retain: materializations")
-            updated["materializations"] = items
-        else:
-            updated["staged_paths"] = paths
-        batches[batch_id] = updated
-        BatchLedger.for_instance(queue.root, checked_instance).file({"batches": batches})
 
 
-    @staticmethod
-    def file_retirement(queue, checked_instance: Mapping[str, object],
-                                checked_template: Mapping[str, object],
-                                batches: dict, batch_id: str,
-                                selection: Mapping[str, object],
-                                receipt: Mapping[str, object]
-                                ) -> dict[str, object]:
-        """Phase three of a retirement: revalidate and mark, under the ownership lock.
-
-        ``batches`` is the commitments document the caller read again, under the
-        lock it took back after the egress; the caller writes it once for every
-        batch it marks.  The EXACT selection is revalidated before anything is
-        marked: the record still loads, the batch still resolves to the same
-        manifest, and the active materialization is still the generation whose
-        copy this receipt just deleted.  A selection that moved underneath the
-        egress is unknown state and retains.  The answer carries ``marked``:
-        whether ``batches`` changed.
-        """
-
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
-            return {"ok": False, "refusal": "unknown-retain: unknown-batch"}
-        try:
-            filed, _sealed = BatchLedger.open(
-                queue.root, checked_instance, checked_template, entry,
-                batch_id)
-            active = BatchFacets(entry).active_copy
-        except oc.ProducedOutputError as exc:
-            return {"ok": False, "refusal": str(exc)}
-        target_mover = str(selection["target_mover"])
-        generation = int(selection["generation"])  # type: ignore[arg-type]
-        if (str(filed.get("manifest_digest") or "") != selection["manifest"]
-                or str(active.get("mover_key") or "") != target_mover
-                or str(active.get("source") or "") != selection["source"]
-                or int(active.get("generation") or 0) != generation):
-            return {"ok": False,
-                    "refusal": "unknown-retain: materialization-changed"}
-        if active.get("retired"):
-            return {"ok": True, "batch_id": batch_id, "duplicate": True,
-                    "receipt": receipt, "mover_key": target_mover,
-                    "generation": generation, "marked": False}
-        staged_paths = list(selection["staged_paths"])  # type: ignore[arg-type]
-        try:
-            if selection["source"] == "materialization":
-                marked = BatchLedger.retire_materialization(
-                    batches, batch_id, mover_key=target_mover, receipt=receipt,
-                    canonical_ns=str(selection["canonical_ns"]),
-                    staged_paths=staged_paths)
-            else:
-                marked = BatchLedger.retire_first_copy(
-                    queue, checked_instance, checked_template, batches, batch_id,
-                    receipt, staged_paths)
-        except oc.ProducedOutputError as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        return {"ok": True, "batch_id": batch_id, "receipt": receipt,
-                "mover_key": target_mover, "generation": generation,
-                "staged_paths": sorted(set(staged_paths)), "marked": marked}
 
 
     @staticmethod
@@ -4043,21 +4014,331 @@ class BatchLedger:
         return rows
 
 
-    @staticmethod
-    def begin_origin_retirement(entry, *, reason, consumers):
+
+
+
+
+
+
+
+class BatchCapture:
+    """One captured scope generation and the transitions that may update it.
+
+    Capturing validates the document shape only. History and immutable-record
+    reads remain conditional on the caller's question. Caller-held prefix locks
+    and file points stay explicit; there is no implicit refresh or transaction.
+    """
+
+    def __init__(self, ledger, record):
+        self.ledger = ledger
+        self._record = record
+        self._batches = record["batches"]
+
+    def __len__(self):
+        return len(self._batches)
+
+    def __contains__(self, batch_id):
+        return batch_id in self._batches
+
+    def __iter__(self):
+        return iter(self._batches)
+
+    def __getitem__(self, batch_id):
+        entry = self._batches[batch_id]
+        return BatchFacets(entry) if isinstance(entry, Mapping) else None
+
+    def lookup(self, batch_id):
+        entry = self._batches.get(batch_id)
+        return BatchFacets(entry) if isinstance(entry, Mapping) else None
+
+    def items(self):
+        return ((key, self[key]) for key in self._batches)
+
+    def values(self):
+        return (self[key] for key in self._batches)
+
+    @property
+    def charges(self):
+        return _class_sums(self._batches)
+
+    @property
+    def unretired_staged(self):
+        return _unretired_staged_batches(self._batches)
+
+    def file(self, *, admission=False, reads=None):
+        if reads is not None:
+            # Invalidate even when the subsequent canonical write fails (#992).
+            reads.forget(self.ledger.path.parent)
+        self.ledger.file(self._record if admission else {"batches": self._batches})
+
+    def retirement(self, batch_id, *, reads):
+        entry = self._batches[batch_id]
+        return RetirementEntry(self, batch_id, dict(entry), reads)
+
+    def publish_stage(self, queue, template, instance, sealed, **publication):
+        # Keep the canonical C12 orchestration seam and its argument semantics.
+        return BatchLedger.publish_stage(queue, template, instance, sealed,
+                                         batches=self._batches, **publication)
+
+
+    def retire_materialization(self,
+            batch_id: str, *, mover_key: str,
+            receipt: Mapping[str, object], canonical_ns: str,
+            staged_paths: list[str]) -> bool:
+        """Mark one materialization's stage retirement in ``batches``.
+
+        ``batches`` is the commitments document the caller read under its
+        ownership lock, and the caller writes it back under the same lock: this
+        marks, it does not read or write (#1072).  Returns whether it changed
+        anything.
+
+        Proof-checked exactly like the primary retirement: the egress receipt must
+        be complete, error-free, and name THIS materialization's mover with the
+        batch's canonical namespace. The namespace is digest-derived and shared by
+        every materialization of one batch, so the reader contract is unchanged.
+        The durable charge is NOT touched -- retiring a materialization returns
+        window credit only, and the origin charge stays constant across forward
+        and reverse staging.
+        """
+        batches = self._batches
+
+        if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
+            raise oc.ProducedOutputError("retire needs a complete egress receipt")
+        if receipt.get("errors"):
+            raise oc.ProducedOutputError("retire needs an error-free egress receipt")
+        if (str(receipt.get("action_key") or "") != str(mover_key)
+                or str(receipt.get("consumer_action_key") or "") != canonical_ns):
+            raise oc.ProducedOutputError("retire receipt names another materialization")
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            raise oc.ProducedOutputError("unknown batch_id for this instance")
+        items = BatchFacets(entry).copies
+        for index, item in enumerate(items):
+            if str(item.get("mover_key")) == str(mover_key):
+                if item.get("retired"):
+                    return False
+                item = dict(item)
+                item["retired"] = True
+                item["staged_paths"] = sorted(set(staged_paths))
+                items[index] = item
+                break
+        else:
+            raise oc.ProducedOutputError("unknown-retain: materializations")
+        updated = dict(entry)
+        updated["materializations"] = items
+        batches[batch_id] = updated
+        return True
+
+
+    def retire_first_copy(self, queue, checked_instance: Mapping[str, object],
+                                   checked_template: Mapping[str, object],
+                                   batch_id: str,
+                                   receipt: Mapping[str, object],
+                                   staged_paths: list[str]) -> bool:
+        """Mark stage retirement in ``batches``, under the caller's ownership lock.
+
+        ``batches`` is the commitments document the caller read under that lock,
+        and the caller writes it back under the same lock: this marks, it does
+        not read or write the document (#1072).  Returns whether it changed
+        anything.
+
+        Proof-checked, never a bare flag: the receipt must be a complete
+        egress for this exact batch (mover + namespace match, no errors),
+        and the batch must still be unretired. Records the staged paths the
+        egress vouched so later census attribution can name them.
+        """
+        batches = self._batches
+
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            raise oc.ProducedOutputError("unknown batch_id for this instance")
+        if entry.get("retired"):
+            return False
+        # Owner/attempt/manifest proof comes from the filed immutable batch
+        # record through the single loader: exact schema/id/binding plus
+        # re-validated entries whose canonical digest matches the seal.
+        # Neither a caller dict nor a bare commitments flag can retire
+        # another attempt's batch or a damaged record.
+        try:
+            BatchLedger.open(queue.root, checked_instance, checked_template,
+                                entry, batch_id)
+        except oc.ProducedOutputError as exc:
+            raise oc.ProducedOutputError(str(exc)) from None
+        if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:
+            raise oc.ProducedOutputError("retire needs a complete egress receipt")
+        if receipt.get("errors"):
+            raise oc.ProducedOutputError("retire needs an error-free egress receipt")
+        if (str(receipt.get("action_key") or "") != str(entry.get("mover_key") or "")
+                or str(receipt.get("consumer_action_key") or "")
+                != str(entry.get("batch_namespace") or "")):
+            raise oc.ProducedOutputError("retire receipt names another batch")
+        entry = dict(entry)
+        entry["retired"] = True
+        entry["staged_paths"] = sorted(set(staged_paths))
+        batches[batch_id] = entry
+        return True
+
+
+    def record_staged_paths(self, queue, checked_instance: Mapping[str, object],
+                             batch_id: str,
+                             source: str,
+                             mover_key: str, staged_paths: list[str]) -> None:
+        """File the staged paths BEFORE a tier-host egress can drop the fragment.
+
+        Caller holds the output-prefix ownership lock. The in-process egress reads
+        the fragment and deletes in one call, so the paths it vouched are in hand
+        when the retirement is filed. A tier-host egress ends between two calls,
+        and the call that files the retirement finds the fragment already gone:
+        without this, a retired batch would record NO staged paths, and a live pin
+        over one of them could never be attributed to it again. `retired` is not
+        touched -- the same field, written early, on a copy that is still live.
+        """
+        batches = self._batches
+        entry = self._batches[batch_id]
+
+        paths = sorted(set(staged_paths))
+        updated = dict(entry)
+        if source == "materialization":
+            items = BatchFacets(entry).copies
+            for index, item in enumerate(items):
+                if str(item.get("mover_key")) == str(mover_key):
+                    item = dict(item)
+                    item["staged_paths"] = paths
+                    items[index] = item
+                    break
+            else:
+                raise oc.ProducedOutputError("unknown-retain: materializations")
+            updated["materializations"] = items
+        else:
+            updated["staged_paths"] = paths
+        batches[batch_id] = updated
+        BatchLedger.for_instance(queue.root, checked_instance).file({"batches": batches})
+
+
+    def file_retirement(self, queue, checked_instance: Mapping[str, object],
+                                checked_template: Mapping[str, object],
+                                batch_id: str,
+                                selection: Mapping[str, object],
+                                receipt: Mapping[str, object]
+                                ) -> dict[str, object]:
+        """Phase three of a retirement: revalidate and mark, under the ownership lock.
+
+        ``batches`` is the commitments document the caller read again, under the
+        lock it took back after the egress; the caller writes it once for every
+        batch it marks.  The EXACT selection is revalidated before anything is
+        marked: the record still loads, the batch still resolves to the same
+        manifest, and the active materialization is still the generation whose
+        copy this receipt just deleted.  A selection that moved underneath the
+        egress is unknown state and retains.  The answer carries ``marked``:
+        whether ``batches`` changed.
+        """
+        batches = self._batches
+
+        entry = batches.get(batch_id)
+        if not isinstance(entry, Mapping):
+            return {"ok": False, "refusal": "unknown-retain: unknown-batch"}
+        try:
+            filed, _sealed = BatchLedger.open(
+                queue.root, checked_instance, checked_template, entry,
+                batch_id)
+            active = BatchFacets(entry).active_copy
+        except oc.ProducedOutputError as exc:
+            return {"ok": False, "refusal": str(exc)}
+        target_mover = str(selection["target_mover"])
+        generation = int(selection["generation"])  # type: ignore[arg-type]
+        if (str(filed.get("manifest_digest") or "") != selection["manifest"]
+                or str(active.get("mover_key") or "") != target_mover
+                or str(active.get("source") or "") != selection["source"]
+                or int(active.get("generation") or 0) != generation):
+            return {"ok": False,
+                    "refusal": "unknown-retain: materialization-changed"}
+        if active.get("retired"):
+            return {"ok": True, "batch_id": batch_id, "duplicate": True,
+                    "receipt": receipt, "mover_key": target_mover,
+                    "generation": generation, "marked": False}
+        staged_paths = list(selection["staged_paths"])  # type: ignore[arg-type]
+        try:
+            if selection["source"] == "materialization":
+                marked = self.retire_materialization(
+                    batch_id, mover_key=target_mover, receipt=receipt,
+                    canonical_ns=str(selection["canonical_ns"]),
+                    staged_paths=staged_paths)
+            else:
+                marked = self.retire_first_copy(
+                    queue, checked_instance, checked_template, batch_id,
+                    receipt, staged_paths)
+        except oc.ProducedOutputError as exc:
+            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
+        return {"ok": True, "batch_id": batch_id, "receipt": receipt,
+                "mover_key": target_mover, "generation": generation,
+                "staged_paths": sorted(set(staged_paths)), "marked": marked}
+
+
+    def origin_gate(self, batch_id: str,
+                            entry: BatchFacets,
+                            filed: Mapping[str, object],
+                            sealed: list[dict[str, object]],
+                            verified: Sequence[Mapping[str, object]] | None
+                            ) -> dict[str, object]:
+        """The origin check a caller holding the prefix lock makes (#1111).
+
+        Without a read. When only re-pins are missing and ``verified`` carries
+        them (hashed by the caller before it took the lock), they are checked
+        against a fresh stat, appended to the entry and written, and the check
+        is made again. Returns `_check_origin_identity`'s answer.
+        """
+        batches = self._batches
+        commitments = self._record
+        commitments_path = self.ledger.path
+        entry = entry._entry
+
+        verdict = check_origin_identity(filed, sealed, entry)
+        if (verdict["ok"] or verdict.get("refusal") != "restage-origin-unverified"
+                or not verified):
+            return verdict
+        updated, refusal = apply_origin_repins(entry, filed, sealed, verified)
+        if updated is None:
+            return {"ok": False, **(refusal or {})}
+        if updated != entry:
+            batches = commitments["batches"]
+            assert isinstance(batches, dict)
+            batches[batch_id] = updated
+            BatchLedger(commitments_path).file(commitments)
+        return check_origin_identity(filed, sealed, updated)
+
+
+
+class RetirementEntry(BatchFacets):
+    """A selected private entry copy, filed at the existing retirement points."""
+
+    def __init__(self, capture, batch_id, entry, reads):
+        super().__init__(entry)
+        self._capture = capture
+        self._batch_id = batch_id
+        self._reads = reads
+
+    def file(self):
+        self._capture._batches[self._batch_id] = self._entry
+        self._capture.file(reads=self._reads)
+
+
+    def begin_origin_retirement(self, *, reason, consumers):
         """Record the selected delete intent before the first unlink."""
+        entry = self._entry
         entry["retiring"] = {"reason": reason, "consumers": consumers}
         entry.pop("retirement_report", None)
 
-    @staticmethod
-    def complete_origin_retirement(entry):
+
+    def complete_origin_retirement(self):
         """End the durable charge after the selected paths have settled."""
+        entry = self._entry
         entry["origin_reclaimed"] = True
         entry.pop("retirement_report", None)
 
-    @staticmethod
-    def retirement_report(entry, event):
+
+    def retirement_report(self, event):
         """Remember one changed report without rewriting an unchanged decision."""
+        entry = self._entry
         signature = digest_primitives.raw_sha256(
             digest_primitives.sorted_json(event).encode())
         if entry.get("retirement_report") == signature:
@@ -4065,15 +4346,17 @@ class BatchLedger:
         entry["retirement_report"] = signature
         return True
 
-    @staticmethod
-    def quiet_retirement(entry):
+
+    def quiet_retirement(self):
+        entry = self._entry
         if "retirement_report" in entry:
             entry.pop("retirement_report")
             return True
         return False
 
-    @staticmethod
-    def retirement_repins(entry, repinned):
+
+    def retirement_repins(self, repinned):
+        entry = self._entry
         if repinned:
             entry["origin_repins"] = [
                 *(entry.get("origin_repins") or []), *repinned]

@@ -4704,16 +4704,16 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     if str(record.get("state")) not in ("consumed", "released"):
         return unknown(f"its output funding is {record.get('state')}, not a settled end")
     try:
-        commitments = bl.BatchLedger(scope / "commitments.json").capture()
-        entry = commitments["batches"].get(batch_id)   # type: ignore[union-attr]
-        if not isinstance(entry, Mapping):
+        commitments = bl.BatchLedger(scope / 'commitments.json').entries()
+        entry = commitments.lookup(batch_id)   # type: ignore[union-attr]
+        if not isinstance(entry, bl.BatchFacets):
             return unknown(f"its batch {batch_id} is not committed")
-        active = bl.BatchFacets(entry).active_copy
+        active = entry.active
     except (OSError, ValueError) as exc:
         return unknown(f"its batch's commitments are unreadable: {exc}")
-    if str(active.get("mover_key") or "") != mover:
+    if str(active.mover_key or '') != mover:
         return unknown(f"its batch {batch_id}'s active copy is another mover's")
-    if active.get("retired"):
+    if active.retired:
         return unknown(f"its batch {batch_id} is retired and it still holds tokens")
     return {"class": "dead", "why": f"its producer attempt {owner[:12]} is {producer}",
             "instance": instance, "template": template, "batch_id": batch_id,

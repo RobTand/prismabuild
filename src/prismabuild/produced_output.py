@@ -921,15 +921,14 @@ def commit_batch(queue, instance: Mapping[str, object],
             return identity_refusal
         assert origin_identity is not None
         try:
-            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).capture()
+            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).entries()
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
         if batch_id in batches:
             existing = batches[batch_id]
-            if (isinstance(existing, Mapping)
-                    and existing.get("manifest_digest") == manifest_digest):
+            if (isinstance(existing, bl.BatchFacets) and existing.manifest == manifest_digest):
                 return {"ok": True, "batch_id": batch_id, "duplicate": True,
                         "batch_namespace": batch_ns,
                         "manifest_digest": manifest_digest}
@@ -962,7 +961,7 @@ def commit_batch(queue, instance: Mapping[str, object],
         if not bl.planned_omitted_absent(prewrite, sealed):
             return {"ok": False, "refusal": "planned-path-present-retain"}
         try:
-            sums = bl._class_sums(batches)
+            sums = batches.charges
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         maxima = oc.checked_instance_maxima(checked_template)
@@ -1066,12 +1065,12 @@ def commit_batch(queue, instance: Mapping[str, object],
                 # retains, never re-funds.
                 return {"ok": False, "refusal": "transfer-short",
                         "moved": mover_now, "expected": batch_gib}
-        refused = bl.BatchLedger.publish_stage(
+        refused = batches.publish_stage(
             queue, checked_template, checked_instance, sealed,
             batch_id=batch_id, batch_ns=batch_ns,
             manifest_digest=manifest_digest, tier=tier, mover=mover,
             class_bytes=class_bytes, batch_total=batch_total,
-            origin_identity=origin_identity, batches=batches,
+            origin_identity=origin_identity,
             funding_path=funding_path)
         if refused is not None:
             return refused
@@ -1559,21 +1558,21 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     # batch is complete -- replay the idempotent commit and answer the
     # duplicate.
     try:
-        commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).capture()
+        commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).entries()
     except oc.ProducedOutputError as exc:
         return {"ok": False, "step": "validate",
                 "refusal": f"unknown-retain: {exc}"}
-    existing = commitments["batches"].get(batch_id)
-    if isinstance(existing, Mapping):
-        if existing.get("origin_only") is True:
+    existing = commitments.lookup(batch_id)
+    if isinstance(existing, bl.BatchFacets):
+        if existing.kind == 'origin':
             # A read-back batch its owner committed at its origin (#1034) has
             # no mover to replay; nothing stages it.
             return {"ok": False, "step": "validate",
                     "refusal": "batch-committed-at-origin"}
-        if str(existing.get("manifest_digest")) != manifest_digest:
+        if str(existing.manifest) != manifest_digest:
             return {"ok": False, "step": "validate",
                     "refusal": "batch-id-in-use"}
-        mover = str(existing.get("mover_key"))
+        mover = str(existing.first_mover)
         committed = commit_batch(queue, checked_instance, checked_template,
                                  descriptors, batch_id=batch_id, tier=tier,
                                  mover_key=mover)
@@ -1865,26 +1864,24 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
         if gated is not None:
             return {**gated, "step": "owner"}
         try:
-            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).capture()
+            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).entries()
         except oc.ProducedOutputError as exc:
             return {"ok": False, "step": "validate",
                     "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
-        entry = batches.get(batch_id)
-        if not isinstance(entry, Mapping):
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
+        entry = batches.lookup(batch_id)
+        if not isinstance(entry, bl.BatchFacets):
             return {"ok": False, "step": "validate", "refusal": "unknown-batch"}
-        if entry.get("origin_only") is True:
+        if entry.kind == 'origin':
             # A read-back batch its owner committed at its origin (#1034) is
             # read from the owner's local spool; nothing stages it.
             return {"ok": False, "step": "validate",
                     "refusal": "batch-committed-at-origin"}
         try:
-            filed, sealed = bl.BatchLedger.open(
-                queue.root, checked_instance, checked_template, entry,
-                batch_id)
-            active = bl.BatchFacets(entry).active_copy
-            mats = bl.BatchFacets(entry).copies
+            filed, sealed = entry.open(queue.root, checked_instance, checked_template, batch_id)
+            active = entry.active
+            mats = entry.history
         except oc.ProducedOutputError as exc:
             return {"ok": False, "step": "validate", "refusal": str(exc)}
         tier = str(filed.get("tier") or "")
@@ -1899,41 +1896,26 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
         except oc.ProducedOutputError as exc:
             return {"ok": False, "step": "validate",
                     "refusal": f"unknown-retain: {exc}"}
-        if (str(entry.get("batch_namespace") or "") != canonical_ns
-                or str(filed.get("batch_namespace") or "") != canonical_ns
-                or str(entry.get("mover_key") or "")
-                != str(filed.get("mover_key") or "")
-                or str(entry.get("tier") or "") != tier):
+        if (str(entry.namespace or '') != canonical_ns or str(filed.get('batch_namespace') or '') != canonical_ns or str(entry.first_mover or '') != str(filed.get('mover_key') or '') or (str(entry.tier or '') != tier)):
             return {"ok": False, "step": "validate",
                     "refusal": "unknown-retain: batch-target-mismatch"}
-        if not active.get("retired"):
+        if not active.retired:
             # Something already owns this batch's material: the first
             # publication, or a successor this call (or another) started.
             # An ACTIVE copy is never replaced -- a pin on it blocks its
             # retirement, and retirement is what makes a successor legal.
-            if str(active.get("source")) == "batch":
-                return {"ok": True, "state": "live", "step": "none",
-                        "batch_id": batch_id, "tier": tier,
-                        "mover_key": str(active.get("mover_key") or ""),
-                        "generation": 0, "batch_namespace": canonical_ns,
-                        "manifest_digest": manifest_digest,
-                        "total_bytes": total, "duplicate": True}
-            resume = dict(active)
-            if str(resume.get("state")) == "funded":
+            if str(active.source) == 'batch':
+                return {'ok': True, 'state': 'live', 'step': 'none', 'batch_id': batch_id, 'tier': tier, 'mover_key': str(active.mover_key or ''), 'generation': 0, 'batch_namespace': canonical_ns, 'manifest_digest': manifest_digest, 'total_bytes': total, 'duplicate': True}
+            resume = active
+            if str(resume.state) == 'funded':
                 # A replay of a materialization that is already funded and
                 # published: its credit is transferred and its row is the
                 # fleet's to run. Re-driving the pool primitives would be
                 # idempotent but pointless, and "live" is the same answer the
                 # first publication's live copy gets. `materialization_state`
                 # is where a reader asks whether the bytes have landed.
-                return {"ok": True, "state": "live", "step": "none",
-                        "batch_id": batch_id, "tier": tier,
-                        "mover_key": str(resume.get("mover_key") or ""),
-                        "generation": int(resume.get("generation") or 0),
-                        "batch_namespace": canonical_ns,
-                        "manifest_digest": manifest_digest,
-                        "total_bytes": total, "duplicate": True}
-        elif entry.get("origin_reclaimed"):
+                return {'ok': True, 'state': 'live', 'step': 'none', 'batch_id': batch_id, 'tier': tier, 'mover_key': str(resume.mover_key or ''), 'generation': int(resume.generation or 0), 'batch_namespace': canonical_ns, 'manifest_digest': manifest_digest, 'total_bytes': total, 'duplicate': True}
+        elif entry.origin_reclaimed:
             # The durable charge was released on proven absence: there are no
             # origin bytes left to copy, and nothing here re-creates them.
             return {"ok": False, "step": "authority",
@@ -1943,8 +1925,7 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
         if resume is None:
             # A NEW materialization. Prove the origins are the committed ones
             # BEFORE anything is funded or published.
-            gate = bl.BatchLedger.origin_gate(
-                bl.BatchLedger.for_instance(queue.root, checked_instance).path, commitments,
+            gate = commitments.origin_gate(
                 batch_id, entry, filed, sealed, verified)
             if not gate["ok"]:
                 return {"ok": False, "step": "origin",
@@ -1978,19 +1959,17 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
             # on the row is the funding key, and re-deriving it from a tier
             # record that drifted since the crash would mint a second
             # generation for work already funded under the first.
-            mover = str(resume.get("mover_key") or "")
-            generation = int(resume.get("generation") or 0)
-            host = str(resume.get("host") or "")
+            mover = str(resume.mover_key or '')
+            generation = int(resume.generation or 0)
+            host = str(resume.host or '')
             # The price the intent was sealed at (#747), absent when it
             # reserved none. Anything else on the row is not a price.
-            fill = resume.get("fill_mb_s_pool_side")
+            fill = resume.fill_mb_s_pool_side
             if fill is not None and (type(fill) is not int or fill <= 0):
                 return {"ok": False, "step": "resume",
                         "refusal": "unknown-retain: materialization-fill"}
-            if str(resume.get("state")) != "funded":
-                gate = bl.BatchLedger.origin_gate(
-                    bl.BatchLedger.for_instance(queue.root, checked_instance).path,
-                    commitments, batch_id, entry, filed, sealed, verified)
+            if str(resume.state) != 'funded':
+                gate = commitments.origin_gate( batch_id, entry, filed, sealed, verified)
                 if not gate["ok"]:
                     return {"ok": False, "step": "origin",
                             **{k: v for k, v in gate.items() if k != "ok"}}
@@ -2716,7 +2695,7 @@ def _tier_host_egress(queue, *, record: Mapping[str, object], producer: str,
 
 def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
                               checked_template: Mapping[str, object],
-                              batches: Mapping[str, object],
+                              batches: bl.BatchCapture,
                               batch_id: str) -> dict[str, object]:
     """Phase one of a retirement: validate and select, under the ownership lock.
 
@@ -2736,16 +2715,14 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
 
     from prismabuild import pool as pool_mod
 
-    entry = batches.get(batch_id)
-    if not isinstance(entry, Mapping):
+    entry = batches.lookup(batch_id)
+    if not isinstance(entry, bl.BatchFacets):
         return {"answer": {"ok": False, "refusal": "unknown-batch"}}
     try:
-        filed, _sealed = bl.BatchLedger.open(
-            queue.root, checked_instance, checked_template,
-            entry, batch_id)
+        filed, _sealed = entry.open(queue.root, checked_instance, checked_template, batch_id)
     except oc.ProducedOutputError as exc:
         return {"answer": {"ok": False, "refusal": str(exc)}}
-    if entry.get("origin_only") is True and filed.get("origin_only") is True:
+    if entry.kind == 'origin' and filed.get('origin_only') is True:
         # Nothing was staged, so there is no copy to evict and no window
         # to return (#912). The origin is `reclaim_origin`'s.
         return {"answer": {"ok": True, "batch_id": batch_id,
@@ -2758,12 +2735,7 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
             str(filed.get("manifest_digest") or ""))
     except oc.ProducedOutputError as exc:
         return {"answer": {"ok": False, "refusal": f"unknown-retain: {exc}"}}
-    if (len(mover) != 64
-            or str(entry.get("mover_key") or "") != mover
-            or str(entry.get("tier") or "") != tier
-            or tier not in checked_template["permitted_tiers"]
-            or str(entry.get("batch_namespace") or "") != canonical_ns
-            or str(filed.get("batch_namespace") or "") != canonical_ns):
+    if (len(mover) != 64 or str(entry.first_mover or '') != mover or str(entry.tier or '') != tier or (tier not in checked_template['permitted_tiers']) or (str(entry.namespace or '') != canonical_ns) or (str(filed.get('batch_namespace') or '') != canonical_ns)):
         return {"answer": {"ok": False,
                            "refusal": "unknown-retain: batch-target-mismatch"}}
     # WHICH copy is being retired: the batch's first materialization, or
@@ -2773,14 +2745,14 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
     # otherwise a restaged batch reports a duplicate retirement and
     # orphans a live stage copy plus its window credit.
     try:
-        active = bl.BatchFacets(entry).active_copy
+        active = entry.active
     except oc.ProducedOutputError as exc:
         return {"answer": {"ok": False, "refusal": str(exc)}}
-    if active.get("retired"):
+    if active.retired:
         return {"answer": {"ok": True, "batch_id": batch_id,
                            "duplicate": True}}
-    target_mover = str(active.get("mover_key") or "")
-    if len(target_mover) != 64 or str(active.get("tier") or "") != tier:
+    target_mover = str(active.mover_key or '')
+    if len(target_mover) != 64 or str(active.tier or '') != tier:
         return {"answer": {"ok": False,
                            "refusal": "unknown-retain: batch-target-mismatch"}}
     consumer = canonical_ns
@@ -2812,18 +2784,11 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
     # Paths an earlier call of this retirement filed for this same copy:
     # a tier-host egress drops the fragment between two calls, so the
     # call that files the retirement may find nothing left to read.
-    recorded = active.get("staged_paths")
+    recorded = active.staged_paths
     recorded_paths = {os.path.normpath(path) for path in recorded
                       if isinstance(path, str) and path} if isinstance(
                           recorded, list) else set()
-    return {"selection": {
-        "entry": entry, "tier": tier, "canonical_ns": canonical_ns,
-        "target_mover": target_mover, "consumer": consumer,
-        "manifest": str(filed.get("manifest_digest") or ""),
-        "source": str(active.get("source") or ""),
-        "generation": int(active.get("generation") or 0),
-        "recorded_paths": recorded_paths,
-        "staged_paths": sorted(set(staged_paths) | recorded_paths)}}
+    return {'selection': {'entry': entry, 'tier': tier, 'canonical_ns': canonical_ns, 'target_mover': target_mover, 'consumer': consumer, 'manifest': str(filed.get('manifest_digest') or ''), 'source': str(active.source or ''), 'generation': int(active.generation or 0), 'recorded_paths': recorded_paths, 'staged_paths': sorted(set(staged_paths) | recorded_paths)}}
 
 
 def _answer(result: Mapping[str, object]) -> dict[str, object]:
@@ -2889,11 +2854,11 @@ def retire_batch(queue, instance: Mapping[str, object],
     oc.output_name(batch_id, where="batch_id")
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         try:
-            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).capture()
+            commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).entries()
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
         chosen = _select_retirement_locked(
             queue, checked_instance, checked_template, batches, batch_id)
         if "answer" in chosen:
@@ -2919,8 +2884,8 @@ def retire_batch(queue, instance: Mapping[str, object],
                     "refusal": f"unknown-retain: tier-not-announced: {tier}"}
         if not in_process and set(staged_paths) - recorded_paths:
             try:
-                bl.BatchLedger.record_staged_paths(
-                    queue, checked_instance, batches, batch_id, entry,
+                batches.record_staged_paths(
+                    queue, checked_instance, batch_id,
                     str(selection["source"]), target_mover, staged_paths)
             except (oc.ProducedOutputError, OSError) as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -2967,19 +2932,17 @@ def retire_batch(queue, instance: Mapping[str, object],
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
         path = bl.BatchLedger.for_instance(queue.root, checked_instance).path
         try:
-            commitments = bl.BatchLedger(path).capture()
+            commitments = bl.BatchLedger(path).entries()
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
-        result = bl.BatchLedger.file_retirement(
-            queue, checked_instance, checked_template, batches, batch_id,
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
+        result = batches.file_retirement(
+            queue, checked_instance, checked_template, batch_id,
             selection, receipt)
         if result.get("marked"):
             try:
-                bl.BatchLedger(path).file({
-                    "batches": batches,
-                    "admission": commitments.get("admission")})
+                commitments.file(admission=True)
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
     return _answer(result)
@@ -3055,12 +3018,12 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
     path = bl.BatchLedger.for_instance(queue.root, checked_instance).path
     with queue.stage_ownership_lock(lock_name):
         try:
-            commitments = bl.BatchLedger(path).capture()
+            commitments = bl.BatchLedger(path).entries()
         except oc.ProducedOutputError as exc:
             refusal = {"ok": False, "refusal": f"unknown-retain: {exc}"}
             return {batch_id: dict(refusal) for batch_id in batch_ids}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
         tier_records: dict[str, object] = {}
         for batch_id in batch_ids:
             chosen = _select_retirement_locked(
@@ -3127,7 +3090,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
         return answers
     with queue.stage_ownership_lock(lock_name):
         try:
-            commitments = bl.BatchLedger(path).capture()
+            commitments = bl.BatchLedger(path).entries()
         except oc.ProducedOutputError as exc:
             for batch_id in receipts:
                 answers[batch_id] = {"ok": False,
@@ -3135,17 +3098,15 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
             if raised is not None:
                 raise raised
             return answers
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
-        results = {batch_id: bl.BatchLedger.file_retirement(
-            queue, checked_instance, checked_template, batches, batch_id,
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
+        results = {batch_id: batches.file_retirement(
+            queue, checked_instance, checked_template, batch_id,
             selections[batch_id], receipt)
             for batch_id, receipt in receipts.items()}
         if any(result.get("marked") for result in results.values()):
             try:
-                bl.BatchLedger(path).file({
-                    "batches": batches,
-                    "admission": commitments.get("admission")})
+                commitments.file(admission=True)
             except oc.ProducedOutputError as exc:
                 for batch_id in receipts:
                     answers[batch_id] = {"ok": False,
@@ -3359,22 +3320,21 @@ def _release_origin_consumer_locked(
 
     batch_id = checked_ref["batch_id"]
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
-        commitments = bl.BatchLedger.for_instance(queue.root, instance).capture()
-        entry = commitments["batches"].get(batch_id)
-        if not isinstance(entry, Mapping):
+        commitments = bl.BatchLedger.for_instance(queue.root, instance).entries()
+        entry = commitments.lookup(batch_id)
+        if not isinstance(entry, bl.BatchFacets):
             raise oc.ProducedOutputError(f"origin-batch-uncommitted: {batch_id}")
-        if (entry.get("origin_only") is not True
-                or entry.get("manifest_digest") != checked_ref["manifest_digest"]):
+        if (entry.kind != 'origin' or entry.manifest != checked_ref['manifest_digest']):
             raise oc.ProducedOutputError(
                 "origin-batch-mismatch: the committed batch is not origin-only "
                 "over this manifest digest")
-        if bl.BatchFacets(entry).lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
+        if entry.lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
             raise oc.ProducedOutputError(
                 f"origin-batch-retained: {batch_id} is never retired, so it has "
                 "no declarations to release")
-        if entry.get("origin_reclaimed"):
+        if entry.origin_reclaimed:
             raise oc.ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
-        if entry.get("retiring"):
+        if entry.retiring:
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
         if consumer not in bl._declared_consumers(
                 queue.root, instance, batch_id, checked_ref):
@@ -3550,20 +3510,19 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
             "origin-batch-not-write-only: its template reads its batches back")
     batch_id = checked_ref["batch_id"]
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
-        commitments = bl.BatchLedger.for_instance(queue.root, instance).capture()
-        entry = commitments["batches"].get(batch_id)
-        if not isinstance(entry, Mapping):
+        commitments = bl.BatchLedger.for_instance(queue.root, instance).entries()
+        entry = commitments.lookup(batch_id)
+        if not isinstance(entry, bl.BatchFacets):
             raise oc.ProducedOutputError(f"origin-batch-uncommitted: {batch_id}")
-        if (entry.get("origin_only") is not True
-                or entry.get("manifest_digest") != checked_ref["manifest_digest"]):
+        if (entry.kind != 'origin' or entry.manifest != checked_ref['manifest_digest']):
             raise oc.ProducedOutputError(
                 "origin-batch-mismatch: the committed batch is not origin-only "
                 "over this manifest digest")
-        if entry.get("origin_reclaimed"):
+        if entry.origin_reclaimed:
             raise oc.ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
-        if entry.get("retiring"):
+        if entry.retiring:
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
-        if bl.BatchFacets(entry).lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
+        if entry.lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
             return {"ok": True, "declared": False}
         if bl._consumer_release(queue.root, instance, batch_id, consumer,
                              checked_ref) is not None:
@@ -3702,14 +3661,11 @@ def dead_input_dependency(
     if state != "dead":
         return None
     try:
-        commitments = bl.BatchLedger.for_instance(queue.root, instance).capture()
-        entry = commitments["batches"].get(batch_id)
-        if (not isinstance(entry, Mapping)
-                or str(entry.get("manifest_digest")) != manifest_digest
-                or entry.get("origin_only") is True):
+        commitments = bl.BatchLedger.for_instance(queue.root, instance).entries()
+        entry = commitments.lookup(batch_id)
+        if (not isinstance(entry, bl.BatchFacets) or str(entry.manifest) != manifest_digest or entry.kind == 'origin'):
             return None
-        _filed, sealed = bl.BatchLedger.open(
-            queue.root, instance, template, entry, batch_id)
+        _filed, sealed = entry.open(queue.root, instance, template, batch_id)
     except (oc.ProducedOutputError, OSError, ValueError):
         return None
     prefix = str(instance["output_prefix"]).rstrip(os.sep) + os.sep
@@ -3899,31 +3855,19 @@ def _retire_consumed_batch_locked(
             # once per due batch.  The stat and the read are under these
             # locks, so a writer they exclude cannot land between them; a
             # writer that landed before them moved the version and is read.
-            batches = tick.batches(commitments_path.parent)
+            batches = tick.entries(commitments_path.parent)
         except oc.ProducedOutputError as exc:
             return _unfiled_report(instance, batch_id, {
                 "event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT,
                 "reason": str(exc)})
 
-        def write(record: Mapping[str, object]) -> None:
-            # The memo never outlives a write attempt: the parse that was
-            # not filed must not answer a later batch (#992).
-            tick.forget(commitments_path.parent)
-            bl.BatchLedger(commitments_path).file(record)
-
-        entry = batches.get(batch_id)
-        if (not isinstance(entry, Mapping)
-                or entry.get("origin_only") is not True
-                or bl.BatchFacets(entry).lifetime != oc.ORIGIN_LIFETIME_CONSUMED
-                or entry.get("origin_reclaimed")):
+        entry = batches.lookup(batch_id)
+        if (not isinstance(entry, bl.BatchFacets) or entry.kind != 'origin' or entry.lifetime != oc.ORIGIN_LIFETIME_CONSUMED or entry.origin_reclaimed):
             return None
-        entry = dict(entry)
-        ref = oc.origin_batch_ref(instance, batch_id=batch_id,
-                               manifest_digest=str(entry["manifest_digest"]))
+        entry = batches.retirement(batch_id, reads=tick)
+        ref = oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.required_manifest))
         try:
-            total = sum(oc._check_class_bytes(
-                entry.get("class_bytes"),
-                where=f"committed batch {batch_id!r}").values())
+            total = sum(oc._check_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
         except oc.ProducedOutputError as exc:
             return _unfiled_report(instance, batch_id, {
                 "event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": ref,
@@ -3932,19 +3876,17 @@ def _retire_consumed_batch_locked(
 
         def report(event: dict[str, object]) -> dict[str, object] | None:
             # Once per change: the entry remembers the last report it made.
-            if not bl.BatchLedger.retirement_report(entry, event):
+            if not entry.retirement_report(event):
                 return None
-            batches[batch_id] = entry
-            write({"batches": batches})
+            entry.file()
             return event
 
         def quiet() -> None:
             # Nothing to report now; a later stall reports again.
-            if bl.BatchLedger.quiet_retirement(entry):
-                batches[batch_id] = entry
-                write({"batches": batches})
+            if entry.quiet_retirement():
+                entry.file()
 
-        retiring = entry.get("retiring")
+        retiring = entry.retiring
         if isinstance(retiring, Mapping):
             reason = str(retiring.get("reason") or "")
             consumers = list(retiring.get("consumers") or [])
@@ -4012,8 +3954,7 @@ def _retire_consumed_batch_locked(
                            "reason": "output-prefix-unreachable",
                            "detail": "not a directory on this host"})
         try:
-            filed, sealed = bl.BatchLedger.open(
-                queue.root, instance, template, entry, batch_id)
+            filed, sealed = entry.open(queue.root, instance, template, batch_id)
         except oc.ProducedOutputError as exc:
             return report({"event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": str(exc)})
@@ -4024,7 +3965,7 @@ def _retire_consumed_batch_locked(
                            "reason": "origin-proof-missing"})
         # The committed identity with the entry's re-pins applied (#1111).
         try:
-            recorded = bl.effective_origin_identity(filed, sealed, entry)
+            recorded = entry.effective_origins(filed, sealed)
         except oc.ProducedOutputError as exc:
             return report({"event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
                            "reason": str(exc)})
@@ -4069,7 +4010,7 @@ def _retire_consumed_batch_locked(
 
         def file_repins() -> None:
             # On the entry, in the same write as the decision it supports.
-            bl.BatchLedger.retirement_repins(entry, repinned)
+            entry.retirement_repins(repinned)
 
         paths = sorted(str(desc["path"]) for desc in sealed)
         # Another attempt's claim on these paths, read under these locks,
@@ -4107,14 +4048,12 @@ def _retire_consumed_batch_locked(
             return to_verify(pending)
         if not retiring:
             file_repins()
-            bl.BatchLedger.begin_origin_retirement(
-                entry, reason=reason, consumers=consumers)
-            batches[batch_id] = entry
-            write({"batches": batches})
+            entry.begin_origin_retirement(
+                reason=reason, consumers=consumers)
+            entry.file()
         elif repinned:
             file_repins()
-            batches[batch_id] = entry
-            write({"batches": batches})
+            entry.file()
         unlinked: list[str] = []
         superseded: list[str] = []
         absent: list[str] = []
@@ -4147,8 +4086,7 @@ def _retire_consumed_batch_locked(
                 return to_verify([path])
             if repinned:
                 file_repins()
-                batches[batch_id] = entry
-                write({"batches": batches})
+                entry.file()
             if verdict == "unlink":
                 outcome, why = _unlink_if_committed(path, recorded[path], tag)
                 if outcome == "refuse":
@@ -4165,9 +4103,8 @@ def _retire_consumed_batch_locked(
             else:
                 absent.append(path)
         _fsync_directories(unlinked)
-        bl.BatchLedger.complete_origin_retirement(entry)
-        batches[batch_id] = entry
-        write({"batches": batches})
+        entry.complete_origin_retirement()
+        entry.file()
     _UNFILED_REPORTS.pop(_batch_report_key(instance, batch_id), None)
     event = {"event": oc.ORIGIN_RETIRED_EVENT, **base, "reason": reason,
              "consumers": consumers, "origin_identity": dict(recorded),
@@ -4414,7 +4351,7 @@ def _unfiled_report(instance: Mapping[str, object], batch_id: str,
 
 
 def _outstanding_prewrite_ids(scope: Path,
-                              batches: Mapping[str, object]) -> list[str]:
+                              batches: bl.BatchCapture) -> list[str]:
     """Batch ids with a prewrite record in ``scope`` and no committed batch.
 
     A commit consumes its prewrite, so a record whose batch id is not in the
@@ -4891,16 +4828,11 @@ def blocked_origin_batches(queue) -> dict[str, list]:
         for scope in scopes:
             where = f"{owner[:12]}/{scope.name}"
             try:
-                batches = reads.batches(scope)
+                batches = reads.entries(scope)
             except oc.ProducedOutputError as exc:
                 unreadable.append(f"{where}: {exc}")
                 continue
-            due = [(batch_id, entry) for batch_id, entry in sorted(batches.items())
-                   if isinstance(entry, Mapping)
-                   and entry.get("origin_only") is True
-                   and bl.BatchFacets(entry).lifetime == oc.ORIGIN_LIFETIME_CONSUMED
-                   and not entry.get("origin_reclaimed")
-                   and not entry.get("retiring")]
+            due = [(batch_id, entry) for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed) and (not entry.retiring)]
             try:
                 outstanding = _outstanding_prewrite_ids(scope, batches)
             except OSError as exc:
@@ -4953,18 +4885,14 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             scope_owners: bl.RetirementOwners | None = None
             for batch_id, entry in due:
                 try:
-                    ref = oc.origin_batch_ref(
-                        instance, batch_id=batch_id,
-                        manifest_digest=str(entry["manifest_digest"]))
+                    ref = oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.required_manifest))
                     checked_ref = oc._checked_origin_ref(ref)
                     declared = bl._declared_consumers(
                         queue.root, instance, batch_id, checked_ref)
                     consumers = (_resolved_consumers(
                         queue, instance, batch_id, checked_ref, declared)
                         if declared else [])
-                    total = sum(oc._check_class_bytes(
-                        entry.get("class_bytes"),
-                        where=f"committed batch {batch_id!r}").values())
+                    total = sum(oc._check_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
                 except (oc.ProducedOutputError, KeyError, ValueError) as exc:
                     unreadable.append(f"{where}/{batch_id}: {exc}")
                     continue
@@ -4980,8 +4908,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     try:
                         if scope_owners is None:
                             scope_owners = reads.path_owners(instance, template)
-                        holders = bl._unknown_path_holders(
-                            scope_owners, entry.get("paths") or [])
+                        holders = bl._unknown_path_holders(scope_owners, entry.paths or [])
                     except (oc.ProducedOutputError, OSError, ValueError) as exc:
                         unreadable.append(f"{where}/{batch_id}: owners: {exc}")
                         holders = []
@@ -4995,10 +4922,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                            if item["state"] not in oc._RESOLVED_CONSUMER_STATES]
                 if holding and all(item["state"] in oc._TERMINAL_CONSUMER_STATES
                                    for item in holding):
-                    blocked.append({
-                        "ref": ref, "bytes": total, "consumers": consumers,
-                        "holding": [str(item["action_key"]) for item in holding],
-                        "reported": "retirement_report" in entry})
+                    blocked.append({'ref': ref, 'bytes': total, 'consumers': consumers, 'holding': [str(item['action_key']) for item in holding], 'reported': entry.has_retirement_report})
     return found()
 
 
@@ -5058,7 +4982,7 @@ class _DeadStagedReports:
 
 
 def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
-                             batch_id: str, batches: Mapping[str, object], *,
+                             batch_id: str, batches: bl.BatchCapture, *,
                              reads: bl.LedgerReads) -> dict[str, object]:
     """Whether a dead producer's staged batch is the tick's to retire (#1053).
 
@@ -5070,17 +4994,17 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
     from prismabuild import pool as pool_mod
 
     report = _DeadStagedReports(instance, batch_id)
-    entry = batches.get(batch_id)
-    if not isinstance(entry, Mapping):
+    entry = batches.lookup(batch_id)
+    if not isinstance(entry, bl.BatchFacets):
         return {"event": report.quiet()}
     try:
-        active = bl.BatchFacets(entry).active_copy
+        active = entry.active
     except oc.ProducedOutputError as exc:
         return {"event": report.refused(f"unknown-retain: {exc}")}
-    if active.get("retired"):
+    if active.retired:
         return {"event": report.quiet()}
-    mover = str(active.get("mover_key") or "")
-    tier = str(active.get("tier") or entry.get("tier") or "")
+    mover = str(active.mover_key or '')
+    tier = str(active.tier or entry.tier or '')
     if len(mover) != 64 or not tier:
         return {"event": report.refused("unknown-retain: batch-target-mismatch")}
     match reads.generation(mover):
@@ -5137,7 +5061,7 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
 
 def _dead_staged_batch_event(queue, instance: Mapping[str, object],
                              template: Mapping[str, object], batch_id: str,
-                             batches: Mapping[str, object],
+                             batches: bl.BatchCapture,
                              result: Mapping[str, object], *, mover: str,
                              tier: str, producer_state: str,
                              reads: bl.LedgerReads) -> dict[str, object] | None:
@@ -5168,12 +5092,12 @@ def _dead_staged_batch_event(queue, instance: Mapping[str, object],
         "tokens_released": int(receipt.get("tokens_released") or 0),
     }
     # Which of its paths another attempt now claims: for the record only.
-    entry = batches.get(batch_id)
-    entry = entry if isinstance(entry, Mapping) else {}
+    entry = batches.lookup(batch_id)
+    entry = entry if isinstance(entry, bl.BatchFacets) else bl.BatchFacets({})
     try:
         owners = reads.path_owners(instance, template)
         superseded: list[dict[str, str]] = []
-        for path in sorted(str(item) for item in entry.get("paths") or []):
+        for path in sorted((str(item) for item in entry.paths or [])):
             note = owners.committed(path)
             kind = "committed"
             if note is None:
@@ -5191,7 +5115,7 @@ def _dead_staged_batch_event(queue, instance: Mapping[str, object],
 def _retire_dead_staged_batches(queue, instance: Mapping[str, object],
                                 template: Mapping[str, object],
                                 staged: Sequence[str],
-                                batches: Mapping[str, object], *,
+                                batches: bl.BatchCapture, *,
                                 producer_state: str, reads: bl.LedgerReads,
                                 budget=None) -> list[dict[str, object]]:
     """File the stage retirements of a dead producer's batches (#1053, #1072).
@@ -5377,19 +5301,15 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
         indexed = _backfill_attempt(queue.root, owner, scope.name) and indexed
         nonce = scope.name.rpartition(".")[2]
         try:
-            batches = reads.batches(scope)
+            batches = reads.entries(scope)
         except oc.ProducedOutputError:
             continue
-        due = [batch_id for batch_id, entry in sorted(batches.items())
-               if isinstance(entry, Mapping)
-               and entry.get("origin_only") is True
-               and bl.BatchFacets(entry).lifetime == oc.ORIGIN_LIFETIME_CONSUMED
-               and not entry.get("origin_reclaimed")]
+        due = [batch_id for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed)]
         try:
             outstanding = _outstanding_prewrite_ids(scope, batches)
         except OSError:
             outstanding = []
-        staged = bl._unretired_staged_batches(batches)
+        staged = batches.unretired_staged
         if not due and not outstanding and not staged:
             continue
         ended = (bl.attempt_state(reads.generation(owner), nonce)
@@ -5552,7 +5472,7 @@ def _lease_pin_files(lease_sdk: object, queue, consumer: str,
 
 
 def _live_output_paths(queue, lease_sdk: object,
-                       batches: Mapping[str, object],
+                       batches: bl.BatchCapture,
                        residency_root: str | Path
                        ) -> tuple[list[str], str | None]:
     """Live pinned paths attributable to these batches, or unknown reason.
@@ -5572,33 +5492,33 @@ def _live_output_paths(queue, lease_sdk: object,
     wanted: set[str] = set()
     unrecorded: list[str] = []
     for batch_id, entry in batches.items():
-        if not isinstance(entry, Mapping):
+        if not isinstance(entry, bl.BatchFacets):
             continue
         # Every materialization this batch has had vouches staged paths: the
         # first publication records them on the entry at retirement, each
         # restage records its own on its materialization row. All of them are
         # attributable to this instance, so all of them are wanted.
         try:
-            active = bl.BatchFacets(entry).active_copy
-            sources: list[Mapping[str, object]] = [entry]
-            sources += bl.BatchFacets(entry).copies
+            active = entry.active
+            sources: list[bl.BatchFacets | bl.StageCopy] = [entry]
+            sources += entry.history
         except oc.ProducedOutputError:
             unrecorded.append(str(batch_id))
             continue
         for source in sources:
-            recorded = source.get("staged_paths")
+            recorded = source.staged_paths
             if isinstance(recorded, list):
                 for path in recorded:
                     if isinstance(path, str) and path:
                         wanted.add(os.path.normpath(path))
-        if active.get("retired"):
+        if active.retired:
             # The copy is gone; only what its egress vouched can be pinned.
             # A record that retired before staged paths were recorded leaves
             # its paths unknowable, so live paths cannot be ruled out.
-            if not isinstance(active.get("staged_paths"), list):
+            if not isinstance(active.staged_paths, list):
                 unrecorded.append(str(batch_id))
             continue
-        ns = entry.get("batch_namespace")
+        ns = entry.namespace
         if not isinstance(ns, str) or not ns:
             unrecorded.append(str(batch_id))
             continue
@@ -5704,30 +5624,30 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         return {"ok": False, "refusal": str(sdk_refusal)}
     with queue.stage_ownership_lock(str(checked["output_prefix"])):
         try:
-            commitments = bl.BatchLedger.for_instance(queue.root, checked).capture()
+            commitments = bl.BatchLedger.for_instance(queue.root, checked).entries()
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        batches = commitments["batches"]
-        assert isinstance(batches, dict)
+        batches = commitments
+        assert isinstance(batches, bl.BatchCapture)
         out_base = bl.output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
         for batch_id, entry in batches.items():
-            if not isinstance(entry, Mapping):
+            if not isinstance(entry, bl.BatchFacets):
                 return {"ok": False, "refusal": "unknown-retain: bad-batch-entry"}
             # The ACTIVE materialization decides, not the entry flag: a batch
             # that was restaged has a live successor copy even though its own
             # `retired` says the first one is gone.
             try:
-                if bl.BatchFacets(entry).stage_retired:
+                if entry.stage_retired:
                     continue
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": str(exc)}
             return {"ok": False, "refusal": "active-batches-retain",
                     "batch_id": batch_id}
         for batch_id, entry in batches.items():
-            assert isinstance(entry, Mapping)
-            tier = str(entry.get("tier") or "")
+            assert isinstance(entry, bl.BatchFacets)
+            tier = str(entry.tier or '')
             try:
-                movers = bl.BatchFacets(entry).movers
+                movers = entry.movers
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": str(exc)}
             for mover in movers:
@@ -5739,7 +5659,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                                     "batch_id": batch_id}
                     except Exception as exc:
                         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            ns = str(entry.get("batch_namespace") or "")
+            ns = str(entry.namespace or '')
             if ns:
                 try:
                     if _dir_has_entries(out_base / ns):
@@ -5786,10 +5706,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         owner = str(checked["owner_action_key"])
         attempt = checked["owner_attempt"]
         assert isinstance(attempt, dict)
-        namespaces = [owner] + [
-            str(entry.get("batch_namespace") or "")
-            for entry in batches.values()
-            if isinstance(entry, Mapping) and entry.get("batch_namespace")]
+        namespaces = [owner] + [str(entry.namespace or '') for entry in batches.values() if isinstance(entry, bl.BatchFacets) and entry.namespace]
         for consumer in namespaces:
             if not consumer:
                 continue
@@ -5864,14 +5781,13 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         released = 0
         holders: set[str] = set()
         for batch_id, entry in batches.items():
-            assert isinstance(entry, Mapping)
+            assert isinstance(entry, bl.BatchFacets)
             # Holder identity comes from the validated immutable record
             # plus the canonically derived namespace -- never from mutable
             # commitments fields alone. A changed mover/namespace in
             # commitments releases nothing here.
             try:
-                filed, _sealed = bl.BatchLedger.open(
-                    queue.root, checked, checked_template, entry, batch_id)
+                filed, _sealed = entry.open(queue.root, checked, checked_template, batch_id)
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": str(exc)}
             try:
@@ -5879,8 +5795,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
                     checked, batch_id, str(filed.get("manifest_digest") or ""))
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            if (str(entry.get("batch_namespace") or "") != canonical_ns
-                    or str(filed.get("batch_namespace") or "") != canonical_ns):
+            if (str(entry.namespace or '') != canonical_ns or str(filed.get('batch_namespace') or '') != canonical_ns):
                 return {"ok": False,
                         "refusal": "unknown-retain: batch-target-mismatch"}
             holders.add(canonical_ns)
@@ -5890,8 +5805,8 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             # Every restage materialization held the same window under its own
             # sealed key; a leftover there is this instance's too.
             try:
-                for extra in bl.BatchFacets(entry).copies:
-                    key = str(extra.get("mover_key") or "")
+                for extra in entry.history:
+                    key = str(extra.mover_key or '')
                     if len(key) == 64:
                         holders.add(key)
             except oc.ProducedOutputError as exc:
@@ -5943,27 +5858,27 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
             except (OSError, ValueError):
                 continue
             try:
-                commitments = bl.BatchLedger.for_instance(queue.root, instance).capture()
+                commitments = bl.BatchLedger.for_instance(queue.root, instance).entries()
             except oc.ProducedOutputError:
                 continue
-            batches = commitments["batches"]
-            assert isinstance(batches, dict)
+            batches = commitments
+            assert isinstance(batches, bl.BatchCapture)
             for batch_id, entry in batches.items():
-                if not isinstance(entry, Mapping):
+                if not isinstance(entry, bl.BatchFacets):
                     continue
                 # The ACTIVE materialization owns the material: after a
                 # restage the entry flag describes a copy that is already
                 # gone, and reading it here would report a live successor as
                 # nothing to reconcile.
                 try:
-                    active = bl.BatchFacets(entry).active_copy
+                    active = entry.active
                 except oc.ProducedOutputError:
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id})
                     continue
-                if active.get("retired"):
+                if active.retired:
                     continue
-                ns = str(entry.get("batch_namespace") or "")
+                ns = str(entry.namespace or '')
                 try:
                     fragments = map_mod.read_fragments(out_base, ns)
                 except Exception:
@@ -5981,20 +5896,13 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                 # Same question, same answer as `recover_batches`: composing
                 # fragments prove bytes landed, not that the batch did, and
                 # two censuses of one lane may not disagree about which.
-                complete = bl.mover_receipt_complete(
-                    queue, str(active.get("mover_key") or ""))
+                complete = bl.mover_receipt_complete(queue, str(active.mover_key or ''))
                 if complete is not True:
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id, "namespace": ns})
                     continue
                 entries = composed.get("entries")
-                events.append({
-                    "event": "output-batch-staged",
-                    "batch_id": batch_id, "namespace": ns,
-                    "manifest_digest": str(entry.get("manifest_digest")),
-                    "generation": int(active.get("generation") or 0),
-                    "entries": len(entries) if isinstance(entries, Mapping) else 0,
-                })
+                events.append({'event': 'output-batch-staged', 'batch_id': batch_id, 'namespace': ns, 'manifest_digest': str(entry.manifest), 'generation': int(active.generation or 0), 'entries': len(entries) if isinstance(entries, Mapping) else 0})
     return events
 
 
@@ -6045,11 +5953,11 @@ def recover_batches(queue, instance: Mapping[str, object],
     checked_template = oc.validate_template(template)
     checked_instance = oc.validate_instance(instance)
     try:
-        commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).capture()
+        commitments = bl.BatchLedger.for_instance(queue.root, checked_instance).entries()
     except oc.ProducedOutputError as exc:
         return [{"event": "output-recovery-unknown", "error": repr(exc)}]
-    batches = commitments["batches"]
-    assert isinstance(batches, dict)
+    batches = commitments
+    assert isinstance(batches, bl.BatchCapture)
     out_base = bl.output_fragment_root(queue.root / pool_mod.record_store.RESIDENCY)
     events: list[dict[str, object]] = []
     try:
@@ -6066,7 +5974,7 @@ def recover_batches(queue, instance: Mapping[str, object],
                        "batch_id": batch_id})
     for batch_id in sorted(batches):
         entry = batches[batch_id]
-        if not isinstance(entry, Mapping):
+        if not isinstance(entry, bl.BatchFacets):
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id})
             continue
@@ -6075,34 +5983,27 @@ def recover_batches(queue, instance: Mapping[str, object],
         # would orphan the live successor and its window credit, and a
         # malformed materialization list is unknown, never "nothing here".
         try:
-            active = bl.BatchFacets(entry).active_copy
+            active = entry.active
         except oc.ProducedOutputError as exc:
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "error": repr(exc)})
             continue
-        if str(active.get("source")) == "origin":
+        if str(active.source) == 'origin':
             # Committed at origin, never staged (#912): nothing to recover.
             events.append({"event": "output-batch-origin-only",
                            "batch_id": batch_id})
             continue
-        if active.get("retired"):
-            events.append({"event": "output-batch-retired",
-                           "batch_id": batch_id,
-                           "generation": int(active.get("generation") or 0)})
+        if active.retired:
+            events.append({'event': 'output-batch-retired', 'batch_id': batch_id, 'generation': int(active.generation or 0)})
             continue
-        ns = str(entry.get("batch_namespace") or "")
-        mover = str(active.get("mover_key") or "")
-        if (str(active.get("source")) == "materialization"
-                and str(active.get("state")) == "intent"
-                and isinstance(RecordStore(queue.root).mover(mover), Absent)):
+        ns = str(entry.namespace or '')
+        mover = str(active.mover_key or '')
+        if (str(active.source) == 'materialization' and str(active.state) == 'intent' and isinstance(RecordStore(queue.root).mover(mover), Absent)):
             # A filed restage intent whose mover row was never published:
             # the durable resumption point `ensure_batch_materialized` left
             # behind. It is neither staged nor lost; re-calling ensure
             # re-drives this exact sealed key.
-            events.append({"event": "output-materialization-intent-pending",
-                           "batch_id": batch_id, "mover": mover,
-                           "generation": int(active.get("generation") or 0),
-                           "action": "ensure-batch-materialized"})
+            events.append({'event': 'output-materialization-intent-pending', 'batch_id': batch_id, 'mover': mover, 'generation': int(active.generation or 0), 'action': 'ensure-batch-materialized'})
             continue
         try:
             fragments = map_mod.read_fragments(out_base, ns) if ns else []
@@ -6134,8 +6035,7 @@ def recover_batches(queue, instance: Mapping[str, object],
             events.append({"event": "output-recovery-unknown",
                            "batch_id": batch_id, "namespace": ns})
         elif state in ("failed", "ready"):
-            verdict, reason = bl.funding_verdict(
-                queue, mover, str(active.get("tier") or ""))
+            verdict, reason = bl.funding_verdict(queue, mover, str(active.tier or ''))
             if verdict == "unknown":
                 event = {"event": "output-recovery-unknown",
                          "batch_id": batch_id, "mover": mover}
