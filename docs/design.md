@@ -18394,8 +18394,7 @@ capability. No C01 reservation, census, lock or commit owner changes.
 ### Shared submission ownership (C14)
 
 `submission_types.SubmissionRequest` is the submission vocabulary. Campaign,
-gang and decomposition field sets derive from its options. JSON requests and
-campaign rows normalize numeric values to the same types as CLI parsing, so
+gang and decomposition field sets derive from its options. Campaign rows normalize numeric values to the same types as CLI parsing, so
 `gpu_memory_gb=32`, `32.0` and the accepted row string `"32"` seal identically.
 CLI private descriptors remain outside the request and sealed action.
 
@@ -18406,9 +18405,10 @@ uses the qualified C03 predicates and C06 `ClientReport`, identities and
 verdicts. Checked refusals carry a client status and display text; interruptions
 outside that model propagate without inventing an ending.
 
-`publish` serves ordinary requests, direct decomposed children, deferred
-releases and compiled producers. Detached cache and live-attachment checks
-precede runnable publication. D38 precedes new work on both transports.
+`_publish_sealed` serves ordinary requests, direct decomposed children, deferred
+releases and compiled producers. Ordinary detached cache and live-attachment checks
+precede runnable publication. Native producers and movement rows retain their
+original publication behavior; deferred releases still file a new generation. D38 precedes new work on both transports.
 Deferred release retains its gate-before-CAS order; ordinary submission retains
 its CAS-before-gate order. Supersession remains immediately before publication,
 after other refusals. Origin-consumer declarations and staged plan installation
@@ -18423,8 +18423,9 @@ and write scope. Each client invocation owns its complete C06 reader history,
 with no history shared between wait threads. Display callbacks and store
 objects do not enter template records, action identity or queue schemas.
 
-`pbrun` accepts ordinary argv and a typed JSON request for process frontends.
-`pbtest` and `pbgang` use that request through the existing C06 channel.
+`pbrun` parses argv into a request and renders display events. `pbtest` and
+`pbgang` construct typed requests and render ordinary flags at their process
+boundary; the C06 private event channel retains its descriptor lifetime and bounds.
 `pbcampaign` calls the package directly. Resident, manifest-promotion, shape,
 snapshot, wait, canary and producer adapters call their package owners without
 importing execution from the CLI. The rollout changes source only; it does not

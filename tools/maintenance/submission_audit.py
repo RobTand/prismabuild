@@ -81,6 +81,66 @@ def test_facts(source: str):
     return definitions, assertions
 
 
+def assertion_delta_rows(conditions, delta):
+    remaining, result = delta.copy(), []
+    for node in conditions:
+        form = assertion_owner_form(node)
+        if remaining[form]:
+            result.append({"line": node.lineno, "assertion": ast.unparse(node),
+                           "normalized_sha256": submission_source_digest(form.encode())})
+            remaining[form] -= 1
+    return result
+
+
+def legacy_cli_references(tree):
+    aliases = {"pbrun", "pbrun_mod"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "pbrun")
+    references = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
+            if node.attr not in CLI:
+                references.append([node.lineno, node.attr])
+        if not isinstance(node, ast.Call):
+            continue
+        patch = isinstance(node.func, ast.Attribute) and node.func.attr in {"setattr", "object"}
+        read = isinstance(node.func, ast.Name) and node.func.id in {"getattr", "hasattr", "setattr"}
+        if not (patch or read) or len(node.args) < 2:
+            continue
+        if isinstance(node.args[0], ast.Name) and node.args[0].id in aliases:
+            names = [part.value for part in ast.walk(node.args[1])
+                     if isinstance(part, ast.Constant) and isinstance(part.value, str)]
+            references.extend([node.lineno, "dynamic:" + name] for name in names if name not in CLI)
+            if not names:
+                references.append([node.lineno, "unresolved dynamic CLI attribute"])
+        if patch and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            owner, _, name = node.args[0].value.partition(".")
+            if owner in aliases and name not in CLI:
+                references.append([node.lineno, "patch:" + name])
+    return references
+
+
+def embedded_programs(tree):
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            source = "".join(part.value if isinstance(part, ast.Constant) else repr("C14_EXPRESSION")
+                             for part in node.values)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if isinstance(parents.get(node), ast.JoinedStr):
+                continue
+            source = node.value
+        else:
+            continue
+        if "import " in source and "pbrun" in source:
+            try:
+                yield node.lineno, ast.parse(source)
+            except SyntaxError:
+                # Textual fragments and documentation are not executable programs.
+                continue
+
+
 def inspect(root: Path) -> dict:
     errors, legacy, forbidden, embedded = [], [], [], []
     tests, assertions, changed = {}, {}, {}
@@ -111,26 +171,14 @@ def inspect(root: Path) -> dict:
                     new = Counter(assertion_owner_form(node) for node in conditions)
                     removed = old - new
                     if removed:
-                        changed[relative] = {
-                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": submission_source_digest(assertion_owner_form(node).encode())}
-                                    for node in old_conditions if assertion_owner_form(node) in removed],
-                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": submission_source_digest(assertion_owner_form(node).encode())}
-                                    for node in conditions if assertion_owner_form(node) in new - old]}
+                        changed[relative] = {"old": assertion_delta_rows(old_conditions, removed),
+                                             "new": assertion_delta_rows(conditions, new - old)}
+            legacy.extend([relative, *row] for row in legacy_cli_references(tree))
+            for line, program in embedded_programs(tree):
+                refs = legacy_cli_references(program)
+                if refs:
+                    embedded.append([relative, line, refs])
             for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "pbrun" and node.attr not in CLI:
-                    legacy.append([relative, node.lineno, node.attr])
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"setattr", "object"} and len(node.args) > 1:
-                    if isinstance(node.args[0], ast.Name) and node.args[0].id == "pbrun" and isinstance(node.args[1], ast.Constant) and node.args[1].value not in CLI:
-                        legacy.append([relative, node.lineno, "patch:" + str(node.args[1].value)])
-                if isinstance(node, ast.Constant) and isinstance(node.value, str) and "pbrun." in node.value and "import " in node.value:
-                    try:
-                        child = ast.parse(node.value)
-                    except SyntaxError:
-                        continue
-                    refs = [n.attr for n in ast.walk(child) if isinstance(n, ast.Attribute)
-                            and isinstance(n.value, ast.Name) and n.value.id == "pbrun" and n.attr not in CLI]
-                    if refs:
-                        embedded.append([relative, node.lineno, refs])
                 if folder == "src" and path.stem in NEW_OWNERS:
                     if isinstance(node, (ast.Import, ast.ImportFrom)):
                         names = [alias.name for alias in node.names]
@@ -148,11 +196,20 @@ def inspect(root: Path) -> dict:
                if isinstance(node, (ast.FunctionDef, ast.ClassDef))} - CLI
     current_api = {node.name for node in ast.parse((root / "tools/fleet/pbrun.py").read_text()).body
                    if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+    registry_path = root / "tools" / "maintenance" / "submission_assertions.json"
+    registered = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+    actual = {path: {side: sorted(row["normalized_sha256"] for row in rows[side])
+                     for side in ("old", "new")} for path, rows in changed.items()}
+    unreviewed = sorted(path for path in actual.keys() | registered.keys()
+        if path not in registered or path not in actual
+        or {side: registered[path].get(side) for side in ("old", "new")} != actual.get(path)
+        or len(registered[path].get("reason", "").split()) < 8)
     return {"base": BASE, "syntax_errors": errors, "legacy_references": legacy,
         "embedded_legacy": embedded, "forbidden": forbidden, "protected": protected,
         "deleted_pbrun_api": sorted(old_api), "retained_legacy_api": sorted(old_api & current_api),
         "missing_definitions": missing_definitions, "missing_assertions": missing_assertions,
-        "changed_assertions": changed, "tests": tests, "assertions": assertions,
+        "changed_assertions": changed, "unreviewed_assertion_changes": unreviewed,
+        "tests": tests, "assertions": assertions,
         "base_test_definitions": base_definitions, "base_assertions": base_assertions}
 
 
@@ -165,13 +222,15 @@ def main():
     if args.output:
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({key: result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
-        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions")} | {
+        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions",
+        "unreviewed_assertion_changes")} | {
         "protected": all(row["unchanged"] for row in result["protected"].values()),
         "deleted_api_count": len(result["deleted_pbrun_api"]), "test_files": len(result["tests"]),
         "test_definitions": sum(result["tests"].values()), "assertions": sum(result["assertions"].values()),
         "changed_assertion_files": len(result["changed_assertions"])}))
     return bool(any(result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
-        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions")) or
+        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions",
+        "unreviewed_assertion_changes")) or
         not all(row["unchanged"] for row in result["protected"].values()))
 
 

@@ -110,7 +110,7 @@ def test_reason_is_refused_clearly_by_an_older_queue_runtime():
     }
     args = pbrun.parse_args(["--priority-reason", REASON, "--", "/bin/true"])
     with pytest.raises(pool.PoolContractError, match="loaded queue runtime.*priority_reason"):
-        submit_core.publication_row(action, args=args, queue=OldQueue(), store=pbrun.configured_store())
+        submit_core.publication_row(action, args=pbrun.request_from_args(args), queue=OldQueue(), store=pbrun.configured_store())
 
 
 def test_an_argument_shaped_campaign_reason_is_only_a_value():

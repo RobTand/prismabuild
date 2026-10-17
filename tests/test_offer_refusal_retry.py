@@ -135,7 +135,7 @@ def test_a_tag_no_worker_offers_still_refuses_at_once(
 
     with pytest.raises(SystemExit, match="no recorded worker can run this action") as caught:
         _submit(monkeypatch, work, "nosuchbox")
-    assert not isinstance(caught.value, getattr(pbrun, "OfferDiscoveryTimedOut", ()))
+    assert not isinstance(caught.value, submit_core.OfferDiscoveryTimedOut)
     assert not list(queue.dir(pool.READY).glob("*.json"))
 
 
