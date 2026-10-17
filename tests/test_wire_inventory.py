@@ -20,6 +20,29 @@ def test_closed_field_sets_remain_pinned():
     assert policies == expected
 
 
+def test_symbolic_fstring_policies_retain_selected_source_bytes(tmp_path, monkeypatch):
+    import ast
+    original = ast.unparse
+
+    def version_specific_unparse(node):
+        if any(isinstance(part, ast.JoinedStr) for part in ast.walk(node)):
+            raise AssertionError('interpolated source must not depend on interpreter rendering')
+        return original(node)
+
+    monkeypatch.setattr(ast, 'unparse', version_specific_unparse)
+    expression = '''{'schema', value['host'], f"runtime-generation:{value['generation']}"}'''
+    source = 'def check(value):\n    required = ' + expression + '\n    if set(value) != required: raise ValueError("fields")\n'
+    for name in ('direct', 'embedded'):
+        root = tmp_path / name
+        package = root / 'src/prismabuild'
+        package.mkdir(parents=True)
+        (package / 'reader.py').write_text(source if name == 'direct' else 'SCRIPT = ' + repr(source) + '\n')
+        _, policies = audit(root)
+        selected = [row for row in policies if row.get('binding') == 'required']
+        assert len(selected) == 1
+        assert selected[0]['unresolved'] == expression
+
+
 def test_inventory_finds_unregistered_imported_embedded_and_data_wires(tmp_path):
     package = tmp_path / "src/prismabuild"
     package.mkdir(parents=True)

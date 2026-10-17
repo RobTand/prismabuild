@@ -148,6 +148,15 @@ def evaluate(node, values):
     return ast.literal_eval(node)
 
 
+def source_expression(node, source):
+    if any(isinstance(part, ast.JoinedStr) for part in ast.walk(node)):
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            raise ValueError('interpolated expression has no selected source bytes')
+        return segment
+    return ast.unparse(node)
+
+
 def audit(root, observations=None):
     observations = observations if observations is not None else {}
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
@@ -272,8 +281,9 @@ def audit(root, observations=None):
             values["__wire_imports__"] = imported
             return values
 
-        def walk(node, owner="<module>", embedded=False, scope=None):
+        def walk(node, owner="<module>", embedded=False, scope=None, source=None):
             scope = local if scope is None else scope
+            source = snippet.decode() if source is None else source
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 owner = (owner + "." + node.name).removeprefix("<module>.")
                 scope = scope_values(node, scope)
@@ -282,7 +292,7 @@ def audit(root, observations=None):
                     rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
                 elif "schema" in node.value:
                     try:
-                        walk(ast.parse(node.value), owner + ":embedded", True, scope)
+                        walk(ast.parse(node.value), owner + ":embedded", True, scope, node.value)
                     except SyntaxError:
                         pass
             schema, names, expansion, schema_node = None, [], False, None
@@ -311,14 +321,14 @@ def audit(root, observations=None):
                 if target.endswith("_exact_mapping"):
                     for kw in node.keywords:
                         if kw.arg == "keys":
-                            pin(kw.value, owner, scope)
+                            pin(kw.value, owner, scope, source)
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub) and isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Name) and node.left.func.id == "set":
-                pin(node.right, owner, scope)
+                pin(node.right, owner, scope, source)
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if isinstance(target, ast.Name) and re.fullmatch(r"_?(?:allowed|optional|required|keys|fields)|.*_(?:KEYS|FIELDS)", target.id):
-                        pin(node.value, owner, scope, binding=target.id)
+                        pin(node.value, owner, scope, source, binding=target.id)
             if isinstance(node, ast.Compare):
                 pairs = zip((node.left, *node.comparators[:-1]), node.comparators)
                 for left, right in pairs:
@@ -328,25 +338,25 @@ def audit(root, observations=None):
                         fields = right if is_keys(left) else left
                         if isinstance(fields, (ast.Tuple, ast.List)) and any(isinstance(part, ast.Set) for part in fields.elts):
                             for part in fields.elts:
-                                pin(part, owner, scope)
+                                pin(part, owner, scope, source)
                         elif not is_keys(fields):
-                            pin(fields, owner, scope)
+                            pin(fields, owner, scope, source)
                 for expression in ast.walk(node):
                     wire = resolve(expression, scope)
-                    if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in ast.unparse(node).lower():
+                    if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in source_expression(node, source).lower():
                         rows[wire]["reader_checks"].append({"path": path, "owner": owner, "line": node.lineno,
-                                                           "expression": ast.unparse(node), "embedded": embedded})
+                                                           "expression": source_expression(node, source), "embedded": embedded})
             if isinstance(schema, str) and WIRE.fullmatch(schema):
                 rows[schema]["schema_builders"].append({"path": path, "owner": owner, "line": node.lineno,
                                                         "fields": sorted(names), "expansion": expansion, "embedded": embedded})
             elif schema_node is not None:
                 observations["unresolved_schema_builders"].append({"path": path, "owner": owner, "line": node.lineno,
-                                                                   "schema": ast.unparse(schema_node), "fields": sorted(names),
+                                                                   "schema": source_expression(schema_node, source), "fields": sorted(names),
                                                                    "embedded": embedded})
             for child in ast.iter_child_nodes(node):
-                walk(child, owner, embedded, scope)
+                walk(child, owner, embedded, scope, source)
 
-        def pin(node, owner, scope, **extra):
+        def pin(node, owner, scope, source, **extra):
             try:
                 fields = evaluate(node, scope)
             except (ValueError, TypeError, KeyError, IndexError):
@@ -354,7 +364,7 @@ def audit(root, observations=None):
             if isinstance(fields, (set, frozenset, list, tuple)) and all(isinstance(k, str) for k in fields):
                 policies.append({"path": path, "owner": owner, "fields": sorted(fields), **extra})
             else:
-                policies.append({"path": path, "owner": owner, "unresolved": ast.unparse(node), **extra})
+                policies.append({"path": path, "owner": owner, "unresolved": source_expression(node, source), **extra})
 
         walk(tree, "<module>" if source_file["block"] is None else
              ("<shell-json@" if source_file["shell_template"] else "<shell-python@") + source_file["block"] + ">")
