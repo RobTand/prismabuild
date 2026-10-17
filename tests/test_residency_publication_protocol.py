@@ -53,3 +53,28 @@ def test_strict_withdrawal_keeps_benchmark_missing_file_errors(tmp_path, missing
     with pytest.raises(FileNotFoundError):
         staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
     assert material.exists() is (missing == 'fragment')
+
+
+def test_starved_fixture_dates_observations_after_landed_files(tmp_path, monkeypatch):
+    """Publication cost precedes the fixture's observation clock, without sleeps."""
+    import json
+    from types import SimpleNamespace
+    import pbmcp_fixture as fixture
+
+    clock = [1700000000.0]
+    monkeypatch.setattr(fixture, 'time', SimpleNamespace(time=lambda: clock[0]))
+    publish = residency_publication.publish_landed_files
+    publications = []
+    def finish_publication(*args, **kwargs):
+        result = publish(*args, **kwargs)
+        publications.append(kwargs['tier_id'])
+        clock[0] += 60.0
+        return result
+    monkeypatch.setattr(residency_publication, 'publish_landed_files', finish_publication)
+    fleet = fixture.build_starved(tmp_path)
+    lease = json.loads(fleet.queue.records.lease_path(fixture.CONSUMER_KEY).read_text())
+    assert publications == [fixture.STAGE_TIER, fixture.RAM_TIER]
+    assert fleet.consumer_reported_unix == clock[0] - 800
+    assert lease['progress_observation']['last_accepted']['reported_unix'] == clock[0] - 800
+    assert lease['claimed_unix'] == clock[0] - 100
+    assert lease['heartbeat_unix'] == clock[0] - 1
