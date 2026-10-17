@@ -1453,7 +1453,11 @@ def test_exclusive_demands_what_a_box_actually_offers(tmp_path):
     assert pbrun.exclusive_gpu_demand(queue, ["sparklina"]) == 1
 
 
-def test_a_spool_producer_with_no_room_for_its_exports_is_refused(tmp_path):
+@pytest.mark.parametrize("capability", [
+    None, "interpreter-path-v1", "local-dependency-v1",
+    "dependency-digest-v1", "container-image-v1",
+])
+def test_a_spool_producer_with_no_room_for_its_exports_is_refused(tmp_path, capability):
     """A spool producer declaring the box's whole pool is refused (#1571).
 
     The 2026-10-06 forward declared mem_gb 104 of sparky's 104 tokens, so
@@ -1464,15 +1468,22 @@ def test_a_spool_producer_with_no_room_for_its_exports_is_refused(tmp_path):
     """
     from prismabuild import adaptive_cpu as cpu_admission
     queue = pool_module.PoolQueue(tmp_path / "q")
-    queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
+    tags = ["sparky", *([capability] if capability else [])]
+    queue.announce(host="sparky", tags=["gb10", *tags], has_gpu=True,
                    capacity={"gpu": 1, "mem_gb": 104})
     action = {
         "params": {"demand": {"cpu": 10, "mem_gb": 104},
-                   "placement": {"required_tags": ["sparky"]}},
+                   "placement": {"required_tags": tags}},
         "environment": {"variables": {
             cpu_admission.SPOOL_ROOT_ENV: "/spool",
             "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES": "256"}},
     }
+    action["params"].update({
+        "interpreter-path-v1": {"interpreter": "/bin/python"},
+        "local-dependency-v1": {"local_dependencies": {"/secondary": "file"}},
+        "dependency-digest-v1": {"requires_files": [{"path": "/secondary", "sha256": "a" * 64}]},
+        "container-image-v1": {"container_images": ["sha256:" + "a" * 64]},
+    }.get(capability, {}))
     refusal = pbrun.producer_allowance_room_refusal(queue, action)
     assert refusal is not None and "104" in refusal, refusal
 

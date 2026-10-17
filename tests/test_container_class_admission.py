@@ -49,7 +49,6 @@ def test_live_image_checks_reobserve_inventory_and_class_freshness():
         raise AssertionError('native work must not read configured image freshness')
 
     assert isinstance(images.check({}, clock=unexpected_clock), capability_eligibility.ImageAccepted)
-    assert images.room_eligible({}, clock=unexpected_clock)
 
 
 def publish(queue, *, container=True):

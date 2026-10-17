@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from prismabuild import pool  # noqa: E402
+from gpu_capacity_fixture import idle_gpu_sample
 
 
 def host_sample(cpus, busy_by_cpu, psi_some, *, interval=10.):
@@ -108,8 +109,12 @@ def test_pressure_refuses_unbounded_demand_with_complete_healthy_telemetry(
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .02), psi_some)
     publish(queue, tmp_path, resources={'gpu': 1, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
-    assert (item is not None) is expect_admission
+    gpu_sample = idle_gpu_sample()
+    item = queue.claim(has_gpu=True, capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
+                       cpu_sampler=cpu_sampler, gpu_sampler=lambda: gpu_sample)
+    assert (item is not None) is expect_admission, [
+        (record["reason"], record.get("evidence", {}).get("decision", {}).get("reason"))
+        for record in queue.latest_denials({"a" * 64}).get("a" * 64, [])]
 
 
 @pytest.mark.parametrize('psi_some,per_cpu,expect_admission', [

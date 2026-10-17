@@ -60,9 +60,9 @@ def _denials(queue):
     return list(records.values())
 
 
-def _intent(path: str) -> dict:
+def _intent(entry: dict) -> dict:
     return {"tags": [TAG], "resources": {"cpu": 1, "mem_gb": 1},
-            "requires_files": [{"path": path}]}
+            "requires_files": [entry]}
 
 
 # --------------------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
     entry = _dependency(tmp_path)
     _publish(queue, "f" * 64, requires_files=[entry])
 
-    probe = _intent(entry["path"])
+    probe = _intent(entry)
     # An old generation: no tag, no answers -> never capable.
     queue.announce(host="old", tags=[], has_gpu=False, capacity=dict(CAPACITY))
     assert queue.placeable(probe) is False
@@ -226,7 +226,7 @@ def test_the_verdict_refuses_a_fleet_with_no_capability(tmp_path):
     queue.announce(host="old", tags=[], has_gpu=False, capacity=dict(CAPACITY))
 
     assert queue.dependency_placement_verdict(
-        _intent(entry["path"])) == "unknown_capability"
+        _intent(entry)) == "unknown_capability"
 
 
 def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
@@ -247,7 +247,7 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
             ),
         ),
     )
-    intent = _intent(entry["path"])
+    intent = _intent(entry)
     assert queue.dependency_placement_verdict(intent) == "unknown_paths"
 
     queue.announce(
@@ -264,7 +264,7 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
         ),
     )
     assert queue.dependency_placement_verdict(
-        _intent(absent_entry["path"])) == "absent"
+        _intent(absent_entry)) == "absent"
 
     queue.announce(
         host="box",
@@ -321,3 +321,27 @@ def test_publication_row_carries_the_sealed_requirements(tmp_path):
         queue=pool.PoolQueue(tmp_path / "queue"))
     assert row["requires_files"] == [entry]
     assert row["tags"] == [TAG]
+
+
+def test_first_use_unknown_files_publish_with_their_sealed_requirement(
+        tmp_path, monkeypatch, capsys):
+    from test_pbrun_detach import _checkout, _queue, _run_pbrun
+
+    queue = _queue(tmp_path)
+    queue.announce(host="sparky", tags=["sparky", TAG], has_gpu=False,
+                   capacity=dict(CAPACITY))
+    entry = _dependency(tmp_path)
+
+    assert _run_pbrun(
+        tmp_path, monkeypatch, _checkout(tmp_path), "--detach",
+        "--requires-files", json.dumps([entry])) == 0
+
+    assert "no worker has answered for the required dependencies" in capsys.readouterr().err
+    [row] = queue.ready_items()
+    assert row["requires_files"] == [entry]
+    assert TAG in row["tags"]
+    claimed = queue.claim(capacity=dict(CAPACITY), tags=["sparky", TAG])
+    assert claimed is not None and claimed["action_key"] == row["action_key"]
+    queue.finish(row["action_key"], status="executed", claim_snapshot=claimed)
+    assert queue.ledger().held_keys() == []
+    assert not queue.lease_path(row["action_key"]).exists()

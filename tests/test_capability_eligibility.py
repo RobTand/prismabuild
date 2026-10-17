@@ -379,9 +379,10 @@ def test_dependency_evidence_is_detached_from_its_source_and_advertisement():
     advertisement["local_dependencies"].clear()
     advertisement["dependency_files"].clear()
 
-    required = eligibility.OfferRequirements.from_item({
+    required = eligibility.CapabilityRequirements.from_item({
         "local_dependencies": {"/a": "path"}, "requires_files": [_required("/b")]})
-    assert eligibility.OfferCapabilities(dependencies=answers).matches(required, clock=lambda: 1000.)
+    assert isinstance(eligibility.OfferCapabilities(dependencies=answers).check(
+        required, clock=lambda: 1000.), eligibility.ImageAccepted)
 
 
 def test_live_digest_keeps_its_first_answer_but_reobserves_presence_each_candidate(tmp_path, monkeypatch):
@@ -485,17 +486,17 @@ def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkey
     ({"tags": [contracts.CONTAINER_IMAGE_TAG]}, [IMAGE], False, "container_image_requirement_missing"),
     ({"container_images": [IMAGE]}, None, False, "container_image_presence_unknown"),
     ({"container_images": [IMAGE]}, [], False, "container_image_absent"),
-    ({"container_images": [7]}, ["7"], True, "malformed_container_images"),
+    ({"container_images": [7]}, ["7"], False, "malformed_container_images"),
     ({"container_images": IMAGE}, [IMAGE], False, "malformed_container_images"),
 ])
-def test_room_image_rule_keeps_its_narrower_foreign_row_contract(item, references, room, reason):
+def test_room_and_claim_images_share_the_foreign_row_contract(item, references, room, reason):
     images = eligibility.LiveImages(references, policy=None, inventory=None)
 
     def unexpected_clock():
         raise AssertionError("an unconfigured image gate must not read class freshness")
 
-    assert images.room_eligible(item, clock=unexpected_clock) is room
     verdict = images.check(item, clock=unexpected_clock)
+    assert isinstance(verdict, eligibility.ImageAccepted) is room
     if reason is None:
         assert isinstance(verdict, eligibility.ImageAccepted)
     else:
@@ -510,9 +511,9 @@ def test_image_advertisement_does_not_share_mutable_reference_or_class_answers()
     advertisement = answers.offer_fields()
     advertisement["container_images"].clear()
     advertisement["container_class_verdict"]["container_work_eligible"] = False
-    required = eligibility.OfferRequirements.from_item({"container_images": [IMAGE]})
+    required = eligibility.CapabilityRequirements.from_item({"container_images": [IMAGE]})
 
-    assert answers.matches(required, clock=lambda: 1000.)
+    assert isinstance(answers.check(required, clock=lambda: 1000.), eligibility.ImageAccepted)
 
 
 def test_live_image_references_are_checked_again_for_each_candidate():
