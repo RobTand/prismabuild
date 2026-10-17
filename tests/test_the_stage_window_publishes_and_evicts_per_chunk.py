@@ -89,9 +89,7 @@ def _key(phase: int, chunk: int) -> str:
 def test_chunks_publish_in_read_order_behind_free_space() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0)], staged=[_key(0, 0)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0)], staged=[_key(0, 0)]), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["publish"]] == [
@@ -106,10 +104,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)],
-        staged=[_key(0, 0)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)], staged=[_key(0, 0)]), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["publish"]] == [("phase-0000", 1)]
@@ -125,10 +120,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 def test_each_chunk_of_a_passed_phase_egresses_through_its_own_node() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0001", free_gib=4, capacity_gib=4,
-        published=[_key(0, 0), _key(0, 1)],
-        staged=[_key(0, 0), _key(0, 1)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0001', residency_plan.LegObservation(published=[_key(0, 0), _key(0, 1)], staged=[_key(0, 0), _key(0, 1)]), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["evict"]] == [
@@ -170,9 +162,7 @@ def test_a_whole_phase_leg_beside_chunks_decides_as_it_always_did() -> None:
         manifest_bytes=6 * GIB,
         phases=[whole, *plan["phases"][1:]])  # type: ignore[index]
 
-    decision = residency_plan.window(
-        mixed, accepted_phase=None, free_gib=4, capacity_gib=4,
-        published=[], staged=[])
+    decision = residency_plan.ConsumerWindow(mixed, None, residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     first = decision["publish"][0]
     assert first["phase"] == "phase-0000"

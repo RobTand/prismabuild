@@ -1772,7 +1772,7 @@ def plans(queue_root, *, view="cursors", now=None, reader=None, ready=None, clai
     notes, unreadable = [], []
     plans: list[dict] = []
     try:
-        plan_paths = queue.records.required_plan_paths()
+        plan_paths = residency_plan.inspection_paths(queue)
     except FileNotFoundError:
         plan_paths = []  # No staged consumer has ever filed a plan.
     except OSError as exc:
@@ -2371,8 +2371,8 @@ class KeptReads:
 
     def plan_entries(self, queue):
         store = self.queue_store(queue.root)
-        return self._from_store(queue.root / pool.record_store.RESIDENCY_PLANS, 'plan-entries',
-                                store.plan_entries)
+        return self._from_store(residency_plan.registry_root(queue), 'plan-entries',
+                                lambda: residency_plan.inspection_entries(store))
 
     def tier_directories(self, queue):
         store = self.queue_store(queue.root)
@@ -2892,13 +2892,13 @@ def _cursor_census(queue_root: Path, *, now: float) -> dict:
     queue = pool.PoolQueue(root.absolute())
     notes: list[str] = []
     unreadable: list[str] = []
-    names = queue.records.inspection_plan_names()
+    names = residency_plan.inspection_names(queue)
     ready = set(pool.record_store.RecordStore(root).inspection_keys(pool.record_store.READY))
     claimed = set(pool.record_store.RecordStore(root).inspection_keys(pool.record_store.CLAIMED))
     rows: list[dict] = []
     for name in names:
         key = name[:-len(".json")]
-        raw = _pool_sidecar(root / pool.record_store.RESIDENCY_PLANS / name)
+        raw = _pool_sidecar(residency_plan.registry_root(queue) / name)
         if isinstance(raw, Exception) or not isinstance(raw, Mapping):
             reason = str(raw) if isinstance(raw, Exception) else "not a JSON object"
             note = f"cursors plan {key[:12]}: {reason}"
@@ -3033,7 +3033,7 @@ def _promotion_waits(queue, consumers, plan_files, *, reader, census_reader,
         # No plan filed is the ordinary answer for a consumer the coordinator
         # never staged, which still counts as a waiter whose tier is unknown
         # rather than as a read failure.
-        plan_entry = plan_files.get(queue.records.residency_plan_path(key).name)
+        plan_entry = plan_files.get(residency_plan.filed_name(queue, key))
         tier_id = _UNKNOWN_TIER
         if plan_entry is not None:
             named = _plan_tier(reader, plan_entry)

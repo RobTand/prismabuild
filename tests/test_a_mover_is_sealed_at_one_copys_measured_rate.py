@@ -21,6 +21,7 @@ Everything runs on ``tmp_path`` queues and stage roots (#628).
 from __future__ import annotations
 import pbrun
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import argparse
 import hashlib
@@ -252,7 +253,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = dict(submit_core.resolve_stage_tier(queue, None))
+    tier = dict(residency_plan.resolve_stage_tier(queue, None))
     tier["tokens"] = ({} if offer is None
                       else {**dict(tier.get("tokens") or {}),
                             storage_tiers.FILL_KIND: offer})
@@ -263,10 +264,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
     for record in receipts:
         record["manifest_sha256"] = (digest if record["manifest_sha256"] == MANIFEST
                                      else record["manifest_sha256"])
-    return submit_core.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=_Cas(manifest_path), movement_receipts=receipts, store=pbrun.configured_store())
+    return residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=_Cas(manifest_path), movement_receipts=receipts, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
 
 
 def _fills(staged: dict[str, object]) -> set[int]:
@@ -347,10 +345,12 @@ def test_the_submitters_declaration_reaches_the_plan(tmp_path: Path) -> None:
     assert "reader" not in staged["plan"]           # undeclared: byte-identical
     args = argparse.Namespace(residency_prefetch_depth_gib=22,
                               residency_read_mb_s=21)
-    assert submit_core.reader_declaration(args) == {
+    assert residency_plan.reader_declaration(residency_plan.FilingOptions(
+        prefetch_depth_gib=args.residency_prefetch_depth_gib,
+        read_mb_s=args.residency_read_mb_s)) == {
         "prefetch_depth_bytes": 22 * storage_tiers.GIB, "read_mb_s": 21}
     # A deferred record filed before #909 restores a Namespace without them.
-    assert submit_core.reader_declaration(argparse.Namespace()) == {}
+    assert residency_plan.reader_declaration(residency_plan.FilingOptions()) == {}
 
 
 @pytest.mark.parametrize("depth,rate", [(-1, None), (None, 0), (True, None)])
@@ -358,8 +358,8 @@ def test_a_malformed_declaration_is_refused_at_submission(depth, rate) -> None:
     import pbrun
 
     with pytest.raises(submit_core.SubmissionRefused):
-        submit_core.reader_declaration(argparse.Namespace(
-            residency_prefetch_depth_gib=depth, residency_read_mb_s=rate))
+        residency_plan.reader_declaration(residency_plan.FilingOptions(
+            prefetch_depth_gib=depth, read_mb_s=rate))
 
 
 def test_a_deferred_record_reads_with_or_without_the_declaration() -> None:

@@ -183,9 +183,9 @@ def test_an_unrecognized_marker_entry_makes_the_hint_unknown(queue):
                   / base.residency_plan.SUPERSEDED)
     superseded.mkdir(parents=True, exist_ok=True)
 
-    assert queue.records.residency_supersession_keys() == frozenset()
+    assert residency_plan.active_supersessions(queue) == frozenset()
     (superseded / "not-a-marker.json").write_text("{}")
-    assert queue.records.residency_supersession_keys() is None
+    assert residency_plan.active_supersessions(queue) is None
 
 
 def test_the_hint_parses_only_the_marker_address(queue):
@@ -202,4 +202,4 @@ def test_the_hint_parses_only_the_marker_address(queue):
                   ).write_text("{}")
     (superseded / f".{key}.deadbeef.tmp").write_text("{}")
 
-    assert queue.records.residency_supersession_keys() == frozenset({key})
+    assert residency_plan.active_supersessions(queue) == frozenset({key})

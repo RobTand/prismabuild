@@ -867,3 +867,41 @@ def seal_movement_action(
         return pb.seal_action(body)
     except pb.ActionContractError as exc:
         raise SubmissionRefused(f"refusing to seal a movement action: {exc}") from None
+
+
+def checkout_identity(cwd: Path) -> dict[str, str]:
+    """Commit plus a digest of the working-tree delta, or a named refusal."""
+
+    try:
+        return pb.git_checkout_identity(cwd)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: cannot identify checkout: {exc}") from None
+
+
+
+def submission_container_owner(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    determinism,
+    retry_policy,
+    marker_root,
+    identity=None,
+    logical_cwd=None,
+    placement=None,
+    container_images=(),
+) -> str:
+    """Submission ownership with the historical Git-identity fallback.
+
+    The digest recipe is shared with writer movements. Submission templates
+    without an explicit identity retain the same checkout read and refusal.
+    """
+
+    return container_owner(
+        command, cwd, demand, variables,
+        determinism=determinism, retry_policy=retry_policy,
+        marker_root=marker_root, identity=identity,
+        logical_cwd=logical_cwd, placement=placement,
+        container_images=container_images, identity_fn=checkout_identity)

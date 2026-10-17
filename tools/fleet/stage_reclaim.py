@@ -31,6 +31,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
+from prismabuild import residency_plan
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
     STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
@@ -733,7 +734,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                 yield path
 
     for root in (queue.root / pool.record_store.MOVERS, queue.root / pool.record_store.MOVERS_RETIRED,
-                 queue.root / pool.record_store.RESIDENCY_PLANS):
+                 residency_plan.registry_root(queue)):
         for path in tree(root):
             record(path)
     for path in tree(Path(residency_root or queue.root / pool.record_store.RESIDENCY)):

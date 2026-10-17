@@ -77,7 +77,10 @@ the consumer never waits on a mover that is waiting on the consumer.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+import bisect
 import contextlib
+from dataclasses import dataclass
+from functools import cached_property
 import hashlib
 import json
 import math
@@ -91,7 +94,10 @@ from . import immutable_files
 from . import manifest_layout
 from . import pool as _pool
 from . import residency_map
-from . import storage_tiers
+from . import storage_tiers, movement_actions, contracts
+from . import data_manifest as manifest_codec
+from .submission_types import SubmissionRefused
+from .queue_publication import RowPublication
 
 RESIDENCY_PLAN_SCHEMA_V1 = "prismaquant.prismabuild.residency_plan.v1"
 
@@ -1618,12 +1624,7 @@ def plan_interest(queue, mover_action_key: str, *,
     unknown: list[str] = []
     root = str(queue.root)
     try:
-        filed = sorted(
-            path.stem for path in immutable_files.scan_optional(
-                queue.root / _pool.record_store.RESIDENCY_PLANS,
-            )
-            if path.suffix == ".json" and len(path.stem) == 64
-            and set(path.stem) <= _HEX)
+        filed = filed_consumers(queue)
     except OSError:
         return {"interested": [], "unknown": ["<plans>"]}
     for stale in [entry for entry in _FILED_KEYS
@@ -1738,7 +1739,7 @@ def leads_for(plan: Mapping[str, object]) -> list[str]:
     return leads
 
 
-def _prelaunch_stage_legs(
+def prelaunch_stage_legs(
         phase: Mapping[str, object]) -> list[dict[str, object]]:
     """One row per stage leg of a plan phase: chunked or whole (#1594).
 
@@ -1808,7 +1809,7 @@ def prelaunch_bound(plan: Mapping[str, object],
                       and phase.get("resident_before_launch") is True)]
 
     def size(phase: Mapping[str, object]) -> int:
-        return sum(leg["stage_gib"] for leg in _prelaunch_stage_legs(phase)
+        return sum(leg["stage_gib"] for leg in prelaunch_stage_legs(phase)
                    if leg["mover_key"] not in owned)
 
     return prelaunch_peak_gib(
@@ -1862,7 +1863,7 @@ def gang_prelaunch_demand(members: Sequence[Mapping[str, object]],
                 continue
             if phase.get("resident_before_launch") is not True:
                 continue
-            for leg in _prelaunch_stage_legs(phase):
+            for leg in prelaunch_stage_legs(phase):
                 namespace = share_namespace(
                     digest, tier_id, int(leg["start_bytes"]),
                     int(leg["end_bytes"]))
@@ -1877,7 +1878,7 @@ def gang_prelaunch_demand(members: Sequence[Mapping[str, object]],
             if phase.get("resident_before_launch") is True:
                 continue
             size = 0
-            for leg in _prelaunch_stage_legs(phase):
+            for leg in prelaunch_stage_legs(phase):
                 namespace = share_namespace(
                     digest, tier_id, int(leg["start_bytes"]),
                     int(leg["end_bytes"]))
@@ -2921,9 +2922,9 @@ def read_footprint(plan: Mapping[str, object], accepted_phase: str | None, *,
             report_latency_s=report_latency_s, mover_role=mover_role,
             consumption_bytes_per_s=consumption_bytes_per_s)
         end = None if horizon is None else horizon["horizon_end_bytes"]
-        decision = window(plan, accepted_phase=name, free_gib=capacity,
-                          capacity_gib=capacity, mover_role=mover_role,
-                          horizon_end_bytes=end)             # type: ignore[arg-type]
+        decision = ConsumerWindow(plan, name,
+            LegObservation(mover_role=mover_role, horizon_end_bytes=end),
+            WindowBudget(free_gib=capacity, capacity_gib=capacity)).decision             # type: ignore[arg-type]
         publish = decision["publish"]
         assert isinstance(publish, list)
         largest = max(largest, sum(int(row["stage_gib"]) for row in publish))
@@ -2998,241 +2999,6 @@ def legs_over(plan: Mapping[str, object], start_bytes: int, end_bytes: int,
             and int(leg["end_bytes"]) > int(start_bytes)]
 
 
-def window(plan: Mapping[str, object], *, accepted_phase: str | None,
-           free_gib: int, capacity_gib: int | None = None,
-           published: Sequence[str] = (),
-           staged: Sequence[str] = (),
-           runahead_cap_gib: int | None = None,
-           mover_role: str = "mover_row",
-           withdrawn: Sequence[str] = (),
-           horizon_end_bytes: int | None = None,
-           prelaunch_held: bool | None = None,
-           prelaunch_need_gib: int | None = None) -> dict[str, object]:
-    """What the coordinator should publish and evict on this cycle.
-
-    ``accepted_phase`` is the phase the consumer's progress record says it is
-    reading *now*, so the phases before it are finished with and may be
-    evicted; counting the named phase itself would take back a window the
-    consumer is still inside, the same rule ``manifest_layout.consumed_through``
-    keeps.  ``published`` names the movers already queued, claimed or terminal
-    **and still holding their tokens**; ``staged`` those whose bytes are on the
-    tier now.
-
-    The decision is about one movement leg, and ``mover_role`` names it:
-    ``"mover_row"`` for the stage window, ``"ram_mover_row"`` for the ram
-    window (#640).  ``published`` and ``staged`` hold that leg's own action
-    keys, so every membership test here runs against the leg's keys -- a ram
-    window fed promotion keys would find no stage key resident, never evict
-    and never recognise its own published promotions, which is the hole the
-    parameter closes.  A phase the submitter sealed without this leg has
-    nothing on the tier: published by nobody, evicted by nobody.  Each
-    entry's ``mover_row`` and ``egress_row`` are the pair the role names.
-
-    ``withdrawn`` names the leg's action keys that carry a live withdrawal
-    marker.  Such a leg is never published: its key is a content hash, so
-    publishing it would retire the operator's marker and run the cancelled
-    copy again at the price it was cancelled for, which is the state #708
-    was filed about.  It is not a stall and it takes no room -- the next
-    publishable leg is what the consumer can still be staged with -- and the
-    coordinator retires the plan that names it, so this is the guard against
-    a marker filed between that pass and this decision rather than the
-    decision itself.  Eviction is untouched: an egress frees bytes nobody
-    has cancelled.
-
-    A phase the submitter sealed chunked decides per chunk: each chunk is
-    a leg with its own ``chunk_index``, its own range and its own rows, in
-    read order -- ``stage_chunks`` on the stage leg (#675), ``ram_chunks``
-    on the ram leg (#673).  Chunks of the phase being read are the reader's
-    near-term food -- they publish as their turn comes, outside the
-    run-ahead budget -- while later chunks spend it, so the budget buys
-    several chunks instead of zero phases.  A chunk of a passed phase
-    evicts through its own egress node; a leg sealed whole carries no
-    ``chunk_index`` and decides exactly as it always did.
-
-    A mover that is terminal but no longer pinned is deliberately absent from
-    ``published``: its key is a content hash, so a second campaign over the
-    same manifest seals the same key, and a ``done`` record left from an
-    already-evicted range would otherwise satisfy nothing and be republished by
-    nobody.  The window is what fits: phases are published in read order while
-    the tier's free capacity covers the next one, so a starved mover is rarely
-    in ``ready/`` at all and the tokens stay the safety net rather than the
-    schedule.
-
-    ...and while the run-ahead bound covers it, which is the second half #632
-    added: free capacity brakes at 0 B, which is too late for a stage that has
-    to keep its own ownership marker writable.  ``capacity_gib`` is the tier's
-    minted total (``ResourceLedger.capacity``); leaving it out keeps free
-    capacity as the only bound for a consumer that is reporting.  The answer
-    carries ``stall``: ``None``, or what the window declined to publish and
-    what it is waiting for.
-
-    ``horizon_end_bytes`` is the third bound, and the one that answers "how
-    far ahead does this consumer need its bytes" rather than "how much room
-    is there" (#903): :func:`refill_horizon`'s ``horizon_end_bytes``.  A leg
-    of a later phase that starts at or past it is not published this cycle,
-    however much room the tier has; it is published on the cycle the
-    consumer's progress brings it inside.  That is the normal state of a
-    rolling window, not a stall, so it files no ``stall``.  ``None`` -- no
-    horizon, or every remaining leg inside it -- leaves the decision exactly
-    as it was.  The phase being read is never held back by it.
-
-    ``prelaunch_held`` says whether the consumer's prelaunch group holds its
-    declared prefix now (#1594).  It changes nothing for a plan with no
-    declared phase.  For a declared plan the declared legs are the phase
-    being read: they never evict, never count as run-ahead, and never wait
-    on the budget or the horizon.  Without the held group (``None`` counts
-    as not held) no declared leg publishes and the answer carries a
-    ``prelaunch_waiting_for_room`` stall; with it every unpublished declared
-    leg publishes in read order, outside free room, and the streaming legs
-    follow the rules above as if the declared phases were absent.
-    """
-
-    if mover_role not in _MOVEMENT_ROLES:
-        raise ResidencyPlanError(
-            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
-            f"not {mover_role!r}")
-    phases = list(plan["phases"])                                # type: ignore[arg-type]
-    ahead = remaining(plan, accepted_phase)
-    ahead_names = [str(phase["name"]) for phase in ahead]
-    current_name = ahead_names[0] if ahead_names else None
-    passed = {str(phase["name"]) for phase in phases[:len(phases) - len(ahead)]}
-    already = set(published)
-    resident = set(staged)
-    cancelled = set(withdrawn)
-    legs = _legs(plan, mover_role=mover_role)
-    declared = frozenset(prelaunch_phase_names(plan))
-
-    evict = []
-    for leg in legs:
-        if leg["phase"] in declared:
-            continue
-        if leg["phase"] not in passed:
-            continue
-        key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-        if key not in resident:
-            continue
-        entry: dict[str, object] = {"phase": leg["phase"]}
-        if leg["chunk_index"] is not None:
-            entry["chunk_index"] = leg["chunk_index"]
-        entry.update({"mover_action_key": key, "egress_row": leg["egress_row"],
-                      "stage_gib": leg["stage_gib"]})
-        evict.append(entry)
-
-    publish: list[dict[str, object]] = []
-    room = int(free_gib)
-    has_accepted = accepted(plan, accepted_phase)
-    future = [leg for leg in legs if leg["phase"] in ahead_names[1:]
-              and leg["phase"] not in declared]
-    step = max((int(leg["stage_gib"]) for leg in future), default=0)
-    budget = _budget_from_step(
-        step, has_accepted=has_accepted, capacity_gib=capacity_gib,
-        runahead_cap_gib=runahead_cap_gib)
-    # Everything the window already holds beyond the phase being read.  The
-    # phase the consumer is inside is not run-ahead: it is the work -- and
-    # for a chunked leg that means the current phase's chunks promote as
-    # their turn comes, while later chunks spend the budget (#673).
-    runahead = sum(int(leg["stage_gib"]) for leg in future
-                   if str(leg["mover_row"]["action_key"]) in already)  # type: ignore[index]
-    # The first streaming phase is the budget regime's current: the declared
-    # legs never count as the phase being read here.  Without a declaration
-    # this names the same phase as ``current_name``.
-    stream_names = [name for name in ahead_names if name not in declared]
-    stream_current = stream_names[0] if stream_names else None
-    effective_current = stream_current if declared else current_name
-    stall: dict[str, object] | None = None
-    if declared and prelaunch_held is not True:
-        pending = [leg for leg in legs
-                   if leg["phase"] in declared
-                   and leg["phase"] in ahead_names
-                   and str(leg["mover_row"]["action_key"]) not in already]  # type: ignore[index]
-        if pending:
-            from . import window_credit as _credit
-            # One computation serves the window and the begin (#1690): the
-            # stall's blocked amount is the group's own deficit when known,
-            # never a second sum beside it. Without the need the pending
-            # sum stands, so callers that pass no need read as before.
-            blocked = (int(prelaunch_need_gib)
-                       if prelaunch_need_gib is not None
-                       else sum(int(leg["stage_gib"]) for leg in pending))
-            stall = {
-                "consumer_action_key": plan["consumer_action_key"],
-                "tier_id": plan["tier_id"],
-                "accepted_phase": accepted_phase,
-                "reading_phase": current_name,
-                "blocked_phase": str(pending[0]["phase"]),
-                "blocked_gib": blocked,
-                "runahead_gib": runahead,
-                "runahead_budget_gib": budget,
-                "free_gib": int(free_gib),
-                "capacity_gib": None if capacity_gib is None else int(capacity_gib),
-                "reason": _credit.REASON_PRELAUNCH_WAIT,
-                "waiting_for": "the prelaunch group reservation",
-            }
-            if prelaunch_need_gib is not None:
-                stall["need_gib"] = int(prelaunch_need_gib)
-            return {"publish": publish, "evict": evict, "stall": stall}
-    for leg in legs:
-        if leg["phase"] not in ahead_names:
-            continue
-        key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-        if key in already or key in cancelled:
-            continue
-        need = int(leg["stage_gib"])
-        if leg["phase"] in declared:
-            # Only a held group reaches this branch with an unpublished
-            # declared leg: the wait above returns first.  The group already
-            # holds these tokens, so they take no room and spend no budget.
-            row: dict[str, object] = {"phase": leg["phase"]}
-            if leg["chunk_index"] is not None:
-                row["chunk_index"] = leg["chunk_index"]
-            row.update({
-                "mover_action_key": key,
-                "start_bytes": leg["start_bytes"], "end_bytes": leg["end_bytes"],
-                "stage_gib": need, "mover_row": leg["mover_row"],
-            })
-            publish.append(row)
-            continue
-        is_current = leg["phase"] == effective_current
-        if (not is_current and horizon_end_bytes is not None
-                and int(leg["start_bytes"]) >= int(horizon_end_bytes)):
-            break     # past the refill horizon: published as progress arrives
-        if not is_current and budget is not None and runahead + need > budget:
-            stall = {
-                "consumer_action_key": plan["consumer_action_key"],
-                "tier_id": plan["tier_id"],
-                "accepted_phase": accepted_phase,
-                "reading_phase": current_name,
-                "blocked_phase": str(leg["phase"]),
-                "blocked_gib": need,
-                "runahead_gib": runahead,
-                "runahead_budget_gib": budget,
-                "free_gib": int(free_gib),
-                "capacity_gib": None if capacity_gib is None else int(capacity_gib),
-                "reason": ("runahead_budget" if has_accepted
-                           else "no_accepted_progress"),
-                "waiting_for": (
-                    f"accepted progress past {accepted_phase}" if has_accepted
-                    else "the consumer's first accepted progress record"),
-            }
-            if leg["chunk_index"] is not None:
-                stall["chunk_index"] = leg["chunk_index"]
-            break
-        if need > room:
-            break
-        room -= need
-        if not is_current:
-            runahead += need
-        row = {"phase": leg["phase"]}
-        if leg["chunk_index"] is not None:
-            row["chunk_index"] = leg["chunk_index"]
-        row.update({
-            "mover_action_key": key,
-            "start_bytes": leg["start_bytes"], "end_bytes": leg["end_bytes"],
-            "stage_gib": need, "mover_row": leg["mover_row"],
-        })
-        publish.append(row)
-    return {"publish": publish, "evict": evict, "stall": stall}
-
 
 def _advance_entry(leg: Mapping[str, object]) -> dict[str, object]:
     """One leg in the shape the fence binder reads (plan-quoted, not row-quoted)."""
@@ -3263,155 +3029,6 @@ def _entry_list(legs: Sequence[Mapping[str, object]]) -> list[dict[str, object]]
 
     return [_advance_entry(leg) for leg in legs]
 
-
-def advance_needs(plan: Mapping[str, object], accepted_phase: str | None, *,
-                  published: Sequence[str] = (),
-                  rowed: Sequence[str] = (),
-                  staged: Sequence[str] = (),
-                  mover_role: str = "mover_row",
-                  horizon_end_bytes: int | None = None) -> dict[str, object]:
-    """The minimum simultaneous current-plus-next needs of one window leg.
-
-    The first two unpublished legs in read order: ``current_min_gib`` is what
-    admission must stage first (the lead), ``next_min_gib`` the advance that
-    must fit beside it for guaranteed progress (``None`` on the final leg --
-    a final phase needs no future credit).  Chunked legs decide per chunk, so
-    a sliding window's minimum is two chunks, never two phases.  A leg the
-    submitter sealed without (``mover_role`` absent) contributes nothing.
-    Raises :class:`ResidencyPlanError` for an unknown mover role, like
-    :func:`window`.
-
-    ``rowed`` names the movers with a queued ready row; ``staged`` the ones
-    holding tokens for landed bytes; ``queued`` returns those ahead legs in
-    read order, with ``queued_prior`` the full-ordered legs before the first
-    of them.  ``fence_target`` names the one advance the fence protects --
-    exactly the leg after the frontier (the earliest unstaged ahead leg),
-    which pays from free under the gate's count -- with ``fence_prior``
-    the legs before it: one fence per window, and the phase the blind
-    pre-publish take and the post-publish bind agree on.  The gate reads
-    ``waiting``/``prior`` exactly as before.
-
-    ``horizon_end_bytes`` is :func:`window`'s refill horizon (#903), and it
-    bounds ``waiting`` the way it bounds the window's publication: a leg of
-    a later phase that starts at or past it is not something this window
-    will publish this cycle, so it is neither the current nor the next the
-    gate reserves room for.  Without the bound a window asks the joint gate
-    for legs it will not publish -- a newcomer its current and next, an
-    admitted window the next the gate reserves for it -- and that phantom
-    footprint can hold another consumer's in-horizon leg out.  (Before #908
-    a rolling window whose original lead retired was also re-gated as a
-    newcomer; a claimed window no longer is.)  The fence is bounded the
-    same way: its frontier is still the earliest unstaged leg of the whole
-    plan, but a ``fence_target`` past the horizon is no advance yet -- the
-    window will not publish it until progress brings it inside -- so it is
-    ``None`` this cycle, and a fence held for it would be room reserved for
-    a leg nobody asked for.  ``queued`` stays on the whole plan.  ``None``
-    changes nothing.
-
-    A declared plan (#1594) reports only its streaming legs here: ``waiting``,
-    ``queued``, the frontier and ``fence_target`` skip the declared prefix,
-    and ``lead_mover_action_key`` is the first streaming leg's mover.  Two
-    extra keys carry the prefix itself: ``prelaunch_legs`` lists every
-    declared leg in read order and ``prelaunch_gib`` sums their demands.
-    A plan with no declaration returns neither key.
-    """
-
-    if mover_role not in _MOVEMENT_ROLES:
-        raise ResidencyPlanError(
-            f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
-            f"not {mover_role!r}")
-    ahead = remaining(plan, accepted_phase)
-    ahead_names = [str(phase["name"]) for phase in ahead]
-    done = set(published)
-    rowed_set = set(rowed)
-    staged_set = set(staged)
-    full = _legs(plan, mover_role=mover_role)
-    declared = frozenset(prelaunch_phase_names(plan))
-    stream_full = ([leg for leg in full if leg["phase"] not in declared]
-                   if declared else full)
-    prelaunch = [leg for leg in full if leg["phase"] in declared]
-    current_name = ahead_names[0] if ahead_names else None
-    waiting = [leg for leg in stream_full
-               if leg["phase"] in ahead_names
-               and str(leg["mover_row"]["action_key"]) not in done  # type: ignore[index]
-               and (horizon_end_bytes is None or leg["phase"] == current_name
-                    or int(leg["start_bytes"]) < int(horizon_end_bytes))]
-    queued = [leg for leg in stream_full
-              if leg["phase"] in ahead_names
-              and str(leg["mover_row"]["action_key"]) in rowed_set]  # type: ignore[index]
-    # Frontier-first fencing: one fence per window per pass.  The frontier
-    # (the earliest unstaged ahead leg) pays from free under the gate's
-    # count; exactly the leg after it is the advance the fence protects.
-    # Blind (unpublished advance) and bind (published advance) target the
-    # same phase, so the pre-publish take and the post-publish bind agree;
-    # legs before the target excluding the frontier are staged by
-    # construction, so the retired check over ``fence_prior`` is a sanity
-    # rail rather than a discovery.
-    frontier_index: int | None = None
-    for index, leg in enumerate(stream_full):
-        if (leg["phase"] in ahead_names
-                and str(leg["mover_row"]["action_key"])  # type: ignore[index]
-                not in staged_set):
-            frontier_index = index
-            break
-    fence_target: dict[str, object] | None = None
-    fence_prior: list[dict[str, object]] = []
-    if frontier_index is not None and frontier_index + 1 < len(stream_full):
-        candidate = stream_full[frontier_index + 1]
-        if candidate["phase"] in ahead_names and (
-                horizon_end_bytes is None or candidate["phase"] == current_name
-                or int(candidate["start_bytes"]) < int(horizon_end_bytes)):
-            fence_target = _advance_entry(candidate)
-            fence_prior = _advance_prior(stream_full[:frontier_index])
-    if not waiting:
-        idle: dict[str, object] = {
-            "current_min_gib": 0, "next_min_gib": None, "final": True,
-            "reading_phase": ahead_names[0] if ahead_names else None,
-            "next_phase": None, "next_mover_action_key": None,
-            "next_chunk_index": None, "waiting": [], "prior": [],
-            "queued": _entry_list(queued), "queued_prior": [],
-            "fence_target": fence_target, "fence_prior": fence_prior,
-            "lead_mover_action_key": None}
-        if declared:
-            idle["prelaunch_legs"] = _entry_list(prelaunch)
-            idle["prelaunch_gib"] = sum(
-                int(leg["stage_gib"]) for leg in prelaunch)
-        return idle
-    first, rest = waiting[0], waiting[1:]
-    order = [str(leg["mover_row"]["action_key"])  # type: ignore[index]
-             for leg in stream_full]
-    prior = stream_full[:order.index(  # type: ignore[index]
-        str(first["mover_row"]["action_key"]))]
-    queued_prior: list[dict[str, object]] = []
-    if queued:
-        queued_prior = stream_full[:order.index(
-            str(queued[0]["mover_row"]["action_key"]))]  # type: ignore[index]
-    out: dict[str, object] = {
-        "current_min_gib": int(first["stage_gib"]),
-        "next_min_gib": int(rest[0]["stage_gib"]) if rest else None,
-        "final": not rest,
-        "reading_phase": ahead_names[0] if ahead_names else None,
-        "next_phase": str(rest[0]["phase"]) if rest else None,
-        "next_mover_action_key": (str(rest[0]["mover_row"]["action_key"])  # type: ignore[index]
-                                  if rest else None),
-        "next_chunk_index": rest[0]["chunk_index"] if rest else None,
-        "lead_mover_action_key": (str(stream_full[0]["mover_row"]["action_key"])  # type: ignore[index]
-                                  if stream_full else None),
-        # The advance itself: the first queued leg is what the fence
-        # protects (its claim), with every earlier leg listed for the
-        # safe-retire check replenish requires.  ``waiting`` stays the
-        # unpublished future the gate decides on.
-        "waiting": _entry_list(waiting),
-        "prior": _advance_prior(prior),
-        "queued": _entry_list(queued),
-        "queued_prior": _advance_prior(queued_prior),
-        "fence_target": fence_target,
-        "fence_prior": fence_prior,
-    }
-    if declared:
-        out["prelaunch_legs"] = _entry_list(prelaunch)
-        out["prelaunch_gib"] = sum(int(leg["stage_gib"]) for leg in prelaunch)
-    return out
 
 
 def prelaunch_owned_gib(plan: Mapping[str, object],
@@ -3815,13 +3432,21 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
 
 __all__ = [
     "RESIDENCY_PLAN_SCHEMA_V1",
+    "FilingOptions", "FiledWindow", "ConsumerWindow", "LegObservation", "WindowBudget",
+    "prepare_window", "consumer_filing", "file_manifest_row",
+    "resolve_stage_tier", "resolve_ram_tier", "reader_declaration",
+    "prelaunch_capacity_refusal", "split_prelaunch_cuts", "residency_leg_cuts",
+    "active_supersessions", "retired_consumers", "registry_cycle", "registry_root",
+    "filed_consumers", "filed_consumer_candidates", "shared_movers", "shared_ranges_present",
+    "inspection_paths", "inspection_names", "inspection_entries", "concluded_consumers",
+    "prelaunch_stage_legs", "stage_leg_rows", "ram_leg_rows", "stage_source_resident",
+    "retirement_presence", "filed_name",
     "ResidencyPlanError",
     "SEALED_AGAINST_FIELDS",
     "SHARED_MOVER_SCHEMA_V1",
     "SHARED_RANGE_SCHEMA_V1",
     "accepted",
     "accepted_plan_phase",
-    "advance_needs",
     "build_plan",
     "consumer_residency",
     "filed_mover_keys",
@@ -3860,5 +3485,1785 @@ __all__ = [
     "shared_range_path",
     "stage_mover_keys",
     "validate_plan",
-    "window",
 ]
+
+
+@dataclass(frozen=True, kw_only=True)
+class FilingOptions:
+    ram: str = "auto"
+    share: str = "auto"
+    mover_readers: int = 4
+    mover_mem_gb: int = 1
+    mover_max_attempts: int = 3
+    prefetch_depth_gib: int | None = None
+    read_mb_s: int | None = None
+
+
+@dataclass(frozen=True)
+class FiledWindow:
+    plan: Mapping[str, object]
+    residency: Mapping[str, object]
+    retired: tuple[str, ...]
+    reused: bool
+
+
+def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
+    """Which stage tier this submission's bytes land on, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: ``tier_loop``
+    announces what each box actually has, so a submitter that hard-coded a
+    pool name would keep asking for a dataset after Rob moved it.  One stage
+    tier is the unambiguous case and needs no flag; none is a refusal naming
+    the loop that would have announced it; more than one is a refusal that
+    lists them, because picking for the operator is picking which box the
+    campaign reads from.
+    """
+
+    stages = [record for record in queue.tiers()
+              if record.get("tier") == "stage" and not record.get("retired")]
+    if declared is not None:
+        for record in stages:
+            if str(record.get("tier_id")) == declared:
+                return record
+        raise SubmissionRefused(
+            f"pbrun: no live stage tier {declared!r}; the fleet announces "
+            f"{sorted(str(r.get('tier_id')) for r in stages) or 'none'}")
+    if not stages:
+        raise SubmissionRefused(
+            "pbrun: --residency stage needs a stage tier, and no box announces "
+            "one.  A storage box mints it by running the tiers role "
+            "(tier_loop.py); until it does, nothing can reserve stage capacity")
+    if len(stages) > 1:
+        raise SubmissionRefused(
+            "pbrun: more than one stage tier is live; name one with "
+            f"--residency-tier: {sorted(str(r.get('tier_id')) for r in stages)}")
+    return stages[0]
+
+
+
+def resolve_ram_tier(queue, stage_tier: Mapping[str, object],
+                     ) -> dict[str, object] | None:
+    """The ram tier that sits in front of this stage, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: the promotion
+    node runs on the box that owns the stage, so the ram tier that feeds the
+    same consumers is that box's, and a ram tier on another host is another
+    stage's leg.  None is the ordinary answer -- no tmpfs mounted, or a
+    generation predating the policy -- and it seals no ram leg, exactly as a
+    submission before the tier existed did.
+    """
+
+    host = str(stage_tier.get("host") or "")
+    rams = [record for record in queue.tiers()
+            if record.get("tier") == "ram" and not record.get("retired")
+            and str(record.get("host") or "") == host]
+    if not rams:
+        return None
+    if len(rams) > 1:
+        raise SubmissionRefused(
+            "pbrun: more than one ram tier is live on "
+            f"{host or 'the stage host'}: the policy declares one mountpoint, "
+            f"and the fleet announces {sorted(str(r.get('tier_id')) for r in rams)}")
+    return rams[0]
+
+
+
+def reader_declaration(options: FilingOptions) -> dict[str, int]:
+    """What the submitter declares about the consumer's reading (#909).
+
+    ``--residency-prefetch-depth-gib`` and ``--residency-read-mb-s``, as the
+    residency plan's ``reader`` block: the tier prices the window from them
+    instead of from the consumer's memory reservation and the tier's own fill
+    offer.  Either may be absent; an empty declaration adds nothing to the
+    plan.  Read with ``getattr`` because a deferred submission filed before
+    #909 carries neither.
+    """
+
+    reader: dict[str, int] = {}
+    depth = getattr(options, "prefetch_depth_gib", None)
+    if depth is not None:
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            raise SubmissionRefused(
+                "pbrun: --residency-prefetch-depth-gib must be a whole number "
+                "of GiB, 0 or more")
+        reader["prefetch_depth_bytes"] = int(depth) * storage_tiers.GIB
+    rate = getattr(options, "read_mb_s", None)
+    if rate is not None:
+        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0:
+            raise SubmissionRefused("pbrun: --residency-read-mb-s must be a positive "
+                             "whole MB/s")
+        reader["read_mb_s"] = int(rate)
+    return reader
+
+
+
+def prelaunch_capacity_refusal(
+    tier: Mapping[str, object], tier_id: str, bound: Mapping[str, int],
+    prelaunch: object, manifest_sha256: str,
+) -> str | None:
+    """Why a declared prefix cannot fit this stage tier, or ``None`` (#1594).
+
+    Compares the peak with the tier's minted capacity.  Headroom is not
+    checked: a fit prefix with no free room waits.  Unknown capacity never
+    refuses.
+    """
+
+    minted = storage_tiers.minted_tokens(tier).get(
+        storage_tiers.capacity_kind_of(tier_id))
+    if minted is None or bound["peak_gib"] <= minted:
+        return None
+    return (
+        f"pbrun: prelaunch prefix {prelaunch} of "
+        f"{manifest_sha256[:12]} needs peak "
+        f"{bound['peak_gib']} GiB (retained "
+        f"{bound['retained_gib']} GiB + suffix "
+        f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
+        f"above the tier's minted capacity of {minted} GiB.  "
+        f"Nothing was sealed or published.")
+
+
+
+def split_prelaunch_cuts(
+    ranges: Sequence[Mapping[str, object]],
+    cuts: Sequence[list[tuple[int, int]]],
+    prelaunch_names: frozenset[str] | set[str],
+) -> tuple[list[list[tuple[int, int]]], list[list[tuple[int, int]]]]:
+    """The declared prefix's cuts and the streaming suffix's, chosen by name.
+
+    ``cuts`` holds one entry per range, and ``ranges`` omits an empty phase,
+    so the manifest's declared count and the cut list can disagree: slicing
+    by count would take a suffix phase's cuts into the prefix.  The names
+    are what the manifest declared, so the split follows them (#1594).
+    """
+
+    if len(ranges) != len(cuts):
+        raise SubmissionRefused("pbrun: prelaunch cuts and ranges disagree; "
+                         "nothing was sealed or published.")
+    prefix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) in prelaunch_names]
+    suffix = [chunks for span, chunks in zip(ranges, cuts)
+              if str(span["name"]) not in prelaunch_names]
+    return (prefix, suffix)
+
+
+
+def residency_leg_cuts(
+    record: Mapping[str, object],
+    *,
+    leg: str,
+    ranges: Sequence[Mapping[str, object]],
+    read_entries: Sequence[Mapping[str, object]],
+) -> list[list[tuple[int, int]]]:
+    """Every phase's chunk ranges on one leg, in read order.
+
+    The chunk size is the tier's announced sizing, never this box's: the pin
+    when the loop mints one, else the same window-quarter derivation the
+    loop announces with.  A tier that announces no sizing seals whole-phase
+    pairs -- chunking is a sealing-time property, and an unchunkable phase
+    keeps the shape it always had.
+
+    Cuts fall only on the manifest's entry boundaries (#965).  A mover
+    stages every entry its range touches, so a cut inside an entry made both
+    neighbouring movers overrun their reservations and refuse
+    ``residency_overran_reservation`` on every attempt.  Each chunk is
+    therefore whole entries, reserved at their bytes; an entry larger than
+    the chunk is a chunk of its own.  An entry larger than the window the
+    tier announces can never be admitted, so it refuses here, by name,
+    before anything is sealed.  A record that announces no window (the
+    stage's, which carries only its host's chunk) has nothing to refuse on.
+    """
+
+    def whole_gib(value: object) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    announced_chunk = whole_gib(record.get("promotion_chunk_gib"))
+    announced_window = whole_gib(record.get("window_gib"))
+    chunk_gib = announced_chunk
+    if chunk_gib is None and announced_window is not None:
+        chunk_gib = storage_tiers.promotion_chunk_gib_for_window(announced_window)
+    spans = [(int(span["start_bytes"]), int(span["end_bytes"])) for span in ranges]
+    if chunk_gib is None:
+        return [[span] for span in spans]
+    sizes = [int(entry.get("bytes", 0) or 0) for entry in read_entries]
+    window_bytes = (None if announced_window is None
+                    else announced_window * storage_tiers.GIB)
+    cuts: list[list[tuple[int, int]]] = []
+    for span, (start, end) in zip(ranges, spans):
+        try:
+            cuts.append(manifest_layout.split_range_into_chunks(
+                start, end, chunk_gib * storage_tiers.GIB,
+                entry_bytes=sizes, window_bytes=window_bytes))
+        except manifest_layout.EntryExceedsWindow as exc:
+            entry = read_entries[exc.entry_index]
+            raise SubmissionRefused(
+                f"pbrun: residency_entry_exceeds_window: phase "
+                f"{span['name']!r} reads {entry.get('path')!r} at offset "
+                f"{entry.get('offset')}, {exc.end_bytes - exc.start_bytes} "
+                f"bytes, which is larger than the {announced_window} GiB "
+                f"window of the {leg} tier {record.get('tier_id')}.  A mover "
+                f"stages whole entries, so no chunk can hold this one and "
+                f"its mover could never be admitted.  Nothing was sealed or "
+                f"published.") from None
+    return cuts
+
+
+
+def prepare_window(
+    template: Mapping[str, object],
+    *,
+    consumer_action_key: str,
+    tier: Mapping[str, object],
+    options: FilingOptions,
+    queue,
+    cas,
+    movement_receipts: Sequence[Mapping[str, object]] | None = None,
+    publication: RowPublication,
+) -> dict[str, object]:
+    """Seal every movement and egress node this submission will ever have.
+
+    All of them, now, before anything is published: an action key is a hash of
+    an action body, so the only way a coordinator can publish the window's
+    later phases is for the submitter to have sealed them and written the rows
+    down.  That is also what freezes the decomposition -- a restart republishes
+    these same children rather than cutting a new partition of the read order.
+
+    The ranges are the manifest's own phases.  Nothing here chooses a boundary:
+    a cut through an entry would hand a mover more bytes than its tokens
+    reserved, and ``manifest_phase_ranges`` refuses a phase table that does not
+    describe its own manifest.  Chunks inside a phase are cut at the same
+    entries' boundaries (``residency_leg_cuts``, #965).
+    """
+
+    manifest_input = template["params"].get("data_manifest")   # type: ignore[union-attr]
+    if not isinstance(manifest_input, Mapping):
+        raise SubmissionRefused(
+            "pbrun: --residency stage needs --data-manifest: the byte ranges a "
+            "mover stages are read-order offsets into that list, and there is "
+            "no other way to say which bytes a range means")
+    entry = manifest_input["input"]
+    manifest, _ = manifest_codec.read_data_manifest(cas.input_path(entry))
+    ranges = manifest_layout.manifest_phase_ranges(manifest)
+    if not ranges:
+        raise SubmissionRefused(
+            "pbrun: --residency stage needs a manifest that declares its read "
+            "order in phases; this one declares none, so there is no boundary "
+            "to stage up to that is not invented here")
+    # Read the declared prelaunch-resident prefix (#1594).  Mark its phases
+    # on the sealed plan.  Refuse its peak when it exceeds the tier.  A v1
+    # manifest reaches this reader unchecked by ``core``.  Refuse a
+    # non-boolean or a non-prefix declaration here.
+    try:
+        prelaunch = manifest_layout.manifest_prelaunch_phases(manifest)
+    except ValueError as exc:
+        raise SubmissionRefused(
+            f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
+            f"unusable prelaunch prefix: {exc}; nothing was sealed or "
+            f"published.") from None
+    prelaunch_names = frozenset(prelaunch)
+    tier_id = str(tier["tier_id"])
+    # A consumer that is already staged keeps the window it was frozen with.
+    # Receipts price a *new* window; they must never repartition a frozen one.
+    # The demand now depends on which receipts exist at submission, so a
+    # resubmission of the same consumer after one more mover filed would seal
+    # different mover keys and a different plan -- and ``freeze``
+    # is first-writer, so it would refuse the whole submission with both bodies
+    # in hand.  The frozen plan is the answer to that question, already agreed.
+    #
+    # The one exception is a plan a withdrawal marked superseded (#708): the
+    # request is new, the old window must not be resurrected at the price it
+    # was cancelled for, and the only supported reprice is this sealing path
+    # run again -- after the old window's work has ended.
+    #
+    # The reading and the filing are one captured identity, never a key read
+    # and a later "whatever is filed": a replacement can land between an
+    # advisory check and a reap, and a caller that never saw it must not
+    # archive it.  ``reap`` rechecks the exact ``(plan, filing)`` inside the
+    # consumer's lock; when it removes nothing, this loop reads what is
+    # actually filed now and decides again from that, rather than treating a
+    # refused reap as "the old filing is gone" (#708 review).
+    refusals: list[Exception] = []
+
+    def filed_now():
+        seen = len(refusals)
+        plan, identity = read_filed(
+            queue, consumer_action_key, on_unreadable=refusals.append)
+        if plan is None and len(refusals) > seen:
+            # A plan body this reader refuses, or a stat that failed: unknown
+            # state, and a fresh seal over it would be a guess (#708 review).
+            raise SubmissionRefused(
+                f"pbrun: the residency plan filed for "
+                f"{consumer_action_key[:12]} cannot be read "
+                f"({refusals[-1]!r}); refusing to reuse or replace it. An "
+                f"operator must resolve it under {SUPERSEDED}/.")
+        return plan, identity
+
+    frozen, filing = filed_now()
+    for _attempt in range(3):
+        if frozen is None:
+            break
+        marker = superseded(queue, frozen)
+        if marker is None:
+            return {
+                "plan": frozen,
+                "residency": {
+                    "schema": _pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": str(frozen["manifest_sha256"]),
+                    "manifest_bytes": int(frozen["manifest_bytes"]),
+                    "tier_id": str(frozen["tier_id"]),
+                    "leads": leads_for(frozen),
+                },
+                "reused_frozen_plan": True,
+            }
+        if marker.get("unreadable"):
+            # Unknown retirement is not "not retired": without a readable
+            # marker nobody can say which window the operator stopped, so a
+            # fresh seal would be a guess and is refused (#708 review).
+            raise SubmissionRefused(
+                f"pbrun: the supersession marker for {consumer_action_key[:12]} "
+                f"is unreadable ({marker.get('error') or 'unknown state'}); "
+                f"refusing to reuse or replace its frozen plan. An operator "
+                f"must resolve the marker under {SUPERSEDED}/.")
+        # A withdrawal marked this window superseded (#708).  Rows are sealed
+        # with the resources their keys hash, so the only supported way to
+        # request the range again at today's price is a fresh plan through
+        # this same sealing path -- and only once the old window's ownership
+        # has ended.  A live consumer or a claimed child is not replaced from
+        # under itself: the old plan is not rewritten, and this refuses.
+        safe, why = handoff_safe(queue, consumer_action_key, frozen)
+        if not safe:
+            raise SubmissionRefused(
+                f"pbrun: the residency plan for {consumer_action_key[:12]} was "
+                f"superseded ({marker.get('reason') or 'withdrawn'}), and its "
+                f"work has not ended: {why}.  Withdraw the consumer and let "
+                f"the tiers loop reap the old window, then resubmit; sealed "
+                f"rows and a frozen plan are never rewritten in place.")
+        reaped = reap(
+            queue, consumer_action_key, reason="superseded-reseal",
+            plan=frozen, filing=filing)
+        if reaped is not None:
+            frozen = None
+            break
+        # The locked reap removed nothing: the handoff went live, or another
+        # handoff changed the filing, after the advisory check above.  Read
+        # the filing that actually stands and decide again from it; a stable
+        # refusal follows on the next pass.
+        frozen, filing = filed_now()
+    else:
+        raise SubmissionRefused(
+            f"pbrun: the residency plan for {consumer_action_key[:12]} kept "
+            f"changing while this submission decided against it; nothing was "
+            f"sealed and nothing published. Retry the submission.")
+    stage_root = str(tier.get("mountpoint") or "")
+    if not stage_root.startswith("/"):
+        raise SubmissionRefused(
+            f"pbrun: stage tier {tier_id} announces no mountpoint to write into")
+    digest = str(entry["sha256"])
+    tags = [str(tier["host"])]
+    mover_python, mover_tool, egress_tool = movement_actions.movement_tools(tier)
+    announced = mover_announcement(tier)
+    pool_root = str(publication.queue_root)
+    # The ram leg, when a ram tier sits in front of this stage (#640): a
+    # promotion node and an egress node per phase, sealed here with the rest
+    # of the plan, because an action key is a hash and the coordinator cannot
+    # publish children the submitter never sealed.  ``auto`` is the default so
+    # the tier turns on with the mount; ``off`` is the A/B's other arm.
+    ram_tier = None
+    if str(getattr(options, "ram", "auto") or "auto") == "auto":
+        ram_tier = resolve_ram_tier(queue, tier)
+    ram_tier_id = None
+    ram_root = ""
+    ram_python = ram_tool = ram_egress_tool = ""
+    if ram_tier is not None:
+        ram_tier_id = str(ram_tier["tier_id"])
+        ram_identity = ram_tier.get("pool_identity")
+        if not isinstance(ram_identity, Mapping):
+            ram_identity = None
+        ram_root = str(ram_tier.get("mountpoint") or "")
+        if not ram_root.startswith("/"):
+            raise SubmissionRefused(
+                f"pbrun: ram tier {ram_tier_id} announces no mountpoint to "
+                f"promote into")
+        ram_python, ram_tool, ram_egress_tool = movement_actions.movement_tools(
+            ram_tier, mover=movement_actions.RAM_PROMOTE_SCRIPT)
+
+    # Every chunk of both legs is cut here, before a single node is sealed or
+    # published: an entry that no chunk of a tier can hold refuses the whole
+    # submission now, rather than after half its nodes reached the CAS.
+    read_entries = manifest_layout.manifest_read_entries(manifest)
+    stage_cuts = residency_leg_cuts(tier, leg="stage", ranges=ranges,
+                                    read_entries=read_entries)
+    ram_cuts = (None if ram_tier is None else
+                residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
+                                   read_entries=read_entries))
+    if prelaunch:
+        # Fit the declared prefix peak to the minted tier capacity (#1594).
+        # The sizes are the same chunk demands the sealed legs will carry,
+        # cut at the same boundaries.  This refuses what the plan demands.
+        # Headroom is not checked: a fit prefix with no free room waits.
+        # Unknown capacity never refuses.
+        prefix_cuts, suffix_cuts = split_prelaunch_cuts(
+            ranges, stage_cuts, prelaunch_names)
+
+        def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
+            return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)
+                        for cstart, cend in chunks) for chunks in cuts]
+
+        bound = prelaunch_peak_gib(
+            _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
+        refusal = prelaunch_capacity_refusal(
+            tier, tier_id, bound, prelaunch, str(entry["sha256"]))
+        if refusal is not None:
+            raise SubmissionRefused(refusal)
+
+    # One read of the live receipts for the whole window: every mover in it has
+    # the same structure and reads the same pool, so they price alike, and a
+    # per-phase read would give two phases of one plan different demands
+    # because a mover finished between them.
+    readers = int(options.mover_readers)
+    # The consumer's own reading, as its submitter declares it (#909).  A
+    # frozen plan returned above keeps the declaration it was frozen with.
+    reader = reader_declaration(options)
+    # A logical freeze supplies one invocation-local observation for all its
+    # siblings. None retains the standalone submission's fresh observation;
+    # an explicitly empty snapshot must not trigger another live census.
+    # Mover receipts and egress receipts share the movers directory, and one
+    # pass reads both (#1021): the movers price the copy, the egresses price
+    # the release (``movement_actions.egress_price``).  A caller's snapshot
+    # that holds no egress receipt seals every egress as before.
+    observed = (queue.move_records(schemas=(_pool.POOL_MOVE_SCHEMA_V1,
+                                            _pool.POOL_EGRESS_SCHEMA_V1))
+                if movement_receipts is None else movement_receipts)
+    receipts = [record for record in observed
+                if not (isinstance(record, Mapping) and record.get("schema")
+                        == _pool.POOL_EGRESS_SCHEMA_V1)]
+    # Which pools the receipts must have measured to price this window
+    # (#611): the tier's current identity, as the tier loop announced it.
+    # ``None`` -- a tier last announced by an older generation -- prices off
+    # every usable receipt, exactly as before.
+    tier_identity = tier.get("pool_identity")
+    if not isinstance(tier_identity, Mapping):
+        tier_identity = None
+    priced = storage_tiers.mover_demand_from_receipts(
+        receipts, tier_id=tier_id, readers=readers,
+        fallback_mem_gb=int(options.mover_mem_gb),
+        pool_identity=tier_identity)
+    # The pool bandwidth a mover reserves, once anything has measured it.  It
+    # is what makes concurrency a ledger decision rather than an accident: the
+    # tier mints what the disks delivered plus one probe mover's worth, and a
+    # mover that reserves nothing can never be rationed against another.  One
+    # copy's measured rate (#909): the slowest landing of this manifest's
+    # latest window onto this tier when that window holds two copies or more,
+    # else the median single-reader share of the tier's latest window (#958),
+    # never the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
+    # asks no more than admission will honour on this cycle (#708), and with
+    # nothing measured the offer is the stated bound, named in demand_source.
+    fill_price = storage_tiers.mover_fill_price(
+        receipts, tier_id=tier_id, pool_identity=tier_identity,
+        manifest_sha256=digest)
+    fill, offered_fill, fill_basis = storage_tiers.current_fill_offer(tier, fill_price["mb_s"])
+    mover_retry_policy = {
+        "max_attempts": int(options.mover_max_attempts),
+        # True by construction, not by the operator's say-so: ``stage_move``
+        # copies to a mover-keyed ``.<name>.partial``, verifies the digest,
+        # then ``os.replace``s, and files its fragment only for entries it
+        # verified.
+        "retry_safe": True,
+    }
+    # A stage mover's stall grace (#1010), from what the tier has measured
+    # (``movement_actions.mover_progress_policy``): its next landing at the
+    # slowest measured landing of this manifest on this tier, capped by the
+    # fill it reserves, plus the time a report takes to reach the stall
+    # check.  Measured means a landing of this manifest only (``landing`` on
+    # the price, whatever basis sealed the fill): a median share of other
+    # manifests' copies is not a landing of this one, while one copy is --
+    # a window of one prices no fill seal (#958) but still bounds how long a
+    # copy of this manifest has gone between landings.  Time the pool is
+    # the bottleneck is not priced here: the worker credits it on its own
+    # sample of the pool's members (``core.POOL_CONTENTION_PARAM``), so a
+    # policy is sealed only with the members the storage role announced.
+    # With either unmeasured the mover is sealed as before, with no stall
+    # grace, and ``demand_source.mover_progress`` says which was missing.
+    landing_bytes_per_s: float | None = None
+    landing = fill_price.get("landing")
+    if isinstance(landing, Mapping) and landing.get("mb_s"):
+        slowest = int(landing["mb_s"])                     # type: ignore[arg-type]
+        if fill is not None:
+            slowest = min(slowest, int(fill))
+        landing_bytes_per_s = float(slowest * storage_tiers.MB)
+    source_members = tier.get("source_members")
+    pool_members = ([str(member) for member in source_members if member]
+                    if isinstance(source_members, Sequence)
+                    and not isinstance(source_members, (str, bytes)) else [])
+    # How many movers were copying on the tier while the pricing window
+    # landed, at most: the rate above was measured under that load, and a
+    # reviewer comparing it with the load now needs both numbers.
+    window_concurrency = None
+    if isinstance(landing, Mapping):
+        counts = [record.get(storage_tiers.MOVER_CONCURRENCY_FIELD)
+                  for record in receipts
+                  if isinstance(record, Mapping)
+                  and str(record.get("manifest_sha256") or "") == digest
+                  and str(record.get("consumer_action_key") or "")
+                  == str(landing.get("window_consumer") or "")]
+        counts = [int(count) for count in counts
+                  if isinstance(count, int) and not isinstance(count, bool)]
+        window_concurrency = max(counts) if counts else None
+    entry_sizes = [int(read_entry.get("bytes", 0) or 0)
+                   for read_entry in read_entries]
+    entry_starts: list[int] = []
+    position = 0
+    for size in entry_sizes:
+        entry_starts.append(position)
+        position += size
+    mover_progress: dict[str, object] = {}
+    # A stage egress's stall grace (#1021), from the egresses this stage has
+    # receipted (``movement_actions.egress_progress_policy``): the census,
+    # this chunk's unlinks and the settle at the slowest measured terms, plus
+    # the time a report takes to reach the stall check.  Sealed only with the
+    # pool members the worker judges contention by, as a mover's is: the
+    # census reads the queue on the source pool, and time that pool is the
+    # bottleneck is credited, not priced.  Unmeasured, the egress is sealed
+    # as before, with no stall grace, and ``demand_source.egress_progress``
+    # says which term was missing.
+    egress_terms = movement_actions.egress_price(observed, stage_root=stage_root)
+    egress_progress: dict[str, object] = {}
+
+    def chunk_entry_bytes(cstart: int, cend: int) -> list[int]:
+        """The sizes of the read-order entries a chunk stages.
+
+        Chunks are cut on entry boundaries (#965), so this is exactly the
+        window ``stage_move`` copies (``manifest_layout.entries_between``).
+        """
+
+        low = bisect.bisect_right(entry_starts, cstart) - 1
+        return [entry_sizes[index]
+                for index in range(max(0, low), len(entry_sizes))
+                if entry_starts[index] < cend
+                and entry_starts[index] + entry_sizes[index] > cstart]
+
+    phases: list[dict[str, object]] = []
+    for ordinal, span in enumerate(ranges):
+        start, end = int(span["start_bytes"]), int(span["end_bytes"])
+        # The stage leg is cut into chunks (#675) the way the ram leg is
+        # (#673): one movement node plus one egress node per chunk, in read
+        # order, so the SSD refills as it frees instead of sawtoothing a
+        # whole phase at a time.  The cuts were made above, at entry
+        # boundaries, before anything was sealed (#965).  A phase that fits
+        # in one chunk seals today's whole-phase pair, and a tier that
+        # announces no sizing seals it too.
+        chunk_ranges = stage_cuts[ordinal]
+
+        def seal_stage_mover(cstart: int, cend: int, csuffix: str,
+                             namespace: str) -> tuple[dict, dict]:
+            """Seal one chunk's mover, filing its fragment under ``namespace``.
+
+            ``namespace`` is the consumer's own key for a per-consumer mover,
+            and the range's :func:`share_namespace` for a
+            shared one (#1026): no one consumer's fragment directory may hold
+            bytes the others read, or that consumer's death would retire
+            them.  Returns the row and its stall-grace derivation.
+            """
+
+            chunk_demand = storage_tiers.residency_demand(
+                tier_id=tier_id, range_start_bytes=cstart,
+                range_end_bytes=cend, fill_mb_s_pool_side=fill)
+            # Measured, not habitual, and above all *present*: a row without a
+            # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
+            # refused whenever the box already holds anything
+            # (``unbounded_cpu_not_exclusive``), which is what ran the first live
+            # window one large mover at a time with 17 idle worker loops (#607,
+            # #603).  Both numbers come off ``pb-queue/movers/`` receipts when
+            # there are any, and ``demand_source`` on the plan says which receipts
+            # were read and which field fell back to a declared bound.
+            chunk_demand["cpu"] = int(priced["cpu"])
+            chunk_demand["mem_gb"] = int(priced["mem_gb"])
+            progress, derivation = movement_actions.mover_progress_policy(
+                chunk_entry_bytes(cstart, cend),
+                landing_bytes_per_s=landing_bytes_per_s)
+            contention: dict[str, object] | None = None
+            if progress is not None and not pool_members:
+                # No members to judge the pool by: a pacer hold would be
+                # charged to the copy, so no grace at all, as before.
+                progress = None
+                derivation = {**derivation, "basis": "unmeasured",
+                              "unmeasured": "pool members", "grace_s": None}
+            elif progress is not None:
+                contention = movement_actions.pool_contention_spec(
+                    members=pool_members, stage_root=stage_root,
+                    priced_bytes_per_s=float(landing_bytes_per_s))  # type: ignore[arg-type]
+            elif derivation["basis"] == "unmeasured":
+                derivation = {**derivation, "unmeasured": "landing rate"}
+            derivation = {**derivation,
+                          "landing_window_movers": window_concurrency,
+                          "pool_contention": contention}
+            chunk_mover = movement_actions.seal_movement_action(
+                template,
+                container_owner_fn=movement_actions.submission_container_owner,
+                command=[mover_python, mover_tool,
+                         "--pool-root", pool_root,
+                         "--cas-root", str(publication.cas_root),
+                         "--consumer-action-key", namespace,
+                         "--tier-id", tier_id,
+                         "--stage-root", stage_root,
+                         "--manifest-sha256", digest,
+                         "--range-start-bytes", str(cstart),
+                         "--range-end-bytes", str(cend),
+                         # Stated on the command, so the width the row reserves and
+                         # the width the copy runs at cannot drift apart.
+                         "--readers", str(readers)]
+                        + ([] if fill is None else
+                           # Carried so the receipt can say what the ledger had
+                           # promised this copy; a later cycle compares that with
+                           # what the copy achieved, and a shortfall is the
+                           # measured ceiling on how many movers the pool feeds.
+                           ["--fill-mb-s-pool-side", str(fill)]),
+                demand=chunk_demand,
+                # A progress-governed action is placed only on a worker
+                # that enforces the contract and exports the helper
+                # environment the mover reports through.
+                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
+                    progress=progress, pool_contention=progress is not None))],
+                retry_policy=mover_retry_policy,
+                log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
+                extra_params=(None if progress is None
+                              else {pb.PROGRESS_PARAM: progress,
+                                    pb.POOL_CONTENTION_PARAM: contention}))
+            cas.publish_action_request(chunk_mover)
+            mover_row = {
+                **publication.row(chunk_mover, queue=queue, max_attempts=int(options.mover_max_attempts), retry_safe=True),
+                # The row, not only the sealed body.  ``residency_pin_holds``
+                # reads the *queue record* to decide whether a concluding
+                # mover keeps its tier tokens, so a row without this block
+                # ends ``executed`` and hands its tokens straight back -- the
+                # ledger reads its full supply free while 34 GB sit on the
+                # stage, which is the one invariant #583 rests on.  The
+                # consumer's block names leads; a mover's names the range it
+                # makes resident, which is what the pin is checked against.
+                "residency": {
+                    "schema": _pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": digest,
+                    "manifest_bytes": int(entry["bytes"]),
+                    "tier_id": tier_id,
+                    "range_start_bytes": cstart,
+                    "range_end_bytes": cend,
+                },
+            }
+            return mover_row, derivation
+
+        def seal_stage_chunk(cstart: int, cend: int,
+                             csuffix: str) -> tuple[dict, dict]:
+            """One chunk's mover row and this consumer's egress row for it.
+
+            With sharing on (the default, #1026) the mover is the one every
+            consumer of this exact range names: the first submitter of the
+            range seals and registers it, and every later one puts that
+            registered row in its own plan.  A mover's key is the hash of a
+            body that carries its submission's checkout, pricing and log
+            name, so a second submitter cannot derive the same key; the
+            registration is how two submitters agree on it
+            (:func:`register_shared_range`).  A registration
+            sealed against another tier announcement -- another runtime
+            generation's mover -- is reused only while its mover is live;
+            otherwise this submission seals the range's mover afresh and
+            replaces it.  The egress is
+            always this consumer's own: for a shared range it drops this
+            consumer's interest, and the last interest to go deletes.
+            """
+
+            if str(getattr(options, "share", "auto") or "auto") == "auto":
+                namespace = share_namespace(
+                    digest, tier_id, cstart, cend)
+                try:
+                    record, sealed_here = register_shared_range(
+                        queue, manifest_sha256=digest, tier_id=tier_id,
+                        start=cstart, end=cend,
+                        seal=lambda: seal_stage_mover(
+                            cstart, cend, csuffix, namespace),
+                        registered_by=consumer_action_key,
+                        # Sealed against the announcement
+                        # ``movement_tools`` read ``mover_python`` and
+                        # ``mover_tool`` from.  A registration sealed
+                        # against another one is reused only while its
+                        # mover is live.
+                        sealed_against=announced)
+                except (ResidencyPlanError, OSError,
+                        _pool.record_store.PoolContractError) as exc:
+                    raise SubmissionRefused(
+                        f"pbrun: the shared range [{cstart}, {cend}) of "
+                        f"{digest[:12]} on {tier_id} cannot be registered "
+                        f"or read ({exc}); nothing was published. "
+                        f"--residency-share off stages it per consumer."
+                    ) from None
+                mover_row = dict(record["mover_row"])        # type: ignore[arg-type]
+                mover_key = str(record["mover_action_key"])
+                derivation = {
+                    **dict(record.get("derivation") or {}),  # type: ignore[arg-type]
+                    "share_namespace": namespace,
+                    "registered_by": str(record.get("registered_by") or ""),
+                    "sealed_here": bool(sealed_here)}
+            else:
+                mover_row, derivation = seal_stage_mover(
+                    cstart, cend, csuffix, consumer_action_key)
+                mover_key = str(mover_row["action_key"])
+            mover_progress[mover_key] = derivation
+            egress_policy, egress_derivation = (
+                movement_actions.egress_progress_policy(
+                    chunk_entry_bytes(cstart, cend), price=egress_terms))
+            egress_contention: dict[str, object] | None = None
+            if egress_policy is not None and not pool_members:
+                # No members to judge the pool by: a census slowed by
+                # another reader would be charged to the egress, so no
+                # grace at all, as before.
+                egress_policy = None
+                egress_derivation = {**egress_derivation, "basis": "unmeasured",
+                                     "unmeasured": "pool members",
+                                     "grace_s": None}
+            elif egress_policy is not None:
+                egress_contention = movement_actions.pool_contention_spec(
+                    members=pool_members, stage_root=stage_root,
+                    priced_bytes_per_s=float(
+                        egress_derivation["priced_bytes_per_s"]))  # type: ignore[arg-type]
+            else:
+                egress_derivation = {**egress_derivation,
+                                     "unmeasured": "egress receipts"}
+            egress_derivation = {**egress_derivation,
+                                 "mover_action_key": mover_key,
+                                 "pool_contention": egress_contention}
+            chunk_egress = movement_actions.seal_movement_action(
+                template,
+                container_owner_fn=movement_actions.submission_container_owner,
+                command=[mover_python, egress_tool,
+                         "--pool-root", pool_root,
+                         "--mover-action-key", mover_key,
+                         "--consumer-action-key", consumer_action_key,
+                         "--stage-root", stage_root],
+                # No tier demand: an egress *returns* capacity, and one that had to
+                # reserve some before it could give any back would deadlock exactly
+                # when the stage is full -- which is the only moment it matters.
+                # CPU and memory it must still declare, and bounded: a row without
+                # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
+                # whenever the box holds anything (#603, #607) -- and the box an
+                # egress runs on is the stage's own file server, whose resident
+                # loops mean it always holds something.  A release that cannot
+                # claim there deadlocks the tier through the same door the comment
+                # above closes: the concluding movers pin their ranges' tokens, the
+                # egress is the only node that returns them, and one waiting for an
+                # empty box waits forever.  One CPU is a declared bound, the width
+                # of the single-process unlink-and-record an egress is -- not a
+                # measurement, because an egress files no receipts of its own, and
+                # pricing it off the movers' copy receipts would measure the wrong
+                # node entirely (the #655 lesson).
+                demand={"cpu": 1, "mem_gb": 1},
+                # A progress-governed egress is placed only on a worker that
+                # enforces the contract, credits the pool on its own sample,
+                # and never credits the egress's own hold of the stage's
+                # ownership lock as a wait (``contracts.EGRESS_PROGRESS_TAG``).
+                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
+                    progress=egress_policy, pool_contention=egress_policy is not None,
+                    egress=egress_policy is not None))],
+                # The egress's retry policy is a movement node's, as the
+                # mover's is (#950): with the consumer's single attempt, one
+                # transient unlink error left the range's bytes holding their
+                # tokens until pressure eviction.  An egress's second attempt
+                # finds released what the first released.
+                retry_policy=mover_retry_policy,
+                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log",
+                extra_params=(None if egress_policy is None
+                              else {pb.PROGRESS_PARAM: egress_policy,
+                                    pb.POOL_CONTENTION_PARAM: egress_contention}))
+            cas.publish_action_request(chunk_egress)
+            egress_progress[str(chunk_egress["action_key"])] = egress_derivation
+            # No block on the egress: it reserves no tier capacity, and
+            # ``validate_residency`` refuses a range whose stage demand is
+            # below the range's own floor.  An egress finds its mover by
+            # ``--mover-action-key``, not by a range of its own.
+            return mover_row, publication.row(
+                chunk_egress,
+                queue=queue,
+                max_attempts=int(options.mover_max_attempts),
+                retry_safe=True,
+            )
+
+        stage_chunks = None
+        stage_mover_row: dict[str, object] | None = None
+        stage_egress_row: dict[str, object] | None = None
+        if len(chunk_ranges) == 1:
+            stage_mover_row, stage_egress_row = seal_stage_chunk(start, end, "")
+        else:
+            stage_chunks = []
+            for cindex, (cstart, cend) in enumerate(chunk_ranges):
+                chunk_mover_row, chunk_egress_row = seal_stage_chunk(
+                    cstart, cend, f"-c{cindex:02d}")
+                stage_chunks.append({
+                    "chunk_index": cindex,
+                    "start_bytes": cstart, "end_bytes": cend,
+                    "stage_gib": storage_tiers.stage_tokens_for_bytes(
+                        cend - cstart),
+                    "mover_row": chunk_mover_row,
+                    "egress_row": chunk_egress_row,
+                })
+        ram_mover_row = None
+        ram_egress_row = None
+        ram_chunks = None
+        if ram_tier_id is not None:
+            # The withdrawn #639 part 3's plumbing, aimed at the right actor:
+            # one occupancy leg per movement node, ``ram_gib`` on the ram tier,
+            # priced off the promotion receipts exactly the way a stage
+            # mover's demand is priced off its own.
+            #
+            # The leg is cut into chunks (#673): one promotion node plus one
+            # egress node per chunk, in read order, so the tmpfs refills as
+            # it frees instead of sawtoothing a whole phase at a time.  The
+            # cuts were made above, at entry boundaries, before anything was
+            # sealed (#965).  A phase that fits in one chunk seals today's
+            # whole-phase pair, and a tier that announces no sizing seals it
+            # too.
+            assert ram_cuts is not None
+            chunk_ranges = ram_cuts[ordinal]
+
+            def seal_ram_chunk(cstart: int, cend: int,
+                               csuffix: str) -> tuple[dict, dict]:
+                ram_demand = storage_tiers.residency_demand(
+                    tier_id=ram_tier_id, range_start_bytes=cstart,
+                    range_end_bytes=cend)
+                ram_priced = storage_tiers.mover_demand_from_receipts(
+                    receipts, tier_id=ram_tier_id, readers=readers,
+                    fallback_mem_gb=int(options.mover_mem_gb),
+                    pool_identity=ram_identity)
+                ram_demand["cpu"] = int(ram_priced["cpu"])
+                # The runtime term only bounds the copier's own buffers and
+                # metadata.  The destination is a tmpfs, whose pages stay
+                # charged to the writing cgroup (writeback never reclaims
+                # them), so the row must reserve the range it will write as
+                # well -- otherwise the promotion OOMs at its own cap partway
+                # through, which is how four live 4-11 GiB promotions died at
+                # exactly 1 GiB on 2026-09-19.  ``ram_gib`` for the range's
+                # retention on the tier is untouched; this only makes the
+                # action's memory demand honest.
+                ram_demand["mem_gb"] = storage_tiers.ram_promotion_mem_gb(
+                    runtime_mem_gb=int(ram_priced["mem_gb"]),
+                    range_bytes=cend - cstart)
+                ram_mover = movement_actions.seal_movement_action(
+                    template,
+                    container_owner_fn=movement_actions.submission_container_owner,
+                    command=[ram_python, ram_tool,
+                             "--pool-root", pool_root,
+                             "--cas-root", str(publication.cas_root),
+                             "--consumer-action-key", consumer_action_key,
+                             "--tier-id", ram_tier_id,
+                             "--ram-root", ram_root,
+                             "--source-stage-root", stage_root,
+                             "--manifest-sha256", digest,
+                             "--range-start-bytes", str(cstart),
+                             "--range-end-bytes", str(cend),
+                             "--readers", str(readers)],
+                    demand=ram_demand, tags=tags,
+                    retry_policy=mover_retry_policy,
+                    log_name=f"ram-promote-{ordinal:04d}-{span['name']}{csuffix}.log")
+                ram_egress = movement_actions.seal_movement_action(
+                    template,
+                    container_owner_fn=movement_actions.submission_container_owner,
+                    command=[ram_python, ram_egress_tool,
+                             "--pool-root", pool_root,
+                             "--mover-action-key", str(ram_mover["action_key"]),
+                             "--consumer-action-key", consumer_action_key,
+                             "--stage-root", ram_root],
+                    # No tier demand, for the same reason as the stage's egress,
+                    # and one declared CPU for the same reason as its cpu: a
+                    # tmpfs promotion's release runs on the same never-empty file
+                    # server, and unknown CPU use would refuse to run beside the
+                    # loops that make it never-empty.
+                    demand={"cpu": 1, "mem_gb": 1}, tags=tags,
+                    retry_policy=mover_retry_policy,
+                    log_name=f"ram-release-{ordinal:04d}-{span['name']}{csuffix}.log")
+                cas.publish_action_request(ram_mover)
+                cas.publish_action_request(ram_egress)
+                mover_row = {
+                    **publication.row(ram_mover, queue=queue, max_attempts=int(options.mover_max_attempts), retry_safe=True),
+                    # The pin the ram window and the pin check read: a promotion
+                    # row without it releases its occupancy the moment it
+                    # finishes -- bytes on a roof-limited tmpfs that no token
+                    # stands for are ENOSPC waiting to happen (#640).
+                    "residency": {
+                        "schema": _pool.RESIDENCY_SCHEMA_V1,
+                        "manifest_sha256": digest,
+                        "manifest_bytes": int(entry["bytes"]),
+                        "tier_id": ram_tier_id,
+                        "range_start_bytes": cstart,
+                        "range_end_bytes": cend,
+                    },
+                }
+                return mover_row, publication.row(
+                    ram_egress,
+                    queue=queue,
+                    max_attempts=int(options.mover_max_attempts),
+                    retry_safe=True,
+                )
+
+            if len(chunk_ranges) == 1:
+                ram_mover_row, ram_egress_row = seal_ram_chunk(
+                    start, end, "")
+            else:
+                ram_chunks = []
+                for cindex, (cstart, cend) in enumerate(chunk_ranges):
+                    mover_row, egress_row = seal_ram_chunk(
+                        cstart, cend, f"-c{cindex:02d}")
+                    ram_chunks.append({
+                        "chunk_index": cindex,
+                        "start_bytes": cstart, "end_bytes": cend,
+                        "stage_gib": storage_tiers.stage_tokens_for_bytes(
+                            cend - cstart),
+                        "ram_mover_row": mover_row,
+                        "ram_egress_row": egress_row,
+                    })
+        phase_record: dict[str, object] = {
+            "name": str(span["name"]),
+            "start_bytes": start, "end_bytes": end,
+            "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
+        }
+        if stage_chunks is not None:
+            phase_record["stage_chunks"] = stage_chunks
+        else:
+            assert stage_mover_row is not None and stage_egress_row is not None
+            phase_record["mover_row"] = stage_mover_row
+            # No block on the egress: it reserves no tier capacity, and
+            # ``validate_residency`` refuses a range whose stage demand is
+            # below the range's own floor.  An egress finds its mover by
+            # ``--mover-action-key``, not by a range of its own.
+            phase_record["egress_row"] = stage_egress_row
+        if ram_mover_row is not None:
+            phase_record["ram_mover_row"] = ram_mover_row
+            phase_record["ram_egress_row"] = ram_egress_row
+        if ram_chunks is not None:
+            phase_record["ram_chunks"] = ram_chunks
+        # Carry the declared prefix on the frozen plan (#1594).  Discovery,
+        # admission and reuse derive leads from ``leads_for(plan)`` with no
+        # manifest in hand.  Only declared phases carry the key.  Undeclared
+        # plans stay byte-identical.
+        if str(span["name"]) in prelaunch_names:
+            phase_record["resident_before_launch"] = True
+        phases.append(phase_record)
+    plan = build_plan(
+        consumer_action_key=consumer_action_key, tier_id=tier_id,
+        stage_root=stage_root, manifest_sha256=digest,
+        manifest_bytes=int(entry["bytes"]), phases=phases,
+        ram_tier_id=ram_tier_id, reader=reader,
+        # Which receipts priced these movers' cpu and mem_gb, so a demand in
+        # the queue traces back to a measurement rather than to a habit.  On
+        # the plan, not on a row: ``tier_loop`` publishes a row as
+        # ``queue.publish(**row)``, whose parameters are a closed set.  The
+        # fill entry names the basis: which tier offer capped it, or that
+        # only receipts priced it.
+        demand_source={**priced["demand_source"],
+                       "fill_mb_s_pool_side": fill,
+                       "fill": fill_basis,
+                       "fill_measured": dict(fill_price),
+                       "tier_offer_mb_s": offered_fill,
+                       # Each stage mover's stall grace and every term of
+                       # it (#1010), by mover key: ``basis`` is ``landing``
+                       # when a measured landing priced it and the tier
+                       # named the pool members the worker judges contention
+                       # by (``pool_contention``, as sealed); ``unmeasured``
+                       # (naming the missing term) when the mover was sealed
+                       # with no grace.
+                       "mover_progress": mover_progress,
+                       # Each stage egress's stall grace and every term of
+                       # it (#1021), by egress key: ``basis`` is ``egress``
+                       # when the stage's receipted egresses priced it and
+                       # the tier named the pool members; ``unmeasured``
+                       # (naming the missing term) when the egress was
+                       # sealed with no grace.
+                       "egress_progress": egress_progress})
+    return {
+        "plan": plan,
+        "residency": {
+            "schema": _pool.RESIDENCY_SCHEMA_V1,
+            "manifest_sha256": digest,
+            "manifest_bytes": int(entry["bytes"]),
+            "tier_id": tier_id,
+            "leads": leads_for(plan),
+        },
+    }
+
+
+
+@contextlib.contextmanager
+def consumer_filing(queue, consumer_action_key: str, *,
+                    template: Mapping[str, object], options: FilingOptions,
+                    publication: RowPublication, cas, tier_id: str | None = None,
+                    attach: bool = False,
+                    immutable_plan: Mapping[str, object] | None = None):
+    """Hold this consumer's filing authority through its row publication.
+
+    The yield stays inside the existing transition lock. Reapers, cancellation
+    and a replacement publication therefore cannot split filing from its row.
+    """
+    with queue.action_transition_lock(consumer_action_key):
+        if immutable_plan is None:
+            staged = prepare_window(template, consumer_action_key=consumer_action_key,
+                tier=resolve_stage_tier(queue, tier_id), options=options,
+                queue=queue, cas=cas, publication=publication)
+        else:
+            if superseded(queue, immutable_plan) is not None:
+                raise SubmissionRefused("decomposed child's immutable data plan was superseded; refusing automatic revival")
+            staged = {"plan": immutable_plan, "residency": {
+                "schema": _pool.RESIDENCY_SCHEMA_V1,
+                "manifest_sha256": immutable_plan["manifest_sha256"],
+                "manifest_bytes": immutable_plan["manifest_bytes"],
+                "tier_id": immutable_plan["tier_id"],
+                "leads": leads_for(immutable_plan)}}
+        renew = not (attach and staged.get("reused_frozen_plan"))
+        try:
+            renewal = seal_window(queue, staged["plan"], renew=renew)
+        except ResidencyPlanError as exc:
+            raise SubmissionRefused(f"pbrun: {exc}") from None
+        yield FiledWindow(staged["plan"], staged["residency"],
+                          tuple(renewal["retired"]),
+                          bool(staged.get("reused_frozen_plan")))
+
+
+def file_manifest_row(queue, consumer_action_key: str, *,
+                      template: Mapping[str, object], tier: Mapping[str, object],
+                      options: FilingOptions, publication: RowPublication, cas
+                      ) -> FiledWindow:
+    """File for an already-published bare row; reuse never renews its window."""
+    with queue.action_transition_lock(consumer_action_key):
+        staged = prepare_window(template, consumer_action_key=consumer_action_key,
+            tier=tier, options=options, queue=queue, cas=cas,
+            publication=publication)
+        renewal = ({"retired": []} if staged.get("reused_frozen_plan") else
+                   seal_window(queue, staged["plan"], renew=True))
+        return FiledWindow(staged["plan"], staged["residency"],
+                           tuple(renewal["retired"]),
+                           bool(staged.get("reused_frozen_plan")))
+
+
+def _active_marker_key(name: str) -> str | None:
+    """The consumer key an active supersession marker name carries, or ``None``.
+
+    The address is ``{key}.{plan_sha256}.superseded.json``, both 64 lowercase
+    hex characters.  Any other name is not an active marker; the caller tells
+    a known archive name from an unrecognized one.
+    """
+
+    if not name.endswith(_SUPERSEDED_MARKER_SUFFIX):
+        return None
+    stem = name[:-len(_SUPERSEDED_MARKER_SUFFIX)]
+    key, separator, digest = stem.partition(".")
+    if not separator or "." in digest:
+        return None
+    if not _pool.record_store.key_shaped(key) or not _pool.record_store.key_shaped(digest):
+        return None
+    return key
+
+
+
+def _archived_supersession_name(name: str) -> bool:
+    """Whether one marker-directory name is a known archive entry.
+
+    ``residency_plan`` archives a reaped plan body as
+    ``{key}.{seconds}.{micros}.{reason-slug}.json`` and retires an active
+    marker beside it as
+    ``{key}.{digest}.{filing}.{seconds}.{micros}.marker.json``; a
+    publication temporary is ``.{name}.{random}.tmp``.  None of these can be
+    the address an active marker is read at, so a directory holding them
+    still answers which keys have one.  Anything else is unrecognized, and
+    the caller treats the whole listing as unknown.
+    """
+
+    if name.startswith("."):
+        return True
+    if name.endswith(".marker.json"):
+        parts = name[:-len(".marker.json")].split(".")
+        return (len(parts) == 5 and _pool.record_store.key_shaped(parts[0]) and _pool.record_store.key_shaped(parts[1])
+                and all(part.isdigit() for part in parts[2:]))
+    if name.endswith(".json"):
+        parts = name[:-len(".json")].split(".")
+        return (len(parts) == 4 and _pool.record_store.key_shaped(parts[0])
+                and parts[1].isdigit() and parts[2].isdigit()
+                and bool(parts[3])
+                and all(character in _SLUG_CHARACTERS
+                        for character in parts[3]))
+    return False
+
+
+
+_SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
+
+
+
+_SLUG_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+
+def active_supersessions(queue, *, store=None) -> frozenset[str] | None:
+    store = queue.records if store is None else store
+    try:
+        names = store.residency_supersession_names()
+    except FileNotFoundError:
+        return frozenset()
+    except OSError:
+        return None
+    keys: set[str] = set()
+    for name in names:
+        key = _active_marker_key(name)
+        if key is not None:
+            keys.add(key)
+        elif not _archived_supersession_name(name):
+            return None
+    return frozenset(keys)
+
+
+
+def shared_movers(queue: _pool.PoolQueue) -> frozenset[str] | None:
+    """The movers registered as shared (#1026), or ``None`` if unreadable.
+
+    One listing of ``residency-plans/shared/movers/`` per cycle.  An absent
+    directory is the ordinary answer before any range was shared: none.
+    """
+
+    memo = _SHARED_MOVER_NAMES[0]
+    root = str(queue.root)
+    if memo is not None and root in memo:
+        return memo[root]
+    try:
+        found: frozenset[str] | None = frozenset(
+            name[:-len(".json")] for name in queue.records.shared_mover_names())
+    except OSError:
+        found = None
+    if memo is not None:
+        memo[root] = found
+    return found
+
+
+
+_SHARED_MOVER_NAMES: list[dict[str, frozenset[str] | None] | None] = [None]
+
+
+@contextlib.contextmanager
+def registry_cycle():
+    """The tier cycle's existing shared-index and shared-name observation lifetime."""
+    _SHARED_MOVER_NAMES[0] = {}
+    _SHARE_NAMESPACE_MEMO[0] = {}
+    try:
+        yield
+    finally:
+        _SHARED_MOVER_NAMES[0] = None
+        _SHARE_NAMESPACE_MEMO[0] = None
+
+
+def registry_root(queue) -> Path:
+    return queue.records.residency_registry_root()
+
+
+def filed_consumers(queue) -> list[str]:
+    """Filed names shaped as complete consumer keys, sorted for attribution."""
+    return sorted(path.stem for path in queue.records.optional_plan_paths()
+                  if path.suffix == ".json" and len(path.stem) == 64
+                  and set(path.stem) <= _HEX)
+
+
+def filed_consumer_candidates(queue) -> list[str]:
+    """The sweep's permissive positive candidates; locked reads decide ownership."""
+    return [path.stem for path in queue.records.optional_plan_paths()
+            if path.suffix == ".json" and len(path.stem) == 64]
+
+
+def retired_consumers(queue) -> set[str] | None:
+    """Any retirement history stands down the automatic bare-row planner."""
+    try:
+        return {marker.name.split(".", 1)[0]
+                for marker in queue.records.supersession_paths()}
+    except (OSError, ValueError):
+        return None
+
+
+def shared_ranges_present(queue) -> bool:
+    return queue.records.shared_registry_present()
+
+
+def inspection_paths(queue) -> list[Path]:
+    """Required listing with the census's original visible-JSON selector."""
+    return queue.records.required_plan_paths()
+
+
+def inspection_names(queue) -> list[str]:
+    return queue.records.inspection_plan_names()
+
+
+def inspection_entries(store):
+    return store.plan_entries()
+
+
+def retirement_presence(queue, consumer: str):
+    return queue.records.retirement_presence_at(queue.records.residency_plan_path(consumer))
+
+
+def concluded_consumers(queue: _pool.PoolQueue) -> list[str]:
+    """Consumer keys with a filed plan and no ready or claimed consumer row."""
+
+    keys = []
+    for path in sorted(
+        queue.records.optional_plan_paths(),
+    ):
+        key = path.stem
+        if path.suffix != ".json" or not path.is_file():
+            continue
+        if bool(
+            _pool.record_store.value_or_raise(
+                queue.records.item_presence(_pool.record_store.READY, key),
+            ),
+        ):
+            continue
+        if bool(
+            _pool.record_store.value_or_raise(
+                queue.records.item_presence(_pool.record_store.CLAIMED, key),
+            ),
+        ):
+            continue
+        keys.append(key)
+    return keys
+
+
+
+@dataclass(frozen=True, kw_only=True)
+class LegObservation:
+    published: Sequence[str] = ()
+    staged: Sequence[str] = ()
+    rowed: Sequence[str] = ()
+    mover_role: str = "mover_row"
+    horizon_end_bytes: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class WindowBudget:
+    free_gib: int = 0
+    capacity_gib: int | None = None
+    runahead_cap_gib: int | None = None
+    withdrawn: Sequence[str] = ()
+    prelaunch_held: bool | None = None
+    prelaunch_need_gib: int | None = None
+
+
+@dataclass(frozen=True)
+class ConsumerWindow:
+    """One captured consumer/leg observation and its cycle-local decisions.
+
+    Budget probes use their own observations. This value performs no I/O and
+    never changes a later freshness or publication boundary into a cached read.
+    """
+    plan: Mapping[str, object]
+    accepted_phase: str | None
+    leg: LegObservation
+    budget: WindowBudget = WindowBudget()
+
+    @cached_property
+    def decision(self) -> dict[str, object]:
+        """What the coordinator should publish and evict on this cycle.
+
+        ``accepted_phase`` is the phase the consumer's progress record says it is
+        reading *now*, so the phases before it are finished with and may be
+        evicted; counting the named phase itself would take back a window the
+        consumer is still inside, the same rule ``manifest_layout.consumed_through``
+        keeps.  ``published`` names the movers already queued, claimed or terminal
+        **and still holding their tokens**; ``staged`` those whose bytes are on the
+        tier now.
+
+        The decision is about one movement leg, and ``mover_role`` names it:
+        ``"mover_row"`` for the stage window, ``"ram_mover_row"`` for the ram
+        window (#640).  ``published`` and ``staged`` hold that leg's own action
+        keys, so every membership test here runs against the leg's keys -- a ram
+        window fed promotion keys would find no stage key resident, never evict
+        and never recognise its own published promotions, which is the hole the
+        parameter closes.  A phase the submitter sealed without this leg has
+        nothing on the tier: published by nobody, evicted by nobody.  Each
+        entry's ``mover_row`` and ``egress_row`` are the pair the role names.
+
+        ``withdrawn`` names the leg's action keys that carry a live withdrawal
+        marker.  Such a leg is never published: its key is a content hash, so
+        publishing it would retire the operator's marker and run the cancelled
+        copy again at the price it was cancelled for, which is the state #708
+        was filed about.  It is not a stall and it takes no room -- the next
+        publishable leg is what the consumer can still be staged with -- and the
+        coordinator retires the plan that names it, so this is the guard against
+        a marker filed between that pass and this decision rather than the
+        decision itself.  Eviction is untouched: an egress frees bytes nobody
+        has cancelled.
+
+        A phase the submitter sealed chunked decides per chunk: each chunk is
+        a leg with its own ``chunk_index``, its own range and its own rows, in
+        read order -- ``stage_chunks`` on the stage leg (#675), ``ram_chunks``
+        on the ram leg (#673).  Chunks of the phase being read are the reader's
+        near-term food -- they publish as their turn comes, outside the
+        run-ahead budget -- while later chunks spend it, so the budget buys
+        several chunks instead of zero phases.  A chunk of a passed phase
+        evicts through its own egress node; a leg sealed whole carries no
+        ``chunk_index`` and decides exactly as it always did.
+
+        A mover that is terminal but no longer pinned is deliberately absent from
+        ``published``: its key is a content hash, so a second campaign over the
+        same manifest seals the same key, and a ``done`` record left from an
+        already-evicted range would otherwise satisfy nothing and be republished by
+        nobody.  The window is what fits: phases are published in read order while
+        the tier's free capacity covers the next one, so a starved mover is rarely
+        in ``ready/`` at all and the tokens stay the safety net rather than the
+        schedule.
+
+        ...and while the run-ahead bound covers it, which is the second half #632
+        added: free capacity brakes at 0 B, which is too late for a stage that has
+        to keep its own ownership marker writable.  ``capacity_gib`` is the tier's
+        minted total (``TierLedger.mint_supply``); leaving it out keeps free
+        capacity as the only bound for a consumer that is reporting.  The answer
+        carries ``stall``: ``None``, or what the window declined to publish and
+        what it is waiting for.
+
+        ``horizon_end_bytes`` is the third bound, and the one that answers "how
+        far ahead does this consumer need its bytes" rather than "how much room
+        is there" (#903): :func:`refill_horizon`'s ``horizon_end_bytes``.  A leg
+        of a later phase that starts at or past it is not published this cycle,
+        however much room the tier has; it is published on the cycle the
+        consumer's progress brings it inside.  That is the normal state of a
+        rolling window, not a stall, so it files no ``stall``.  ``None`` -- no
+        horizon, or every remaining leg inside it -- leaves the decision exactly
+        as it was.  The phase being read is never held back by it.
+
+        ``prelaunch_held`` says whether the consumer's prelaunch group holds its
+        declared prefix now (#1594).  It changes nothing for a plan with no
+        declared phase.  For a declared plan the declared legs are the phase
+        being read: they never evict, never count as run-ahead, and never wait
+        on the budget or the horizon.  Without the held group (``None`` counts
+        as not held) no declared leg publishes and the answer carries a
+        ``prelaunch_waiting_for_room`` stall; with it every unpublished declared
+        leg publishes in read order, outside free room, and the streaming legs
+        follow the rules above as if the declared phases were absent.
+        """
+        plan, accepted_phase = self.plan, self.accepted_phase
+        published, staged = self.leg.published, self.leg.staged
+        mover_role, withdrawn = self.leg.mover_role, self.budget.withdrawn
+        horizon_end_bytes = self.leg.horizon_end_bytes
+        free_gib, capacity_gib = self.budget.free_gib, self.budget.capacity_gib
+        runahead_cap_gib = self.budget.runahead_cap_gib
+        prelaunch_held = self.budget.prelaunch_held
+        prelaunch_need_gib = self.budget.prelaunch_need_gib
+
+        if mover_role not in _MOVEMENT_ROLES:
+            raise ResidencyPlanError(
+                f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+                f"not {mover_role!r}")
+        phases = list(plan["phases"])                                # type: ignore[arg-type]
+        ahead = remaining(plan, accepted_phase)
+        ahead_names = [str(phase["name"]) for phase in ahead]
+        current_name = ahead_names[0] if ahead_names else None
+        passed = {str(phase["name"]) for phase in phases[:len(phases) - len(ahead)]}
+        already = set(published)
+        resident = set(staged)
+        cancelled = set(withdrawn)
+        legs = _legs(plan, mover_role=mover_role)
+        declared = frozenset(prelaunch_phase_names(plan))
+
+        evict = []
+        for leg in legs:
+            if leg["phase"] in declared:
+                continue
+            if leg["phase"] not in passed:
+                continue
+            key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if key not in resident:
+                continue
+            entry: dict[str, object] = {"phase": leg["phase"]}
+            if leg["chunk_index"] is not None:
+                entry["chunk_index"] = leg["chunk_index"]
+            entry.update({"mover_action_key": key, "egress_row": leg["egress_row"],
+                          "stage_gib": leg["stage_gib"]})
+            evict.append(entry)
+
+        publish: list[dict[str, object]] = []
+        room = int(free_gib)
+        has_accepted = accepted(plan, accepted_phase)
+        future = [leg for leg in legs if leg["phase"] in ahead_names[1:]
+                  and leg["phase"] not in declared]
+        step = max((int(leg["stage_gib"]) for leg in future), default=0)
+        budget = _budget_from_step(
+            step, has_accepted=has_accepted, capacity_gib=capacity_gib,
+            runahead_cap_gib=runahead_cap_gib)
+        # Everything the window already holds beyond the phase being read.  The
+        # phase the consumer is inside is not run-ahead: it is the work -- and
+        # for a chunked leg that means the current phase's chunks promote as
+        # their turn comes, while later chunks spend the budget (#673).
+        runahead = sum(int(leg["stage_gib"]) for leg in future
+                       if str(leg["mover_row"]["action_key"]) in already)  # type: ignore[index]
+        # The first streaming phase is the budget regime's current: the declared
+        # legs never count as the phase being read here.  Without a declaration
+        # this names the same phase as ``current_name``.
+        stream_names = [name for name in ahead_names if name not in declared]
+        stream_current = stream_names[0] if stream_names else None
+        effective_current = stream_current if declared else current_name
+        stall: dict[str, object] | None = None
+        if declared and prelaunch_held is not True:
+            pending = [leg for leg in legs
+                       if leg["phase"] in declared
+                       and leg["phase"] in ahead_names
+                       and str(leg["mover_row"]["action_key"]) not in already]  # type: ignore[index]
+            if pending:
+                from . import window_credit as _credit
+                # One computation serves the window and the begin (#1690): the
+                # stall's blocked amount is the group's own deficit when known,
+                # never a second sum beside it. Without the need the pending
+                # sum stands, so callers that pass no need read as before.
+                blocked = (int(prelaunch_need_gib)
+                           if prelaunch_need_gib is not None
+                           else sum(int(leg["stage_gib"]) for leg in pending))
+                stall = {
+                    "consumer_action_key": plan["consumer_action_key"],
+                    "tier_id": plan["tier_id"],
+                    "accepted_phase": accepted_phase,
+                    "reading_phase": current_name,
+                    "blocked_phase": str(pending[0]["phase"]),
+                    "blocked_gib": blocked,
+                    "runahead_gib": runahead,
+                    "runahead_budget_gib": budget,
+                    "free_gib": int(free_gib),
+                    "capacity_gib": None if capacity_gib is None else int(capacity_gib),
+                    "reason": _credit.REASON_PRELAUNCH_WAIT,
+                    "waiting_for": "the prelaunch group reservation",
+                }
+                if prelaunch_need_gib is not None:
+                    stall["need_gib"] = int(prelaunch_need_gib)
+                return {"publish": publish, "evict": evict, "stall": stall}
+        for leg in legs:
+            if leg["phase"] not in ahead_names:
+                continue
+            key = str(leg["mover_row"]["action_key"])  # type: ignore[index]
+            if key in already or key in cancelled:
+                continue
+            need = int(leg["stage_gib"])
+            if leg["phase"] in declared:
+                # Only a held group reaches this branch with an unpublished
+                # declared leg: the wait above returns first.  The group already
+                # holds these tokens, so they take no room and spend no budget.
+                row: dict[str, object] = {"phase": leg["phase"]}
+                if leg["chunk_index"] is not None:
+                    row["chunk_index"] = leg["chunk_index"]
+                row.update({
+                    "mover_action_key": key,
+                    "start_bytes": leg["start_bytes"], "end_bytes": leg["end_bytes"],
+                    "stage_gib": need, "mover_row": leg["mover_row"],
+                })
+                publish.append(row)
+                continue
+            is_current = leg["phase"] == effective_current
+            if (not is_current and horizon_end_bytes is not None
+                    and int(leg["start_bytes"]) >= int(horizon_end_bytes)):
+                break     # past the refill horizon: published as progress arrives
+            if not is_current and budget is not None and runahead + need > budget:
+                stall = {
+                    "consumer_action_key": plan["consumer_action_key"],
+                    "tier_id": plan["tier_id"],
+                    "accepted_phase": accepted_phase,
+                    "reading_phase": current_name,
+                    "blocked_phase": str(leg["phase"]),
+                    "blocked_gib": need,
+                    "runahead_gib": runahead,
+                    "runahead_budget_gib": budget,
+                    "free_gib": int(free_gib),
+                    "capacity_gib": None if capacity_gib is None else int(capacity_gib),
+                    "reason": ("runahead_budget" if has_accepted
+                               else "no_accepted_progress"),
+                    "waiting_for": (
+                        f"accepted progress past {accepted_phase}" if has_accepted
+                        else "the consumer's first accepted progress record"),
+                }
+                if leg["chunk_index"] is not None:
+                    stall["chunk_index"] = leg["chunk_index"]
+                break
+            if need > room:
+                break
+            room -= need
+            if not is_current:
+                runahead += need
+            row = {"phase": leg["phase"]}
+            if leg["chunk_index"] is not None:
+                row["chunk_index"] = leg["chunk_index"]
+            row.update({
+                "mover_action_key": key,
+                "start_bytes": leg["start_bytes"], "end_bytes": leg["end_bytes"],
+                "stage_gib": need, "mover_row": leg["mover_row"],
+            })
+            publish.append(row)
+        return {"publish": publish, "evict": evict, "stall": stall}
+
+
+    @cached_property
+    def advance(self) -> dict[str, object]:
+        """The minimum simultaneous current-plus-next needs of one window leg.
+
+        The first two unpublished legs in read order: ``current_min_gib`` is what
+        admission must stage first (the lead), ``next_min_gib`` the advance that
+        must fit beside it for guaranteed progress (``None`` on the final leg --
+        a final phase needs no future credit).  Chunked legs decide per chunk, so
+        a sliding window's minimum is two chunks, never two phases.  A leg the
+        submitter sealed without (``mover_role`` absent) contributes nothing.
+        Raises :class:`ResidencyPlanError` for an unknown mover role, like
+        :func:`window`.
+
+        ``rowed`` names the movers with a queued ready row; ``staged`` the ones
+        holding tokens for landed bytes; ``queued`` returns those ahead legs in
+        read order, with ``queued_prior`` the full-ordered legs before the first
+        of them.  ``fence_target`` names the one advance the fence protects --
+        exactly the leg after the frontier (the earliest unstaged ahead leg),
+        which pays from free under the gate's count -- with ``fence_prior``
+        the legs before it: one fence per window, and the phase the blind
+        pre-publish take and the post-publish bind agree on.  The gate reads
+        ``waiting``/``prior`` exactly as before.
+
+        ``horizon_end_bytes`` is :func:`window`'s refill horizon (#903), and it
+        bounds ``waiting`` the way it bounds the window's publication: a leg of
+        a later phase that starts at or past it is not something this window
+        will publish this cycle, so it is neither the current nor the next the
+        gate reserves room for.  Without the bound a window asks the joint gate
+        for legs it will not publish -- a newcomer its current and next, an
+        admitted window the next the gate reserves for it -- and that phantom
+        footprint can hold another consumer's in-horizon leg out.  (Before #908
+        a rolling window whose original lead retired was also re-gated as a
+        newcomer; a claimed window no longer is.)  The fence is bounded the
+        same way: its frontier is still the earliest unstaged leg of the whole
+        plan, but a ``fence_target`` past the horizon is no advance yet -- the
+        window will not publish it until progress brings it inside -- so it is
+        ``None`` this cycle, and a fence held for it would be room reserved for
+        a leg nobody asked for.  ``queued`` stays on the whole plan.  ``None``
+        changes nothing.
+
+        A declared plan (#1594) reports only its streaming legs here: ``waiting``,
+        ``queued``, the frontier and ``fence_target`` skip the declared prefix,
+        and ``lead_mover_action_key`` is the first streaming leg's mover.  Two
+        extra keys carry the prefix itself: ``prelaunch_legs`` lists every
+        declared leg in read order and ``prelaunch_gib`` sums their demands.
+        A plan with no declaration returns neither key.
+        """
+        plan, accepted_phase = self.plan, self.accepted_phase
+        published, rowed, staged = self.leg.published, self.leg.rowed, self.leg.staged
+        mover_role, horizon_end_bytes = self.leg.mover_role, self.leg.horizon_end_bytes
+
+        if mover_role not in _MOVEMENT_ROLES:
+            raise ResidencyPlanError(
+                f"mover_role must be one of {sorted(_MOVEMENT_ROLES)}, "
+                f"not {mover_role!r}")
+        ahead = remaining(plan, accepted_phase)
+        ahead_names = [str(phase["name"]) for phase in ahead]
+        done = set(published)
+        rowed_set = set(rowed)
+        staged_set = set(staged)
+        full = _legs(plan, mover_role=mover_role)
+        declared = frozenset(prelaunch_phase_names(plan))
+        stream_full = ([leg for leg in full if leg["phase"] not in declared]
+                       if declared else full)
+        prelaunch = [leg for leg in full if leg["phase"] in declared]
+        current_name = ahead_names[0] if ahead_names else None
+        waiting = [leg for leg in stream_full
+                   if leg["phase"] in ahead_names
+                   and str(leg["mover_row"]["action_key"]) not in done  # type: ignore[index]
+                   and (horizon_end_bytes is None or leg["phase"] == current_name
+                        or int(leg["start_bytes"]) < int(horizon_end_bytes))]
+        queued = [leg for leg in stream_full
+                  if leg["phase"] in ahead_names
+                  and str(leg["mover_row"]["action_key"]) in rowed_set]  # type: ignore[index]
+        # Frontier-first fencing: one fence per window per pass.  The frontier
+        # (the earliest unstaged ahead leg) pays from free under the gate's
+        # count; exactly the leg after it is the advance the fence protects.
+        # Blind (unpublished advance) and bind (published advance) target the
+        # same phase, so the pre-publish take and the post-publish bind agree;
+        # legs before the target excluding the frontier are staged by
+        # construction, so the retired check over ``fence_prior`` is a sanity
+        # rail rather than a discovery.
+        frontier_index: int | None = None
+        for index, leg in enumerate(stream_full):
+            if (leg["phase"] in ahead_names
+                    and str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                    not in staged_set):
+                frontier_index = index
+                break
+        fence_target: dict[str, object] | None = None
+        fence_prior: list[dict[str, object]] = []
+        if frontier_index is not None and frontier_index + 1 < len(stream_full):
+            candidate = stream_full[frontier_index + 1]
+            if candidate["phase"] in ahead_names and (
+                    horizon_end_bytes is None or candidate["phase"] == current_name
+                    or int(candidate["start_bytes"]) < int(horizon_end_bytes)):
+                fence_target = _advance_entry(candidate)
+                fence_prior = _advance_prior(stream_full[:frontier_index])
+        if not waiting:
+            idle: dict[str, object] = {
+                "current_min_gib": 0, "next_min_gib": None, "final": True,
+                "reading_phase": ahead_names[0] if ahead_names else None,
+                "next_phase": None, "next_mover_action_key": None,
+                "next_chunk_index": None, "waiting": [], "prior": [],
+                "queued": _entry_list(queued), "queued_prior": [],
+                "fence_target": fence_target, "fence_prior": fence_prior,
+                "lead_mover_action_key": None}
+            if declared:
+                idle["prelaunch_legs"] = _entry_list(prelaunch)
+                idle["prelaunch_gib"] = sum(
+                    int(leg["stage_gib"]) for leg in prelaunch)
+            return idle
+        first, rest = waiting[0], waiting[1:]
+        order = [str(leg["mover_row"]["action_key"])  # type: ignore[index]
+                 for leg in stream_full]
+        prior = stream_full[:order.index(  # type: ignore[index]
+            str(first["mover_row"]["action_key"]))]
+        queued_prior: list[dict[str, object]] = []
+        if queued:
+            queued_prior = stream_full[:order.index(
+                str(queued[0]["mover_row"]["action_key"]))]  # type: ignore[index]
+        out: dict[str, object] = {
+            "current_min_gib": int(first["stage_gib"]),
+            "next_min_gib": int(rest[0]["stage_gib"]) if rest else None,
+            "final": not rest,
+            "reading_phase": ahead_names[0] if ahead_names else None,
+            "next_phase": str(rest[0]["phase"]) if rest else None,
+            "next_mover_action_key": (str(rest[0]["mover_row"]["action_key"])  # type: ignore[index]
+                                      if rest else None),
+            "next_chunk_index": rest[0]["chunk_index"] if rest else None,
+            "lead_mover_action_key": (str(stream_full[0]["mover_row"]["action_key"])  # type: ignore[index]
+                                      if stream_full else None),
+            # The advance itself: the first queued leg is what the fence
+            # protects (its claim), with every earlier leg listed for the
+            # safe-retire check replenish requires.  ``waiting`` stays the
+            # unpublished future the gate decides on.
+            "waiting": _entry_list(waiting),
+            "prior": _advance_prior(prior),
+            "queued": _entry_list(queued),
+            "queued_prior": _advance_prior(queued_prior),
+            "fence_target": fence_target,
+            "fence_prior": fence_prior,
+        }
+        if declared:
+            out["prelaunch_legs"] = _entry_list(prelaunch)
+            out["prelaunch_gib"] = sum(int(leg["stage_gib"]) for leg in prelaunch)
+        return out
+
+
+    def ram_publications(self, stage_resident: Collection[str]) -> list[tuple[object, object]]:
+        phases = {str(phase["name"]): phase for phase in self.plan["phases"]}
+        publishable = []
+        for entry in self.decision["publish"]:
+            phase = phases.get(str(entry["phase"]))
+            if phase is None:
+                continue
+            mover_row, _egress_row = ram_leg_rows(phase, entry.get("chunk_index"))
+            if mover_row is None:
+                continue
+            if not stage_source_resident(
+                    phase, int(entry["start_bytes"]), int(entry["end_bytes"]),
+                    stage_resident):
+                continue
+            publishable.append((mover_row, entry))
+        return publishable
+
+
+def stage_leg_rows(phase: Mapping[str, object],
+                     chunk_index: object) -> tuple[object, object]:
+    """The ``(mover_row, egress_row)`` one window entry's stage leg sealed.
+
+    The stage mirror of :func:`_ram_leg_rows`: ``(None, None)`` when the
+    entry and the phase disagree about the shape -- a chunk entry for a
+    whole-phase leg, or the reverse.  Publishing a row the plan never sealed
+    would put an unsealed key in the queue, so a mismatch publishes nothing
+    rather than guessing which leg was meant.
+    """
+
+    if chunk_index is not None:
+        chunks = phase.get("stage_chunks")
+        if not isinstance(chunks, list):
+            return None, None
+        matches = [chunk for chunk in chunks
+                   if isinstance(chunk, Mapping)
+                   and chunk.get("chunk_index") == chunk_index
+                   and isinstance(chunk.get("mover_row"), Mapping)
+                   and isinstance(chunk.get("egress_row"), Mapping)]
+        if len(matches) != 1:
+            return None, None
+        return matches[0]["mover_row"], matches[0]["egress_row"]
+    mover = phase.get("mover_row")
+    egress = phase.get("egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
+
+
+
+def ram_leg_rows(phase: Mapping[str, object],
+                   chunk_index: object) -> tuple[object, object]:
+    """The ``(mover_row, egress_row)`` one window entry's leg sealed.
+
+    ``(None, None)`` when the entry and the phase disagree about the shape --
+    a chunk entry for a whole-phase leg, or the reverse.  Publishing a row
+    the plan never sealed would put an unsealed key in the queue, so a
+    mismatch publishes nothing rather than guessing which leg was meant.
+    """
+
+    if chunk_index is not None:
+        chunks = phase.get("ram_chunks")
+        if not isinstance(chunks, list):
+            return None, None
+        matches = [chunk for chunk in chunks
+                   if isinstance(chunk, Mapping)
+                   and chunk.get("chunk_index") == chunk_index
+                   and isinstance(chunk.get("ram_mover_row"), Mapping)
+                   and isinstance(chunk.get("ram_egress_row"), Mapping)]
+        if len(matches) != 1:
+            return None, None
+        return matches[0]["ram_mover_row"], matches[0]["ram_egress_row"]
+    # A promotion leg with no egress row still promotes: the plan validator
+    # refuses an egress without a mover, not a mover without an egress, so
+    # the publish side asks for the mover and the evict side asks for both.
+    mover = phase.get("ram_mover_row")
+    egress = phase.get("ram_egress_row")
+    return (mover if isinstance(mover, Mapping) else None,
+            egress if isinstance(egress, Mapping) else None)
+
+
+
+def stage_source_resident(phase: Mapping[str, object], start: int, end: int,
+                         stage_staged: set[str]) -> bool:
+    """Whether the stage already holds the bytes one promotion copies.
+
+    ``stage_staged`` is publication state -- :func:`_resident_movers`, never
+    bare token holdings.  The distinction is the whole of #759: a booking
+    exists from claim, while the evidence that predicate reads exists only
+    once a copy has landed and vouched for itself.
+
+    A promotion's source is the stage and nothing else: with a whole-phase
+    stage leg that is the phase's mover, and with a chunked one (#675) it is
+    every stage chunk the promoted range overlaps -- a later chunk the
+    promotion does not touch is not its precondition, so the current phase's
+    promotions stage as their turn comes while the stage slides behind them.
+    """
+
+    chunks = phase.get("stage_chunks")
+    if not isinstance(chunks, list):
+        mover = phase.get("mover_row")
+        return (isinstance(mover, Mapping)
+                and str(mover.get("action_key")) in stage_staged)
+    overlapped = []
+    for chunk in chunks:
+        if not isinstance(chunk, Mapping):
+            continue
+        cstart, cend = chunk.get("start_bytes"), chunk.get("end_bytes")
+        if (isinstance(cstart, bool) or not isinstance(cstart, int)
+                or isinstance(cend, bool) or not isinstance(cend, int)):
+            continue
+        if cstart < end and cend > start:
+            overlapped.append(chunk)
+    if not overlapped:
+        return False
+    return all(
+        isinstance(chunk.get("mover_row"), Mapping)
+        and str(chunk["mover_row"]["action_key"]) in stage_staged  # type: ignore[index]
+        for chunk in overlapped)
+
+
+def filed_name(queue, consumer_action_key: str) -> str:
+    """The canonical current filename, retaining Store's consumer-key check."""
+    return queue.records.residency_plan_path(consumer_action_key).name

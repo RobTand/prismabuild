@@ -113,8 +113,7 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
             if json.loads(path.read_text(encoding="utf-8"))["action_key"]
             == sealed["action_key"]}
         assert len(bodies) == 1, "one seal files one request body"
-        row = submit_core.publication_row(
-            sealed, args=pbrun.request_from_args(args), queue=queue, tested_repository=tag, store=pbrun.configured_store())
+        row = submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(sealed, queue=queue, tested_repository=tag)
         filed = json.loads(queue.publish(**row).read_text(encoding="utf-8"))
         seen[tag] = (sealed["action_key"], next(iter(bodies)), filed)
     assert len({entry[0] for entry in seen.values()}) == 1

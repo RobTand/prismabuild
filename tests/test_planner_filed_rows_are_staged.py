@@ -255,10 +255,8 @@ def test_a_placed_report_evicts_behind_and_republishes_nothing(tmp_path):
 
     fleet = Fleet(tmp_path)
     _key, plan = _planner_row(fleet, "row-churn")
-    unplaced = residency_plan.window(plan, accepted_phase="pricing", free_gib=16,
-                                     capacity_gib=16, published=(), staged=())
-    placed = residency_plan.window(plan, accepted_phase="phase-2", free_gib=16,
-                                   capacity_gib=16, published=(), staged=())
+    unplaced = residency_plan.ConsumerWindow(plan, 'pricing', residency_plan.LegObservation(published=(), staged=()), residency_plan.WindowBudget(free_gib=16, capacity_gib=16)).decision
+    placed = residency_plan.ConsumerWindow(plan, 'phase-2', residency_plan.LegObservation(published=(), staged=()), residency_plan.WindowBudget(free_gib=16, capacity_gib=16)).decision
 
     assert [entry["phase"] for entry in unplaced["publish"]][:1] == ["phase-0"]
     assert [entry["phase"] for entry in placed["publish"]] == ["phase-2"]

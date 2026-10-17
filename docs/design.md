@@ -18860,3 +18860,46 @@ winning attempt's generation and disposition. A legacy prior terminal without a
 generation stamp requires the same complete archived-byte match; its missing
 stamp supplies no absence or ordering proof. Live successors and unknown proof
 retain their authority.
+
+### Residency filing and cycle decisions (C21)
+
+`residency_plan` owns preparation, the filed-plan registry, supersession
+observations, shared ranges, prelaunch legs and window decisions.
+`FilingOptions` carries residency choices and mover/reader facts. C14 projects
+publication policy and paths into `queue_publication.RowPublication`; residency
+never imports submission or reconstructs a `SubmissionRequest` or `FleetStore`.
+The common row projection keeps the sealed action authoritative.
+
+`consumer_filing` holds the consumer's existing action-transition lock while it
+resolves the tier, reuses or reseals, freezes, renews and yields the filing to
+C14. C14 constructs and publishes or attaches its consumer row before leaving
+that context. The supersession hook retains its position immediately before
+publication. No wait or floor allowance moves into this lock. A deliberate
+submission renews a reused plan. A deferred attachment suppresses renewal only
+when it reuses its own frozen plan. An immutable decomposed plan refuses
+supersession and installs only inside this transaction. `file_manifest_row`
+files for an already-published bare consumer and renews only a newly prepared
+plan. Decomposition prepares every movement graph before publishing any child,
+without installing ownerless plans in the registry.
+
+`ConsumerWindow` holds one captured plan, accepted phase, `LegObservation` and
+`WindowBudget`. Its decision and advance facts are computed once for that
+observation. Stage and RAM observations stay at their original positions;
+pressure probes and publication still take their independent budget and
+freshness observations. Adoption, eviction, RAM publication and stage
+publication keep their order. No cycle-wide I/O cache merges these boundaries.
+Unknown evidence stays unknown, and accepted-phase, horizon, eligibility,
+prelaunch, alignment and run-ahead algebra are unchanged.
+
+RecordStore captures registry names, paths and records. Residency interprets
+those captures through concrete observations. `active_supersessions` retains
+the strict marker-name grammar and unknown result; `retired_consumers` retains
+the bare-row planner's broader retirement-history rule. Census keeps its
+independent section completeness, selected reads and denial windows, and uses
+public residency observations. Public fragment validation and mover keys remain
+tolerant of foreign files; strict diagnostic fragment capture remains
+`RecordStore.inspection_fragment_records_at`.
+
+Plan and registry schemas, filenames, JSON bytes, hashing recipes, seal order,
+filing incarnation, generation authority, renewal and cancellation boundaries
+are unchanged. Historical readers continue to find the same files.

@@ -135,7 +135,7 @@ def _declared_legs(plan: Mapping[str, object]) -> list[dict]:
             continue
         if phase.get("resident_before_launch") is not True:
             continue
-        for leg in residency_plan._prelaunch_stage_legs(phase):
+        for leg in residency_plan.prelaunch_stage_legs(phase):
             mover_row, egress_row = _leg_rows(phase, leg["mover_key"])
             legs.append({**leg, "mover_row": mover_row,
                          "egress_row": egress_row})
@@ -171,9 +171,7 @@ def _owned_by_others(queue, mover_keys: Sequence[str]) -> frozenset:
     registry means no sharing, so the set stays empty.
     """
     try:
-        registry = (Path(queue.root) / pool.record_store.RESIDENCY_PLANS
-                    / residency_plan.SHARED)
-        if not registry.is_dir():
+        if not residency_plan.shared_ranges_present(queue):
             return frozenset()
     except OSError:
         return frozenset()
@@ -240,7 +238,7 @@ def _union(entries: Sequence[dict], owned: frozenset,
                         or phase.get("resident_before_launch") is True):
                     continue
                 size = 0
-                for leg in residency_plan._prelaunch_stage_legs(phase):
+                for leg in residency_plan.prelaunch_stage_legs(phase):
                     if leg["mover_key"] in owned:
                         continue
                     namespace = residency_plan.share_namespace(
@@ -625,9 +623,7 @@ def _shared_fences(queue, movers: Sequence[str]) -> set[str]:
     retains.
     """
     try:
-        registry = (Path(queue.root) / pool.record_store.RESIDENCY_PLANS
-                    / residency_plan.SHARED)
-        if not registry.is_dir():
+        if not residency_plan.shared_ranges_present(queue):
             return set()
     except OSError:
         return set(movers)

@@ -32,40 +32,15 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 
-from prismabuild import immutable_files, pool, residency_plan  # noqa: E402
+from prismabuild import pool, residency_plan  # noqa: E402
 
-
-def candidates(queue: pool.PoolQueue) -> list[str]:
-    """Consumer keys with a filed plan and no ready or claimed consumer row."""
-
-    keys = []
-    for path in sorted(
-        immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS),
-    ):
-        key = path.stem
-        if path.suffix != ".json" or not path.is_file():
-            continue
-        if bool(
-            pool.record_store.value_or_raise(
-                queue.records.item_presence(pool.record_store.READY, key),
-            ),
-        ):
-            continue
-        if bool(
-            pool.record_store.value_or_raise(
-                queue.records.item_presence(pool.record_store.CLAIMED, key),
-            ),
-        ):
-            continue
-        keys.append(key)
-    return keys
 
 
 def retire_concluded_plans(queue: pool.PoolQueue, *, apply: bool) -> dict[str, list[str]]:
     """Reap each candidate plan (or only list it when ``apply`` is false)."""
 
     result: dict[str, list[str]] = {"retired": [], "kept": [], "would_retire": []}
-    for key in candidates(queue):
+    for key in residency_plan.concluded_consumers(queue):
         if not apply:
             result["would_retire"].append(key)
             continue

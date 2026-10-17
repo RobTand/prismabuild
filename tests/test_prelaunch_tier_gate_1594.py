@@ -240,8 +240,7 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
     assert pt.declared_units(queue, {TIER: {"tier": "stage"}},
                              [_consumer(consumer)]) == []
     assert pt.obligations([], _held(queue), KIND) == ({}, {})
-    needs = residency_plan.advance_needs(plan, None, published=[], rowed=[],
-                                         staged=[])
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[], rowed=[], staged=[])).advance
     assert (needs["current_min_gib"], needs["next_min_gib"]) == (40, 40)
     result = _protect(queue, _tiers(stage))
     entry = result["gated"][(consumer, TIER)]

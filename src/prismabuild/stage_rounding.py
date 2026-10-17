@@ -15,16 +15,11 @@ def declared_range_index(queue) -> dict[str, int] | None:
     reads each once. Returns None when the plan directory does not
     read, so the caller reports every in-flight holder unknown.
     """
-    from prismabuild import immutable_files
     from prismabuild import pool as pool_mod
     from prismabuild import residency_plan as plan_mod
 
     try:
-        plans_dir = queue.root / pool_mod.record_store.RESIDENCY_PLANS
-        names = sorted(
-            path.stem for path in immutable_files.scan_optional(plans_dir)
-            if path.suffix == ".json" and len(path.stem) == 64
-            and set(path.stem) <= set("0123456789abcdef"))
+        names = plan_mod.filed_consumers(queue)
     except (OSError, pool_mod.PoolContractError, ValueError):
         return None
     index: dict[str, int] = {}
@@ -44,7 +39,7 @@ def declared_range_index(queue) -> dict[str, int] | None:
         for phase in phases:
             if not isinstance(phase, Mapping):
                 continue
-            for leg in plan_mod._prelaunch_stage_legs(phase):
+            for leg in plan_mod.prelaunch_stage_legs(phase):
                 try:
                     mover = str(leg["mover_key"])
                     start = int(leg["start_bytes"])  # type: ignore[arg-type]

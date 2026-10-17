@@ -311,16 +311,7 @@ def test_publication_row_carries_the_sealed_requirements(tmp_path):
     spec.loader.exec_module(pbrun)
 
     entry = _dependency(tmp_path)
-    row = submit_core.publication_row(
-        {"action_key": "6" * 64,
-         "params": {"demand": {}, "placement": {"required_tags": [TAG]},
-                    "checkout_snapshot": {},
-                    "requires_files": [entry]},
-         "environment": {"variables": {submit_core.CONTAINER_OWNER_ENV:
-                                      "publication-row-test"}}},
-        args=type("Args", (), {"priority": 0, "max_attempts": 1,
-                               "retry_safe": True, "priority_reason": None})(),
-        queue=pool.PoolQueue(tmp_path / "queue"), store=pbrun.configured_store())
+    row = submit_core.row_publication(type('Args', (), {'priority': 0, 'max_attempts': 1, 'retry_safe': True, 'priority_reason': None})(), pbrun.configured_store()).row({'action_key': '6' * 64, 'params': {'demand': {}, 'placement': {'required_tags': [TAG]}, 'checkout_snapshot': {}, 'requires_files': [entry]}, 'environment': {'variables': {submit_core.CONTAINER_OWNER_ENV: 'publication-row-test'}}}, queue=pool.PoolQueue(tmp_path / 'queue'))
     assert row["requires_files"] == [entry]
     assert row["tags"] == [TAG]
 

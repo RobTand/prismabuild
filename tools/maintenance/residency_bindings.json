@@ -1,0 +1,265 @@
+{
+  "base": "a8ba9c0c7beeeb379908924a60c6933e997c8df6",
+  "bindings": [
+    {
+      "path": "tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py",
+      "scope": [
+        "test_each_child_owns_its_own_container_lifecycle#1"
+      ],
+      "occurrence": 3,
+      "original_ast_blob": "dccca0dbabb739e672ff40276a35c8429383d73a",
+      "current_ast_blob": "4cc3f2942f8e49121baff6719233479402b9a531",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py",
+      "scope": [
+        "test_the_submitters_declaration_reaches_the_plan#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "44ed4d4c02465a15a285ff8a2a6d93797922f76e",
+      "current_ast_blob": "a51fa9c4204bf1b41908a5794eebe7958eb50b27",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py",
+      "scope": [
+        "test_the_submitters_declaration_reaches_the_plan#1"
+      ],
+      "occurrence": 2,
+      "original_ast_blob": "d258f551f584df097cdb51df95a622f001db8d14",
+      "current_ast_blob": "a6c9aea4c2ebbb39a8c04812b5e782447464df27",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_portable_submission_identity_ignores_the_source_checkout_path#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "7a29cf50e5fda70f91b904ba01f7b699d281b27f",
+      "current_ast_blob": "b3b48050ce5aca345d5560c8baccfbbd847b6161",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_pbrun_identity_includes_bytes_below_an_untracked_directory#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "6d7fdf91067503efecc08dda82a4f4e5f17d5021",
+      "current_ast_blob": "f3c4a0201f0f0234ea9e5511b02d7d83dbd28d7f",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_pbrun_identity_hashes_untracked_symlink_to_directory_text#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "6d7fdf91067503efecc08dda82a4f4e5f17d5021",
+      "current_ast_blob": "f3c4a0201f0f0234ea9e5511b02d7d83dbd28d7f",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_pbrun_identity_hashes_symlink_text_not_target_contents#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "6d7fdf91067503efecc08dda82a4f4e5f17d5021",
+      "current_ast_blob": "f3c4a0201f0f0234ea9e5511b02d7d83dbd28d7f",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_pbrun_identity_hashes_untracked_nul_delimited_paths#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "6d7fdf91067503efecc08dda82a4f4e5f17d5021",
+      "current_ast_blob": "f3c4a0201f0f0234ea9e5511b02d7d83dbd28d7f",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_placement.py",
+      "scope": [
+        "test_pbrun_identity_does_not_hide_legitimate_prefix_paths#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "6d7fdf91067503efecc08dda82a4f4e5f17d5021",
+      "current_ast_blob": "f3c4a0201f0f0234ea9e5511b02d7d83dbd28d7f",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_pbrun_stamp_overlay.py",
+      "scope": [
+        "test_concurrent_overlays_need_no_shared_stamp_path#1"
+      ],
+      "occurrence": 2,
+      "original_ast_blob": "6b91511a7966b6f2ec7033fc8231baa1398a2be5",
+      "current_ast_blob": "01c579e9baaa63f0dd262c5f3beeaf4a393a288d",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_minted_capacity_1594.py",
+      "scope": [
+        "test_a_prefix_that_fits_the_minted_supply_is_not_refused#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "c14f675583d29cd09120323fe8045016d4b23323",
+      "current_ast_blob": "edf9aaec2f7d50a06790bfb000980d2ab5698959",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_minted_capacity_1594.py",
+      "scope": [
+        "test_an_empty_tier_behaves_as_before#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "32d1a7066e22f9d26b342425f218613a1852e569",
+      "current_ast_blob": "81d11612b909c52b7fd94d76a17ef5b7e9357be3",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_minted_capacity_1594.py",
+      "scope": [
+        "test_an_empty_tier_behaves_as_before#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "2f66fc4f95d0063fb32e810632a579fc88f7114b",
+      "current_ast_blob": "da2ca28fed20256cafe9b4c136f024fcd8280143",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_minted_capacity_1594.py",
+      "scope": [
+        "test_unknown_capacity_never_refuses#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "1f131b7fdbefe3a2afc9cf642f74e600495e6d6f",
+      "current_ast_blob": "54499a073af8eefd2d7244838a4b6a61adc3ebc4",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_window_1594.py",
+      "scope": [
+        "test_undeclared_plan_ignores_prelaunch_held#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "5d6cafb7c8875d70cd76946dd2ea5951c1c505e8",
+      "current_ast_blob": "8b78145c27d71b390a40d5e21e1c9d4f99582469",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_window_1594.py",
+      "scope": [
+        "test_undeclared_plan_ignores_prelaunch_held#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "aa28e1c316023ac1bde374a6962009500c92d505",
+      "current_ast_blob": "8232599a6c5ab4160730b8983293aad70e10647a",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_prelaunch_window_1594.py",
+      "scope": [
+        "test_undeclared_plan_ignores_prelaunch_held#1"
+      ],
+      "occurrence": 2,
+      "original_ast_blob": "8577b5150128bf699ac4b23829e043df2aab490d",
+      "current_ast_blob": "34e771d858798edd5edca825135cb0ac5721ed09",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_retire_residency_plans_tool.py",
+      "scope": [
+        "test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "8ad2976166da9f6a8a372714742d3ac5dd5e414d",
+      "current_ast_blob": "6f07bb83a273fa279a7e3f5ccccbe33edd9d29a9",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_retire_residency_plans_tool.py",
+      "scope": [
+        "test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan#1"
+      ],
+      "occurrence": 2,
+      "original_ast_blob": "06710229e5be3f1af82ee88ce74415df603fd3cb",
+      "current_ast_blob": "ef842a41537bf51bceec1454b170f5aa797e9a06",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_retire_residency_plans_tool.py",
+      "scope": [
+        "test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan#1"
+      ],
+      "occurrence": 7,
+      "original_ast_blob": "8ad2976166da9f6a8a372714742d3ac5dd5e414d",
+      "current_ast_blob": "6f07bb83a273fa279a7e3f5ccccbe33edd9d29a9",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_snapshot_refuses_a_sparse_checkout.py",
+      "scope": [
+        "test_an_ordinary_dense_checkout_still_seals#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "55375b8c69dfec17d59320cd2dc8fa6db3404e6a",
+      "current_ast_blob": "d39461221088e056042c34ad3ffa245987f16b78",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_the_ordinary_pbrun_action_is_sealed_unchanged.py",
+      "scope": [
+        "test_every_masked_value_is_re_derived_from_the_body#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "bc6d56004e714e543e89c90e49ec0c0cce4a0a05",
+      "current_ast_blob": "2e728fd7d49274b3ab283f95eb3ae072bd8c9292",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_the_window_publishes_only_what_the_stage_can_hold.py",
+      "scope": [
+        "test_one_announced_stage_tier_needs_no_flag#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "ef6554d2a0444a4ddba6eb46f1d0ba453c6d124c",
+      "current_ast_blob": "fe8082e89363312788c1ad2605f6cf89b51d1487",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_the_withdrawal_precheck_reads_no_plan_without_a_marker.py",
+      "scope": [
+        "test_an_unrecognized_marker_entry_makes_the_hint_unknown#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "665a676831059bfeb3b518dfe6d89cb3e3213f4d",
+      "current_ast_blob": "dc644bcebba498017aac50b97b72f4bdcc21e5cd",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_the_withdrawal_precheck_reads_no_plan_without_a_marker.py",
+      "scope": [
+        "test_an_unrecognized_marker_entry_makes_the_hint_unknown#1"
+      ],
+      "occurrence": 1,
+      "original_ast_blob": "1bfbbec51921899e55e699c1ba97532ddb1f7e3d",
+      "current_ast_blob": "352f2b33a369d315f5cd57be258f96d278dad178",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_the_withdrawal_precheck_reads_no_plan_without_a_marker.py",
+      "scope": [
+        "test_the_hint_parses_only_the_marker_address#1"
+      ],
+      "occurrence": 0,
+      "original_ast_blob": "36bbc22894a1c435f3dad8dda46886bef4d59571",
+      "current_ast_blob": "58da95ef99e85226c6e8770e98f3c6a983768a85",
+      "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    }
+  ]
+}

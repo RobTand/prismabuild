@@ -125,7 +125,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, **overrides):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = submit_core.resolve_stage_tier(queue, None)
+    tier = residency_plan.resolve_stage_tier(queue, None)
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
@@ -133,10 +133,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, **overrides):
     for name, value in overrides.items():
         setattr(args, name, value)
     cas = _Cas(manifest_path)
-    staged = submit_core.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas, store=pbrun.configured_store())
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     staged["cas"] = cas
     return staged
 

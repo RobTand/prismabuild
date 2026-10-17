@@ -28,6 +28,7 @@ from . import (action_edges, adaptive_gpu, capability_eligibility, container_ima
     core as pb, decomposition as dc, dependency_digest, filesystem_floor, fleet_roster,
     materialize, movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
     local_dependencies, _bounded_reader, d38_gate, target_evidence)
+from .queue_publication import RowPublication
 from . import data_manifest as manifest_codec
 from .digest_primitives import sorted_json
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
@@ -104,14 +105,6 @@ CONTAINER_OWNER_ENV = pool.CONTAINER_OWNER_ENV
 
 CONTAINER_MARKER_ENV = pool.CONTAINER_MARKER_ENV
 
-
-def _git_identity(cwd: Path) -> dict[str, str]:
-    """Commit plus a digest of the working-tree delta, or a named refusal."""
-
-    try:
-        return pb.git_checkout_identity(cwd)
-    except pb.ActionContractError as exc:
-        raise SubmissionRefused(f"pbrun: cannot identify checkout: {exc}") from None
 
 
 def git_repository_root(cwd: Path) -> Path | None:
@@ -839,8 +832,8 @@ def snapshot_checkout(
                              "checkout snapshot size limit")
     require_untransformed_checkout(
         root, paths + ([stamp_relative] if stamp_payload is not None else []))
-    identity = expected_identity or _git_identity(cwd)
-    if _git_identity(cwd) != identity:
+    identity = expected_identity or movement_actions.checkout_identity(cwd)
+    if movement_actions.checkout_identity(cwd) != identity:
         raise SubmissionRefused("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
     resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
@@ -966,7 +959,7 @@ def snapshot_checkout(
                 f"{size} bytes, above the {max_bytes}-byte safety limit; "
                 "remove generated data from the worktree or lower its footprint"
             )
-        if _git_identity(cwd) != identity:
+        if movement_actions.checkout_identity(cwd) != identity:
             raise SubmissionRefused("pbrun: checkout changed while it was snapshotted")
         snapshot_input, _ = cas.ingest_input(
             bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
@@ -1313,7 +1306,7 @@ def result_and_stamp_names(
     it gets a different action key.
     """
 
-    identity = _git_identity(cwd) if identity is None else identity
+    identity = movement_actions.checkout_identity(cwd) if identity is None else identity
     cwd_identity = str(cwd) if logical_cwd is None else str(logical_cwd)
     fingerprint = hashlib.sha256(
         json.dumps([command, cwd_identity, demand, variables, identity,
@@ -1323,35 +1316,6 @@ def result_and_stamp_names(
     return (f"{RESULT_PREFIX}{fingerprint}.txt",
             f"{STAMP_PREFIX}{fingerprint}.json")
 
-
-def container_owner(
-    command,
-    cwd,
-    demand,
-    variables,
-    *,
-    determinism,
-    retry_policy,
-    marker_root,
-    identity=None,
-    logical_cwd=None,
-    placement=None,
-    container_images=(),
-) -> str:
-    """The submitter's ownership hash: git identity stays with pbrun.
-
-    The construction lives in ``prismabuild.movement_actions.container_owner``
-    (the one implementation, shared with the produced-output writer lane);
-    this wrapper injects pbrun's ``_git_identity`` so a template without an
-    explicit identity keeps its exact historical digest.
-    """
-
-    return movement_actions.container_owner(
-        command, cwd, demand, variables,
-        determinism=determinism, retry_policy=retry_policy,
-        marker_root=marker_root, identity=identity,
-        logical_cwd=logical_cwd, placement=placement,
-        container_images=container_images, identity_fn=_git_identity)
 
 
 def keep_droppings_out_of_git(cwd: Path) -> Path | None:
@@ -4143,7 +4107,7 @@ store: FleetStore) -> dict[str, object]:
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
                          else f"{wrapper_dir}:{prior_path}")
-    identity = _git_identity(cwd)
+    identity = movement_actions.checkout_identity(cwd)
     # Which repository this template's tree belongs to (#1565): the owning
     # repository's name -- a linked worktree resolves to its main repo --
     # ``"unknown"`` when Git cannot place the checkout.  A submitter's
@@ -4159,7 +4123,7 @@ store: FleetStore) -> dict[str, object]:
     # the other's live payload, and one child's ``<owner>.used`` marker blocks
     # the other's reclaim.  An unmodified command re-derives this exact digest
     # there, so an ordinary submission is unchanged.
-    owner = container_owner(
+    owner = movement_actions.submission_container_owner(
         command,
         cwd,
         demand,
@@ -4558,7 +4522,7 @@ def seal(
     variables.pop(CONTAINER_OWNER_ENV, None)
     variables.pop(CONTAINER_MARKER_ENV, None)
     marker_root = template["marker_root"]
-    owner = container_owner(
+    owner = movement_actions.submission_container_owner(
         command,
         params["cwd"],
         params["demand"],
@@ -4640,66 +4604,9 @@ def seal_movement(
     return movement_actions.seal_movement_action(
         template, command=command, demand=demand, tags=tags,
         log_name=log_name, retry_policy=retry_policy,
-        container_owner_fn=container_owner, extra_params=extra_params)
+        container_owner_fn=movement_actions.submission_container_owner, extra_params=extra_params)
 
 
-def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
-    """Which stage tier this submission's bytes land on, from what the fleet says.
-
-    Discovered rather than configured, because the tiers are: ``tier_loop``
-    announces what each box actually has, so a submitter that hard-coded a
-    pool name would keep asking for a dataset after Rob moved it.  One stage
-    tier is the unambiguous case and needs no flag; none is a refusal naming
-    the loop that would have announced it; more than one is a refusal that
-    lists them, because picking for the operator is picking which box the
-    campaign reads from.
-    """
-
-    stages = [record for record in queue.tiers()
-              if record.get("tier") == "stage" and not record.get("retired")]
-    if declared is not None:
-        for record in stages:
-            if str(record.get("tier_id")) == declared:
-                return record
-        raise SubmissionRefused(
-            f"pbrun: no live stage tier {declared!r}; the fleet announces "
-            f"{sorted(str(r.get('tier_id')) for r in stages) or 'none'}")
-    if not stages:
-        raise SubmissionRefused(
-            "pbrun: --residency stage needs a stage tier, and no box announces "
-            "one.  A storage box mints it by running the tiers role "
-            "(tier_loop.py); until it does, nothing can reserve stage capacity")
-    if len(stages) > 1:
-        raise SubmissionRefused(
-            "pbrun: more than one stage tier is live; name one with "
-            f"--residency-tier: {sorted(str(r.get('tier_id')) for r in stages)}")
-    return stages[0]
-
-
-def resolve_ram_tier(queue, stage_tier: Mapping[str, object],
-                     ) -> dict[str, object] | None:
-    """The ram tier that sits in front of this stage, from what the fleet says.
-
-    Discovered rather than configured, because the tiers are: the promotion
-    node runs on the box that owns the stage, so the ram tier that feeds the
-    same consumers is that box's, and a ram tier on another host is another
-    stage's leg.  None is the ordinary answer -- no tmpfs mounted, or a
-    generation predating the policy -- and it seals no ram leg, exactly as a
-    submission before the tier existed did.
-    """
-
-    host = str(stage_tier.get("host") or "")
-    rams = [record for record in queue.tiers()
-            if record.get("tier") == "ram" and not record.get("retired")
-            and str(record.get("host") or "") == host]
-    if not rams:
-        return None
-    if len(rams) > 1:
-        raise SubmissionRefused(
-            "pbrun: more than one ram tier is live on "
-            f"{host or 'the stage host'}: the policy declares one mountpoint, "
-            f"and the fleet announces {sorted(str(r.get('tier_id')) for r in rams)}")
-    return rams[0]
 
 
 def movement_tools(tier: Mapping[str, object], *,
@@ -4726,917 +4633,9 @@ def current_fill_offer(tier: Mapping[str, object],
     return storage_tiers.current_fill_offer(tier, measured)
 
 
-def reader_declaration(args) -> dict[str, int]:
-    """What the submitter declares about the consumer's reading (#909).
-
-    ``--residency-prefetch-depth-gib`` and ``--residency-read-mb-s``, as the
-    residency plan's ``reader`` block: the tier prices the window from them
-    instead of from the consumer's memory reservation and the tier's own fill
-    offer.  Either may be absent; an empty declaration adds nothing to the
-    plan.  Read with ``getattr`` because a deferred submission filed before
-    #909 carries neither.
-    """
-
-    reader: dict[str, int] = {}
-    depth = getattr(args, "residency_prefetch_depth_gib", None)
-    if depth is not None:
-        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
-            raise SubmissionRefused(
-                "pbrun: --residency-prefetch-depth-gib must be a whole number "
-                "of GiB, 0 or more")
-        reader["prefetch_depth_bytes"] = int(depth) * storage_tiers.GIB
-    rate = getattr(args, "residency_read_mb_s", None)
-    if rate is not None:
-        if isinstance(rate, bool) or not isinstance(rate, int) or rate <= 0:
-            raise SubmissionRefused("pbrun: --residency-read-mb-s must be a positive "
-                             "whole MB/s")
-        reader["read_mb_s"] = int(rate)
-    return reader
 
 
-def prelaunch_capacity_refusal(
-    tier: Mapping[str, object], tier_id: str, bound: Mapping[str, int],
-    prelaunch: object, manifest_sha256: str,
-) -> str | None:
-    """Why a declared prefix cannot fit this stage tier, or ``None`` (#1594).
 
-    Compares the peak with the tier's minted capacity.  Headroom is not
-    checked: a fit prefix with no free room waits.  Unknown capacity never
-    refuses.
-    """
-
-    minted = storage_tiers.minted_tokens(tier).get(
-        storage_tiers.capacity_kind_of(tier_id))
-    if minted is None or bound["peak_gib"] <= minted:
-        return None
-    return (
-        f"pbrun: prelaunch prefix {prelaunch} of "
-        f"{manifest_sha256[:12]} needs peak "
-        f"{bound['peak_gib']} GiB (retained "
-        f"{bound['retained_gib']} GiB + suffix "
-        f"{bound['suffix_gib']} GiB) on stage tier {tier_id}, "
-        f"above the tier's minted capacity of {minted} GiB.  "
-        f"Nothing was sealed or published.")
-
-
-def split_prelaunch_cuts(
-    ranges: Sequence[Mapping[str, object]],
-    cuts: Sequence[list[tuple[int, int]]],
-    prelaunch_names: frozenset[str] | set[str],
-) -> tuple[list[list[tuple[int, int]]], list[list[tuple[int, int]]]]:
-    """The declared prefix's cuts and the streaming suffix's, chosen by name.
-
-    ``cuts`` holds one entry per range, and ``ranges`` omits an empty phase,
-    so the manifest's declared count and the cut list can disagree: slicing
-    by count would take a suffix phase's cuts into the prefix.  The names
-    are what the manifest declared, so the split follows them (#1594).
-    """
-
-    if len(ranges) != len(cuts):
-        raise SubmissionRefused("pbrun: prelaunch cuts and ranges disagree; "
-                         "nothing was sealed or published.")
-    prefix = [chunks for span, chunks in zip(ranges, cuts)
-              if str(span["name"]) in prelaunch_names]
-    suffix = [chunks for span, chunks in zip(ranges, cuts)
-              if str(span["name"]) not in prelaunch_names]
-    return (prefix, suffix)
-
-
-def residency_leg_cuts(
-    record: Mapping[str, object],
-    *,
-    leg: str,
-    ranges: Sequence[Mapping[str, object]],
-    read_entries: Sequence[Mapping[str, object]],
-) -> list[list[tuple[int, int]]]:
-    """Every phase's chunk ranges on one leg, in read order.
-
-    The chunk size is the tier's announced sizing, never this box's: the pin
-    when the loop mints one, else the same window-quarter derivation the
-    loop announces with.  A tier that announces no sizing seals whole-phase
-    pairs -- chunking is a sealing-time property, and an unchunkable phase
-    keeps the shape it always had.
-
-    Cuts fall only on the manifest's entry boundaries (#965).  A mover
-    stages every entry its range touches, so a cut inside an entry made both
-    neighbouring movers overrun their reservations and refuse
-    ``residency_overran_reservation`` on every attempt.  Each chunk is
-    therefore whole entries, reserved at their bytes; an entry larger than
-    the chunk is a chunk of its own.  An entry larger than the window the
-    tier announces can never be admitted, so it refuses here, by name,
-    before anything is sealed.  A record that announces no window (the
-    stage's, which carries only its host's chunk) has nothing to refuse on.
-    """
-
-    def whole_gib(value: object) -> int | None:
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-        return None
-
-    announced_chunk = whole_gib(record.get("promotion_chunk_gib"))
-    announced_window = whole_gib(record.get("window_gib"))
-    chunk_gib = announced_chunk
-    if chunk_gib is None and announced_window is not None:
-        chunk_gib = storage_tiers.promotion_chunk_gib_for_window(announced_window)
-    spans = [(int(span["start_bytes"]), int(span["end_bytes"])) for span in ranges]
-    if chunk_gib is None:
-        return [[span] for span in spans]
-    sizes = [int(entry.get("bytes", 0) or 0) for entry in read_entries]
-    window_bytes = (None if announced_window is None
-                    else announced_window * storage_tiers.GIB)
-    cuts: list[list[tuple[int, int]]] = []
-    for span, (start, end) in zip(ranges, spans):
-        try:
-            cuts.append(manifest_layout.split_range_into_chunks(
-                start, end, chunk_gib * storage_tiers.GIB,
-                entry_bytes=sizes, window_bytes=window_bytes))
-        except manifest_layout.EntryExceedsWindow as exc:
-            entry = read_entries[exc.entry_index]
-            raise SubmissionRefused(
-                f"pbrun: residency_entry_exceeds_window: phase "
-                f"{span['name']!r} reads {entry.get('path')!r} at offset "
-                f"{entry.get('offset')}, {exc.end_bytes - exc.start_bytes} "
-                f"bytes, which is larger than the {announced_window} GiB "
-                f"window of the {leg} tier {record.get('tier_id')}.  A mover "
-                f"stages whole entries, so no chunk can hold this one and "
-                f"its mover could never be admitted.  Nothing was sealed or "
-                f"published.") from None
-    return cuts
-
-
-def residency_stage_rows(
-    template: Mapping[str, object],
-    *,
-    consumer_action_key: str,
-    tier: Mapping[str, object],
-    args: SubmissionRequest,
-    queue,
-    cas,
-    movement_receipts: Sequence[Mapping[str, object]] | None = None,
-store: FleetStore) -> dict[str, object]:
-    """Seal every movement and egress node this submission will ever have.
-
-    All of them, now, before anything is published: an action key is a hash of
-    an action body, so the only way a coordinator can publish the window's
-    later phases is for the submitter to have sealed them and written the rows
-    down.  That is also what freezes the decomposition -- a restart republishes
-    these same children rather than cutting a new partition of the read order.
-
-    The ranges are the manifest's own phases.  Nothing here chooses a boundary:
-    a cut through an entry would hand a mover more bytes than its tokens
-    reserved, and ``manifest_phase_ranges`` refuses a phase table that does not
-    describe its own manifest.  Chunks inside a phase are cut at the same
-    entries' boundaries (``residency_leg_cuts``, #965).
-    """
-
-    manifest_input = template["params"].get("data_manifest")   # type: ignore[union-attr]
-    if not isinstance(manifest_input, Mapping):
-        raise SubmissionRefused(
-            "pbrun: --residency stage needs --data-manifest: the byte ranges a "
-            "mover stages are read-order offsets into that list, and there is "
-            "no other way to say which bytes a range means")
-    entry = manifest_input["input"]
-    manifest, _ = manifest_codec.read_data_manifest(cas.input_path(entry))
-    ranges = manifest_layout.manifest_phase_ranges(manifest)
-    if not ranges:
-        raise SubmissionRefused(
-            "pbrun: --residency stage needs a manifest that declares its read "
-            "order in phases; this one declares none, so there is no boundary "
-            "to stage up to that is not invented here")
-    # Read the declared prelaunch-resident prefix (#1594).  Mark its phases
-    # on the sealed plan.  Refuse its peak when it exceeds the tier.  A v1
-    # manifest reaches this reader unchecked by ``core``.  Refuse a
-    # non-boolean or a non-prefix declaration here.
-    try:
-        prelaunch = manifest_layout.manifest_prelaunch_phases(manifest)
-    except ValueError as exc:
-        raise SubmissionRefused(
-            f"pbrun: data manifest {str(entry['sha256'])[:12]} declares an "
-            f"unusable prelaunch prefix: {exc}; nothing was sealed or "
-            f"published.") from None
-    prelaunch_names = frozenset(prelaunch)
-    tier_id = str(tier["tier_id"])
-    # A consumer that is already staged keeps the window it was frozen with.
-    # Receipts price a *new* window; they must never repartition a frozen one.
-    # The demand now depends on which receipts exist at submission, so a
-    # resubmission of the same consumer after one more mover filed would seal
-    # different mover keys and a different plan -- and ``residency_plan.freeze``
-    # is first-writer, so it would refuse the whole submission with both bodies
-    # in hand.  The frozen plan is the answer to that question, already agreed.
-    #
-    # The one exception is a plan a withdrawal marked superseded (#708): the
-    # request is new, the old window must not be resurrected at the price it
-    # was cancelled for, and the only supported reprice is this sealing path
-    # run again -- after the old window's work has ended.
-    #
-    # The reading and the filing are one captured identity, never a key read
-    # and a later "whatever is filed": a replacement can land between an
-    # advisory check and a reap, and a caller that never saw it must not
-    # archive it.  ``reap`` rechecks the exact ``(plan, filing)`` inside the
-    # consumer's lock; when it removes nothing, this loop reads what is
-    # actually filed now and decides again from that, rather than treating a
-    # refused reap as "the old filing is gone" (#708 review).
-    refusals: list[Exception] = []
-
-    def filed_now():
-        seen = len(refusals)
-        plan, identity = residency_plan.read_filed(
-            queue, consumer_action_key, on_unreadable=refusals.append)
-        if plan is None and len(refusals) > seen:
-            # A plan body this reader refuses, or a stat that failed: unknown
-            # state, and a fresh seal over it would be a guess (#708 review).
-            raise SubmissionRefused(
-                f"pbrun: the residency plan filed for "
-                f"{consumer_action_key[:12]} cannot be read "
-                f"({refusals[-1]!r}); refusing to reuse or replace it. An "
-                f"operator must resolve it under {residency_plan.SUPERSEDED}/.")
-        return plan, identity
-
-    frozen, filing = filed_now()
-    for _attempt in range(3):
-        if frozen is None:
-            break
-        marker = residency_plan.superseded(queue, frozen)
-        if marker is None:
-            return {
-                "plan": frozen,
-                "residency": {
-                    "schema": pool.RESIDENCY_SCHEMA_V1,
-                    "manifest_sha256": str(frozen["manifest_sha256"]),
-                    "manifest_bytes": int(frozen["manifest_bytes"]),
-                    "tier_id": str(frozen["tier_id"]),
-                    "leads": residency_plan.leads_for(frozen),
-                },
-                "reused_frozen_plan": True,
-            }
-        if marker.get("unreadable"):
-            # Unknown retirement is not "not retired": without a readable
-            # marker nobody can say which window the operator stopped, so a
-            # fresh seal would be a guess and is refused (#708 review).
-            raise SubmissionRefused(
-                f"pbrun: the supersession marker for {consumer_action_key[:12]} "
-                f"is unreadable ({marker.get('error') or 'unknown state'}); "
-                f"refusing to reuse or replace its frozen plan. An operator "
-                f"must resolve the marker under {residency_plan.SUPERSEDED}/.")
-        # A withdrawal marked this window superseded (#708).  Rows are sealed
-        # with the resources their keys hash, so the only supported way to
-        # request the range again at today's price is a fresh plan through
-        # this same sealing path -- and only once the old window's ownership
-        # has ended.  A live consumer or a claimed child is not replaced from
-        # under itself: the old plan is not rewritten, and this refuses.
-        safe, why = residency_plan.handoff_safe(queue, consumer_action_key, frozen)
-        if not safe:
-            raise SubmissionRefused(
-                f"pbrun: the residency plan for {consumer_action_key[:12]} was "
-                f"superseded ({marker.get('reason') or 'withdrawn'}), and its "
-                f"work has not ended: {why}.  Withdraw the consumer and let "
-                f"the tiers loop reap the old window, then resubmit; sealed "
-                f"rows and a frozen plan are never rewritten in place.")
-        reaped = residency_plan.reap(
-            queue, consumer_action_key, reason="superseded-reseal",
-            plan=frozen, filing=filing)
-        if reaped is not None:
-            frozen = None
-            break
-        # The locked reap removed nothing: the handoff went live, or another
-        # handoff changed the filing, after the advisory check above.  Read
-        # the filing that actually stands and decide again from it; a stable
-        # refusal follows on the next pass.
-        frozen, filing = filed_now()
-    else:
-        raise SubmissionRefused(
-            f"pbrun: the residency plan for {consumer_action_key[:12]} kept "
-            f"changing while this submission decided against it; nothing was "
-            f"sealed and nothing published. Retry the submission.")
-    stage_root = str(tier.get("mountpoint") or "")
-    if not stage_root.startswith("/"):
-        raise SubmissionRefused(
-            f"pbrun: stage tier {tier_id} announces no mountpoint to write into")
-    digest = str(entry["sha256"])
-    tags = [str(tier["host"])]
-    mover_python, mover_tool, egress_tool = movement_tools(tier)
-    announced = residency_plan.mover_announcement(tier)
-    pool_root = str(store.queue_root)
-    # The ram leg, when a ram tier sits in front of this stage (#640): a
-    # promotion node and an egress node per phase, sealed here with the rest
-    # of the plan, because an action key is a hash and the coordinator cannot
-    # publish children the submitter never sealed.  ``auto`` is the default so
-    # the tier turns on with the mount; ``off`` is the A/B's other arm.
-    ram_tier = None
-    if str(getattr(args, "residency_ram", "auto") or "auto") == "auto":
-        ram_tier = resolve_ram_tier(queue, tier)
-    ram_tier_id = None
-    ram_root = ""
-    ram_python = ram_tool = ram_egress_tool = ""
-    if ram_tier is not None:
-        ram_tier_id = str(ram_tier["tier_id"])
-        ram_identity = ram_tier.get("pool_identity")
-        if not isinstance(ram_identity, Mapping):
-            ram_identity = None
-        ram_root = str(ram_tier.get("mountpoint") or "")
-        if not ram_root.startswith("/"):
-            raise SubmissionRefused(
-                f"pbrun: ram tier {ram_tier_id} announces no mountpoint to "
-                f"promote into")
-        ram_python, ram_tool, ram_egress_tool = movement_tools(
-            ram_tier, mover=movement_actions.RAM_PROMOTE_SCRIPT)
-
-    # Every chunk of both legs is cut here, before a single node is sealed or
-    # published: an entry that no chunk of a tier can hold refuses the whole
-    # submission now, rather than after half its nodes reached the CAS.
-    read_entries = manifest_layout.manifest_read_entries(manifest)
-    stage_cuts = residency_leg_cuts(tier, leg="stage", ranges=ranges,
-                                    read_entries=read_entries)
-    ram_cuts = (None if ram_tier is None else
-                residency_leg_cuts(ram_tier, leg="ram", ranges=ranges,
-                                   read_entries=read_entries))
-    if prelaunch:
-        # Fit the declared prefix peak to the minted tier capacity (#1594).
-        # The sizes are the same chunk demands the sealed legs will carry,
-        # cut at the same boundaries.  This refuses what the plan demands.
-        # Headroom is not checked: a fit prefix with no free room waits.
-        # Unknown capacity never refuses.
-        prefix_cuts, suffix_cuts = split_prelaunch_cuts(
-            ranges, stage_cuts, prelaunch_names)
-
-        def _cut_gib(cuts: list[list[tuple[int, int]]]) -> list[int]:
-            return [sum(storage_tiers.stage_tokens_for_bytes(cend - cstart)
-                        for cstart, cend in chunks) for chunks in cuts]
-
-        bound = residency_plan.prelaunch_peak_gib(
-            _cut_gib(prefix_cuts), _cut_gib(suffix_cuts))
-        refusal = prelaunch_capacity_refusal(
-            tier, tier_id, bound, prelaunch, str(entry["sha256"]))
-        if refusal is not None:
-            raise SubmissionRefused(refusal)
-
-    # One read of the live receipts for the whole window: every mover in it has
-    # the same structure and reads the same pool, so they price alike, and a
-    # per-phase read would give two phases of one plan different demands
-    # because a mover finished between them.
-    readers = int(args.residency_mover_readers)
-    # The consumer's own reading, as its submitter declares it (#909).  A
-    # frozen plan returned above keeps the declaration it was frozen with.
-    reader = reader_declaration(args)
-    # A logical freeze supplies one invocation-local observation for all its
-    # siblings. None retains the standalone submission's fresh observation;
-    # an explicitly empty snapshot must not trigger another live census.
-    # Mover receipts and egress receipts share the movers directory, and one
-    # pass reads both (#1021): the movers price the copy, the egresses price
-    # the release (``movement_actions.egress_price``).  A caller's snapshot
-    # that holds no egress receipt seals every egress as before.
-    observed = (queue.move_records(schemas=(pool.POOL_MOVE_SCHEMA_V1,
-                                            pool.POOL_EGRESS_SCHEMA_V1))
-                if movement_receipts is None else movement_receipts)
-    receipts = [record for record in observed
-                if not (isinstance(record, Mapping) and record.get("schema")
-                        == pool.POOL_EGRESS_SCHEMA_V1)]
-    # Which pools the receipts must have measured to price this window
-    # (#611): the tier's current identity, as the tier loop announced it.
-    # ``None`` -- a tier last announced by an older generation -- prices off
-    # every usable receipt, exactly as before.
-    tier_identity = tier.get("pool_identity")
-    if not isinstance(tier_identity, Mapping):
-        tier_identity = None
-    priced = storage_tiers.mover_demand_from_receipts(
-        receipts, tier_id=tier_id, readers=readers,
-        fallback_mem_gb=int(args.residency_mover_mem_gb),
-        pool_identity=tier_identity)
-    # The pool bandwidth a mover reserves, once anything has measured it.  It
-    # is what makes concurrency a ledger decision rather than an accident: the
-    # tier mints what the disks delivered plus one probe mover's worth, and a
-    # mover that reserves nothing can never be rationed against another.  One
-    # copy's measured rate (#909): the slowest landing of this manifest's
-    # latest window onto this tier when that window holds two copies or more,
-    # else the median single-reader share of the tier's latest window (#958),
-    # never the tier's whole offer.  The tier's *current* offer caps it: a fresh seal
-    # asks no more than admission will honour on this cycle (#708), and with
-    # nothing measured the offer is the stated bound, named in demand_source.
-    fill_price = storage_tiers.mover_fill_price(
-        receipts, tier_id=tier_id, pool_identity=tier_identity,
-        manifest_sha256=digest)
-    fill, offered_fill, fill_basis = current_fill_offer(tier, fill_price["mb_s"])
-    mover_retry_policy = {
-        "max_attempts": int(args.residency_mover_max_attempts),
-        # True by construction, not by the operator's say-so: ``stage_move``
-        # copies to a mover-keyed ``.<name>.partial``, verifies the digest,
-        # then ``os.replace``s, and files its fragment only for entries it
-        # verified.
-        "retry_safe": True,
-    }
-    # A stage mover's stall grace (#1010), from what the tier has measured
-    # (``movement_actions.mover_progress_policy``): its next landing at the
-    # slowest measured landing of this manifest on this tier, capped by the
-    # fill it reserves, plus the time a report takes to reach the stall
-    # check.  Measured means a landing of this manifest only (``landing`` on
-    # the price, whatever basis sealed the fill): a median share of other
-    # manifests' copies is not a landing of this one, while one copy is --
-    # a window of one prices no fill seal (#958) but still bounds how long a
-    # copy of this manifest has gone between landings.  Time the pool is
-    # the bottleneck is not priced here: the worker credits it on its own
-    # sample of the pool's members (``core.POOL_CONTENTION_PARAM``), so a
-    # policy is sealed only with the members the storage role announced.
-    # With either unmeasured the mover is sealed as before, with no stall
-    # grace, and ``demand_source.mover_progress`` says which was missing.
-    landing_bytes_per_s: float | None = None
-    landing = fill_price.get("landing")
-    if isinstance(landing, Mapping) and landing.get("mb_s"):
-        slowest = int(landing["mb_s"])                     # type: ignore[arg-type]
-        if fill is not None:
-            slowest = min(slowest, int(fill))
-        landing_bytes_per_s = float(slowest * storage_tiers.MB)
-    source_members = tier.get("source_members")
-    pool_members = ([str(member) for member in source_members if member]
-                    if isinstance(source_members, Sequence)
-                    and not isinstance(source_members, (str, bytes)) else [])
-    # How many movers were copying on the tier while the pricing window
-    # landed, at most: the rate above was measured under that load, and a
-    # reviewer comparing it with the load now needs both numbers.
-    window_concurrency = None
-    if isinstance(landing, Mapping):
-        counts = [record.get(storage_tiers.MOVER_CONCURRENCY_FIELD)
-                  for record in receipts
-                  if isinstance(record, Mapping)
-                  and str(record.get("manifest_sha256") or "") == digest
-                  and str(record.get("consumer_action_key") or "")
-                  == str(landing.get("window_consumer") or "")]
-        counts = [int(count) for count in counts
-                  if isinstance(count, int) and not isinstance(count, bool)]
-        window_concurrency = max(counts) if counts else None
-    entry_sizes = [int(read_entry.get("bytes", 0) or 0)
-                   for read_entry in read_entries]
-    entry_starts: list[int] = []
-    position = 0
-    for size in entry_sizes:
-        entry_starts.append(position)
-        position += size
-    mover_progress: dict[str, object] = {}
-    # A stage egress's stall grace (#1021), from the egresses this stage has
-    # receipted (``movement_actions.egress_progress_policy``): the census,
-    # this chunk's unlinks and the settle at the slowest measured terms, plus
-    # the time a report takes to reach the stall check.  Sealed only with the
-    # pool members the worker judges contention by, as a mover's is: the
-    # census reads the queue on the source pool, and time that pool is the
-    # bottleneck is credited, not priced.  Unmeasured, the egress is sealed
-    # as before, with no stall grace, and ``demand_source.egress_progress``
-    # says which term was missing.
-    egress_terms = movement_actions.egress_price(observed, stage_root=stage_root)
-    egress_progress: dict[str, object] = {}
-
-    def chunk_entry_bytes(cstart: int, cend: int) -> list[int]:
-        """The sizes of the read-order entries a chunk stages.
-
-        Chunks are cut on entry boundaries (#965), so this is exactly the
-        window ``stage_move`` copies (``manifest_layout.entries_between``).
-        """
-
-        low = bisect.bisect_right(entry_starts, cstart) - 1
-        return [entry_sizes[index]
-                for index in range(max(0, low), len(entry_sizes))
-                if entry_starts[index] < cend
-                and entry_starts[index] + entry_sizes[index] > cstart]
-
-    phases: list[dict[str, object]] = []
-    for ordinal, span in enumerate(ranges):
-        start, end = int(span["start_bytes"]), int(span["end_bytes"])
-        # The stage leg is cut into chunks (#675) the way the ram leg is
-        # (#673): one movement node plus one egress node per chunk, in read
-        # order, so the SSD refills as it frees instead of sawtoothing a
-        # whole phase at a time.  The cuts were made above, at entry
-        # boundaries, before anything was sealed (#965).  A phase that fits
-        # in one chunk seals today's whole-phase pair, and a tier that
-        # announces no sizing seals it too.
-        chunk_ranges = stage_cuts[ordinal]
-
-        def seal_stage_mover(cstart: int, cend: int, csuffix: str,
-                             namespace: str) -> tuple[dict, dict]:
-            """Seal one chunk's mover, filing its fragment under ``namespace``.
-
-            ``namespace`` is the consumer's own key for a per-consumer mover,
-            and the range's :func:`residency_plan.share_namespace` for a
-            shared one (#1026): no one consumer's fragment directory may hold
-            bytes the others read, or that consumer's death would retire
-            them.  Returns the row and its stall-grace derivation.
-            """
-
-            chunk_demand = storage_tiers.residency_demand(
-                tier_id=tier_id, range_start_bytes=cstart,
-                range_end_bytes=cend, fill_mb_s_pool_side=fill)
-            # Measured, not habitual, and above all *present*: a row without a
-            # ``cpu`` key is read by ``adaptive_cpu`` as unknown CPU use and
-            # refused whenever the box already holds anything
-            # (``unbounded_cpu_not_exclusive``), which is what ran the first live
-            # window one large mover at a time with 17 idle worker loops (#607,
-            # #603).  Both numbers come off ``pb-queue/movers/`` receipts when
-            # there are any, and ``demand_source`` on the plan says which receipts
-            # were read and which field fell back to a declared bound.
-            chunk_demand["cpu"] = int(priced["cpu"])
-            chunk_demand["mem_gb"] = int(priced["mem_gb"])
-            progress, derivation = movement_actions.mover_progress_policy(
-                chunk_entry_bytes(cstart, cend),
-                landing_bytes_per_s=landing_bytes_per_s)
-            contention: dict[str, object] | None = None
-            if progress is not None and not pool_members:
-                # No members to judge the pool by: a pacer hold would be
-                # charged to the copy, so no grace at all, as before.
-                progress = None
-                derivation = {**derivation, "basis": "unmeasured",
-                              "unmeasured": "pool members", "grace_s": None}
-            elif progress is not None:
-                contention = movement_actions.pool_contention_spec(
-                    members=pool_members, stage_root=stage_root,
-                    priced_bytes_per_s=float(landing_bytes_per_s))  # type: ignore[arg-type]
-            elif derivation["basis"] == "unmeasured":
-                derivation = {**derivation, "unmeasured": "landing rate"}
-            derivation = {**derivation,
-                          "landing_window_movers": window_concurrency,
-                          "pool_contention": contention}
-            chunk_mover = seal_movement(
-                template,
-                command=[mover_python, mover_tool,
-                         "--pool-root", pool_root,
-                         "--cas-root", str(store.cas_root),
-                         "--consumer-action-key", namespace,
-                         "--tier-id", tier_id,
-                         "--stage-root", stage_root,
-                         "--manifest-sha256", digest,
-                         "--range-start-bytes", str(cstart),
-                         "--range-end-bytes", str(cend),
-                         # Stated on the command, so the width the row reserves and
-                         # the width the copy runs at cannot drift apart.
-                         "--readers", str(readers)]
-                        + ([] if fill is None else
-                           # Carried so the receipt can say what the ledger had
-                           # promised this copy; a later cycle compares that with
-                           # what the copy achieved, and a shortfall is the
-                           # measured ceiling on how many movers the pool feeds.
-                           ["--fill-mb-s-pool-side", str(fill)]),
-                demand=chunk_demand,
-                # A progress-governed action is placed only on a worker
-                # that enforces the contract and exports the helper
-                # environment the mover reports through.
-                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
-                    progress=progress, pool_contention=progress is not None))],
-                retry_policy=mover_retry_policy,
-                log_name=f"stage-move-{ordinal:04d}-{span['name']}{csuffix}.log",
-                extra_params=(None if progress is None
-                              else {pb.PROGRESS_PARAM: progress,
-                                    pb.POOL_CONTENTION_PARAM: contention}))
-            cas.publish_action_request(chunk_mover)
-            mover_row = {
-                **publication_row(
-                    chunk_mover, args=args, queue=queue,
-                    max_attempts=int(args.residency_mover_max_attempts),
-                    retry_safe=True, store=store),
-                # The row, not only the sealed body.  ``residency_pin_holds``
-                # reads the *queue record* to decide whether a concluding
-                # mover keeps its tier tokens, so a row without this block
-                # ends ``executed`` and hands its tokens straight back -- the
-                # ledger reads its full supply free while 34 GB sit on the
-                # stage, which is the one invariant #583 rests on.  The
-                # consumer's block names leads; a mover's names the range it
-                # makes resident, which is what the pin is checked against.
-                "residency": {
-                    "schema": pool.RESIDENCY_SCHEMA_V1,
-                    "manifest_sha256": digest,
-                    "manifest_bytes": int(entry["bytes"]),
-                    "tier_id": tier_id,
-                    "range_start_bytes": cstart,
-                    "range_end_bytes": cend,
-                },
-            }
-            return mover_row, derivation
-
-        def seal_stage_chunk(cstart: int, cend: int,
-                             csuffix: str) -> tuple[dict, dict]:
-            """One chunk's mover row and this consumer's egress row for it.
-
-            With sharing on (the default, #1026) the mover is the one every
-            consumer of this exact range names: the first submitter of the
-            range seals and registers it, and every later one puts that
-            registered row in its own plan.  A mover's key is the hash of a
-            body that carries its submission's checkout, pricing and log
-            name, so a second submitter cannot derive the same key; the
-            registration is how two submitters agree on it
-            (:func:`residency_plan.register_shared_range`).  A registration
-            sealed against another tier announcement -- another runtime
-            generation's mover -- is reused only while its mover is live;
-            otherwise this submission seals the range's mover afresh and
-            replaces it.  The egress is
-            always this consumer's own: for a shared range it drops this
-            consumer's interest, and the last interest to go deletes.
-            """
-
-            if str(getattr(args, "residency_share", "auto") or "auto") == "auto":
-                namespace = residency_plan.share_namespace(
-                    digest, tier_id, cstart, cend)
-                try:
-                    record, sealed_here = residency_plan.register_shared_range(
-                        queue, manifest_sha256=digest, tier_id=tier_id,
-                        start=cstart, end=cend,
-                        seal=lambda: seal_stage_mover(
-                            cstart, cend, csuffix, namespace),
-                        registered_by=consumer_action_key,
-                        # Sealed against the announcement
-                        # ``movement_tools`` read ``mover_python`` and
-                        # ``mover_tool`` from.  A registration sealed
-                        # against another one is reused only while its
-                        # mover is live.
-                        sealed_against=announced)
-                except (residency_plan.ResidencyPlanError, OSError,
-                        pool.record_store.PoolContractError) as exc:
-                    raise SubmissionRefused(
-                        f"pbrun: the shared range [{cstart}, {cend}) of "
-                        f"{digest[:12]} on {tier_id} cannot be registered "
-                        f"or read ({exc}); nothing was published. "
-                        f"--residency-share off stages it per consumer."
-                    ) from None
-                mover_row = dict(record["mover_row"])        # type: ignore[arg-type]
-                mover_key = str(record["mover_action_key"])
-                derivation = {
-                    **dict(record.get("derivation") or {}),  # type: ignore[arg-type]
-                    "share_namespace": namespace,
-                    "registered_by": str(record.get("registered_by") or ""),
-                    "sealed_here": bool(sealed_here)}
-            else:
-                mover_row, derivation = seal_stage_mover(
-                    cstart, cend, csuffix, consumer_action_key)
-                mover_key = str(mover_row["action_key"])
-            mover_progress[mover_key] = derivation
-            egress_policy, egress_derivation = (
-                movement_actions.egress_progress_policy(
-                    chunk_entry_bytes(cstart, cend), price=egress_terms))
-            egress_contention: dict[str, object] | None = None
-            if egress_policy is not None and not pool_members:
-                # No members to judge the pool by: a census slowed by
-                # another reader would be charged to the egress, so no
-                # grace at all, as before.
-                egress_policy = None
-                egress_derivation = {**egress_derivation, "basis": "unmeasured",
-                                     "unmeasured": "pool members",
-                                     "grace_s": None}
-            elif egress_policy is not None:
-                egress_contention = movement_actions.pool_contention_spec(
-                    members=pool_members, stage_root=stage_root,
-                    priced_bytes_per_s=float(
-                        egress_derivation["priced_bytes_per_s"]))  # type: ignore[arg-type]
-            else:
-                egress_derivation = {**egress_derivation,
-                                     "unmeasured": "egress receipts"}
-            egress_derivation = {**egress_derivation,
-                                 "mover_action_key": mover_key,
-                                 "pool_contention": egress_contention}
-            chunk_egress = seal_movement(
-                template,
-                command=[mover_python, egress_tool,
-                         "--pool-root", pool_root,
-                         "--mover-action-key", mover_key,
-                         "--consumer-action-key", consumer_action_key,
-                         "--stage-root", stage_root],
-                # No tier demand: an egress *returns* capacity, and one that had to
-                # reserve some before it could give any back would deadlock exactly
-                # when the stage is full -- which is the only moment it matters.
-                # CPU and memory it must still declare, and bounded: a row without
-                # a ``cpu`` key is *unknown* CPU use to ``adaptive_cpu``, refused
-                # whenever the box holds anything (#603, #607) -- and the box an
-                # egress runs on is the stage's own file server, whose resident
-                # loops mean it always holds something.  A release that cannot
-                # claim there deadlocks the tier through the same door the comment
-                # above closes: the concluding movers pin their ranges' tokens, the
-                # egress is the only node that returns them, and one waiting for an
-                # empty box waits forever.  One CPU is a declared bound, the width
-                # of the single-process unlink-and-record an egress is -- not a
-                # measurement, because an egress files no receipts of its own, and
-                # pricing it off the movers' copy receipts would measure the wrong
-                # node entirely (the #655 lesson).
-                demand={"cpu": 1, "mem_gb": 1},
-                # A progress-governed egress is placed only on a worker that
-                # enforces the contract, credits the pool on its own sample,
-                # and never credits the egress's own hold of the stage's
-                # ownership lock as a wait (``contracts.EGRESS_PROGRESS_TAG``).
-                tags=[*tags, *contracts.declared_contract_tags(contracts.Publication(
-                    progress=egress_policy, pool_contention=egress_policy is not None,
-                    egress=egress_policy is not None))],
-                # The egress's retry policy is a movement node's, as the
-                # mover's is (#950): with the consumer's single attempt, one
-                # transient unlink error left the range's bytes holding their
-                # tokens until pressure eviction.  An egress's second attempt
-                # finds released what the first released.
-                retry_policy=mover_retry_policy,
-                log_name=f"stage-release-{ordinal:04d}-{span['name']}{csuffix}.log",
-                extra_params=(None if egress_policy is None
-                              else {pb.PROGRESS_PARAM: egress_policy,
-                                    pb.POOL_CONTENTION_PARAM: egress_contention}))
-            cas.publish_action_request(chunk_egress)
-            egress_progress[str(chunk_egress["action_key"])] = egress_derivation
-            # No block on the egress: it reserves no tier capacity, and
-            # ``validate_residency`` refuses a range whose stage demand is
-            # below the range's own floor.  An egress finds its mover by
-            # ``--mover-action-key``, not by a range of its own.
-            return mover_row, publication_row(
-                chunk_egress, args=args, queue=queue,
-                max_attempts=int(args.residency_mover_max_attempts),
-                retry_safe=True, store=store)
-
-        stage_chunks = None
-        stage_mover_row: dict[str, object] | None = None
-        stage_egress_row: dict[str, object] | None = None
-        if len(chunk_ranges) == 1:
-            stage_mover_row, stage_egress_row = seal_stage_chunk(start, end, "")
-        else:
-            stage_chunks = []
-            for cindex, (cstart, cend) in enumerate(chunk_ranges):
-                chunk_mover_row, chunk_egress_row = seal_stage_chunk(
-                    cstart, cend, f"-c{cindex:02d}")
-                stage_chunks.append({
-                    "chunk_index": cindex,
-                    "start_bytes": cstart, "end_bytes": cend,
-                    "stage_gib": storage_tiers.stage_tokens_for_bytes(
-                        cend - cstart),
-                    "mover_row": chunk_mover_row,
-                    "egress_row": chunk_egress_row,
-                })
-        ram_mover_row = None
-        ram_egress_row = None
-        ram_chunks = None
-        if ram_tier_id is not None:
-            # The withdrawn #639 part 3's plumbing, aimed at the right actor:
-            # one occupancy leg per movement node, ``ram_gib`` on the ram tier,
-            # priced off the promotion receipts exactly the way a stage
-            # mover's demand is priced off its own.
-            #
-            # The leg is cut into chunks (#673): one promotion node plus one
-            # egress node per chunk, in read order, so the tmpfs refills as
-            # it frees instead of sawtoothing a whole phase at a time.  The
-            # cuts were made above, at entry boundaries, before anything was
-            # sealed (#965).  A phase that fits in one chunk seals today's
-            # whole-phase pair, and a tier that announces no sizing seals it
-            # too.
-            assert ram_cuts is not None
-            chunk_ranges = ram_cuts[ordinal]
-
-            def seal_ram_chunk(cstart: int, cend: int,
-                               csuffix: str) -> tuple[dict, dict]:
-                ram_demand = storage_tiers.residency_demand(
-                    tier_id=ram_tier_id, range_start_bytes=cstart,
-                    range_end_bytes=cend)
-                ram_priced = storage_tiers.mover_demand_from_receipts(
-                    receipts, tier_id=ram_tier_id, readers=readers,
-                    fallback_mem_gb=int(args.residency_mover_mem_gb),
-                    pool_identity=ram_identity)
-                ram_demand["cpu"] = int(ram_priced["cpu"])
-                # The runtime term only bounds the copier's own buffers and
-                # metadata.  The destination is a tmpfs, whose pages stay
-                # charged to the writing cgroup (writeback never reclaims
-                # them), so the row must reserve the range it will write as
-                # well -- otherwise the promotion OOMs at its own cap partway
-                # through, which is how four live 4-11 GiB promotions died at
-                # exactly 1 GiB on 2026-09-19.  ``ram_gib`` for the range's
-                # retention on the tier is untouched; this only makes the
-                # action's memory demand honest.
-                ram_demand["mem_gb"] = storage_tiers.ram_promotion_mem_gb(
-                    runtime_mem_gb=int(ram_priced["mem_gb"]),
-                    range_bytes=cend - cstart)
-                ram_mover = seal_movement(
-                    template,
-                    command=[ram_python, ram_tool,
-                             "--pool-root", pool_root,
-                             "--cas-root", str(store.cas_root),
-                             "--consumer-action-key", consumer_action_key,
-                             "--tier-id", ram_tier_id,
-                             "--ram-root", ram_root,
-                             "--source-stage-root", stage_root,
-                             "--manifest-sha256", digest,
-                             "--range-start-bytes", str(cstart),
-                             "--range-end-bytes", str(cend),
-                             "--readers", str(readers)],
-                    demand=ram_demand, tags=tags,
-                    retry_policy=mover_retry_policy,
-                    log_name=f"ram-promote-{ordinal:04d}-{span['name']}{csuffix}.log")
-                ram_egress = seal_movement(
-                    template,
-                    command=[ram_python, ram_egress_tool,
-                             "--pool-root", pool_root,
-                             "--mover-action-key", str(ram_mover["action_key"]),
-                             "--consumer-action-key", consumer_action_key,
-                             "--stage-root", ram_root],
-                    # No tier demand, for the same reason as the stage's egress,
-                    # and one declared CPU for the same reason as its cpu: a
-                    # tmpfs promotion's release runs on the same never-empty file
-                    # server, and unknown CPU use would refuse to run beside the
-                    # loops that make it never-empty.
-                    demand={"cpu": 1, "mem_gb": 1}, tags=tags,
-                    retry_policy=mover_retry_policy,
-                    log_name=f"ram-release-{ordinal:04d}-{span['name']}{csuffix}.log")
-                cas.publish_action_request(ram_mover)
-                cas.publish_action_request(ram_egress)
-                mover_row = {
-                    **publication_row(
-                        ram_mover, args=args, queue=queue,
-                        max_attempts=int(args.residency_mover_max_attempts),
-                        retry_safe=True, store=store),
-                    # The pin the ram window and the pin check read: a promotion
-                    # row without it releases its occupancy the moment it
-                    # finishes -- bytes on a roof-limited tmpfs that no token
-                    # stands for are ENOSPC waiting to happen (#640).
-                    "residency": {
-                        "schema": pool.RESIDENCY_SCHEMA_V1,
-                        "manifest_sha256": digest,
-                        "manifest_bytes": int(entry["bytes"]),
-                        "tier_id": ram_tier_id,
-                        "range_start_bytes": cstart,
-                        "range_end_bytes": cend,
-                    },
-                }
-                return mover_row, publication_row(
-                    ram_egress, args=args, queue=queue,
-                    max_attempts=int(args.residency_mover_max_attempts),
-                    retry_safe=True, store=store)
-
-            if len(chunk_ranges) == 1:
-                ram_mover_row, ram_egress_row = seal_ram_chunk(
-                    start, end, "")
-            else:
-                ram_chunks = []
-                for cindex, (cstart, cend) in enumerate(chunk_ranges):
-                    mover_row, egress_row = seal_ram_chunk(
-                        cstart, cend, f"-c{cindex:02d}")
-                    ram_chunks.append({
-                        "chunk_index": cindex,
-                        "start_bytes": cstart, "end_bytes": cend,
-                        "stage_gib": storage_tiers.stage_tokens_for_bytes(
-                            cend - cstart),
-                        "ram_mover_row": mover_row,
-                        "ram_egress_row": egress_row,
-                    })
-        phase_record: dict[str, object] = {
-            "name": str(span["name"]),
-            "start_bytes": start, "end_bytes": end,
-            "stage_gib": storage_tiers.stage_tokens_for_bytes(end - start),
-        }
-        if stage_chunks is not None:
-            phase_record["stage_chunks"] = stage_chunks
-        else:
-            assert stage_mover_row is not None and stage_egress_row is not None
-            phase_record["mover_row"] = stage_mover_row
-            # No block on the egress: it reserves no tier capacity, and
-            # ``validate_residency`` refuses a range whose stage demand is
-            # below the range's own floor.  An egress finds its mover by
-            # ``--mover-action-key``, not by a range of its own.
-            phase_record["egress_row"] = stage_egress_row
-        if ram_mover_row is not None:
-            phase_record["ram_mover_row"] = ram_mover_row
-            phase_record["ram_egress_row"] = ram_egress_row
-        if ram_chunks is not None:
-            phase_record["ram_chunks"] = ram_chunks
-        # Carry the declared prefix on the frozen plan (#1594).  Discovery,
-        # admission and reuse derive leads from ``leads_for(plan)`` with no
-        # manifest in hand.  Only declared phases carry the key.  Undeclared
-        # plans stay byte-identical.
-        if str(span["name"]) in prelaunch_names:
-            phase_record["resident_before_launch"] = True
-        phases.append(phase_record)
-    plan = residency_plan.build_plan(
-        consumer_action_key=consumer_action_key, tier_id=tier_id,
-        stage_root=stage_root, manifest_sha256=digest,
-        manifest_bytes=int(entry["bytes"]), phases=phases,
-        ram_tier_id=ram_tier_id, reader=reader,
-        # Which receipts priced these movers' cpu and mem_gb, so a demand in
-        # the queue traces back to a measurement rather than to a habit.  On
-        # the plan, not on a row: ``tier_loop`` publishes a row as
-        # ``queue.publish(**row)``, whose parameters are a closed set.  The
-        # fill entry names the basis: which tier offer capped it, or that
-        # only receipts priced it.
-        demand_source={**priced["demand_source"],
-                       "fill_mb_s_pool_side": fill,
-                       "fill": fill_basis,
-                       "fill_measured": dict(fill_price),
-                       "tier_offer_mb_s": offered_fill,
-                       # Each stage mover's stall grace and every term of
-                       # it (#1010), by mover key: ``basis`` is ``landing``
-                       # when a measured landing priced it and the tier
-                       # named the pool members the worker judges contention
-                       # by (``pool_contention``, as sealed); ``unmeasured``
-                       # (naming the missing term) when the mover was sealed
-                       # with no grace.
-                       "mover_progress": mover_progress,
-                       # Each stage egress's stall grace and every term of
-                       # it (#1021), by egress key: ``basis`` is ``egress``
-                       # when the stage's receipted egresses priced it and
-                       # the tier named the pool members; ``unmeasured``
-                       # (naming the missing term) when the egress was
-                       # sealed with no grace.
-                       "egress_progress": egress_progress})
-    return {
-        "plan": plan,
-        "residency": {
-            "schema": pool.RESIDENCY_SCHEMA_V1,
-            "manifest_sha256": digest,
-            "manifest_bytes": int(entry["bytes"]),
-            "tier_id": tier_id,
-            "leads": residency_plan.leads_for(plan),
-        },
-    }
 
 
 def seal_child(
@@ -6441,113 +5440,6 @@ def interpreter_of(command: Sequence[str]) -> str | None:
     return first
 
 
-def publication_row(
-    action: Mapping[str, object],
-    *,
-    args: SubmissionRequest,
-    queue,
-    max_attempts: int | None = None,
-    retry_safe: bool | None = None,
-    tested_repository: str | None = None,
-store: FleetStore) -> dict[str, object]:
-    """The queue row that submits one sealed action.
-
-    A queue row and the action it points at are two spellings of one
-    submission, so every field that describes the work is read off the sealed
-    body itself rather than off a template or a local the caller happens to
-    still be holding.  That matters most for the owner: the lifecycle cleanup
-    asks Docker for a label derived from it, so a row naming a different owner
-    than the body would query a label nothing carries.  It matters for the
-    rest because a decomposed child seals its own ``params``: reading the row
-    off the body is what makes a child's row describe the child.
-
-    Only the submitter's own handles -- priority, the attempt ceiling, retry
-    safety -- come from ``args``, and they are exactly the fields no action
-    body carries, because they say how hard to try rather than what to run.
-    The tested-repository tag (#1565) is the one caller-supplied field that
-    names the work: it arrives as an argument because it is frozen in the
-    template, which the sealed body must not carry, and a caller that cannot
-    name the tree it froze passes nothing.
-
-    ``pbcampaign`` publishes decomposed children through this too.  The
-    alternative is a second copy of the literal, which is how a row and a body
-    come to disagree about one action.
-    """
-
-    params = action["params"]
-    demand = params["demand"]
-    variables = action["environment"]["variables"]
-    row: dict[str, object] = {
-        "action_key": str(action["action_key"]),
-        "cas_root": str(store.cas_root),
-        "worker_script": str(store.runtime_root / "tools" / "prismabuild_worker.py"),
-        "tags": params["placement"]["required_tags"],
-        "needs_gpu": bool(demand.get("gpu")),
-        "priority": args.priority,
-        "resources": demand,
-        # ``args`` for the submitter's own work; overridden only by a movement
-        # node, whose idempotence is a property of the mover rather than of
-        # what the submitter asked for (#603).
-        "max_attempts": (args.max_attempts if max_attempts is None
-                         else int(max_attempts)),
-        "container_owner": str(variables[CONTAINER_OWNER_ENV]),
-        "checkout_snapshot": params["checkout_snapshot"],
-    }
-    priority_reason = getattr(args, "priority_reason", None)
-    if priority_reason is not None:
-        parameters = inspect.signature(queue.publish).parameters
-        if ("priority_reason" not in parameters
-                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
-                            for p in parameters.values())):
-            raise pool.record_store.PoolContractError(
-                "loaded queue runtime does not support priority_reason; "
-                "use a matching runtime or omit --priority-reason")
-        row["priority_reason"] = pool.normalize_priority_reason(priority_reason)
-    if tested_repository is not None:
-        # The template's frozen answer for the tree this action seals (#1565).
-        # Guarded like the annotation above: a loaded runtime that cannot
-        # carry the tag refuses rather than silently untagging the submission.
-        parameters = inspect.signature(queue.publish).parameters
-        if ("tested_repository" not in parameters
-                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
-                            for p in parameters.values())):
-            raise pool.record_store.PoolContractError(
-                "loaded queue runtime does not support tested_repository; "
-                "use a matching runtime")
-        row["tested_repository"] = pool.normalize_tested_repository(
-            tested_repository)
-    if params.get("container_images"):
-        # Derived from the sealed body, never re-read from the caller: the row
-        # describes the action, so the action's own params are the authority.
-        row["container_images"] = list(params["container_images"])
-    if params.get("interpreter"):
-        row["interpreter"] = str(params["interpreter"])
-    for field in ("local_dependencies", "dependency_queries"):
-        if params.get(field):
-            row[field] = dict(params[field])
-    if params.get("gang"):
-        row["gang"] = dict(params["gang"])
-    if params.get("requires_files") and "requires_files" in (
-            inspect.signature(queue.publish).parameters):
-        # Derived from the sealed body like the interpreter (#1495), and
-        # guarded like retry_safe: in a mixed runtime window the row simply
-        # omits the field and the capability tag in the row's tags alone
-        # still fences every worker that cannot read the requirement.
-        row["requires_files"] = [
-            {"path": str(entry["path"]), "sha256": str(entry["sha256"])}
-            for entry in params["requires_files"]]
-    # The repo checkout can advance just before the atomic runtime generation
-    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
-    # so keep that mixed window usable; add the explanatory annotation once the
-    # loaded runtime exposes it.  The sealed action params carry the full
-    # contract in both cases.
-    if "retry_safe" in inspect.signature(queue.publish).parameters:
-        row["retry_safe"] = (args.retry_safe if retry_safe is None
-                             else bool(retry_safe))
-    if params.get("resident_set") is not None:
-        row["resident_set"] = params["resident_set"]
-    return row
-
 
 _DEFERRED_PUBLICATION_ARGS = (
     "priority", "priority_reason", "max_attempts", "retry_safe", "residency",
@@ -7033,57 +5925,22 @@ def publish_consumer_row(q, action: Mapping[str, object],
 
     staged = None
     if args.residency == "stage" or staged_plan is not None:
-        # One ownership transaction, under the consumer's existing transition
-        # lock: handoff, seal and the consumer's publication are indivisible.  A dead consumer's cleanup rereads an old failed or
-        # withdrawn terminal every cycle, and between ``freeze`` and the
-        # consumer's own row it would see a filed plan nobody owns and reap
-        # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
-        # all take this same lock and nest inside it (#708 review).
-        with q.action_transition_lock(key):
-            if staged_plan is None:
-                staged = residency_stage_rows(
-                    template, consumer_action_key=key,
-                    tier=resolve_stage_tier(q, args.residency_tier),
-                    args=args, queue=q, cas=cas, store=store)
-            else:
-                if residency_plan.superseded(q, staged_plan) is not None:
-                    raise SubmissionRefused("decomposed child's immutable data plan was superseded; refusing automatic revival")
-                staged = {"plan": staged_plan, "residency": {
-                    "schema": pool.RESIDENCY_SCHEMA_V1,
-                    "manifest_sha256": staged_plan["manifest_sha256"],
-                    "manifest_bytes": staged_plan["manifest_bytes"],
-                    "tier_id": staged_plan["tier_id"],
-                    "leads": residency_plan.leads_for(staged_plan)}}
-            # A seal is a new generation of this consumer's window, and so is
-            # a resubmission that reuses its frozen plan.  The predecessor's
-            # *visible* child cancellations -- an operator's withdrawal, or
-            # the dead-consumer pass that stopped a dead consumer's movers --
-            # do not cover it, but the window reads them as live and would
-            # supersede it before its second phase ever published.  So the
-            # plan is filed first, which is what makes this consumer's
-            # interest visible to the dead-consumer pass, and then the
-            # predecessor's markers are retired as evidence under this
-            # consumer's lock and every mover's (#708 review, #1114).  A
-            # cancellation filed after that is the new plan's own decision
-            # and still supersedes it; automatic publication never retires
-            # one.  A release re-attaching to its own live row (#913) renews
-            # nothing: that window already owns its markers.
-            renew = not (attach and staged.get("reused_frozen_plan"))
-            try:
-                renewal = residency_plan.seal_window(
-                    q, staged["plan"], renew=renew)
-            except residency_plan.ResidencyPlanError as exc:
-                raise SubmissionRefused(f"pbrun: {exc}") from None
-            if renewal["retired"]:
+        with residency_plan.consumer_filing(q, key, template=template,
+                options=filing_options(args), publication=row_publication(args, store),
+                cas=cas, tier_id=args.residency_tier, attach=attach,
+                immutable_plan=staged_plan) as staged:
+            if staged.retired:
                 emit_display(display,
                     f"pbrun: renewing {key[:12]}: retired "
-                    f"{len(renewal['retired'])} predecessor cancellation "
+                    f"{len(staged.retired)} predecessor cancellation "
                     f"marker(s); their decisions stay under "
                     f"{q.records.superseded_dir()}", channel="stderr", flush=True)
-            publication = publication_row(
-                action, args=args, queue=q,
-                tested_repository=template.get("tested_repository"), store=store)
-            publication["residency"] = staged["residency"]
+            publication = row_publication(args, store).row(
+                action,
+                queue=q,
+                tested_repository=template.get('tested_repository'),
+            )
+            publication["residency"] = staged.residency
             if template.get("produced_output_template") is not None:
                 publication["produced_output_template"] = template[
                     "produced_output_template"]
@@ -7110,9 +5967,9 @@ def publish_consumer_row(q, action: Mapping[str, object],
             # publisher also means no interleaving to arbitrate.  A cold lead
             # therefore waits for the next cycle, which staged submissions
             # already depend on for phases 1..n.
-            lead = staged["plan"]["phases"][0]
-            emit_display(display, f"pbrun: staging {len(staged['plan']['phases'])} phases onto "
-                  f"{staged['plan']['tier_id']}; phase {lead['name']!r} "
+            lead = staged.plan["phases"][0]
+            emit_display(display, f"pbrun: staging {len(staged.plan['phases'])} phases onto "
+                  f"{staged.plan['tier_id']}; phase {lead['name']!r} "
                   f"({lead['stage_gib']} GiB) next, for the tiers loop to "
                   f"adopt or publish",
                   channel="stderr", flush=True)
@@ -7123,9 +5980,11 @@ def publish_consumer_row(q, action: Mapping[str, object],
                            "recompute": True}
         else:
             publication = (producer_publication_row(action, args=args, producer=producer, store=store)
-                if producer is not None else publication_row(
-                    action, args=args, queue=q,
-                    tested_repository=template.get("tested_repository"), store=store))
+                if producer is not None else row_publication(args, store).row(
+                    action,
+                    queue=q,
+                    tested_repository=template.get('tested_repository'),
+                ))
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
@@ -8051,3 +6910,21 @@ def adopt_resident(resident, set_id, tier, *, checkout, source, policy_path,
         resident.update_movements(set_id, tier["host"], {"adopt": row})
         _resident_publication(action, template, tier, request_path=request_path, store=store)
         return row
+
+
+def row_publication(args: SubmissionRequest, store: FleetStore) -> RowPublication:
+    return RowPublication(queue_root=store.queue_root, cas_root=store.cas_root,
+        worker_script=store.runtime_root / "tools" / "prismabuild_worker.py",
+        priority=args.priority, max_attempts=args.max_attempts,
+        retry_safe=args.retry_safe, priority_reason=getattr(args, "priority_reason", None))
+
+
+def filing_options(args: SubmissionRequest) -> residency_plan.FilingOptions:
+    return residency_plan.FilingOptions(
+        ram=getattr(args, "residency_ram", "auto"),
+        share=getattr(args, "residency_share", "auto"),
+        mover_readers=args.residency_mover_readers,
+        mover_mem_gb=args.residency_mover_mem_gb,
+        mover_max_attempts=args.residency_mover_max_attempts,
+        prefetch_depth_gib=getattr(args, "residency_prefetch_depth_gib", None),
+        read_mb_s=getattr(args, "residency_read_mb_s", None))
