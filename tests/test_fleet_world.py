@@ -14,17 +14,22 @@ def _key():
 
 def test_plain_and_simulated_admission_keep_explicit_refusals(tmp_path):
     plain = FleetWorld(tmp_path / "plain")
-    with pytest.raises(pool.PoolContractError):
-        plain.actions.publish(_key())
+    plain_key = _key()
+    plain.actions.publish(plain_key)
+    row = record_store.value_or_raise(plain.queue.records.item(record_store.READY, plain_key))
+    assert row["resources"] == {}
+    assert plain.queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
     world = FleetWorld(tmp_path / "admitted", admission=Admission(
         capacity={"cpu": 2, "mem_gb": 4},
         default_demand={"cpu": 1, "mem_gb": 1}))
-    with pytest.raises(pool.PoolContractError):
-        world.actions.publish(_key(), resources=None)
+    explicit_key = _key()
+    world.actions.publish(explicit_key, resources=None)
+    row = record_store.value_or_raise(world.queue.records.item(record_store.READY, explicit_key))
+    assert row["resources"] == {}
+    assert world.queue.claim() is None
     key = _key()
     world.actions.publish(key)
-    with pytest.raises(pool.PoolContractError):
-        world.queue.claim(capacity=None)
+    assert world.queue.claim(capacity=None) is None
     claim = world.queue.claim(owner="world-control")
     assert claim is not None and claim["action_key"] == key
     assert isinstance(world.queue.records.claimed(key), record_store.Present)
