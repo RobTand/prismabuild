@@ -443,14 +443,14 @@ def _worker_finish(
             # only unstarted releases. The late archive distinguishes their
             # numbered history from an uncharged slot; the missing-claim
             # terminal path would end work still waiting in READY (#234).
-            return lifecycle._finish_late(queue, 
+            return _finish_late(queue, 
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=ready,
             )
     if facts.claim is ClaimRelation.SUCCESSOR:
         # Whatever is at ``claimed/<key>.json`` now is not the claim this
         # worker executed, so none of the code below may touch it.
-        return lifecycle._finish_late(queue, 
+        return _finish_late(queue, 
             action_key, status=status, detail=detail,
             snapshot=claim_snapshot, live=record,
         )
@@ -462,7 +462,7 @@ def _worker_finish(
         if pending_late is not None:
             # Its successor may have finished since the first refusal.
             # The saved exact-scope transition still owns this retry.
-            return lifecycle._retry_late_finish(queue, late_path, pending_late)
+            return _retry_late_finish(queue, late_path, pending_late)
     if record is not None:
         # Host-level token ownership cannot distinguish successive attempts
         # on one box. A stale claim read can agree with this caller while
@@ -473,8 +473,8 @@ def _worker_finish(
             action_key,
             record,
             record_store.read_document(queue.records.lease_path(action_key)),
-           invalid=AmbiguousClaimHolder,
-       )
+            invalid=AmbiguousClaimHolder,
+        )
     read_claim = dict(record) if record is not None else None
     # Cleanup annotates this mapping with the completed scope evidence.
     # Keep the live record itself so the terminal retains that annotation;
@@ -1173,7 +1173,7 @@ def _sweep_finish_tombstones(
                         raise PoolContractError("invalid late-finish recovery record")
                     if record.get("claimed_host") != socket.gethostname():
                         continue
-                    result = lifecycle._retry_late_finish(queue, tombstone, record)
+                    result = _retry_late_finish(queue, tombstone, record)
                 except Exception as exc:                         # noqa: BLE001
                     print(f"pool: late finish {key} retained: {type(exc).__name__}: {exc}",
                           file=sys.stderr)

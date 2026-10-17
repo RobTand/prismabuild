@@ -11919,8 +11919,8 @@ class PoolQueue:
             action_key,
             claim,
             record_store.read_document(self.records.lease_path(action_key)),
-           invalid=AmbiguousClaimHolder,
-       )
+            invalid=AmbiguousClaimHolder,
+        )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                       "claimed_unix", "published_unix", "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
@@ -17994,8 +17994,8 @@ class PoolQueue:
                 key,
                 live,
                 record_store.read_document(self.records.lease_path(key)),
-               invalid=AmbiguousClaimHolder,
-           )
+                invalid=AmbiguousClaimHolder,
+            )
             live["resource_scope"] = control
             self.records.replace_record_at(path, live)
             self.write_lease(key, owner=str(record.get("claimed_by") or ""),
@@ -18174,8 +18174,8 @@ class PoolQueue:
             key,
             live,
             record_store.read_document(self.records.lease_path(key)),
-           invalid=AmbiguousClaimHolder,
-       )
+            invalid=AmbiguousClaimHolder,
+        )
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
                   "socket_path": str(scope.socket_path), **gpu_kwargs}
@@ -18204,8 +18204,8 @@ class PoolQueue:
                 key,
                 live,
                 record_store.read_document(self.records.lease_path(key)),
-               invalid=AmbiguousClaimHolder,
-           )
+                invalid=AmbiguousClaimHolder,
+            )
             live["resource_scope"] = control
             self.records.replace_record_at(path, live)
             if isinstance(item, dict):
@@ -22756,8 +22756,8 @@ class PoolQueue:
                         key,
                         record,
                         record_store.read_document(self.records.lease_path(key)),
-                       invalid=AmbiguousClaimHolder,
-                   )
+                        invalid=AmbiguousClaimHolder,
+                    )
                     holder = self.resolve_claim_holder(key, record)
                 except AmbiguousClaimHolder as exc:
                     print(f"pool reaper: {exc}", file=sys.stderr)
