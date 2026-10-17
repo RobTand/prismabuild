@@ -7708,6 +7708,7 @@ def producer_publication_row(action, *, args: SubmissionRequest,
 
 def release_deferred(q, pending_id, record, *, producers=(), store: FleetStore,
                      display: DisplaySink = discard_display):
+    store = replace(store, queue_root=q.root, cas_root=Path(str(record["cas_root"])))
     with action_wait.client_readers():
         with write_window(SubmissionRequest(), store=store):
             return _release_deferred(q, pending_id, record, producers=producers,

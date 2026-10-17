@@ -18658,9 +18658,11 @@ after other refusals. Origin-consumer declarations and staged plan installation
 retain the consumer transition lock and existing cancellation renewal rules.
 Pre-frozen decomposed plans use that same transaction. Child queue rows retain
 the preparation's tested-repository annotation.
-Deferred release derives the queue path from its actual queue for the floor,
-D38 and publication. Its configured CAS, runtime, roster and D38 settings stay
-explicit in `FleetStore`.
+The package deferred-release entry derives the queue path from its actual queue
+and the CAS path from its immutable record before acquiring the floor allowance.
+D38 and runnable publication use that queue, and the row advertises the CAS
+holding its sealed request. Runtime, roster and D38 settings stay explicit in
+`FleetStore`.
 
 `write_window` holds the filesystem growth allowance during preparation and
 publication. Resident copy and adoption accept a checkout and freeze inside

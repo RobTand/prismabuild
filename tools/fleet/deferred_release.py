@@ -40,7 +40,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import contextlib
-from dataclasses import replace
 import hashlib
 import io
 import json
@@ -163,7 +162,7 @@ def release_tick(queue, *, deadline: float | None = None,
         return events
     try:
         published_root = published_runtime_root()
-        store = replace(store_for(__file__), queue_root=queue.root)
+        store = store_for(__file__)
         loop_root = store.runtime_root.resolve(strict=True)
     except OSError as exc:
         event = _report_once("", {"event": REFUSED_EVENT,
