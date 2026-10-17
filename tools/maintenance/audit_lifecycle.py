@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tarfile
 import tokenize
 
 LIFECYCLE_AUDIT_BASE = "578e54d0788c0f3b138f5dcf217e980322bb7726"
@@ -30,6 +31,7 @@ LIFECYCLE_AUDIT_OWNERS = (
     "reap_stale", "quarantine_orphans", "sweep_finish_tombstones", "sweep_ready_transitions",
     "_file_unreadable", "reclaim_terminal_reservation", "_archive_earlier_terminal",
 )
+LIFECYCLE_AUDIT_SOURCES = {}
 
 
 def lifecycle_audit_git(*args):
@@ -38,7 +40,13 @@ def lifecycle_audit_git(*args):
 
 def lifecycle_audit_text(path, revision=None):
     if revision:
-        return lifecycle_audit_git("show", f"{revision}:{path}").decode()
+        if revision not in LIFECYCLE_AUDIT_SOURCES:
+            raw = lifecycle_audit_git("archive", revision, "src", "tests", "tools")
+            with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                LIFECYCLE_AUDIT_SOURCES[revision] = {
+                    member.name: archive.extractfile(member).read().decode()
+                    for member in archive if member.isfile() and member.name.endswith(".py")}
+        return LIFECYCLE_AUDIT_SOURCES[revision][path]
     return (LIFECYCLE_AUDIT_ROOT / path).read_text()
 
 
@@ -73,7 +81,10 @@ def lifecycle_audit_definitions(raw):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 name = prefix + node.name
                 if name in result:
-                    raise ValueError(f"shadowed definition: {name}")
+                    occurrence = 2
+                    while f"{name}@{occurrence}" in result:
+                        occurrence += 1
+                    name = f"{name}@{occurrence}"
                 result[name] = node
                 walk(node.body, name + ".")
     walk(ast.parse(raw).body)
