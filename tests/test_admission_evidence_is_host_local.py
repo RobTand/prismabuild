@@ -15,6 +15,7 @@ dead holder's tokens from whatever box sweeps; that is cross-host evidence and
 stays on the mount. The ownership tests for it are elsewhere
 (``test_pool_ambiguous_holder_recovery``, ``test_pool_holder_contradiction``).
 """
+from prismabuild import census as fleet_census
 import pbstatus
 import json
 from pathlib import Path
@@ -240,6 +241,7 @@ def test_a_cold_host_imports_nothing_from_the_shared_gpu_snapshot(gpu_rig):
 
 
 def test_pbstatus_reads_the_published_gpu_snapshot_from_the_shared_path(gpu_rig, monkeypatch):
+    from prismabuild import census as fleet_census
     import pbstatus
     queue, clock, sample, capacity, publish, tick, claim = gpu_rig
     host = socket.gethostname()
@@ -248,7 +250,7 @@ def test_pbstatus_reads_the_published_gpu_snapshot_from_the_shared_path(gpu_rig,
     publish(1)
     assert claim()
     _await_publishers()
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.rows(queue.root).value
     node = next(n for n in result['nodes'] if n['node'] == host)
     assert node['state'] == 'live'
     gpu = node['admission']['gpu']
