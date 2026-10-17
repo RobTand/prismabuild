@@ -319,7 +319,7 @@ def test_explicit_transport_overrides_environment(live_pool, monkeypatch, capsys
 
 
 def test_deployed_transport_default_is_used(tmp_path, monkeypatch, capsys):
-    import fleet_submit
+    from prismabuild import fleet_submit
     monkeypatch.delenv('PRISMABUILD_TRANSPORT', raising=False)
     (tmp_path / 'RUNTIME_VERSION.json').write_text(json.dumps({'default_transport': 'slurm'}))
     from submission_support import patch_store

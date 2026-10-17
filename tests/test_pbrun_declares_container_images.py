@@ -23,7 +23,7 @@ from prismabuild import container_images as ci  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core

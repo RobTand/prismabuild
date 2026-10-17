@@ -2731,7 +2731,7 @@ def test_retained_alias_controls_class_placement(retained_executable_alias, avai
 
 @pytest.mark.parametrize("present", [False, True])
 def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, present):
-    import fleet_submit
+    from prismabuild import fleet_submit
     from prismabuild import adaptive_cpu, local_dependencies
     submit, root, alias, target = retained_executable_alias
     answers = local_dependencies.observe({str(alias): "executable", str(target): "executable"})
@@ -2893,7 +2893,7 @@ def test_direct_portable_input_preserves_class_placement(direct_portable_input, 
 @pytest.mark.parametrize("source", ["argv", "environment"])
 @pytest.mark.parametrize("present", [False, True])
 def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias, source, present):
-    import fleet_submit
+    from prismabuild import fleet_submit
     from prismabuild import adaptive_cpu, local_dependencies
     submit, root, alias, target, requested = retained_input_alias
     declared = str(root / "checkout" / requested)
