@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import core as pb
+from prismabuild import data_manifest as manifest_codec
 from . import immutable_files
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the
@@ -492,7 +493,7 @@ def validate_task_data_policy(value: object) -> dict[str, Any]:
         pb._fail("task data mover CPU/readers and memory must be positive")
     prefix = pb._text(policy["mount_prefix"], where="task data mount prefix")
     # Delegate path and manifest normalization to the ordinary data contract.
-    pb.validate_data_manifest({"schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    manifest_codec.validate_data_manifest({"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {}, "mount_prefix": prefix,
         "entries": [{"path": prefix + "/validation", "offset": 0, "bytes": 1, "sha256": None}],
         "entry_count": 1, "total_bytes": 1})
@@ -537,8 +538,8 @@ def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -
                 if isinstance(path, str) and not path.startswith("/"):
                     entry = {**entry, "path": policy["mount_prefix"] + "/" + path}
             expanded.append(entry)
-        checked = pb.validate_data_manifest({
-            "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+        checked = manifest_codec.validate_data_manifest({
+            "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
             "mount_prefix": policy["mount_prefix"], "entries": expanded,
             "entry_count": len(reads),
             "total_bytes": sum(entry.get("bytes", 0) for entry in reads
@@ -554,8 +555,8 @@ def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -
     total = sum(entry["bytes"] for entry in entries)
     if not entries:
         return None
-    return pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    return manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "prismabuild.decomposition",
                         "parent_key": envelope.get("parent_key"),
                         "plan_key": envelope.get("plan_key"),

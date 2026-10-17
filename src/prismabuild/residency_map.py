@@ -10,7 +10,7 @@ Its path arrives in the consumer's environment as
 already injects, and a consumer falls back to the declared path for anything
 the map does not name.
 
-**The key is ``(path, offset)``, not ``path``.**  ``core.validate_data_manifest``
+**The key is ``(path, offset)``, not ``path``.**  ``data_manifest.validate_data_manifest``
 refuses a manifest that repeats a ``(path, offset)`` pair and permits the same
 path at several offsets -- the live campaign manifest carries 46 byte-range
 entries inside 43 model shards -- so a path on its own is not an entry's

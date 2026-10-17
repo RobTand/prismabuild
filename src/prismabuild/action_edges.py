@@ -1,6 +1,6 @@
 """Action edges: a consumer submitted before the producer it reads (#913).
 
-A consumer's key covers its data manifest (``core.validate_data_manifest``),
+A consumer's key covers its data manifest (``data_manifest.validate_data_manifest``),
 and a manifest entry names a path and a positive byte count.  A handoff's
 paths and sizes exist only once its producer has committed them (#912), so a
 consumer that reads a handoff cannot be keyed before its producer runs.
@@ -39,6 +39,7 @@ import os
 from pathlib import Path
 
 from . import core as pb
+from prismabuild import data_manifest as manifest_codec
 from . import produced_output as po
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 
@@ -957,11 +958,11 @@ def merged_manifest(static: Mapping[str, object] | None,
     if any, then the resolved ones.
     """
 
-    checked_batches = pb.validate_data_manifest(batches)
+    checked_batches = manifest_codec.validate_data_manifest(batches)
     if static is None:
         return checked_batches
-    checked_static = pb.validate_data_manifest(static)
-    if checked_static["schema"] != pb.DATA_MANIFEST_SCHEMA_V1:
+    checked_static = manifest_codec.validate_data_manifest(static)
+    if checked_static["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V1:
         raise ActionEdgeError(
             "a deferred consumer's static manifest must be data_manifest.v1")
     static_notes = dict(checked_static["annotations"])
@@ -985,8 +986,8 @@ def merged_manifest(static: Mapping[str, object] | None,
             "the static manifest and the committed batches share no directory "
             "below / to mount")
     entries = [*checked_static["entries"], *checked_batches["entries"]]
-    return pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    return manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "prismabuild.action_edges.merged_manifest"},
         "mount_prefix": prefix,
         "entries": entries,
@@ -1011,8 +1012,8 @@ def after_slots(static: Mapping[str, object],
     plan order; raises `ActionEdgeError` naming what does not fit.
     """
 
-    checked = pb.validate_data_manifest(static)
-    if checked["schema"] != pb.DATA_MANIFEST_SCHEMA_V2:
+    checked = manifest_codec.validate_data_manifest(static)
+    if checked["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         raise ActionEdgeError("--after slots need a data_manifest.v2")
     notes = checked["annotations"]
     if po.ORIGIN_BATCHES_ANNOTATION in notes:

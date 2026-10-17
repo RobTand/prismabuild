@@ -156,6 +156,7 @@ from .denial_records import (
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
+from prismabuild import data_manifest as manifest_codec
 from . import immutable_files
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
@@ -5696,7 +5697,7 @@ _CLAIM_DIAGNOSTICS: contextvars.ContextVar[_ClaimDiagnostics | None] = (
 
 def _resident_preference_body_hosts(record: Mapping[str, object], set_id: str) -> list[str]:
     """Validate recorded preference metadata without opening canonical payloads."""
-    manifest = pb.validate_data_manifest(record["manifest"])
+    manifest = manifest_codec.validate_data_manifest(record["manifest"])
     if pb.raw_sha256(pb.compact_ascii_json_bytes(manifest)) != set_id:
         raise ValueError("resident set normalized manifest digest mismatch")
     canonical_root = record.get("canonical_root")
@@ -9626,7 +9627,7 @@ class PoolQueue:
             return {}
         for entry in body.get("inputs") or ():
             if isinstance(entry, Mapping) and str(entry.get("id")) == \
-                    pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+                    manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
                 return {pb.RESIDENCY_MAP_ENV: str(path)}
         return {}
 
@@ -18035,7 +18036,7 @@ class PoolQueue:
                 for candidate in inputs:
                     if (isinstance(candidate, Mapping)
                             and str(candidate.get("id"))
-                            == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                            == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
                         entry = candidate
                         break
             digest = entry.get("sha256") if entry is not None else None
@@ -18056,7 +18057,7 @@ class PoolQueue:
         if declares is None:
             try:
                 path = pb.PrismaBuildCAS(cas_root).input_path(entry)
-                manifest, _ = pb.read_data_manifest(path)
+                manifest, _ = manifest_codec.read_data_manifest(path)
                 declares = manifest_layout.manifest_prelaunch_phases(manifest)
             except (OSError, ValueError, pb.PrismaBuildError) as exc:
                 # Unknown evidence waits; it never admits.  ``map_unreadable``

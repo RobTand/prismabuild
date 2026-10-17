@@ -76,6 +76,7 @@ from . import manifest_layout
 from . import action_result as _action_result
 from . import contracts as _contracts
 from . import core as _core
+from prismabuild import data_manifest as manifest_codec
 from . import local_scratch as _local_scratch
 from . import pool as _pool
 from . import produced_output as _produced_output
@@ -101,8 +102,8 @@ containment_certificate_ok = _reader_lease.containment_certificate_ok
 
 # -- the sealed data manifest ------------------------------------------------
 
-DATA_MANIFEST_MAX_BYTES = _core.DATA_MANIFEST_MAX_BYTES
-read_data_manifest = _core.read_data_manifest
+DATA_MANIFEST_MAX_BYTES = manifest_codec.DATA_MANIFEST_MAX_BYTES
+read_data_manifest = manifest_codec.read_data_manifest
 manifest_read_entries = manifest_layout.manifest_read_entries
 
 # -- the queue ---------------------------------------------------------------
