@@ -804,6 +804,14 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                         _gang.note_backfill_preemption(queue, election, timing)
         tombstone.unlink(missing_ok=True)
         return destination
+    return _publish_claim_destination(queue, plan, tombstone)
+
+
+def _publish_claim_destination(queue, plan: ClaimCommit, tombstone: Path) -> Path | None:
+    from . import pool
+
+    key, record, destination = plan.action_key, plan.record, plan.destination
+    transition, disposition = plan.transition, plan.disposition
     retired = (_archive_earlier_terminal(queue, record, str(disposition))
                if transition in {Transition.FINISH, Transition.EXPIRE} and disposition in {DONE, FAILED} else None)
     if retired is not None:
