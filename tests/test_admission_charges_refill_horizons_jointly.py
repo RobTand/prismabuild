@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, produced_output as po, residency_plan  # noqa: E402
 from prismabuild import storage_tiers, window_credit  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     GIB, STAGE_KIND, TIER, _hexkey, _row, assert_ledger_matches_the_stage)
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402

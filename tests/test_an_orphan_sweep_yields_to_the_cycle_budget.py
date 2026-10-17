@@ -44,7 +44,7 @@ from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F40
 from prismabuild import pool, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_holdings
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 TIER = unc.TIER
