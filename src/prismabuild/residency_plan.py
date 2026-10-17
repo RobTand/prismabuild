@@ -2375,7 +2375,7 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
        disk, the pin is still holding its tokens because of it, and only the
        count tie notices that the fragment beside it is a prefix.
 
-    Adoption passes unchanged: ``tier_loop.adopt`` re-issues the donor's
+    Adoption passes unchanged: ``staged_path.adopt`` re-issues the donor's
     fragment under the successor's name and files a receipt whose declared
     and staged counts are that fragment's own, with the tokens transferred
     rather than released.

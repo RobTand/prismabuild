@@ -238,7 +238,7 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
                          phase: str) -> None:
     """Give a consumer an accepted phase, claiming it first when needed.
 
-    The lease is what the storage role trusts (``prewarm_loop.progress_phase``
+    The lease is what the storage role trusts (``RecordStore.accepted_progress_phase``
     checks the claim stamp against it), written the way
     ``tests/prewarm_fixture.py`` writes it.  A later phase on an already
     claimed consumer refreshes the same lease, as the consumer reading the

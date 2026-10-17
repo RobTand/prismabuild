@@ -725,7 +725,7 @@ def _starvation_accepted_phase(lease: Mapping[str, object] | None) -> str | None
     """The phase the consumer's progress record says it is reading now.
 
     The same field ``tier_loop.live_consumers`` reads through
-    ``prewarm_loop.progress_phase`` (the lease's authenticated accepted
+    ``RecordStore.accepted_progress_phase`` (the lease's authenticated accepted
     observation), parsed here so this census does not import the tier loop.
     ``None`` is "no accepted progress": a ready consumer with no lease, or a
     claim whose worker has accepted nothing yet.

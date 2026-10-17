@@ -186,7 +186,7 @@ def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
 
     The lease, not the action-writable channel: the storage role reads the
     worker's already authenticated observation, which is the only one it can
-    trust, and ``prewarm_loop.progress_phase`` checks the claim stamp against
+    trust, and ``RecordStore.accepted_progress_phase`` checks the claim stamp against
     it.  Written the way ``tests/prewarm_fixture.py`` writes it.
     """
 

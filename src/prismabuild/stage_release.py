@@ -18,7 +18,7 @@ overfill the reservation exists to prevent, arriving by another road.  Evicting
 is still deleting --- what #598 changed is *when* and *whether*.  A range a live
 consumer's window names is **adopted** instead: the tokens move from the
 finished mover's key to the successor's and nothing is copied
-(``tier_loop.adopt``).  What no window names stays resident, held and counted,
+(``staged_path.adopt``).  What no window names stays resident, held and counted,
 until a window cannot be placed without the room --- the ``pressure`` argument
 to :func:`sweep`.  Both are the same rule stated twice: an orphan is evicted
 when the tier needs its tokens, never because a clock said so.

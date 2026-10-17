@@ -8092,11 +8092,19 @@ donor pair again under the existing stage ownership lock before mutation,
 compares every dated file identity there, and retains an unknown or distinct
 successor pair. A successor miss is confirmed through the existing strict
 metadata-absence reader, including its NFS parent revalidation. Same-pair
-reissue after an interrupted adoption remains valid. After process interruption following
-the full token handover, the unchanged donor and successor pairs, live file
-identities and a successor occupancy charge covering the whole range let a
-retry finish withdrawal and the receipt. That retry moves no additional
-token. There is no adoption journal or new durable state.
+reissue after an interrupted adoption remains valid. After the full token
+handover, adoption files its existing complete successor receipt before donor
+withdrawal, under the same ownership lock. If interrupted before that receipt,
+both pairs must still agree. If interrupted after donor fragment removal, a
+fresh owner verifies the receipt's exact donor/consumer/range binding, the
+successor pair, live file identities and its whole-range occupancy charge.
+Only then may it finish donor material and retiring-mark cleanup. An unknown
+or different receipt or pair retains authority. Repeating completed adoption
+preserves receipt bytes and moves no token again. No receiptless donorless
+legacy state is guessed into a completed adoption. These process-interruption
+controls establish filesystem effects visible to a fresh owner; they do not
+simulate power loss, stable-storage persistence or NFS durability. There is no
+adoption journal or new durable state.
 
 The egress still reads claims, fragments, pins and promotion sources in its
 existing order. Source-mark reclamation asks the same owner for one
@@ -8105,6 +8113,29 @@ takes the existing ownership lock, repeats the conditional census and holds
 the lock through the act. Each refusal keeps its previous short circuit and
 error precedence. Neither a hint nor an incomplete census grants authority.
 The parse counters and timing include that locked re-census.
+
+The census entry points answer different questions. Their read budgets and
+conditional error precedence remain part of each pass:
+
+| Pass | Question and census | Hint | Lock, re-census and act | Read and unknown policy |
+| --- | --- | --- | --- | --- |
+| Held or uncharged-owner sweep | Which candidate namespaces name this mover? `fragment_census` | Captured listings and validated fragments select candidates only. | `evict` or `prune_stale_mentions` takes actual stage ownership and repeats its authority census. | Strict fragment reader and existing byte cap; malformed files, symlinks, unknown directories and incomplete listings taint. A selection never authorizes unlink. |
+| Ordinary/shared egress | Who can still write or read these exact paths? `ownership_census` composes claimed destinations, `fragment_owners`, pins, then promotion sources. | Same ordered census plus own material and path fences fills the memo before ownership. | `_evict_owned` repeats the ordered census under ownership and holds it through containment, payload unlink and vouch withdrawal. | Claim records are read each time; immutable manifest-derived paths may be memoized. Any taint retains bytes and charge. Own claimed paths differ from foreign co-owners. Empty-entry branches keep their short circuits. |
+| Stale-mention prune | Which mentions can be removed while preserving surviving owners? `ownership_census` | Census and containment fences run only for nonempty observed entries. | Under ownership, donor documents are read again and must equal the observation; the census then repeats before classification, unlink and fragment-then-material shrink. | Document versions are captured before reads and compared after classification. Same-tick or untrusted stamps cannot authorize a skip checkpoint. Trim/shrink preserve the material's own epoch, including empty non-RAM epochs. |
+| Source-mark reclaim | Is any known publisher or reader retaining these paths? `source_mark_census` returns one `RetainedPaths` verdict. | Attribution, pins, claims and promotion-source reads prime the memo; hints never authorize an act. | `source_mark_authority` takes ownership, checks in-flight movers first, then repeats each conditional census and yields the verdict while retaining the lock through unlink. | First failing question retains with its original reason. Attribution uses its bounded taint report; later reads do not run after an earlier authority refusal. |
+| Unattributed reconciliation | Which paths are wanted, which are named by any fragment, and which copies are residue? `_named_census` returns both sets from one fragment walk. | The same sets, pins and conditional promotion sources prime the memo. | Reconciliation repeats under ownership, then checks current writer state and containment before deletion. | Wanted attribution and any-name attribution are distinct policies. Unknown ownership, pin state, writer state or promotion sources retain. |
+| Bounded orphan recovery | Does anything retain the exact paths derived from the sealed range? `fragment_owners`, pins, claims and promotion sources. | Scope verification and the same readers run before ownership. | Under ownership it rechecks head/consumer readiness, in-flight movers and the scope's retention questions in order before unlink. | Every fragment retains, wanted or not. This bounded scope must not use the wanted-only view or tolerant map composition. Each refusal keeps its original short circuit. |
+| Staged-copy publication | Can this destination incarnation be reused or replaced? `StagedPublisher` reads current material, claim and live-state evidence. | Copy preparation has no mutation authority. | Existing mover/root ownership locks cover the fresh arbitration, identity comparison, rename and material-before-fragment publication. | Action reads are untrusted by default. Unknown competing writers and dates retain; a hint never proves absence. |
+| Adoption | Can this exact completed range and charge change namespace? Donor/successor pairs, complete receipts and live file identities. | Descriptor matching selects a candidate only. | Both existing mover transition locks and actual stage ownership cover fresh pair/receipt checks, handover, complete receipt and donor withdrawal. | Exact whole-range accounting; live or unknown movers, documents and receipts retain. Retry uses no version cache or second handover. |
+
+`attributed_census` is the strict wanted-path view over `_named_census`;
+`attributed_stage_paths` is a paths-only observation for callers that cannot
+use its taint as deletion authority. `claimed_paths_attributed` distinguishes
+an evicted mover's own live writer from foreign co-owners. These are projections
+with distinct questions, not independent caches. Combining them into one
+unconditional global scan would change conditional reads, budgets and refusal
+precedence. The literal four-to-one verdict applies to source-mark reclaim;
+ordinary egress already composes its four questions in `ownership_census`.
 
 These readers continue to use `kept_reads.CensusMemo`, `CensusIndex`, captured
 directory listings and their filesystem-trust rules. Adoption's action-side
