@@ -171,7 +171,10 @@ def staged_replay_cli():
     parser.add_argument("--capture", nargs=2, type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not os.environ.get("PRISMABUILD_ACTION_SCOPE"):
+    # Native tests scrub the outer launch identity before synthetic queue work.
+    # Their published pbtest bound still identifies this already-admitted child.
+    if not (os.environ.get("PRISMABUILD_ACTION_SCOPE")
+            or os.environ.get("PRISMABUILD_TEST_TIMEOUT_S")):
         raise SystemExit("Execute this runtime replay through published PrismaBuild pbrun.py")
     if args.capture:
         print(json.dumps(staged_replay_capture(*args.capture)))
