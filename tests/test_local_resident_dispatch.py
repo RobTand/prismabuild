@@ -53,9 +53,10 @@ def test_published_pairs_queue_only_copy_and_retain_egress_for_owner(tmp_path, m
     monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     template = fixture._template("c" * 64, 7)
     template["cas"] = submission.pb.PrismaBuildCAS(tmp_path / "cas")
+    monkeypatch.setattr(submission, "freeze_resident", lambda *args, **kwargs: template)
     tier = {"tier_id": "local:test-host", "host": "test-host", "mountpoint": str(tmp_path / "local"),
         "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"}
-    rows = submission.dispatch_resident(template, store, record["set_id"], [tier], policy_path="/policy.json", store=pbrun.configured_store())
+    rows = submission.dispatch_resident(store, record["set_id"], [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())
     queue = pool.PoolQueue(store.queue_root)
     copy = rows["test-host"]["copy"]
     assert queue.records.item_path(pool.record_store.READY, copy["action_key"]).exists()

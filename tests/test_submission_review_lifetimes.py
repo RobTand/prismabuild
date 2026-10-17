@@ -64,14 +64,14 @@ def test_resident_freeze_and_publication_share_one_bounded_growth_holder(tmp_pat
             active.pop()
 
     monkeypatch.setattr(filesystem_floor, "operation", bounded)
-    freeze = pbresident.movement_template
+    freeze = submission.freeze_resident
 
     def frozen(*args, **kwargs):
         assert active
         effects.append("freeze")
         return freeze(*args, **kwargs)
 
-    monkeypatch.setattr(pbresident, "movement_template", frozen)
+    monkeypatch.setattr(submission, "freeze_resident", frozen)
     update = resident.update_movements
 
     def updated(*args, **kwargs):

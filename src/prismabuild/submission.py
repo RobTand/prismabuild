@@ -8010,18 +8010,22 @@ def _resident_publication(action, template, tier, *, request_path, store: FleetS
         raise RuntimeError("detached resident publication returned a waiter")
 
 
-def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
+def dispatch_resident(resident, set_id, tiers, *, checkout, policy_path,
                       store: FleetStore):
     """Keep pair requests and immutable descriptors ahead of the copy row."""
     from . import local_resident
     record = resident.read(set_id)
     if not local_resident.lease_active(resident, set_id):
         raise ValueError("resident lease expired")
-    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
-    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    request = SubmissionRequest(cwd=str(checkout), detach=True)
+    store = replace(store, queue_root=resident.queue_root)
     by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
+    for host in record["hosts"]:
+        if host not in by_host:
+            raise ValueError(f"local tier has not announced its movement tools on {host}")
     rows = {}
     with action_wait.client_readers(), write_window(request, store=store):
+        template = freeze_resident(set_id, checkout, store=store)
         for host in record["hosts"]:
             tier = by_host[host]
             pair, actions = {}, {}
@@ -8039,12 +8043,15 @@ def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
     return rows
 
 
-def adopt_resident(template, resident, set_id, tier, *, source, policy_path,
+def adopt_resident(resident, set_id, tier, *, checkout, source, policy_path,
                    store: FleetStore):
     from . import local_resident
-    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
-    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    if tier["host"] not in resident.read(set_id)["hosts"]:
+        raise ValueError("adoption host must be declared and announce its local tier")
+    request = SubmissionRequest(cwd=str(checkout), detach=True)
+    store = replace(store, queue_root=resident.queue_root)
     with action_wait.client_readers(), write_window(request, store=store):
+        template = freeze_resident(set_id, checkout, store=store)
         action = local_resident.movement_action(template, resident, set_id, tier,
             policy_path=policy_path, operation="adopt", source=source)
         request_path = template["cas"].publish_action_request(action)
