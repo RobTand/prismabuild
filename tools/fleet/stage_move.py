@@ -70,6 +70,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 import prewarm_loop  # noqa: E402
 from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import progress as pb_progress  # noqa: E402
@@ -4015,7 +4016,7 @@ def load_manifest(cas_root: Path, action_key: str,
         # "Testing and one-off moves" is exactly where a hand-written manifest
         # enters, and it reads gzip for free.
         try:
-            return pb.load_data_manifest(manifest_path)
+            return manifest_codec.load_data_manifest(manifest_path)
         except (pb.ActionContractError, pb.CASTamperError) as exc:
             raise SystemExit(f"{manifest_path}: {exc}") from None
     request = prewarm_loop.sealed_request(cas_root, action_key)

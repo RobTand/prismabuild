@@ -115,6 +115,7 @@ from prismabuild.stage_marks import (  # noqa: E402
     STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
 )
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
@@ -966,7 +967,7 @@ def _cached_manifest_layout(cas_root: str, digest: str) -> tuple[str, list[dict[
         return hit
     try:
         blob = pb.PrismaBuildCAS(Path(cas_root)).blob_path(digest)
-        manifest = pb.load_data_manifest(blob)
+        manifest = manifest_codec.load_data_manifest(blob)
     except (OSError, ValueError, pb.PrismaBuildError):
         return None
     if not isinstance(manifest, Mapping):
@@ -1212,7 +1213,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
         if isinstance(inputs, list):
             for entry in inputs:
                 if (isinstance(entry, Mapping)
-                        and entry.get("id") == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                        and entry.get("id") == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
                     digest = entry.get("sha256")
         if not isinstance(digest, str) or not digest:
             tainted.append(f"{key[:12]}: sealed request names no data manifest")
@@ -2033,7 +2034,7 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
         if isinstance(inputs, list):
             for entry in inputs:
                 if (isinstance(entry, Mapping)
-                        and entry.get("id") == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
+                        and entry.get("id") == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID):
                     digest = entry.get("sha256")
         if not isinstance(digest, str) or not digest:
             tainted.append(f"{key[:12]}: sealed request names no data manifest")
