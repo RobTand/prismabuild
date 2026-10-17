@@ -18860,3 +18860,13 @@ winning attempt's generation and disposition. A legacy prior terminal without a
 generation stamp requires the same complete archived-byte match; its missing
 stamp supplies no absence or ordering proof. Live successors and unknown proof
 retain their authority.
+
+For a withdrawal-covered expired claim whose immutable next attempt is already
+verified as an ending other than withdrawn, recovery uses cancellation release.
+It preserves that attempt's bytes and slot and the operator's decision, then
+compare-entombs the exact claim and returns its reservation after containment.
+It neither republishes the archived ending nor creates a withdrawn attempt.
+The existing withdrawn-attempt adoption path and its reader contract remain.
+Source/component evidence for this repair is scoped to SM-01, ID-02, INV-01,
+ACC-02 and ACC-04 in the staged-read ledger and acceptance record; it grants
+no deployment, campaign or whole-requirement satisfaction.

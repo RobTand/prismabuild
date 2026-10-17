@@ -9,8 +9,6 @@ payloads in broker scopes; their demand is included in the enclosing PB actions.
 """
 from __future__ import annotations
 
-from prismabuild import claim_identity
-
 import argparse
 from contextlib import ExitStack
 import hashlib
@@ -28,7 +26,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild import action_client  # noqa: E402
+from prismabuild import action_client, claim_identity  # noqa: E402
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
