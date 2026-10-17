@@ -2106,6 +2106,14 @@ how to split an opaque command or modify a published execution unit.
 The ordinary row controller retains `--max-inflight`; logical requests refuse
 that option until bounded child publication is supported.
 
+`decomposition.DataPlans` owns the immutable `data-plans.json` path,
+first-writer publication, losing-writer read-back and strict parent/child
+identity checks. Its constructor captures the record path without I/O.
+The campaign retains residency graph preparation and per-child plan checks.
+Child record checks remain lazy so an earlier invalid residency plan still
+fails before a malformed later child identity. Existing bytes, first-writer
+authority and public campaign refusal messages remain unchanged.
+
 ## Test fanout submission
 
 `pbtest` validates every requested path before fanout. A path that is neither

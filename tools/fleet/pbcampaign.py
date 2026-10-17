@@ -238,7 +238,6 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, action_wait  # noqa: E402
-from prismabuild import immutable_files  # noqa: E402
 from prismabuild import (  # noqa: E402
     core as pb, decomposition as dc, pool, residency_plan,
 )
@@ -1042,24 +1041,6 @@ def rows_for(submissions, waited) -> list[dict]:
 # interrupted halfway resumes into the same batches rather than asking the
 # batcher for a second opinion about a roster that has not changed.
 
-def _stored_document(path: Path) -> object | None:
-    """What is published at ``path``, or ``None`` if nothing is."""
-
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ManifestError(f"cannot read {path}: {exc}") from None
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except ValueError as exc:
-        raise ManifestError(
-            f"{path} is published but is not JSON: {exc}.  It is immutable, "
-            f"so this is damage rather than drift; move it aside deliberately "
-            f"before re-running this campaign"
-        ) from None
-
 
 def child_record(child, *, args: SubmissionRequest, queue, cas, staged_plan=None,
                  template=None) -> dict:
@@ -1085,67 +1066,58 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
     residency registry installation remains inside its ordinary ownership
     transaction, so the tier loop never sees a free-floating ownerless plan.
     """
-    path = dc.record_dir(cas.root, plan["parent_key"]) / "data-plans.json"
-    stored = _stored_document(path)
-    if stored is None:
-        policy = request["task_data_manifest"]
-        stage_args = replace(args, residency="stage",
-            residency_tier=policy["residency_tier"], residency_ram=policy["residency_ram"],
-            residency_mover_readers=policy["mover_readers"],
-            residency_mover_mem_gb=policy["mover_mem_gb"],
-            residency_prefetch_depth_gib=policy.get("prefetch_depth_gib"),
-            residency_read_mb_s=policy.get("read_mb_s"))
-        tier = None
-        movement_receipts = None
-        rows = []
-        for child in children:
-            child_plan = None
-            if child["params"].get("data_manifest") is not None:
-                if tier is None:
-                    tier = residency_plan.resolve_stage_tier(queue, stage_args.residency_tier)
-                if movement_receipts is None:
-                    # Egress receipts too, in the same one read: the stage
-                    # egresses are priced off them (#1021).
-                    movement_receipts = tuple(queue.move_records(schemas=(
-                        pool.POOL_MOVE_SCHEMA_V1, pool.POOL_EGRESS_SCHEMA_V1)))
-                child_template = {**template, "inputs": child["inputs"],
-                                  "params": child["params"], "environment": child["environment"]}
-                staged = residency_plan.prepare_window(
-                    child_template, consumer_action_key=child["action_key"],
-                    tier=tier, options=submission.filing_options(stage_args), queue=queue, cas=cas,
-                    movement_receipts=movement_receipts,
-                    publication=submission.row_publication(stage_args, store_for(__file__)))
-                child_plan = staged["plan"]
-            rows.append({"action_key": child["action_key"], "plan": child_plan})
-        proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
-                    "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
-                    "children": rows}
-        if immutable_files.publish_immutable(path, dc.document_bytes(proposed)):
-            stored = proposed
-        else:
-            stored = _stored_document(path)
-    if (not isinstance(stored, dict) or set(stored) != {"schema", "parent_key", "plan_key", "children"}
-            or stored["schema"] != "prismabuild.decomposed_data_plans.v1"
-            or stored["parent_key"] != plan["parent_key"] or stored["plan_key"] != plan["plan_key"]
-            or not isinstance(stored["children"], list) or len(stored["children"]) != len(children)):
-        raise ManifestError("decomposed data-plan record is corrupt or belongs to another plan")
-    checked = []
-    for child, row in zip(children, stored["children"]):
-        if not isinstance(row, dict) or set(row) != {"action_key", "plan"} or row["action_key"] != child["action_key"]:
-            raise ManifestError("decomposed data-plan child identity differs from the frozen publication")
-        manifest = child["params"].get("data_manifest")
-        if manifest is None:
-            if row["plan"] is not None:
-                raise ManifestError("a no-read child unexpectedly has a staging plan")
-            checked.append(None)
-            continue
-        child_plan = residency_plan.validate_plan(row["plan"])
-        if (child_plan["consumer_action_key"] != child["action_key"]
-                or child_plan["manifest_sha256"] != manifest["input"]["sha256"]
-                or child_plan["manifest_bytes"] != manifest["input"]["bytes"]):
-            raise ManifestError("decomposed staging plan does not bind its child's read manifest")
-        checked.append(child_plan)
-    return checked
+    try:
+        record = dc.DataPlans(cas.root, plan)
+        stored = record.capture()
+        if stored is None:
+            policy = request["task_data_manifest"]
+            stage_args = replace(args, residency="stage",
+                residency_tier=policy["residency_tier"], residency_ram=policy["residency_ram"],
+                residency_mover_readers=policy["mover_readers"],
+                residency_mover_mem_gb=policy["mover_mem_gb"],
+                residency_prefetch_depth_gib=policy.get("prefetch_depth_gib"),
+                residency_read_mb_s=policy.get("read_mb_s"))
+            tier = None
+            movement_receipts = None
+            rows = []
+            for child in children:
+                child_plan = None
+                if child["params"].get("data_manifest") is not None:
+                    if tier is None:
+                        tier = residency_plan.resolve_stage_tier(queue, stage_args.residency_tier)
+                    if movement_receipts is None:
+                        # Egress receipts too, in the same one read: the stage
+                        # egresses are priced off them (#1021).
+                        movement_receipts = tuple(queue.move_records(schemas=(
+                            pool.POOL_MOVE_SCHEMA_V1, pool.POOL_EGRESS_SCHEMA_V1)))
+                    child_template = {**template, "inputs": child["inputs"],
+                                      "params": child["params"], "environment": child["environment"]}
+                    staged = residency_plan.prepare_window(
+                        child_template, consumer_action_key=child["action_key"],
+                        tier=tier, options=submission.filing_options(stage_args), queue=queue, cas=cas,
+                        movement_receipts=movement_receipts,
+                        publication=submission.row_publication(stage_args, store_for(__file__)))
+                    child_plan = staged["plan"]
+                rows.append({"action_key": child["action_key"], "plan": child_plan})
+            stored = record.freeze(rows)
+        checked = []
+        for child, row in record.rows_for_children(stored, children):
+            manifest = child["params"].get("data_manifest")
+            if manifest is None:
+                if row["plan"] is not None:
+                    raise ManifestError("a no-read child unexpectedly has a staging plan")
+                checked.append(None)
+                continue
+            child_plan = residency_plan.validate_plan(row["plan"])
+            if (child_plan["consumer_action_key"] != child["action_key"]
+                    or child_plan["manifest_sha256"] != manifest["input"]["sha256"]
+                    or child_plan["manifest_bytes"] != manifest["input"]["bytes"]):
+                raise ManifestError("decomposed staging plan does not bind its child's read manifest")
+            checked.append(child_plan)
+        return checked
+
+    except dc.RecordError as exc:
+        raise ManifestError(str(exc)) from None
 
 
 def decompose(

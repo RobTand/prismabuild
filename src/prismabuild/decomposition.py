@@ -74,6 +74,7 @@ __all__ = [
     "MissingChildResult",
     "RecordError",
     "ChildResult",
+    "DataPlans",
     "TASK_BATCH_INPUT_ID",
     "ROSTER_BATCH_POLICY_SCHEMA_V1",
     "TASK_BATCH_PLACEHOLDER",
@@ -1092,6 +1093,40 @@ def _stored_record(path: Path) -> object | None:
             f"so this is damage rather than drift; move it aside deliberately "
             f"before re-running this campaign"
         ) from None
+
+
+def _validate_data_plans(stored, plan, children):
+    if (not isinstance(stored, dict) or set(stored) != {"schema", "parent_key", "plan_key", "children"}
+            or stored["schema"] != "prismabuild.decomposed_data_plans.v1"
+            or stored["parent_key"] != plan["parent_key"] or stored["plan_key"] != plan["plan_key"]
+            or not isinstance(stored["children"], list) or len(stored["children"]) != len(children)):
+        raise RecordError("decomposed data-plan record is corrupt or belongs to another plan")
+    for child, row in zip(children, stored["children"]):
+        if not isinstance(row, dict) or set(row) != {"action_key", "plan"} or row["action_key"] != child["action_key"]:
+            raise RecordError("decomposed data-plan child identity differs from the frozen publication")
+        yield child, row
+
+
+class DataPlans:
+    """One immutable decomposition data-plan record and its recovery protocol."""
+
+    def __init__(self, cas_root: str | Path, plan: Mapping[str, Any]):
+        self.path = record_dir(cas_root, plan["parent_key"]) / "data-plans.json"
+        self.plan = plan
+
+    def capture(self):
+        return _stored_record(self.path)
+
+    def freeze(self, rows):
+        proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
+                    "parent_key": self.plan["parent_key"], "plan_key": self.plan["plan_key"],
+                    "children": rows}
+        if immutable_files.publish_immutable(self.path, document_bytes(proposed)):
+            return proposed
+        return _stored_record(self.path)
+
+    def rows_for_children(self, stored, children):
+        return _validate_data_plans(stored, self.plan, children)
 
 
 def freeze_plan(request, frozen_common, *, cas_root: str | Path) -> dict:
