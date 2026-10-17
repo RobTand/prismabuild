@@ -463,6 +463,9 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             authorize_canary=authorize_canary)
         refusal = result if isinstance(result, SubmissionRefused) else None
         if refusal is not None:
+            if refusal.returncode == 2:
+                print(f"pbrun: error: {refusal.reason}", file=sys.stderr)
+                raise SystemExit(2)
             if refusal.reason:
                 raise SystemExit(refusal.reason)
             raise SystemExit(refusal.returncode)

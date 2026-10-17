@@ -1,5 +1,6 @@
 """Explicit receipt recovery preserves the failed transport's causal evidence."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -200,7 +201,7 @@ def test_existing_conflicting_reconciliation_is_preserved(failure):
 
 def test_cli_recovery_is_explicit_and_preserves_original_exit(failure, monkeypatch, capsys):
     q, _, action, ending = failure
-    monkeypatch.setattr(pbwait.pbrun, 'SH', q.root.parent)
+    patch_store(monkeypatch, client=pbwait, root=q.root.parent)
     # The CLI's live layout is pb-queue. Give its factory the fixture queue;
     # all authority is still the fixture's canonical CAS and records.
     monkeypatch.setattr(pbwait.pool, 'PoolQueue', lambda _root: q)
@@ -270,7 +271,7 @@ def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch)
 
 def test_cli_reports_cas_corruption_as_refusal(failure, monkeypatch, capsys):
     q, cas, action, ending = failure
-    monkeypatch.setattr(pbwait.pbrun, 'SH', q.root.parent)
+    patch_store(monkeypatch, client=pbwait, root=q.root.parent)
     monkeypatch.setattr(pbwait.pool, 'PoolQueue', lambda _root: q)
     path = cas._receipt_path(action['action_key'])
     path.chmod(0o644)

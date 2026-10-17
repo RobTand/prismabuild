@@ -491,7 +491,7 @@ from dataclasses import replace
 configured = replace(pbtest.store_for(pbtest.__file__), root=pathlib.Path(sys.argv[2]) / 'fleet',
     queue_root=pathlib.Path(sys.argv[2]) / 'fleet' / 'pb-queue',
     cas_root=pathlib.Path(sys.argv[2]) / 'fleet' / 'cas')
-pbtest.configured_store = lambda: configured
+pbtest.store_for = lambda *args, **kwargs: configured
 missing = '/no/native-mergeq/python'
 pbtest.fleet_queue().announce(host='fixture', tags=[contracts.INTERPRETER_TAG], has_gpu=False,
     capacity={'cpu': 1, 'mem_gb': 8}, timeout_ceiling_s=300,

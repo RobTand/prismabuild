@@ -26,7 +26,7 @@ def request_arguments(request):
         name, value = item.name, getattr(request, item.name)
         if name == "command" or value is None:
             continue
-        if value == getattr(defaults, name) and name not in {"cwd", "transport", "cpus", "priority"}:
+        if value == getattr(defaults, name) and name not in {"cwd", "transport", "cpus"}:
             continue
         flag = "--" + name.replace("_", "-")
         if name == "progress_policy":
