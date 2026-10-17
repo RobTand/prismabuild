@@ -1,4 +1,5 @@
 """Native reservation boundaries retained while the claim driver changes."""
+from fleet_world import FleetWorld
 import json
 
 import pytest
@@ -13,8 +14,7 @@ KEY = "c" * 64
 
 
 def _queue(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker", resources={"cpu": 1, "mem_gb": 1})
     return queue

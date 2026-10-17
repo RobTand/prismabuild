@@ -1,5 +1,6 @@
 """#1221: one latest-only diagnostic commit per claim pass, never per row."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import os
@@ -175,7 +176,7 @@ def test_interleaved_passes_merge_and_preserve_newer_peer_verdict(tmp_path, monk
     queue = pool.PoolQueue(tmp_path / "queue")
     clock = threading.local()
     clock.value = 1.0
-    monkeypatch.setattr(pool, "_now", lambda: clock.value)
+    FleetClock(source=lambda: clock.value).install(monkeypatch, scope="pool")
     same, unrelated = "a" * 64, "b" * 64
     for key in (same, unrelated):
         publish(queue, key, resources={"cpu": 1}, tags=["foreign"])

@@ -1,5 +1,6 @@
 """Scan fairness preserves room boundaries without owning capacity or reads."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 
@@ -136,7 +137,7 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
     capacity = {"cpu": 2, "gpu": 1}
     local_tags = [pool.socket.gethostname()]
     holder, head, busy, tail = (digit * 64 for digit in "0abc")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     assert ledger.acquire(holder, capacity)
